@@ -1,0 +1,74 @@
+QWidget {
+    background: #10141b;
+    color: #e5e9f0;
+    font-family: Segoe UI, Arial, sans-serif;
+    font-size: 10pt;
+}
+
+QGroupBox {
+    border: 1px solid #1f2836;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding: 8px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 6px;
+    color: #9fb2d2;
+}
+
+QLineEdit, QPlainTextEdit, QComboBox, QDoubleSpinBox {
+    background: #141a24;
+    border: 1px solid #243044;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+QLineEdit[error="true"], QComboBox[error="true"], QDoubleSpinBox[error="true"] {
+    border: 1px solid #c2504c;
+}
+
+QPushButton, QToolButton {
+    background: #1a2231;
+    border: 1px solid #2a3950;
+    border-radius: 4px;
+    padding: 6px 10px;
+}
+
+QPushButton:hover, QToolButton:hover {
+    background: #222c3f;
+}
+
+QPushButton:disabled {
+    color: #6b7688;
+    background: #141a24;
+}
+
+QToolButton {
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
+    border-radius: 11px;
+}
+
+QScrollArea {
+    border: none;
+}
+
+QPlainTextEdit {
+    font-family: Consolas, Courier New, monospace;
+}
+
+QProgressBar {
+    border: 1px solid #2a3950;
+    border-radius: 4px;
+    text-align: center;
+    background: #141a24;
+}
+
+QProgressBar::chunk {
+    background: #3c8dbc;
+}
