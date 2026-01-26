@@ -1,0 +1,51 @@
+<Window x:Class="GmodAddonCompressor.DebugConsoleWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Debug Console"
+        Width="860"
+        Height="520"
+        Background="{DynamicResource AppBackground}"
+        Foreground="{DynamicResource TextPrimary}"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Border Style="{StaticResource Card}">
+            <DockPanel LastChildFill="False">
+                <TextBlock Style="{StaticResource SectionTitleText}"
+                           Text="Debug Console"
+                           VerticalAlignment="Center"
+                           DockPanel.Dock="Left" />
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                    <Button x:Name="Button_Copy"
+                            Margin="0,0,8,0"
+                            Content="Copy" />
+                    <Button x:Name="Button_Clear"
+                            Margin="0,0,8,0"
+                            Content="Clear" />
+                    <Button x:Name="Button_Hide"
+                            Style="{StaticResource ButtonAccent}"
+                            Content="Hide" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,12,0,0">
+            <TextBox x:Name="TextBox_Log"
+                     FontFamily="Consolas"
+                     FontSize="12"
+                     Background="{DynamicResource Surface2}"
+                     Foreground="{DynamicResource TextPrimary}"
+                     BorderBrush="{DynamicResource Border}"
+                     BorderThickness="1"
+                     IsReadOnly="True"
+                     TextWrapping="NoWrap"
+                     VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Auto" />
+        </Border>
+    </Grid>
+</Window>
+

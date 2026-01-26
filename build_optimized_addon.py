@@ -27,9 +27,88 @@ def _quote_cmd(cmd: list[str]) -> str:
 
 def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
     print(f"+ {_quote_cmd(cmd)}")
+
+    if _try_run_inprocess(cmd):
+        return
+
     proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None)
     if proc.returncode != 0:
         raise SystemExit(proc.returncode)
+
+
+def _try_run_inprocess(cmd: list[str]) -> bool:
+    """
+    When frozen (PyInstaller), sys.executable points to the worker EXE (not a Python interpreter).
+    Some steps call: [sys.executable, <script.py>, ...]. In that case we run the script in-process.
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+
+    if len(cmd) < 2:
+        return False
+
+    try:
+        exe0 = Path(cmd[0]).resolve()
+        sys_exe = Path(sys.executable).resolve()
+    except Exception:
+        return False
+
+    if exe0 != sys_exe:
+        return False
+
+    script_path = Path(cmd[1])
+    if script_path.suffix.lower() != ".py":
+        return False
+
+    script_name = script_path.name.lower()
+    args = cmd[2:]
+
+    if script_name == "batch_decompile_organize.py":
+        import batch_decompile_organize
+
+        return _run_main_with_sysargv(batch_decompile_organize.main, script_path, args)
+
+    if script_name == "batch_compile_opt_qc.py":
+        import batch_compile_opt_qc
+
+        return _run_main_with_sysargv(batch_compile_opt_qc.main, script_path, args)
+
+    if script_name == "batch_optimize_parallel.py":
+        import batch_optimize_parallel
+
+        try:
+            code = int(batch_optimize_parallel.main(args) or 0)
+        except SystemExit as ex:
+            code = int(ex.code or 0)
+        if code != 0:
+            raise SystemExit(code)
+        return True
+
+    return False
+
+
+def _run_main_with_sysargv(main_func, script_path: Path, args: list[str]) -> bool:
+    old_argv = sys.argv[:]
+    sys.argv = [str(script_path), *args]
+    try:
+        try:
+            result = main_func()
+            code = int(result or 0)
+        except SystemExit as ex:
+            code = int(ex.code or 0)
+        except Exception:
+            import traceback
+
+            print("[ERROR] Unhandled exception while running script in-process:")
+            print(f"[ERROR] Script: {script_path}")
+            print(traceback.format_exc())
+            code = 1
+    finally:
+        sys.argv = old_argv
+
+    if code != 0:
+        raise SystemExit(code)
+    return True
 
 
 def _detect_blender(blender_arg: str | None) -> Path:
@@ -140,6 +219,12 @@ def main(argv: list[str]) -> int:
         help="Path to studiomdl.exe (optional; defaults to batch_compile_opt_qc.py default).",
     )
     ap.add_argument(
+        "--compile-jobs",
+        type=int,
+        default=1,
+        help="Parallel compile jobs for studiomdl (default: 1, 0 = auto).",
+    )
+    ap.add_argument(
         "--no-restore-phy",
         action="store_true",
         help="Disable restoring original .phy from work/<addon>/original/models after compile.",
@@ -148,6 +233,24 @@ def main(argv: list[str]) -> int:
         "--require-phy-backup",
         action="store_true",
         help="Fail compile if .phy backup is missing when restore is enabled.",
+    )
+    ap.add_argument(
+        "--restore-skins",
+        dest="restore_skins",
+        action="store_true",
+        default=True,
+        help="Restore original skinfamilies table from the original addon models (slower; use when skins break).",
+    )
+    ap.add_argument(
+        "--no-restore-skins",
+        dest="restore_skins",
+        action="store_false",
+        help="Disable skinfamilies restore (faster).",
+    )
+    ap.add_argument(
+        "--compile-verbose",
+        action="store_true",
+        help="Enable verbose studiomdl output and full per-QC logs (slower; use for debugging).",
     )
     ap.add_argument(
         "--strict",
@@ -296,17 +399,22 @@ def main(argv: list[str]) -> int:
     cmd = [sys.executable, str(compile_script), str(src_root), "--out", str(compiled_dir)]
     if args.studiomdl:
         cmd.extend(["--studiomdl", str(Path(args.studiomdl).expanduser().resolve())])
+    if args.compile_jobs is not None:
+        cmd.extend(["--compile-jobs", str(int(args.compile_jobs))])
+    if args.compile_verbose:
+        cmd.extend(["--studiomdl-verbose", "--log-detail", "full"])
     if args.no_restore_phy:
         cmd.append("--no-restore-phy")
     else:
         cmd.extend(["--restore-phy-from", str((work_dir / "original" / "models").resolve())])
         if args.require_phy_backup:
             cmd.append("--require-phy-backup")
-    orig_models_dir = addon_path / "models"
-    if orig_models_dir.exists():
-        cmd.extend(["--restore-skin-from", str(orig_models_dir.resolve())])
-    else:
-        print(f"[WARN] Original models folder not found; skin restore disabled: {orig_models_dir}")
+    if args.restore_skins:
+        orig_models_dir = addon_path / "models"
+        if orig_models_dir.exists():
+            cmd.extend(["--restore-skin-from", str(orig_models_dir.resolve())])
+        else:
+            print(f"[WARN] Original models folder not found; skin restore disabled: {orig_models_dir}")
     _run(cmd)
 
     compile_summary = compiled_dir / "compile_summary.json"

@@ -1,0 +1,48 @@
+{
+  "minimal": {
+    "SchemaVersion": 1,
+    "LastAddonPath": "C:\\WorkshopDL\\steamcmd\\steamapps\\workshop\\content\\4000\\1234567890\\my_addon",
+    "BlenderPath": "C:\\Program Files\\Blender Foundation\\Blender 4.3\\blender.exe",
+    "StudioMdlPath": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\GarrysMod\\bin\\studiomdl.exe",
+    "OptimizerSuffix": "_optimized",
+    "OptimizerPreset": "Safe",
+    "AudioWavSampleRateIndex": 0,
+    "AudioWavChannelsIndex": 0,
+    "AudioWavCodecIndex": 0,
+    "AudioLoopSafe": true,
+    "AudioMp3SampleRateIndex": 0,
+    "AudioMp3BitrateIndex": 0,
+    "AudioOggSampleRateIndex": 1,
+    "AudioOggChannelsIndex": 1,
+    "AudioOggQualityIndex": 4
+  },
+  "full": {
+    "SchemaVersion": 1,
+    "LastAddonPath": "C:\\WorkshopDL\\steamcmd\\steamapps\\workshop\\content\\4000\\1234567890\\my_addon",
+    "BlenderPath": "C:\\Program Files\\Blender Foundation\\Blender 4.3\\blender.exe",
+    "StudioMdlPath": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\GarrysMod\\bin\\studiomdl.exe",
+    "OptimizerSuffix": "_optimized",
+    "OptimizerPreset": "Custom",
+    "AudioWavSampleRateIndex": 0,
+    "AudioWavChannelsIndex": 0,
+    "AudioWavCodecIndex": 0,
+    "AudioLoopSafe": true,
+    "AudioMp3SampleRateIndex": 0,
+    "AudioMp3BitrateIndex": 0,
+    "AudioOggSampleRateIndex": 1,
+    "AudioOggChannelsIndex": 1,
+    "AudioOggQualityIndex": 4,
+    "OptimizerCustom": {
+      "Ratio": 0.5,
+      "Merge": 0.0,
+      "AutoSmooth": 45.0,
+      "Format": "smd",
+      "Jobs": 0,
+      "DecompileJobs": 1,
+      "Strict": false,
+      "ResumeOpt": false,
+      "Overwrite": false,
+      "OverwriteWork": false
+    }
+  }
+}

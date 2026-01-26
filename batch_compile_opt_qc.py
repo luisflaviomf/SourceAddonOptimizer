@@ -4,16 +4,23 @@
 
 import argparse
 import json
+import os
 import re
 import shutil
 import struct
 import subprocess
 import time
+import hashlib
+import traceback
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import threading
+from _thread import LockType
 
 DEFAULT_ROOT = r"C:\Users\luisf\OneDrive\Documentos\lvscrowbar"
 DEFAULT_STUDIOMDL = r"C:\Program Files (x86)\Steam\steamapps\common\GarrysMod\bin\studiomdl.exe"
+MAX_AUTO_COMPILE_JOBS = 4
 
 MODELNAME_RE = re.compile(r'^\s*\$modelname\s+(".*?"|\S+)', re.IGNORECASE)
 ERROR_RE = re.compile(r"(error|fatal|cannot|can't|could not|failed|missing)", re.IGNORECASE)
@@ -47,7 +54,9 @@ TEXTURE_STRUCT_SIZE = 64
 
 
 def _read_mdl_header(data: bytes):
-    if len(data) < 128:
+    # Header parsing below reads past the first 128 bytes (ints block),
+    # so we need a bit more data available.
+    if len(data) < 256:
         return None, "mdl_too_short"
     if data[:4] != MDL_MAGIC:
         return None, "mdl_bad_magic"
@@ -124,19 +133,86 @@ def _read_mdl_skin_table(data: bytes, header: dict):
     return [vals[i * numref : (i + 1) * numref] for i in range(numfam)]
 
 
+def _read_mdl_header_from_file(path: Path):
+    try:
+        with path.open("rb") as f:
+            data = f.read(512)
+    except Exception:
+        return None, "mdl_read_error"
+    return _read_mdl_header(data)
+
+
+def _read_cstring_ascii(f, offset: int, *, max_len: int = 4096) -> str:
+    if offset < 0:
+        return ""
+    try:
+        f.seek(offset)
+        data = f.read(max_len)
+    except Exception:
+        return ""
+    if not data:
+        return ""
+    end = data.find(b"\x00")
+    if end == -1:
+        end = len(data)
+    return data[:end].decode("ascii", "ignore")
+
+
+def _read_mdl_textures_from_file(path: Path, header: dict):
+    num = int(header.get("numtextures", 0))
+    tex_index = int(header.get("textureindex", 0))
+    if num <= 0:
+        return []
+    if tex_index <= 0:
+        return None
+    try:
+        with path.open("rb") as f:
+            names = []
+            for i in range(num):
+                base = tex_index + i * TEXTURE_STRUCT_SIZE
+                f.seek(base)
+                block = f.read(TEXTURE_STRUCT_SIZE)
+                if len(block) < 4:
+                    return None
+                name_index = struct.unpack_from("<i", block, 0)[0]
+                if name_index <= 0:
+                    names.append("")
+                    continue
+                name_off = base + name_index
+                names.append(_read_cstring_ascii(f, int(name_off)))
+            return names
+    except Exception:
+        return None
+
+
+def _read_mdl_skin_table_bytes_from_file(path: Path, header: dict):
+    numref = int(header.get("numskinref", 0))
+    numfam = int(header.get("numskinfamilies", 0))
+    skinindex = int(header.get("skinindex", 0))
+    if numref <= 0 or numfam <= 0:
+        return b""
+    count = numref * numfam
+    length = count * 2
+    if skinindex <= 0 or length <= 0:
+        return None
+    try:
+        with path.open("rb") as f:
+            f.seek(int(skinindex))
+            data = f.read(int(length))
+            if len(data) != length:
+                return None
+            return data
+    except Exception:
+        return None
+
+
 def restore_skin_table(orig_mdl: Path, out_mdl: Path):
     if not orig_mdl.exists():
         return {"status": "skipped", "reason": "missing_original_mdl"}
     if not out_mdl.exists():
         return {"status": "skipped", "reason": "missing_output_mdl"}
-    try:
-        data_o = orig_mdl.read_bytes()
-        data_out = out_mdl.read_bytes()
-    except Exception:
-        return {"status": "error", "reason": "mdl_read_error"}
-
-    header_o, err_o = _read_mdl_header(data_o)
-    header_out, err_out = _read_mdl_header(data_out)
+    header_o, err_o = _read_mdl_header_from_file(orig_mdl)
+    header_out, err_out = _read_mdl_header_from_file(out_mdl)
     if err_o:
         return {"status": "error", "reason": f"orig_{err_o}"}
     if err_out:
@@ -148,8 +224,8 @@ def restore_skin_table(orig_mdl: Path, out_mdl: Path):
     ):
         return {"status": "skipped", "reason": "skinref_mismatch"}
 
-    tex_o = _read_mdl_textures(data_o, header_o)
-    tex_out = _read_mdl_textures(data_out, header_out)
+    tex_o = _read_mdl_textures_from_file(orig_mdl, header_o)
+    tex_out = _read_mdl_textures_from_file(out_mdl, header_out)
     if tex_o is None or tex_out is None:
         return {"status": "error", "reason": "texture_parse_error"}
     if len(tex_o) != len(tex_out):
@@ -157,18 +233,17 @@ def restore_skin_table(orig_mdl: Path, out_mdl: Path):
     if [t.lower() for t in tex_o] != [t.lower() for t in tex_out]:
         return {"status": "skipped", "reason": "texture_list_mismatch"}
 
-    skin_o = _read_mdl_skin_table(data_o, header_o)
-    skin_out = _read_mdl_skin_table(data_out, header_out)
+    skin_o = _read_mdl_skin_table_bytes_from_file(orig_mdl, header_o)
+    skin_out = _read_mdl_skin_table_bytes_from_file(out_mdl, header_out)
     if skin_o is None or skin_out is None:
         return {"status": "error", "reason": "skin_parse_error"}
     if skin_o == skin_out:
         return {"status": "skipped", "reason": "already_match"}
 
-    flat = [v for row in skin_o for v in row]
     try:
         with out_mdl.open("r+b") as f:
             f.seek(int(header_out["skinindex"]))
-            f.write(struct.pack("<" + ("H" * len(flat)), *flat))
+            f.write(skin_o)
     except Exception:
         return {"status": "error", "reason": "skin_write_error"}
 
@@ -276,43 +351,123 @@ def ensure_gameinfo(game_dir: Path):
     return True, gameinfo
 
 
-def run_studiomdl(qc_path: Path, studiomdl: Path, game_dir: Path, log_path: Path):
+def _resolve_compile_jobs(value: int) -> int:
+    if value <= 0:
+        cpu = os.cpu_count() or 1
+        return max(1, min(cpu, MAX_AUTO_COMPILE_JOBS))
+    return max(1, value)
+
+
+def _prepare_job_dirs(out_dir: Path, jobs: int):
+    compile_tmp_dir = out_dir / "compile_tmp"
+    job_dirs = []
+    for i in range(jobs):
+        job_dir = compile_tmp_dir / f"job_{i + 1:02d}"
+        ensure_gameinfo(job_dir)
+        (job_dir / "models").mkdir(parents=True, exist_ok=True)
+        job_dirs.append(job_dir)
+    return compile_tmp_dir, job_dirs
+
+
+def _safe_log_id(qc: Path, idx: int, suffix: str) -> str:
+    # Keep paths short to avoid Windows MAX_PATH issues; include a hash for uniqueness.
+    stem = qc.stem
+    short = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem)[:48]
+    h = hashlib.sha1(str(qc).encode("utf-8", errors="ignore")).hexdigest()[:10]
+    return f"{idx:05d}_{short}_{h}{suffix}"
+
+
+def _merge_job_outputs(job_dirs: list[Path], out_models_dir: Path):
+    conflicts = []
+    out_models_dir.mkdir(parents=True, exist_ok=True)
+    for job_dir in job_dirs:
+        job_models_dir = job_dir / "models"
+        if not job_models_dir.exists():
+            continue
+        for src in job_models_dir.rglob("*"):
+            if not src.is_file():
+                continue
+            rel = src.relative_to(job_models_dir)
+            dst = out_models_dir / rel
+            if dst.exists():
+                conflicts.append(str(rel))
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+    return conflicts
+
+
+def run_studiomdl(
+    qc_path: Path,
+    studiomdl: Path,
+    game_dir: Path,
+    log_path: Path,
+    *,
+    verbose: bool,
+    log_detail: str,
+):
     cmd = [
         str(studiomdl),
         "-game",
         str(game_dir),
         "-nop4",
-        "-verbose",
         str(qc_path.name),
     ]
+    if verbose:
+        cmd.insert(-1, "-verbose")
     last_lines = deque(maxlen=60)
     error_lines = []
 
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8", errors="replace") as log:
-        log.write(f"QC: {qc_path}\n")
-        log.write(f"CWD: {qc_path.parent}\n")
-        log.write("CMD: " + " ".join(cmd) + "\n\n")
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(qc_path.parent),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert proc.stdout is not None
 
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(qc_path.parent),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        assert proc.stdout is not None
+    if log_detail == "full":
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("w", encoding="utf-8", errors="replace") as log:
+            log.write(f"QC: {qc_path}\n")
+            log.write(f"CWD: {qc_path.parent}\n")
+            log.write("CMD: " + " ".join(cmd) + "\n\n")
+
+            for line in proc.stdout:
+                log.write(line)
+                last_lines.append(line.rstrip("\n"))
+                if ERROR_RE.search(line):
+                    err = re.sub(r"\s+", " ", line.strip())
+                    if err:
+                        error_lines.append(err)
+            rc = proc.wait()
+            log.write(f"\n[EXIT] returncode={rc}\n")
+    else:
         for line in proc.stdout:
-            log.write(line)
             last_lines.append(line.rstrip("\n"))
             if ERROR_RE.search(line):
                 err = re.sub(r"\s+", " ", line.strip())
                 if err:
                     error_lines.append(err)
         rc = proc.wait()
-        log.write(f"\n[EXIT] returncode={rc}\n")
+
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("w", encoding="utf-8", errors="replace") as log:
+            log.write(f"QC: {qc_path}\n")
+            log.write(f"CWD: {qc_path.parent}\n")
+            log.write("CMD: " + " ".join(cmd) + "\n\n")
+            if error_lines:
+                log.write("[ERROR_LINES]\n")
+                for e in error_lines:
+                    log.write(e + "\n")
+                log.write("\n")
+            log.write("[LAST_LINES]\n")
+            for l in last_lines:
+                log.write(l + "\n")
+            log.write(f"\n[EXIT] returncode={rc}\n")
 
     return rc, list(last_lines), error_lines
 
@@ -497,6 +652,237 @@ def _has_duplicate_name_error(error_lines: list[str]) -> bool:
     return False
 
 
+def _print_locked(lock: LockType | None, text: str) -> None:
+    if lock:
+        with lock:
+            print(text)
+    else:
+        print(text)
+
+
+def _exception_result(entry: dict, exc: Exception, *, log_path: Path | None = None):
+    msg = f"exception={type(exc).__name__}: {exc}"
+    qc = entry.get("qc")
+    qc_dir = entry.get("qc_dir")
+    return {
+        "index": entry.get("index"),
+        "qc_path": str(qc) if qc else None,
+        "qc_dir": str(qc_dir) if qc_dir else None,
+        "log_path": str(log_path) if log_path else None,
+        "log_path_initial": None,
+        "log_path_autofix": None,
+        "status": "fail",
+        "returncode": 1,
+        "duration_sec": 0.0,
+        "modelname_raw": entry.get("modelname_raw"),
+        "model_rel": entry.get("model_rel"),
+        "expected_mdl": None,
+        "compiled_dir": None,
+        "compiled_files": [],
+        "autofix_applied": False,
+        "autofix_retry": False,
+        "autofix_qc_path": None,
+        "autofix_details": [],
+        "phy_restore_requested": None,
+        "phy_restore_attempted": None,
+        "phy_backup_path": None,
+        "phy_backup_found": None,
+        "phy_out_path": None,
+        "phy_restored_out": None,
+        "phy_restore_errors": [],
+        "skin_restore_attempted": None,
+        "skin_restore_applied": None,
+        "skin_restore_reason": None,
+        "skin_restore_error": None,
+        "last_lines": [],
+        "error_lines": [msg],
+        "message": msg,
+    }
+
+
+def _compile_one(
+    entry: dict,
+    *,
+    total: int,
+    studiomdl: Path,
+    compile_dir: Path,
+    compile_models_dir: Path,
+    out_dir: Path,
+    log_detail: str,
+    verbose: bool,
+    restore_phy: bool,
+    phy_backup_models_dir: Path,
+    require_phy_backup: bool,
+    skin_backup_models_dir: Path | None,
+    print_lock: LockType | None,
+):
+    qc = entry["qc"]
+    idx = entry["index"]
+    qc_dir = entry["qc_dir"]
+
+    _print_locked(print_lock, f"\n=== ({idx}/{total}) QC: {qc} ===")
+
+    log_id = _safe_log_id(qc, int(idx), "")
+    log_path = qc_dir / "output" / f"compile_studiomdl_{log_id}.log"
+    log_path_initial = None
+    log_path_autofix = qc_dir / "output" / f"compile_studiomdl_{log_id}_autofix.log"
+    autofix_applied = False
+    autofix_details = []
+    autofix_qc_path = None
+    autofix_retry = False
+
+    modelname_raw = entry["modelname_raw"]
+    model_rel = entry["model_rel"]
+    model_err = entry["model_err"]
+
+    compile_start = time.monotonic()
+    rc, last_lines, error_lines = run_studiomdl(
+        qc,
+        studiomdl,
+        compile_dir,
+        log_path,
+        verbose=verbose,
+        log_detail=log_detail,
+    )
+    if rc != 0 and _has_duplicate_name_error(error_lines):
+        autofix_qc_path = qc.with_name(qc.stem + "_AUTOFIX.qc")
+        changed, details = sanitize_qc_duplicates(qc, autofix_qc_path)
+        if changed:
+            autofix_applied = True
+            autofix_details = details
+            log_path_initial = log_path
+            rc, last_lines, error_lines = run_studiomdl(
+                autofix_qc_path,
+                studiomdl,
+                compile_dir,
+                log_path_autofix,
+                verbose=verbose,
+                log_detail=log_detail,
+            )
+            autofix_retry = True
+            log_path = log_path_autofix
+        else:
+            autofix_details = ["duplicate error detected, but no duplicates found to fix"]
+    duration = time.monotonic() - compile_start
+
+    expected_mdl = None
+    compiled_dir = None
+    compiled_files = []
+    message = ""
+    status = "fail"
+
+    if model_rel:
+        model_rel_path = Path(*model_rel.split("/"))
+        expected_mdl = (compile_models_dir / model_rel_path).resolve()
+        compiled_dir = expected_mdl.parent
+        compiled_files = gather_compiled_files(compiled_dir, expected_mdl.stem)
+    else:
+        message = f"modelname_error={model_err or 'unknown'}"
+
+    if expected_mdl and expected_mdl.exists():
+        status = "ok"
+    else:
+        if not message:
+            message = "missing_expected_mdl"
+
+    phy_restore_requested = bool(restore_phy and model_rel)
+    phy_restore_attempted = False
+    phy_backup_path = None
+    phy_backup_found = None
+    phy_out_path = None
+    phy_restored_out = False
+    phy_restore_errors = []
+    skin_restore_attempted = False
+    skin_restore_applied = False
+    skin_restore_reason = None
+    skin_restore_error = None
+
+    if status == "ok":
+        out_models = compile_models_dir
+        out_models.mkdir(parents=True, exist_ok=True)
+
+        if phy_restore_requested:
+            phy_restore_attempted = True
+            phy_backup_path = (phy_backup_models_dir / model_rel_path).with_suffix(".phy")
+            phy_out_path = (out_models / model_rel_path).with_suffix(".phy")
+
+            if phy_backup_path.exists():
+                phy_backup_found = True
+                try:
+                    phy_out_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(phy_backup_path, phy_out_path)
+                    phy_restored_out = True
+                except Exception as e:
+                    phy_restore_errors.append(f"out: {phy_backup_path} -> {phy_out_path}: {e}")
+            else:
+                phy_backup_found = False
+
+        if skin_backup_models_dir and model_rel:
+            skin_restore_attempted = True
+            orig_mdl = skin_backup_models_dir / model_rel_path
+            out_mdl = out_models / model_rel_path
+            res = restore_skin_table(orig_mdl, out_mdl)
+            if res.get("status") == "applied":
+                skin_restore_applied = True
+                _print_locked(print_lock, f"[SKINFIX] Restored skinfamilies: {model_rel}")
+            elif res.get("status") == "skipped":
+                skin_restore_reason = res.get("reason")
+            else:
+                skin_restore_error = res.get("reason")
+
+    if phy_restore_requested and phy_restore_attempted and not phy_backup_found:
+        message = (message + "; " if message else "") + "phy_backup_missing"
+        if require_phy_backup:
+            status = "fail"
+    if phy_restore_attempted and phy_restore_errors:
+        message = (message + "; " if message else "") + "phy_restore_failed"
+        if require_phy_backup:
+            status = "fail"
+    if rc != 0:
+        message = (message + "; " if message else "") + f"studiomdl_rc={rc}"
+
+    result = {
+        "index": idx,
+        "qc_path": str(qc),
+        "qc_dir": str(qc_dir),
+        "log_path": str(log_path),
+        "log_path_initial": str(log_path_initial) if log_path_initial else None,
+        "log_path_autofix": str(log_path_autofix) if autofix_retry else None,
+        "status": status,
+        "returncode": rc,
+        "duration_sec": round(duration, 3),
+        "modelname_raw": modelname_raw,
+        "model_rel": model_rel,
+        "expected_mdl": str(expected_mdl) if expected_mdl else None,
+        "compiled_dir": str(compiled_dir) if compiled_dir else None,
+        "compiled_files": [str(p) for p in compiled_files],
+        "autofix_applied": autofix_applied,
+        "autofix_retry": autofix_retry,
+        "autofix_qc_path": str(autofix_qc_path) if autofix_qc_path else None,
+        "autofix_details": autofix_details,
+        "phy_restore_requested": phy_restore_requested,
+        "phy_restore_attempted": phy_restore_attempted if phy_restore_requested else None,
+        "phy_backup_path": str(phy_backup_path) if phy_backup_path else None,
+        "phy_backup_found": phy_backup_found if phy_restore_attempted else None,
+        "phy_out_path": str(phy_out_path) if phy_out_path else None,
+        "phy_restored_out": phy_restored_out if phy_restore_attempted else None,
+        "phy_restore_errors": phy_restore_errors,
+        "skin_restore_attempted": skin_restore_attempted if skin_backup_models_dir else None,
+        "skin_restore_applied": skin_restore_applied if skin_backup_models_dir else None,
+        "skin_restore_reason": skin_restore_reason if skin_backup_models_dir else None,
+        "skin_restore_error": skin_restore_error if skin_backup_models_dir else None,
+        "last_lines": last_lines,
+        "error_lines": error_lines,
+        "message": message,
+    }
+
+    _print_locked(print_lock, f"Status: {status.upper()} | Time: {duration:.2f}s | Log: {log_path}")
+    if message:
+        _print_locked(print_lock, f"Note: {message}")
+
+    return result
+
+
 def write_summary_txt(out_dir: Path, summary: dict):
     lines = []
     lines.append("Compile summary")
@@ -505,6 +891,16 @@ def write_summary_txt(out_dir: Path, summary: dict):
     lines.append(f"Output dir: {summary['out_dir']}")
     if summary.get("compile_dir"):
         lines.append(f"Compile dir: {summary['compile_dir']}")
+    if "compile_jobs" in summary:
+        lines.append(f"Compile jobs: {summary.get('compile_jobs')}")
+    if summary.get("collision_count"):
+        lines.append(f"Modelname collisions: {summary.get('collision_count')}")
+        for name in summary.get("collision_models", [])[:5]:
+            lines.append(f"- collision: {name}")
+    if summary.get("merge_conflict_count"):
+        lines.append(f"Merge conflicts: {summary.get('merge_conflict_count')}")
+        for name in summary.get("merge_conflicts", [])[:5]:
+            lines.append(f"- merge: {name}")
     lines.append(f"Total QCs: {summary['total']}")
     lines.append(f"OK: {summary['ok']}  FAIL: {summary['fail']}")
     if "phy_restore" in summary:
@@ -580,262 +976,305 @@ def main():
         action="store_true",
         help="Fail a QC if .phy backup is missing when restore is enabled",
     )
+    ap.add_argument(
+        "--studiomdl-verbose",
+        action="store_true",
+        help="Pass -verbose to studiomdl.exe (slower, larger output).",
+    )
+    ap.add_argument(
+        "--log-detail",
+        choices=["minimal", "full"],
+        default="minimal",
+        help="Compile log detail per QC (default: minimal).",
+    )
+    ap.add_argument(
+        "--compile-jobs",
+        type=int,
+        default=1,
+        help="Parallel compile jobs for studiomdl (default: 1, 0 = auto).",
+    )
     ap.set_defaults(restore_phy=True)
     args = ap.parse_args()
 
-    root = Path(args.root).expanduser().resolve()
-    studiomdl = Path(args.studiomdl).expanduser().resolve()
-    out_dir = Path(args.out).expanduser().resolve() if args.out else (root / "compiled")
-    compile_dir = out_dir
-    compile_models_dir = compile_dir / "models"
-    phy_backup_models_dir = (
-        Path(args.restore_phy_from).expanduser().resolve()
-        if args.restore_phy_from
-        else (root / "original" / "models")
-    )
-    skin_backup_models_dir = (
-        Path(args.restore_skin_from).expanduser().resolve() if args.restore_skin_from else None
-    )
-
-    if not root.exists():
-        print(f"[ERROR] Root does not exist: {root}")
-        return 2
-    if not studiomdl.exists():
-        print(f"[ERROR] studiomdl.exe not found: {studiomdl}")
-        return 2
-
-    created_gameinfo, gameinfo_path = ensure_gameinfo(compile_dir)
-    compile_models_dir.mkdir(parents=True, exist_ok=True)
-
-    qcs = find_opt_qcs(root)
-    print(f"Root: {root}")
-    print(f"Found {len(qcs)} _OPT.qc files (excluding any 'output' folders).")
-    print(f"Output: {out_dir}")
-    if created_gameinfo:
-        print(f"[INFO] Created minimal gameinfo.txt for studiomdl: {gameinfo_path}")
-    if args.restore_phy:
-        print(f"PHY restore: ON | Backup root: {phy_backup_models_dir}")
-    else:
-        print("PHY restore: OFF")
-    if skin_backup_models_dir:
-        if not skin_backup_models_dir.exists():
-            print(f"[WARN] SKIN restore disabled; path not found: {skin_backup_models_dir}")
-            skin_backup_models_dir = None
-        else:
-            print(f"SKIN restore: ON | Backup root: {skin_backup_models_dir}")
-    else:
-        print("SKIN restore: OFF")
-
-    start_all = time.monotonic()
     results = []
-    error_counts = {}
+    compile_jobs = 1
+    compile_tmp_dir = None
+    collision_keys = set()
+    merge_conflicts = []
 
-    skin_restored_count = 0
-    skin_skipped_count = 0
-    skin_error_count = 0
+    try:
+        root = Path(args.root).expanduser().resolve()
+        studiomdl = Path(args.studiomdl).expanduser().resolve()
+        out_dir = Path(args.out).expanduser().resolve() if args.out else (root / "compiled")
+        compile_dir = out_dir
+        compile_models_dir = compile_dir / "models"
+        phy_backup_models_dir = (
+            Path(args.restore_phy_from).expanduser().resolve()
+            if args.restore_phy_from
+            else (root / "original" / "models")
+        )
+        skin_backup_models_dir = (
+            Path(args.restore_skin_from).expanduser().resolve() if args.restore_skin_from else None
+        )
 
-    for idx, qc in enumerate(qcs, start=1):
-        print(f"\n=== ({idx}/{len(qcs)}) QC: {qc} ===")
-        qc_dir = qc.parent
-        log_path = qc_dir / "output" / "compile_studiomdl.log"
-        log_path_initial = None
-        log_path_autofix = qc_dir / "output" / "compile_studiomdl_autofix.log"
-        autofix_applied = False
-        autofix_details = []
-        autofix_qc_path = None
-        autofix_retry = False
+        if not root.exists():
+            print(f"[ERROR] Root does not exist: {root}")
+            return 2
+        if not studiomdl.exists():
+            print(f"[ERROR] studiomdl.exe not found: {studiomdl}")
+            return 2
 
-        modelname_raw = parse_modelname(qc)
-        model_rel, model_err = normalize_modelname(modelname_raw)
+        created_gameinfo, gameinfo_path = ensure_gameinfo(compile_dir)
+        compile_models_dir.mkdir(parents=True, exist_ok=True)
 
-        compile_start = time.monotonic()
-        rc, last_lines, error_lines = run_studiomdl(qc, studiomdl, compile_dir, log_path)
-        if rc != 0 and _has_duplicate_name_error(error_lines):
-            autofix_qc_path = qc.with_name(qc.stem + "_AUTOFIX.qc")
-            changed, details = sanitize_qc_duplicates(qc, autofix_qc_path)
-            if changed:
-                autofix_applied = True
-                autofix_details = details
-                log_path_initial = log_path
-                rc, last_lines, error_lines = run_studiomdl(
-                    autofix_qc_path, studiomdl, compile_dir, log_path_autofix
-                )
-                autofix_retry = True
-                log_path = log_path_autofix
+        qcs = find_opt_qcs(root)
+        print(f"Root: {root}")
+        print(f"Found {len(qcs)} _OPT.qc files (excluding any 'output' folders).")
+        print(f"Output: {out_dir}")
+        if created_gameinfo:
+            print(f"[INFO] Created minimal gameinfo.txt for studiomdl: {gameinfo_path}")
+        if args.restore_phy:
+            print(f"PHY restore: ON | Backup root: {phy_backup_models_dir}")
+        else:
+            print("PHY restore: OFF")
+        if skin_backup_models_dir:
+            if not skin_backup_models_dir.exists():
+                print(f"[WARN] SKIN restore disabled; path not found: {skin_backup_models_dir}")
+                skin_backup_models_dir = None
             else:
-                autofix_details = ["duplicate error detected, but no duplicates found to fix"]
-        duration = time.monotonic() - compile_start
-
-        for line in error_lines:
-            error_counts[line] = error_counts.get(line, 0) + 1
-
-        expected_mdl = None
-        compiled_dir = None
-        compiled_files = []
-        message = ""
-        status = "fail"
-
-        if model_rel:
-            model_rel_path = Path(*model_rel.split("/"))
-            expected_mdl = (compile_models_dir / model_rel_path).resolve()
-            compiled_dir = expected_mdl.parent
-            compiled_files = gather_compiled_files(compiled_dir, expected_mdl.stem)
+                print(f"SKIN restore: ON | Backup root: {skin_backup_models_dir}")
         else:
-            message = f"modelname_error={model_err or 'unknown'}"
+            print("SKIN restore: OFF")
 
-        if expected_mdl and expected_mdl.exists():
-            status = "ok"
+        start_all = time.monotonic()
+
+        qc_entries = []
+        model_groups = {}
+        for idx, qc in enumerate(qcs, start=1):
+            modelname_raw = parse_modelname(qc)
+            model_rel, model_err = normalize_modelname(modelname_raw)
+            model_key = model_rel.lower() if model_rel else None
+            entry = {
+                "qc": qc,
+                "qc_dir": qc.parent,
+                "index": idx,
+                "modelname_raw": modelname_raw,
+                "model_rel": model_rel,
+                "model_err": model_err,
+                "model_rel_key": model_key,
+            }
+            qc_entries.append(entry)
+            if model_key:
+                model_groups.setdefault(model_key, []).append(entry)
+
+        collision_keys = {k for k, v in model_groups.items() if len(v) > 1}
+        serial_entries = [e for e in qc_entries if e.get("model_rel_key") in collision_keys]
+        parallel_entries = [e for e in qc_entries if e.get("model_rel_key") not in collision_keys]
+
+        if collision_keys:
+            print(f"[WARN] Modelname collisions detected: {len(collision_keys)}. These QCs will compile serially.")
+            for key in sorted(list(collision_keys))[:5]:
+                print(f"[WARN] Collision: {key}")
+
+        compile_jobs = _resolve_compile_jobs(int(args.compile_jobs))
+        if len(parallel_entries) <= 1:
+            compile_jobs = 1
+        elif compile_jobs > len(parallel_entries):
+            compile_jobs = len(parallel_entries)
+
+        if compile_jobs <= 1:
+            for entry in qc_entries:
+                try:
+                    results.append(
+                        _compile_one(
+                            entry,
+                            total=len(qc_entries),
+                            studiomdl=studiomdl,
+                            compile_dir=compile_dir,
+                            compile_models_dir=compile_models_dir,
+                            out_dir=out_dir,
+                            log_detail=str(args.log_detail),
+                            verbose=bool(args.studiomdl_verbose),
+                            restore_phy=bool(args.restore_phy),
+                            phy_backup_models_dir=phy_backup_models_dir,
+                            require_phy_backup=bool(args.require_phy_backup),
+                            skin_backup_models_dir=skin_backup_models_dir,
+                            print_lock=None,
+                        )
+                    )
+                except Exception as exc:
+                    _print_locked(None, f"[ERROR] QC exception: {entry.get('qc')} | {exc}")
+                    results.append(_exception_result(entry, exc))
         else:
-            if not message:
-                message = "missing_expected_mdl"
+            compile_tmp_dir, job_dirs = _prepare_job_dirs(out_dir, compile_jobs)
+            print(
+                f"[INFO] Parallel compile enabled: jobs={compile_jobs} "
+                f"parallel={len(parallel_entries)} serial={len(serial_entries)}"
+            )
+            print_lock = threading.Lock()
 
-        phy_restore_requested = bool(args.restore_phy and model_rel)
-        phy_restore_attempted = False
-        phy_backup_path = None
-        phy_backup_found = None
-        phy_out_path = None
-        phy_restored_out = False
-        phy_restore_errors = []
-        skin_restore_attempted = False
-        skin_restore_applied = False
-        skin_restore_reason = None
-        skin_restore_error = None
+            with ThreadPoolExecutor(max_workers=compile_jobs) as executor:
+                future_to_entry = {}
+                for i, entry in enumerate(parallel_entries):
+                    job_dir = job_dirs[i % compile_jobs]
+                    future = executor.submit(
+                        _compile_one,
+                        entry,
+                        total=len(qc_entries),
+                        studiomdl=studiomdl,
+                        compile_dir=job_dir,
+                        compile_models_dir=job_dir / "models",
+                        out_dir=out_dir,
+                        log_detail=str(args.log_detail),
+                        verbose=bool(args.studiomdl_verbose),
+                        restore_phy=bool(args.restore_phy),
+                        phy_backup_models_dir=phy_backup_models_dir,
+                        require_phy_backup=bool(args.require_phy_backup),
+                        skin_backup_models_dir=skin_backup_models_dir,
+                        print_lock=print_lock,
+                    )
+                    future_to_entry[future] = entry
 
-        if status == "ok":
-            out_models = out_dir / "models"
-            out_models.mkdir(parents=True, exist_ok=True)
-
-            if phy_restore_requested:
-                phy_restore_attempted = True
-                phy_backup_path = (phy_backup_models_dir / model_rel_path).with_suffix(".phy")
-                phy_out_path = (out_models / model_rel_path).with_suffix(".phy")
-
-                if phy_backup_path.exists():
-                    phy_backup_found = True
+                for future in as_completed(list(future_to_entry.keys())):
                     try:
-                        phy_out_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(phy_backup_path, phy_out_path)
-                        phy_restored_out = True
-                    except Exception as e:
-                        phy_restore_errors.append(f"out: {phy_backup_path} -> {phy_out_path}: {e}")
-                else:
-                    phy_backup_found = False
+                        results.append(future.result())
+                    except Exception as exc:
+                        entry = future_to_entry.get(future, {"index": None})
+                        _print_locked(print_lock, f"[ERROR] QC exception: {entry.get('qc')} | {exc}")
+                        results.append(_exception_result(entry, exc))
 
-            if skin_backup_models_dir and model_rel:
-                skin_restore_attempted = True
-                orig_mdl = skin_backup_models_dir / model_rel_path
-                out_mdl = out_models / model_rel_path
-                res = restore_skin_table(orig_mdl, out_mdl)
-                if res.get("status") == "applied":
-                    skin_restore_applied = True
-                    skin_restored_count += 1
-                    print(f"[SKINFIX] Restored skinfamilies: {model_rel}")
-                elif res.get("status") == "skipped":
-                    skin_restore_reason = res.get("reason")
-                    skin_skipped_count += 1
-                else:
-                    skin_restore_error = res.get("reason")
-                    skin_error_count += 1
+            for entry in serial_entries:
+                try:
+                    results.append(
+                        _compile_one(
+                            entry,
+                            total=len(qc_entries),
+                            studiomdl=studiomdl,
+                            compile_dir=compile_dir,
+                            compile_models_dir=compile_models_dir,
+                            out_dir=out_dir,
+                            log_detail=str(args.log_detail),
+                            verbose=bool(args.studiomdl_verbose),
+                            restore_phy=bool(args.restore_phy),
+                            phy_backup_models_dir=phy_backup_models_dir,
+                            require_phy_backup=bool(args.require_phy_backup),
+                            skin_backup_models_dir=skin_backup_models_dir,
+                            print_lock=None,
+                        )
+                    )
+                except Exception as exc:
+                    _print_locked(None, f"[ERROR] QC exception: {entry.get('qc')} | {exc}")
+                    results.append(_exception_result(entry, exc))
 
-        if phy_restore_requested and phy_restore_attempted and not phy_backup_found:
-            message = (message + "; " if message else "") + "phy_backup_missing"
-            if args.require_phy_backup:
-                status = "fail"
-        if phy_restore_attempted and phy_restore_errors:
-            message = (message + "; " if message else "") + "phy_restore_failed"
-            if args.require_phy_backup:
-                status = "fail"
-        if rc != 0:
-            message = (message + "; " if message else "") + f"studiomdl_rc={rc}"
+            try:
+                merge_conflicts = _merge_job_outputs(job_dirs, compile_models_dir)
+            except Exception as exc:
+                print(f"[ERROR] Merge failed: {exc}")
+                merge_conflicts = merge_conflicts or []
+                merge_conflicts.append(f"exception: {type(exc).__name__}: {exc}")
 
-        result = {
-            "qc_path": str(qc),
-            "qc_dir": str(qc_dir),
-            "log_path": str(log_path),
-            "log_path_initial": str(log_path_initial) if log_path_initial else None,
-            "log_path_autofix": str(log_path_autofix) if autofix_retry else None,
-            "status": status,
-            "returncode": rc,
-            "duration_sec": round(duration, 3),
-            "modelname_raw": modelname_raw,
-            "model_rel": model_rel,
-            "expected_mdl": str(expected_mdl) if expected_mdl else None,
-            "compiled_dir": str(compiled_dir) if compiled_dir else None,
-            "compiled_files": [str(p) for p in compiled_files],
-            "autofix_applied": autofix_applied,
-            "autofix_retry": autofix_retry,
-            "autofix_qc_path": str(autofix_qc_path) if autofix_qc_path else None,
-            "autofix_details": autofix_details,
-            "phy_restore_requested": phy_restore_requested,
-            "phy_restore_attempted": phy_restore_attempted if phy_restore_requested else None,
-            "phy_backup_path": str(phy_backup_path) if phy_backup_path else None,
-            "phy_backup_found": phy_backup_found if phy_restore_attempted else None,
-            "phy_out_path": str(phy_out_path) if phy_out_path else None,
-            "phy_restored_out": phy_restored_out if phy_restore_attempted else None,
-            "phy_restore_errors": phy_restore_errors,
-            "skin_restore_attempted": skin_restore_attempted if skin_backup_models_dir else None,
-            "skin_restore_applied": skin_restore_applied if skin_backup_models_dir else None,
-            "skin_restore_reason": skin_restore_reason if skin_backup_models_dir else None,
-            "skin_restore_error": skin_restore_error if skin_backup_models_dir else None,
-            "last_lines": last_lines,
-            "error_lines": error_lines,
-            "message": message,
+            # Only delete tmp outputs if merge succeeded.
+            if compile_tmp_dir and not merge_conflicts:
+                shutil.rmtree(compile_tmp_dir, ignore_errors=True)
+
+        results.sort(key=lambda r: int(r.get("index") or 0))
+        duration_all = time.monotonic() - start_all
+        ok_count = sum(1 for r in results if r["status"] == "ok")
+        fail_count = len(results) - ok_count
+        phy_enabled = bool(args.restore_phy)
+        phy_restored_out_count = sum(1 for r in results if r.get("phy_restored_out"))
+        phy_backup_missing_count = sum(
+            1 for r in results if r.get("phy_restore_requested") and not r.get("phy_backup_found")
+        )
+        phy_error_count = sum(1 for r in results if r.get("phy_restore_errors"))
+
+        error_counts = {}
+        for r in results:
+            for line in r.get("error_lines") or []:
+                error_counts[line] = error_counts.get(line, 0) + 1
+
+        skin_restored_count = sum(1 for r in results if r.get("skin_restore_applied"))
+        skin_skipped_count = sum(
+            1
+            for r in results
+            if r.get("skin_restore_attempted")
+            and not r.get("skin_restore_applied")
+            and r.get("skin_restore_reason")
+        )
+        skin_error_count = sum(1 for r in results if r.get("skin_restore_error"))
+
+        top_errors = sorted(
+            [{"line": k, "count": v} for k, v in error_counts.items()],
+            key=lambda x: x["count"],
+            reverse=True,
+        )[:10]
+
+        summary = {
+            "root": str(root),
+            "studiomdl": str(studiomdl),
+            "out_dir": str(out_dir),
+            "compile_dir": str(compile_dir),
+            "compile_jobs": compile_jobs,
+            "compile_tmp_dir": str(compile_tmp_dir) if compile_tmp_dir else None,
+            "collision_count": len(collision_keys),
+            "collision_models": sorted(list(collision_keys))[:20],
+            "merge_conflict_count": len(merge_conflicts),
+            "merge_conflicts": merge_conflicts[:50],
+            "total": len(results),
+            "ok": ok_count,
+            "fail": fail_count,
+            "duration_sec": round(duration_all, 3),
+            "phy_restore": {
+                "enabled": phy_enabled,
+                "backup_root": str(phy_backup_models_dir) if phy_enabled else None,
+                "restored_out": phy_restored_out_count if phy_enabled else 0,
+                "backup_missing": phy_backup_missing_count if phy_enabled else 0,
+                "errors": phy_error_count if phy_enabled else 0,
+            },
+            "skin_restore": {
+                "enabled": bool(skin_backup_models_dir),
+                "backup_root": str(skin_backup_models_dir) if skin_backup_models_dir else None,
+                "restored": skin_restored_count if skin_backup_models_dir else 0,
+                "skipped": skin_skipped_count if skin_backup_models_dir else 0,
+                "errors": skin_error_count if skin_backup_models_dir else 0,
+            },
+            "top_errors": top_errors,
+            "results": results,
         }
-        results.append(result)
 
-        print(f"Status: {status.upper()} | Time: {duration:.2f}s | Log: {log_path}")
-        if message:
-            print(f"Note: {message}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        summary_json = out_dir / "compile_summary.json"
+        summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8", errors="replace")
+        write_summary_txt(out_dir, summary)
 
-    duration_all = time.monotonic() - start_all
-    ok_count = sum(1 for r in results if r["status"] == "ok")
-    fail_count = len(results) - ok_count
-    phy_enabled = bool(args.restore_phy)
-    phy_restored_out_count = sum(1 for r in results if r.get("phy_restored_out"))
-    phy_backup_missing_count = sum(1 for r in results if r.get("phy_restore_requested") and not r.get("phy_backup_found"))
-    phy_error_count = sum(1 for r in results if r.get("phy_restore_errors"))
-
-    top_errors = sorted(
-        [{"line": k, "count": v} for k, v in error_counts.items()],
-        key=lambda x: x["count"],
-        reverse=True,
-    )[:10]
-
-    summary = {
-        "root": str(root),
-        "studiomdl": str(studiomdl),
-        "out_dir": str(out_dir),
-        "compile_dir": str(compile_dir),
-        "total": len(results),
-        "ok": ok_count,
-        "fail": fail_count,
-        "duration_sec": round(duration_all, 3),
-        "phy_restore": {
-            "enabled": phy_enabled,
-            "backup_root": str(phy_backup_models_dir) if phy_enabled else None,
-            "restored_out": phy_restored_out_count if phy_enabled else 0,
-            "backup_missing": phy_backup_missing_count if phy_enabled else 0,
-            "errors": phy_error_count if phy_enabled else 0,
-        },
-        "skin_restore": {
-            "enabled": bool(skin_backup_models_dir),
-            "backup_root": str(skin_backup_models_dir) if skin_backup_models_dir else None,
-            "restored": skin_restored_count if skin_backup_models_dir else 0,
-            "skipped": skin_skipped_count if skin_backup_models_dir else 0,
-            "errors": skin_error_count if skin_backup_models_dir else 0,
-        },
-        "top_errors": top_errors,
-        "results": results,
-    }
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    summary_json = out_dir / "compile_summary.json"
-    summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8", errors="replace")
-    write_summary_txt(out_dir, summary)
-
-    print("\nDone.")
-    print(f"Summary: {summary_json}")
-    return 0
+        print("\nDone.")
+        print(f"Summary: {summary_json}")
+        return 0
+    except Exception:
+        tb = traceback.format_exc()
+        try:
+            out_dir = None
+            try:
+                root = Path(args.root).expanduser().resolve()
+                out_dir = Path(args.out).expanduser().resolve() if args.out else (root / "compiled")
+            except Exception:
+                out_dir = Path.cwd() / "compiled"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            summary_json = out_dir / "compile_summary.json"
+            crash_summary = {
+                "crash": True,
+                "exception": tb,
+                "compile_jobs": compile_jobs,
+                "collision_count": len(collision_keys) if collision_keys else 0,
+                "merge_conflicts": merge_conflicts,
+                "results": results,
+            }
+            summary_json.write_text(json.dumps(crash_summary, indent=2), encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+        print("[ERROR] batch_compile_opt_qc crashed. See compile_summary.json for details.")
+        print(tb)
+        return 1
 
 
 if __name__ == "__main__":

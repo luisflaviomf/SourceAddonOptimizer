@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -490,4 +491,36 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except SystemExit:
+        raise
+    except Exception:
+        tb = traceback.format_exc()
+
+        work_dir = None
+        argv = sys.argv[1:]
+        try:
+            if "--work" in argv:
+                i = argv.index("--work")
+                if i + 1 < len(argv):
+                    work_dir = Path(argv[i + 1]).expanduser().resolve()
+        except Exception:
+            work_dir = None
+
+        crash_log_path = None
+        try:
+            if work_dir:
+                crash_dir = work_dir / "logs"
+                crash_dir.mkdir(parents=True, exist_ok=True)
+                crash_log_path = crash_dir / f"worker_crash_{_ts()}.log"
+                crash_log_path.write_text(tb, encoding="utf-8", errors="replace")
+        except Exception:
+            crash_log_path = None
+
+        if crash_log_path:
+            print(f"[ERROR] Unhandled exception. Crash log: {crash_log_path}")
+        else:
+            print("[ERROR] Unhandled exception. (Failed to write crash log)")
+        print(tb)
+        raise SystemExit(1)

@@ -28,5 +28,8 @@ build/
 # Local test archives
 teste*.zip
 
+# Large local archives (do not commit)
+/*.zip
+
 # PyInstaller
 *.spec
