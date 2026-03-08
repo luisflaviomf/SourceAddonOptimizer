@@ -6,17 +6,14 @@
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>icon.ico</ApplicationIcon>
+    <AssemblyName>GmodAddonOptimizer</AssemblyName>
+    <RootNamespace>GmodAddonCompressor</RootNamespace>
+    <AssemblyTitle>GMod Addon Optimizer</AssemblyTitle>
+    <Product>GMod Addon Optimizer</Product>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="icon.ico" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="Resources\\SourceAddonOptimizer.win-x64.zip"
-             Condition="Exists('Resources\\SourceAddonOptimizer.win-x64.zip')"
-             CopyToOutputDirectory="PreserveNewest"
-             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

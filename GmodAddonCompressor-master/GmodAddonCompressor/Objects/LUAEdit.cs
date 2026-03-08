@@ -3,12 +3,12 @@ using GmodAddonCompressor.DataContexts;
 using GmodAddonCompressor.Interfaces;
 using GmodAddonCompressor.Properties;
 using GmodAddonCompressor.Systems;
+using GmodAddonCompressor.Systems.Tools;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -22,12 +22,12 @@ namespace GmodAddonCompressor.Objects
         private readonly string _scriptCommentsRemover;
         private static readonly Regex _regexUtf8 = new Regex("[^\x00-\x7F]");
         //private static readonly Regex _regexUnicode = new Regex("[^\u0000-\u007F]+");
-        private const string _mainDirectoryNamePrometheus = "Prometheus";
-        private const string _mainDirectoryNameGLuaFixer = "GLuaFixer";
+        private const string _toolPrometheus = "Prometheus";
+        private const string _toolGluaFixer = "GLuaFixer";
+        private const string _toolVersionPrometheus = "1";
+        private const string _toolVersionGluaFixer = "1";
         private readonly string _prometheusFilePath;
         private readonly string _gLuaFixerFilePath;
-        private string _mainDirectoryPrometheusPath;
-        private string _mainDirectoryGLuaFixerPath;
         private readonly ILogger _logger = LogSystem.CreateLogger<LUAEdit>();
 
         public LUAEdit()
@@ -35,36 +35,22 @@ namespace GmodAddonCompressor.Objects
             _scriptCompact = Encoding.UTF8.GetString(Resources.script_compact);
             _scriptCommentsRemover = Encoding.UTF8.GetString(Resources.script_comments_remover);
 
-            string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
-            _mainDirectoryPrometheusPath = Path.Combine(baseDirectory, _mainDirectoryNamePrometheus);
-            _mainDirectoryGLuaFixerPath = Path.Combine(baseDirectory, _mainDirectoryNameGLuaFixer);
+            string prometheusRoot = ToolExtractionSystem.EnsureExtracted(
+                _toolPrometheus,
+                _toolVersionPrometheus,
+                Resources.Prometheus,
+                new[] { Path.Combine("Prometheus", "cli.lua") }
+            );
 
-            if (!Directory.Exists(_mainDirectoryPrometheusPath))
-            {
-                string zipResourcePath = Path.Combine(baseDirectory, _mainDirectoryNamePrometheus + ".zip");
+            string gluaRoot = ToolExtractionSystem.EnsureExtracted(
+                _toolGluaFixer,
+                _toolVersionGluaFixer,
+                Resources.glualint,
+                new[] { "glualint.exe" }
+            );
 
-                if (!File.Exists(zipResourcePath))
-                    File.WriteAllBytes(zipResourcePath, Resources.Prometheus);
-
-                ZipFile.ExtractToDirectory(zipResourcePath, baseDirectory);
-                File.Delete(zipResourcePath);
-            }
-
-            if (!Directory.Exists(_mainDirectoryGLuaFixerPath))
-            {
-                Directory.CreateDirectory(_mainDirectoryGLuaFixerPath);
-    
-                string zipResourcePath = Path.Combine(baseDirectory, _mainDirectoryNameGLuaFixer + ".zip");
-
-                if (!File.Exists(zipResourcePath))
-                    File.WriteAllBytes(zipResourcePath, Resources.glualint);
-
-                ZipFile.ExtractToDirectory(zipResourcePath, _mainDirectoryGLuaFixerPath);
-                File.Delete(zipResourcePath);
-            }
-
-            _prometheusFilePath = Path.Combine(_mainDirectoryPrometheusPath, "cli.lua");
-            _gLuaFixerFilePath = Path.Combine(_mainDirectoryGLuaFixerPath, "glualint.exe");
+            _prometheusFilePath = Path.Combine(prometheusRoot, "Prometheus", "cli.lua");
+            _gLuaFixerFilePath = Path.Combine(gluaRoot, "glualint.exe");
         }
 
         private static string Replace(Match match) => @"\\u" + ((int)match.Value[0]).ToString("x4");

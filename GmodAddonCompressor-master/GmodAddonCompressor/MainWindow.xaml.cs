@@ -6,6 +6,7 @@ using GmodAddonCompressor.Systems.Optimizer;
 using GmodAddonCompressor.Systems.Reporting;
 using GmodAddonCompressor.Systems.Settings;
 using GmodAddonCompressor.Systems.Tools;
+using GmodAddonCompressor.Properties;
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
@@ -21,6 +22,7 @@ namespace GmodAddonCompressor
 {
     public partial class MainWindow : Window
     {
+        private static readonly TimeSpan SizeScanTimeout = TimeSpan.FromSeconds(8);
         private MainWindowContext _context = new MainWindowContext();
         private const string _version = "v1.0.1";
         private readonly SourceAddonOptimizerRunner _optimizerRunner = new SourceAddonOptimizerRunner();
@@ -641,11 +643,11 @@ namespace GmodAddonCompressor
             }
             catch (FileNotFoundException ex)
             {
-                string resourcesDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources");
-                string message = $"{ex.Message}\n\nExpected zip:\n{ToolPaths.ZipPath}\n\nOpen Resources folder?";
+                string toolsDir = ToolPaths.ToolsRoot;
+                string message = $"{ex.Message}\n\nTools folder:\n{toolsDir}\n\nOpen tools folder?";
                 var result = MessageBox.Show(message, title, MessageBoxButton.YesNo, MessageBoxImage.Error);
                 if (result == MessageBoxResult.Yes)
-                    OpenFolder(resourcesDir, title);
+                    OpenFolder(toolsDir, title);
                 return false;
             }
             catch (Exception ex)
@@ -832,12 +834,13 @@ namespace GmodAddonCompressor
         {
             try
             {
-                string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
-                string ffmpegDirectory = Path.Combine(baseDirectory, "ffmpeg");
-                string ffmpegExePath = Path.Combine(ffmpegDirectory, "ffmpeg.exe");
-
-                if (!File.Exists(ffmpegExePath))
-                    _ = new FFMpegSystem();
+                string ffmpegRoot = ToolExtractionSystem.EnsureExtracted(
+                    "ffmpeg",
+                    "2022-09-22",
+                    global::GmodAddonCompressor.Properties.Resources.ffmpeg,
+                    new[] { "ffmpeg.exe" }
+                );
+                string ffmpegExePath = Path.Combine(ffmpegRoot, "ffmpeg.exe");
 
                 if (!File.Exists(ffmpegExePath))
                 {
@@ -1182,9 +1185,15 @@ namespace GmodAddonCompressor
 
         private static async Task<DirectorySizeSnapshot?> TryScanSizeAsync(string rootPath, CancellationToken token)
         {
+            if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+                return null;
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeoutCts.CancelAfter(SizeScanTimeout);
+
             try
             {
-                return await DirectorySizeScanner.ScanAsync(rootPath, token);
+                return await DirectorySizeScanner.ScanAsync(rootPath, timeoutCts.Token);
             }
             catch (OperationCanceledException)
             {

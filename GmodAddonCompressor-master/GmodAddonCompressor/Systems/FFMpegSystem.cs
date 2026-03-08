@@ -7,7 +7,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -16,7 +15,8 @@ namespace GmodAddonCompressor.Systems
 {
     internal class FFMpegSystem
     {
-        private const string _mainDirectoryFFMpeg = "ffmpeg";
+        private const string _toolName = "ffmpeg";
+        private const string _toolVersion = "2022-09-22";
         private readonly string _ffmpegFilePath;
         private readonly ILogger _logger = LogSystem.CreateLogger<FFMpegSystem>();
 
@@ -33,21 +33,14 @@ namespace GmodAddonCompressor.Systems
 
         public FFMpegSystem()
         {
-            string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
-            string appDirectory = Path.Combine(baseDirectory, _mainDirectoryFFMpeg);
+            string toolRoot = ToolExtractionSystem.EnsureExtracted(
+                _toolName,
+                _toolVersion,
+                Resources.ffmpeg,
+                new[] { "ffmpeg.exe" }
+            );
 
-            if (!Directory.Exists(appDirectory))
-            {
-                string zipResourcePath = Path.Combine(baseDirectory, _mainDirectoryFFMpeg + ".zip");
-
-                if (!File.Exists(zipResourcePath))
-                    File.WriteAllBytes(zipResourcePath, Resources.ffmpeg);
-
-                ZipFile.ExtractToDirectory(zipResourcePath, appDirectory);
-                File.Delete(zipResourcePath);
-            }
-
-            _ffmpegFilePath = Path.Combine(appDirectory, "ffmpeg.exe");
+            _ffmpegFilePath = Path.Combine(toolRoot, "ffmpeg.exe");
         }
 
         internal static void AppendAudioLog(string message)

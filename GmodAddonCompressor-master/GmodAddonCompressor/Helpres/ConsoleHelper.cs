@@ -159,7 +159,7 @@ namespace GmodAddonCompressor.Helpres
             {
                 var baseDir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "GmodAddonCompressor",
+                    "GmodAddonOptimizer",
                     "logs");
                 Directory.CreateDirectory(baseDir);
                 var logPath = Path.Combine(baseDir, "debug_console.log");
@@ -197,4 +197,3 @@ namespace GmodAddonCompressor.Helpres
         }
     }
 }
-

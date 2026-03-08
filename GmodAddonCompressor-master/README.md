@@ -1,4 +1,4 @@
-# Garry's Mod addon compressor
+# GMod Addon Optimizer
  
 ## Current features:
 
@@ -23,7 +23,7 @@ In the app, go to **Models** and set paths via **Auto-detect** or **Browse**.
 
 The app generates its real settings file at runtime in:
 
-`%LOCALAPPDATA%\GmodAddonCompressor\settings.json`
+`%LOCALAPPDATA%\GmodAddonOptimizer\settings.json`
 
 The repo includes `settings.example.json` only as a reference (do not edit it expecting the app to read it).
 It contains two examples: a minimal one (paths + preset + suffix) and a full one (custom params).
@@ -32,7 +32,7 @@ It contains two examples: a minimal one (paths + preset + suffix) and a full one
 
 The SourceAddonOptimizer tools are extracted to:
 
-`%LOCALAPPDATA%\GmodAddonCompressor\tools\SourceAddonOptimizer\<TOOL_VERSION>\`
+`%LOCALAPPDATA%\GmodAddonOptimizer\tools\SourceAddonOptimizer\<TOOL_VERSION>\`
 
 This avoids admin permissions and keeps the install self-contained.
 
@@ -40,11 +40,8 @@ The worker zip must exist in the project at:
 
 `GmodAddonCompressor/Resources/SourceAddonOptimizer.win-x64.zip`
 
-At runtime it is loaded from the app base folder via `ToolPaths.ZipPath`, which resolves to `...\Resources\SourceAddonOptimizer.win-x64.zip`.
-Unlike the other tools, this zip is not embedded via `GmodAddonCompressor/Properties/Resources.resx` today.
-If you choose to embed it, add a `ResXFileRef` entry there pointing to `..\Resources\SourceAddonOptimizer.win-x64.zip`.
-
-On publish, the zip is copied into the output automatically (if present) via `GmodAddonCompressor/GmodAddonCompressor.csproj` using `CopyToPublishDirectory`.
+At runtime it is embedded via `GmodAddonCompressor/Properties/Resources.resx` and extracted into `%LOCALAPPDATA%` by `ToolExtractionSystem`.
+No external zip is needed in the publish output.
 
 ## Theme
 

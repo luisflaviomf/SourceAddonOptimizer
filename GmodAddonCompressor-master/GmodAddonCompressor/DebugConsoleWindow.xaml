@@ -1,7 +1,7 @@
 <Window x:Class="GmodAddonCompressor.DebugConsoleWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Debug Console"
+        Title="GMod Addon Optimizer - Debug Console"
         Width="860"
         Height="520"
         Background="{DynamicResource AppBackground}"
@@ -48,4 +48,3 @@
         </Border>
     </Grid>
 </Window>
-

@@ -119,5 +119,15 @@ namespace GmodAddonCompressor.Properties {
                 return ((byte[])(obj));
             }
         }
+
+        /// <summary>
+        ///   Поиск локализованного ресурса типа System.Byte[].
+        /// </summary>
+        internal static byte[] SourceAddonOptimizer_win_x64 {
+            get {
+                object obj = ResourceManager.GetObject("SourceAddonOptimizer_win_x64", resourceCulture);
+                return ((byte[])(obj));
+            }
+        }
     }
 }

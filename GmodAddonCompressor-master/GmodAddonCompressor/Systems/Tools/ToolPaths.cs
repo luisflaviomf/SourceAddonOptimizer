@@ -9,7 +9,7 @@ namespace GmodAddonCompressor.Systems.Tools
         internal const string ToolVersion = "0.1.7";
 
         internal static string AppDataRoot =>
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GmodAddonCompressor");
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GmodAddonOptimizer");
 
         internal static string ToolsRoot => Path.Combine(AppDataRoot, "tools");
 
@@ -24,9 +24,6 @@ namespace GmodAddonCompressor.Systems.Tools
         internal static string ManifestPath => Path.Combine(ToolRoot, "manifest.json");
 
         internal static string ExtractLockPath => Path.Combine(ToolsRoot, ToolName, "extract.lock");
-
-        internal static string ZipPath =>
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "SourceAddonOptimizer.win-x64.zip");
 
         internal static string GetWorkDir(string addonPath, string suffix)
         {

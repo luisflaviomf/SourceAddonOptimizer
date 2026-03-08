@@ -7,7 +7,7 @@
         mc:Ignorable="d"
         ResizeMode="CanResize"
         Background="{DynamicResource AppBackground}"
-        Title="Garry's Mod - Resources Compress"
+        Title="GMod Addon Optimizer"
         MinHeight="520"
         MinWidth="900"
         Height="720"

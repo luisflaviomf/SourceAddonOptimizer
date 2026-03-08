@@ -5,40 +5,34 @@ using GmodAddonCompressor.Interfaces;
 using GmodAddonCompressor.Models;
 using GmodAddonCompressor.Properties;
 using GmodAddonCompressor.Systems;
+using GmodAddonCompressor.Systems.Tools;
 using ImageMagick;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
 using System.Threading.Tasks;
 
 namespace GmodAddonCompressor.Objects
 {
     internal class VTFEdit : ImageEditBase, ICompress
     {
-        private const string _mainDirectoryName = "VTFEdit";
+        private const string _toolName = "VTFEdit";
+        private const string _toolVersion = "1";
         private readonly string _vtfCmdFilePath;
-        private string _mainDirectoryPath;
+        private string _toolRoot;
         private readonly ILogger _logger = LogSystem.CreateLogger<VTFEdit>();
 
         public VTFEdit()
         {
-            string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
-            _mainDirectoryPath = Path.Combine(baseDirectory, _mainDirectoryName);
+            _toolRoot = ToolExtractionSystem.EnsureExtracted(
+                _toolName,
+                _toolVersion,
+                Resources.VTFEdit,
+                new[] { Path.Combine("VTFEdit", "VTFCmd.exe") }
+            );
 
-            if (!Directory.Exists(_mainDirectoryPath))
-            {
-                string zipResourcePath = Path.Combine(baseDirectory, _mainDirectoryName + ".zip");
-
-                if (!File.Exists(zipResourcePath))
-                    File.WriteAllBytes(zipResourcePath, Resources.VTFEdit);
-
-                ZipFile.ExtractToDirectory(zipResourcePath, baseDirectory);
-                File.Delete(zipResourcePath);
-            }
-
-            _vtfCmdFilePath = Path.Combine(_mainDirectoryPath, "VTFCmd.exe");
+            _vtfCmdFilePath = Path.Combine(_toolRoot, "VTFEdit", "VTFCmd.exe");
 
             SetImageFileExtension(".png");
         }
