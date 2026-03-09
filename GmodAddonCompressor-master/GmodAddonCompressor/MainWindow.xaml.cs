@@ -1,11 +1,13 @@
 ﻿using GmodAddonCompressor.DataContexts;
 using GmodAddonCompressor.Helpres;
 using GmodAddonCompressor.Models;
+using GmodAddonCompressor.Systems.Maps;
 using GmodAddonCompressor.Systems;
 using GmodAddonCompressor.Systems.Optimizer;
 using GmodAddonCompressor.Systems.Reporting;
 using GmodAddonCompressor.Systems.Settings;
 using GmodAddonCompressor.Systems.Tools;
+using GmodAddonCompressor.Systems.Unpack;
 using GmodAddonCompressor.Properties;
 using Microsoft.Win32;
 using System;
@@ -14,9 +16,11 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 
 namespace GmodAddonCompressor
 {
@@ -26,7 +30,13 @@ namespace GmodAddonCompressor
         private MainWindowContext _context = new MainWindowContext();
         private const string _version = "v1.0.1";
         private readonly SourceAddonOptimizerRunner _optimizerRunner = new SourceAddonOptimizerRunner();
+        private readonly AddonUnpackRunner _unpackRunner = new AddonUnpackRunner();
+        private readonly MapBspAnalysisRunner _mapBspAnalysisRunner = new MapBspAnalysisRunner();
+        private readonly MapBspBuildRunner _mapBspBuildRunner = new MapBspBuildRunner();
         private CancellationTokenSource? _optimizerCts = null;
+        private CancellationTokenSource? _unpackCts = null;
+        private CancellationTokenSource? _mapScanCts = null;
+        private CancellationTokenSource? _mapBuildCts = null;
         private string? _modelsOutputPath = null;
         private string? _modelsWorkDir = null;
         private string? _modelsLastErrorLine = null;
@@ -55,6 +65,27 @@ namespace GmodAddonCompressor
         private DirectorySizeSnapshot? _pipelineModelsSizeAfter = null;
         private DirectorySizeSnapshot? _pipelineCompressSizeBefore = null;
         private DirectorySizeSnapshot? _pipelineCompressSizeAfter = null;
+        private bool _unpackRunning = false;
+        private bool _unpackCancelRequested = false;
+        private bool _unpackLastActionWasRun = false;
+        private int _unpackSupportedTotal = 0;
+        private string? _unpackSummaryPath = null;
+        private string? _unpackWorkDir = null;
+        private string? _unpackCancelFile = null;
+        private bool _unpackSummaryCancelled = false;
+        private bool _unpackSummaryScanOnly = false;
+        private int _unpackSummaryFailedCount = 0;
+        private bool _mapScanRunning = false;
+        private bool _mapStageOptimizeRunning = false;
+        private bool _mapBuildRunning = false;
+        private bool _mapScanCancelRequested = false;
+        private string? _mapScanSummaryPath = null;
+        private string? _mapScanWorkDir = null;
+        private string? _mapScanCancelFile = null;
+        private string? _mapStageOptimizeSummaryPath = null;
+        private string? _mapBuildSummaryPath = null;
+        private string? _mapBuildOutputPath = null;
+        private List<string> _mapScanStagingDirs = new List<string>();
 
         private const int PresetSafeIndex = 0;
         private const int PresetAggressiveIndex = 1;
@@ -97,6 +128,19 @@ namespace GmodAddonCompressor
             _optimizerRunner.ProgressUpdate += OptimizerProgressUpdate;
             _optimizerRunner.OutputPathFound += OptimizerOutputPathFound;
             _optimizerRunner.ErrorLine += OptimizerErrorLine;
+            _unpackRunner.ProgressUpdate += UnpackProgressUpdate;
+            _unpackRunner.SummaryPathFound += UnpackSummaryPathFound;
+            _unpackRunner.WorkDirFound += UnpackWorkDirFound;
+            _unpackRunner.LogLine += UnpackLogLine;
+            _mapBspAnalysisRunner.ProgressUpdate += MapScanProgressUpdate;
+            _mapBspAnalysisRunner.SummaryPathFound += MapScanSummaryPathFound;
+            _mapBspAnalysisRunner.WorkDirFound += MapScanWorkDirFound;
+            _mapBspAnalysisRunner.LogLine += MapScanLogLine;
+            _mapBspBuildRunner.ProgressUpdate += MapBuildProgressUpdate;
+            _mapBspBuildRunner.SummaryPathFound += MapBuildSummaryPathFound;
+            _mapBspBuildRunner.WorkDirFound += MapBuildWorkDirFound;
+            _mapBspBuildRunner.OutputDirFound += MapBuildOutputDirFound;
+            _mapBspBuildRunner.LogLine += MapScanLogLine;
 
             LoadSettings();
         }
@@ -108,6 +152,1661 @@ namespace GmodAddonCompressor
             {
                 _context.AddonDirectoryPath = dialog.SelectedPath;
             }
+        }
+
+        private void Button_SelectUnpackRoot_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Ookii.Dialogs.Wpf.VistaFolderBrowserDialog();
+            if (dialog.ShowDialog(this).GetValueOrDefault())
+                TextBox_UnpackRootPath.Text = dialog.SelectedPath;
+        }
+
+        private void Button_BrowseGmad_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "Select gmad.exe",
+                Filter = "gmad.exe|gmad.exe|Executable|*.exe|All files|*.*",
+                CheckFileExists = true
+            };
+
+            if (dialog.ShowDialog(this).GetValueOrDefault())
+                TextBox_UnpackGmadPath.Text = dialog.FileName;
+        }
+
+        private void Button_AutoDetectGmad_Click(object sender, RoutedEventArgs e)
+        {
+            var detected = DetectGmadPath();
+            if (!string.IsNullOrWhiteSpace(detected))
+            {
+                TextBox_UnpackGmadPath.Text = detected;
+                return;
+            }
+
+            MessageBox.Show("gmad.exe not found. Please browse to gmad.exe.", "Descompactar addons", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
+        private void TextBox_UnpackRootPath_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!_unpackRunning)
+                ResetUnpackSummary();
+            UpdateUnpackActionStates();
+        }
+
+        private void TextBox_UnpackGmadPath_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            UpdateUnpackActionStates();
+        }
+
+        private void ResetUnpackSummary()
+        {
+            _unpackSupportedTotal = 0;
+            _unpackSummaryPath = null;
+            _unpackSummaryCancelled = false;
+            _unpackSummaryScanOnly = false;
+            _unpackSummaryFailedCount = 0;
+            if (!_unpackRunning)
+                _unpackWorkDir = null;
+            TextBox_UnpackSummary.Text = "No scan executed yet.";
+            TextBlock_UnpackFoundCount.Text = "0";
+            TextBlock_UnpackGmaCount.Text = "0/0";
+            TextBlock_UnpackBinSupportedCount.Text = "0";
+            TextBlock_UnpackBinUnsupportedCount.Text = "0";
+            TextBlock_UnpackOkCount.Text = "0";
+            TextBlock_UnpackSkippedCount.Text = "0";
+            TextBlock_UnpackFailedCount.Text = "0";
+            ProgressBar_Unpack.IsIndeterminate = false;
+            ProgressBar_Unpack.Minimum = 0;
+            ProgressBar_Unpack.Maximum = 100;
+            ProgressBar_Unpack.Value = 0;
+            TextBlock_UnpackPhase.Text = "Idle";
+            TextBlock_UnpackCurrent.Text = "Idle";
+            TextBlock_UnpackStatus.Text = "Idle";
+        }
+
+        private void UpdateUnpackActionStates()
+        {
+            bool hasRoot = Directory.Exists(TextBox_UnpackRootPath.Text.Trim());
+            bool hasGmad = File.Exists(TextBox_UnpackGmadPath.Text.Trim());
+
+            Button_UnpackScan.IsEnabled = !_unpackRunning && hasRoot;
+            Button_UnpackRun.IsEnabled = !_unpackRunning && hasRoot && hasGmad && _unpackSupportedTotal > 0;
+            Button_UnpackCancel.IsEnabled = _unpackRunning && !_unpackCancelRequested;
+            Button_UnpackOpenRoot.IsEnabled = !_unpackRunning && hasRoot;
+        }
+
+        private bool ValidateUnpackInputs(bool scanOnly, out string errorMessage)
+        {
+            var errors = new List<string>();
+            string rootPath = TextBox_UnpackRootPath.Text.Trim();
+
+            if (!Directory.Exists(rootPath))
+                errors.Add("Root folder not found.");
+
+            if (!CanWriteToDirectory(ToolPaths.WorkRoot))
+                errors.Add("No write permission in work directory root.");
+
+            if (!scanOnly)
+            {
+                string gmadPath = TextBox_UnpackGmadPath.Text.Trim();
+                if (string.IsNullOrWhiteSpace(gmadPath) || !File.Exists(gmadPath))
+                    errors.Add("gmad.exe path is invalid.");
+            }
+
+            errorMessage = string.Join("\n", errors);
+            return errors.Count == 0;
+        }
+
+        private string GetSelectedUnpackExistingMode()
+        {
+            if (ComboBox_UnpackExistingMode.SelectedItem is ComboBoxItem item && item.Tag is string tag && !string.IsNullOrWhiteSpace(tag))
+                return tag;
+            return "skip";
+        }
+
+        private void SetSelectedUnpackExistingMode(string? mode)
+        {
+            string target = string.IsNullOrWhiteSpace(mode) ? "skip" : mode.Trim().ToLowerInvariant();
+            for (int i = 0; i < ComboBox_UnpackExistingMode.Items.Count; i++)
+            {
+                if (ComboBox_UnpackExistingMode.Items[i] is ComboBoxItem item &&
+                    item.Tag is string tag &&
+                    string.Equals(tag, target, StringComparison.OrdinalIgnoreCase))
+                {
+                    ComboBox_UnpackExistingMode.SelectedIndex = i;
+                    return;
+                }
+            }
+
+            ComboBox_UnpackExistingMode.SelectedIndex = 0;
+        }
+
+        private static string BuildUnpackWorkDir(string rootPath)
+        {
+            string name = Path.GetFileName(rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (string.IsNullOrWhiteSpace(name))
+                name = "root";
+            return Path.Combine(ToolPaths.WorkRoot, $"{name}_unpack_runs", DateTime.Now.ToString("yyyyMMdd_HHmmss_fff"));
+        }
+
+        private static string BuildUnpackCancelFilePath()
+        {
+            return Path.Combine(ToolPaths.WorkRoot, "_unpack_cancel_tokens", $"cancel_{Guid.NewGuid():N}.flag");
+        }
+
+        private void ClearUnpackCancelFile()
+        {
+            if (string.IsNullOrWhiteSpace(_unpackCancelFile))
+                return;
+
+            try
+            {
+                if (File.Exists(_unpackCancelFile))
+                    File.Delete(_unpackCancelFile);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                string? cancelDir = Path.GetDirectoryName(_unpackCancelFile);
+                if (!string.IsNullOrWhiteSpace(cancelDir) && Directory.Exists(cancelDir) && !Directory.EnumerateFileSystemEntries(cancelDir).Any())
+                    Directory.Delete(cancelDir);
+            }
+            catch
+            {
+            }
+
+            _unpackCancelFile = null;
+        }
+
+        private void PrepareUnpackRunState(bool scanOnly)
+        {
+            SaveSettings();
+            ClearUnpackCancelFile();
+
+            _unpackCts?.Cancel();
+            _unpackCts = new CancellationTokenSource();
+            _unpackRunning = true;
+            _unpackCancelRequested = false;
+            _unpackLastActionWasRun = !scanOnly;
+            _unpackSupportedTotal = 0;
+            _unpackSummaryPath = null;
+            _unpackWorkDir = BuildUnpackWorkDir(TextBox_UnpackRootPath.Text.Trim());
+            _unpackCancelFile = BuildUnpackCancelFilePath();
+
+            ProgressBar_Unpack.IsIndeterminate = true;
+            ProgressBar_Unpack.Minimum = 0;
+            ProgressBar_Unpack.Maximum = 100;
+            ProgressBar_Unpack.Value = 0;
+            TextBlock_UnpackPhase.Text = "Starting";
+            TextBlock_UnpackCurrent.Text = scanOnly ? "Scanning archives..." : "Preparing extraction...";
+            TextBlock_UnpackStatus.Text = "Running";
+            TextBox_UnpackSummary.Text = scanOnly
+                ? "Scanning addon archives..."
+                : "Extracting addon archives...";
+
+            AppendUnpackLog(string.Empty);
+            AppendUnpackLog($"=== {TextBox_UnpackSummary.Text} ===");
+            UpdateUnpackActionStates();
+        }
+
+        private async void Button_UnpackScan_Click(object sender, RoutedEventArgs e)
+        {
+            if (_unpackRunning)
+                return;
+
+            if (!ValidateUnpackInputs(scanOnly: true, out var errorMessage))
+            {
+                MessageBox.Show(errorMessage, "Descompactar addons", MessageBoxButton.OK, MessageBoxImage.Warning);
+                TextBlock_UnpackStatus.Text = "Error";
+                TextBox_UnpackSummary.Text = errorMessage;
+                return;
+            }
+
+            if (!EnsureToolsAvailable("Descompactar addons"))
+                return;
+
+            PrepareUnpackRunState(scanOnly: true);
+            await RunUnpackAsync(scanOnly: true);
+        }
+
+        private async void Button_UnpackRun_Click(object sender, RoutedEventArgs e)
+        {
+            if (_unpackRunning)
+                return;
+
+            if (!ValidateUnpackInputs(scanOnly: false, out var errorMessage))
+            {
+                MessageBox.Show(errorMessage, "Descompactar addons", MessageBoxButton.OK, MessageBoxImage.Warning);
+                TextBlock_UnpackStatus.Text = "Error";
+                TextBox_UnpackSummary.Text = errorMessage;
+                return;
+            }
+
+            if (!EnsureToolsAvailable("Descompactar addons"))
+                return;
+
+            PrepareUnpackRunState(scanOnly: false);
+            await RunUnpackAsync(scanOnly: false);
+        }
+
+        private async Task RunUnpackAsync(bool scanOnly)
+        {
+            if (!File.Exists(ToolPaths.WorkerExePath))
+            {
+                _unpackRunning = false;
+                TextBlock_UnpackStatus.Text = "FAIL";
+                TextBox_UnpackSummary.Text = "SourceAddonOptimizer worker not found.";
+                UpdateUnpackActionStates();
+                return;
+            }
+
+            var options = new AddonUnpackRunOptions
+            {
+                WorkerExePath = ToolPaths.WorkerExePath,
+                RootPath = TextBox_UnpackRootPath.Text.Trim(),
+                WorkDir = _unpackWorkDir ?? BuildUnpackWorkDir(TextBox_UnpackRootPath.Text.Trim()),
+                GmadExePath = scanOnly ? null : TextBox_UnpackGmadPath.Text.Trim(),
+                ExistingMode = GetSelectedUnpackExistingMode(),
+                ScanOnly = scanOnly,
+                ExtractMapPakContent = CheckBox_UnpackExtractMapPak.IsChecked == true,
+                DeleteMapBspAfterExtract = CheckBox_UnpackDeleteMapBsp.IsChecked == true,
+                CancelFilePath = _unpackCancelFile
+            };
+
+            int exitCode;
+            try
+            {
+                exitCode = await _unpackRunner.RunAsync(options, _unpackCts?.Token ?? CancellationToken.None);
+            }
+            catch (OperationCanceledException)
+            {
+                exitCode = 130;
+            }
+            catch (Exception ex)
+            {
+                _unpackRunning = false;
+                ProgressBar_Unpack.IsIndeterminate = false;
+                ClearUnpackCancelFile();
+                TextBlock_UnpackPhase.Text = "Error";
+                TextBlock_UnpackStatus.Text = "FAIL";
+                TextBox_UnpackSummary.Text = $"Execution failed before summary.{Environment.NewLine}{ex.Message}";
+                AppendUnpackLog($"[GUI] {ex}");
+                UpdateUnpackActionStates();
+                return;
+            }
+
+            FinishUnpackRun(exitCode);
+        }
+
+        private void Button_UnpackCancel_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_unpackRunning || _unpackCancelRequested)
+                return;
+
+            _unpackCancelRequested = true;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(_unpackCancelFile))
+                {
+                    string? cancelDir = Path.GetDirectoryName(_unpackCancelFile);
+                    if (!string.IsNullOrWhiteSpace(cancelDir))
+                        Directory.CreateDirectory(cancelDir);
+                    File.WriteAllText(_unpackCancelFile, "cancel");
+                }
+            }
+            catch
+            {
+            }
+
+            TextBlock_UnpackStatus.Text = "Canceling";
+            TextBox_UnpackSummary.Text = "Cancellation requested. Waiting for worker cleanup...";
+            AppendUnpackLog("[GUI] Cancellation requested. Waiting for safe shutdown...");
+            UpdateUnpackActionStates();
+            _ = ForceStopUnpackIfNeededAsync();
+        }
+
+        private async Task ForceStopUnpackIfNeededAsync()
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            if (!_unpackRunning || _unpackCts == null || _unpackCts.IsCancellationRequested)
+                return;
+
+            AppendUnpackLog("[GUI] Worker still running after timeout. Forcing stop.");
+            _unpackCts.Cancel();
+        }
+
+        private void UnpackProgressUpdate(AddonUnpackProgressUpdate update)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (!string.IsNullOrWhiteSpace(update.Phase))
+                {
+                    TextBlock_UnpackPhase.Text = update.Phase;
+                    if (!update.ItemIndex.HasValue)
+                    {
+                        ProgressBar_Unpack.IsIndeterminate = true;
+                        TextBlock_UnpackCurrent.Text = update.Phase;
+                    }
+                }
+
+                if (update.ItemIndex.HasValue && update.ItemTotal.HasValue)
+                {
+                    ProgressBar_Unpack.IsIndeterminate = false;
+                    ProgressBar_Unpack.Minimum = 0;
+                    ProgressBar_Unpack.Maximum = update.ItemTotal.Value;
+                    ProgressBar_Unpack.Value = update.ItemIndex.Value;
+                    TextBlock_UnpackCurrent.Text = string.IsNullOrWhiteSpace(update.CurrentPath)
+                        ? $"Current: {update.ItemIndex}/{update.ItemTotal}"
+                        : $"Current: {update.ItemIndex}/{update.ItemTotal} | {update.CurrentPath}";
+                }
+            });
+        }
+
+        private void UnpackSummaryPathFound(string path)
+        {
+            _unpackSummaryPath = path;
+        }
+
+        private void UnpackWorkDirFound(string path)
+        {
+            _unpackWorkDir = path;
+        }
+
+        private void UnpackLogLine(string line)
+        {
+            Dispatcher.Invoke(() => AppendUnpackLog(line));
+        }
+
+        private void AppendUnpackLog(string line)
+        {
+            const int trimThreshold = 400000;
+            const int trimTarget = 250000;
+
+            if (TextBox_UnpackLog.Text.Length > trimThreshold)
+                TextBox_UnpackLog.Text = TextBox_UnpackLog.Text[^trimTarget..];
+
+            if (TextBox_UnpackLog.Text.Length > 0)
+                TextBox_UnpackLog.AppendText(Environment.NewLine);
+
+            TextBox_UnpackLog.AppendText(line);
+            TextBox_UnpackLog.ScrollToEnd();
+        }
+
+        private void FinishUnpackRun(int exitCode)
+        {
+            _unpackRunning = false;
+            ProgressBar_Unpack.IsIndeterminate = false;
+            ClearUnpackCancelFile();
+
+            bool loadedSummary = LoadUnpackSummary();
+            if (loadedSummary)
+            {
+                if (_unpackSummaryCancelled || exitCode == 130)
+                {
+                    TextBlock_UnpackPhase.Text = "Canceled";
+                    TextBlock_UnpackStatus.Text = "Canceled";
+                }
+                else if (_unpackSummaryFailedCount > 0 || exitCode != 0)
+                {
+                    TextBlock_UnpackPhase.Text = "Completed";
+                    TextBlock_UnpackStatus.Text = "Completed with failures";
+                }
+                else
+                {
+                    TextBlock_UnpackPhase.Text = "Completed";
+                    TextBlock_UnpackStatus.Text = "OK";
+                    ProgressBar_Unpack.Minimum = 0;
+                    ProgressBar_Unpack.Maximum = 100;
+                    ProgressBar_Unpack.Value = 100;
+                }
+            }
+            else
+            {
+                TextBlock_UnpackPhase.Text = exitCode == 130 ? "Canceled" : "Completed";
+                TextBlock_UnpackStatus.Text = exitCode == 0 ? "OK" : exitCode == 130 ? "Canceled" : $"FAIL ({exitCode})";
+                TextBox_UnpackSummary.Text = exitCode == 130
+                    ? "Execution canceled before summary was generated. Check the log."
+                    : "Execution ended without unpack_summary.json. Check the log.";
+            }
+
+            _unpackCancelRequested = false;
+            UpdateUnpackActionStates();
+
+            if (exitCode == 0 && _unpackLastActionWasRun && CheckBox_UnpackOpenOnFinish.IsChecked == true)
+                OpenFolder(TextBox_UnpackRootPath.Text.Trim(), "Descompactar addons");
+        }
+
+        private bool LoadUnpackSummary()
+        {
+            if (string.IsNullOrWhiteSpace(_unpackSummaryPath) || !File.Exists(_unpackSummaryPath))
+                return false;
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(_unpackSummaryPath));
+                var root = document.RootElement;
+                var counts = root.TryGetProperty("counts", out var countsElement) ? countsElement : default;
+                var run = root.TryGetProperty("run", out var runElement) ? runElement : default;
+
+                int foundTotal = GetJsonInt(counts, "found_total");
+                int gmaSupported = GetJsonInt(counts, "gma_supported");
+                int gmaTotal = GetJsonInt(counts, "gma_total");
+                int binSupported = GetJsonInt(counts, "bin_supported");
+                int binUnsupported = GetJsonInt(counts, "bin_unsupported");
+                int okCount = GetJsonInt(counts, "ok");
+                int skippedCount = GetJsonInt(counts, "skipped");
+                int failedCount = GetJsonInt(counts, "failed");
+                int unsupportedCount = GetJsonInt(counts, "unsupported");
+                int cancelledItems = GetJsonInt(counts, "cancelled_items");
+                int scanWarningCount = GetJsonInt(counts, "scan_errors");
+                int mapBspFound = GetJsonInt(counts, "map_bsp_found");
+                int mapBspWithPak = GetJsonInt(counts, "map_bsp_with_pak");
+                int mapPakFilesExtracted = GetJsonInt(counts, "map_pak_files_extracted");
+                int mapBspDeleted = GetJsonInt(counts, "map_bsp_deleted");
+                _unpackSupportedTotal = GetJsonInt(counts, "supported_total");
+
+                bool cancelled = GetJsonBool(counts, "cancelled");
+                bool scanOnly = GetJsonBool(run, "scan_only");
+                bool extractMapPak = GetJsonBool(run, "extract_map_pak");
+                bool deleteMapBsp = GetJsonBool(run, "delete_map_bsp");
+                string rootPath = GetJsonString(run, "root") ?? TextBox_UnpackRootPath.Text.Trim();
+                string gmadError = GetJsonString(run, "gmad_error") ?? string.Empty;
+                _unpackSummaryCancelled = cancelled;
+                _unpackSummaryScanOnly = scanOnly;
+                _unpackSummaryFailedCount = failedCount;
+
+                TextBlock_UnpackFoundCount.Text = foundTotal.ToString();
+                TextBlock_UnpackGmaCount.Text = $"{gmaSupported}/{gmaTotal}";
+                TextBlock_UnpackBinSupportedCount.Text = binSupported.ToString();
+                TextBlock_UnpackBinUnsupportedCount.Text = binUnsupported.ToString();
+                TextBlock_UnpackOkCount.Text = okCount.ToString();
+                TextBlock_UnpackSkippedCount.Text = skippedCount.ToString();
+                TextBlock_UnpackFailedCount.Text = failedCount.ToString();
+
+                string statusText;
+                if (scanOnly)
+                {
+                    if (cancelled)
+                    {
+                        _unpackSupportedTotal = 0;
+                        statusText = "Scan canceled by user.";
+                    }
+                    else if (foundTotal == 0)
+                    {
+                        statusText = "Scan completed: no .gma or .bin files found.";
+                    }
+                    else if (_unpackSupportedTotal == 0)
+                    {
+                        statusText = $"Scan completed: {foundTotal} archive(s) found, none supported.";
+                    }
+                    else
+                    {
+                        statusText = $"Scan completed: {foundTotal} found, {_unpackSupportedTotal} supported for extraction.";
+                    }
+                }
+                else
+                {
+                    if (cancelled)
+                    {
+                        statusText = $"Extraction canceled: ok={okCount}, skipped={skippedCount}, failed={failedCount}, cancelled={cancelledItems}.";
+                    }
+                    else if (failedCount > 0)
+                    {
+                        statusText = $"Extraction completed with failures: ok={okCount}, failed={failedCount}, skipped={skippedCount}.";
+                    }
+                    else if (okCount == 0 && skippedCount == 0 && unsupportedCount > 0)
+                    {
+                        statusText = $"Extraction completed without supported outputs: unsupported={unsupportedCount}.";
+                    }
+                    else
+                    {
+                        statusText = $"Extraction completed: ok={okCount}, skipped={skippedCount}.";
+                    }
+                }
+
+                if (scanWarningCount > 0)
+                    statusText += $"{Environment.NewLine}Scan warnings: {scanWarningCount}.";
+                if (!scanOnly && extractMapPak && mapBspFound > 0)
+                {
+                    string mapStatus = $"Map content: {mapBspWithPak}/{mapBspFound} BSP pakfile(s), {mapPakFilesExtracted} file(s) extracted";
+                    if (deleteMapBsp && mapBspDeleted > 0)
+                        mapStatus += $", {mapBspDeleted} BSP file(s) deleted";
+                    statusText += $"{Environment.NewLine}{mapStatus}.";
+                }
+                if (!scanOnly && !string.IsNullOrWhiteSpace(gmadError))
+                    statusText += $"{Environment.NewLine}{gmadError}";
+                statusText += $"{Environment.NewLine}Root: {rootPath}";
+
+                TextBox_UnpackSummary.Text = statusText;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                TextBox_UnpackSummary.Text = $"Failed to read unpack_summary.json.{Environment.NewLine}{ex.Message}";
+                return false;
+            }
+        }
+
+        private static int GetJsonInt(JsonElement element, string propertyName)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var value))
+                return 0;
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
+                return number;
+
+            if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out var parsed))
+                return parsed;
+
+            return 0;
+        }
+
+        private static bool GetJsonBool(JsonElement element, string propertyName)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var value))
+                return false;
+
+            if (value.ValueKind == JsonValueKind.True)
+                return true;
+            if (value.ValueKind == JsonValueKind.False)
+                return false;
+            if (value.ValueKind == JsonValueKind.String && bool.TryParse(value.GetString(), out var parsed))
+                return parsed;
+            return false;
+        }
+
+        private static string? GetJsonString(JsonElement element, string propertyName)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var value))
+                return null;
+            if (value.ValueKind == JsonValueKind.String)
+                return value.GetString();
+            return value.ToString();
+        }
+
+        private void Button_UnpackOpenRoot_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFolder(TextBox_UnpackRootPath.Text.Trim(), "Descompactar addons");
+        }
+
+        private void Button_SelectMapScanRoot_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Ookii.Dialogs.Wpf.VistaFolderBrowserDialog();
+            if (dialog.ShowDialog(this).GetValueOrDefault())
+                TextBox_MapScanRootPath.Text = dialog.SelectedPath;
+        }
+
+        private void TextBox_MapScanRootPath_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!_mapScanRunning && !_mapStageOptimizeRunning && !_mapBuildRunning)
+                ResetMapScanSummary();
+            UpdateMapScanActionStates();
+        }
+
+        private void ResetMapScanSummary()
+        {
+            _mapScanSummaryPath = null;
+            _mapStageOptimizeSummaryPath = null;
+            _mapBuildSummaryPath = null;
+            _mapBuildOutputPath = null;
+            _mapScanStagingDirs.Clear();
+            if (!_mapScanRunning && !_mapStageOptimizeRunning && !_mapBuildRunning)
+                _mapScanWorkDir = null;
+
+            TextBox_MapScanSummary.Text = "No BSP scan executed yet.";
+            TextBlock_MapScanBspCount.Text = "0";
+            TextBlock_MapScanPakZipCount.Text = "0";
+            TextBlock_MapScanStagedBspCount.Text = "0";
+            TextBlock_MapScanStagedFileCount.Text = "0";
+            TextBlock_MapScanCandidateCount.Text = "0";
+            TextBlock_MapScanBlockedCount.Text = "0";
+            TextBlock_MapScanAddonSize.Text = "0 B";
+            TextBlock_MapScanPakTotalSize.Text = "0 B";
+            ProgressBar_MapScan.IsIndeterminate = false;
+            ProgressBar_MapScan.Minimum = 0;
+            ProgressBar_MapScan.Maximum = 100;
+            ProgressBar_MapScan.Value = 0;
+            TextBlock_MapScanPhase.Text = "Idle";
+            TextBlock_MapScanCurrent.Text = "Idle";
+            TextBlock_MapScanStatus.Text = "Idle";
+        }
+
+        private void UpdateMapScanActionStates()
+        {
+            bool hasRoot = Directory.Exists(TextBox_MapScanRootPath.Text.Trim());
+            bool hasWork = !string.IsNullOrWhiteSpace(_mapScanWorkDir) && Directory.Exists(_mapScanWorkDir);
+            bool hasStaging = _mapScanStagingDirs.Any(Directory.Exists);
+            bool hasStageOptimizeSummary = !string.IsNullOrWhiteSpace(_mapStageOptimizeSummaryPath) && File.Exists(_mapStageOptimizeSummaryPath);
+            bool hasOutput = !string.IsNullOrWhiteSpace(_mapBuildOutputPath) && Directory.Exists(_mapBuildOutputPath);
+            bool isBusy = _mapScanRunning || _mapStageOptimizeRunning || _mapBuildRunning;
+
+            Button_MapScanRun.IsEnabled = !isBusy && hasRoot;
+            Button_MapStageOptimize.IsEnabled = !isBusy && hasStaging;
+            Button_MapBuildRun.IsEnabled = !isBusy && hasStaging && hasStageOptimizeSummary;
+            Button_MapScanCancel.IsEnabled = (_mapScanRunning || _mapBuildRunning) && !_mapScanCancelRequested;
+            Button_MapScanOpenRoot.IsEnabled = !isBusy && hasRoot;
+            Button_MapScanOpenWork.IsEnabled = !isBusy && hasWork;
+            Button_MapBuildOpenOutput.IsEnabled = !isBusy && hasOutput;
+        }
+
+        private bool ValidateMapScanInputs(out string errorMessage)
+        {
+            var errors = new List<string>();
+            string rootPath = TextBox_MapScanRootPath.Text.Trim();
+
+            if (!Directory.Exists(rootPath))
+                errors.Add("Extracted addon root folder not found.");
+
+            if (!CanWriteToDirectory(ToolPaths.WorkRoot))
+                errors.Add("No write permission in work directory root.");
+
+            errorMessage = string.Join("\n", errors);
+            return errors.Count == 0;
+        }
+
+        private static string BuildMapScanWorkDir(string rootPath)
+        {
+            string name = Path.GetFileName(rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (string.IsNullOrWhiteSpace(name))
+                name = "root";
+            return Path.Combine(ToolPaths.WorkRoot, $"{name}_map_scan_runs", DateTime.Now.ToString("yyyyMMdd_HHmmss_fff"));
+        }
+
+        private static string BuildMapBuildOutputDir(string rootPath)
+        {
+            string trimmed = rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string name = Path.GetFileName(trimmed);
+            if (string.IsNullOrWhiteSpace(name))
+                name = "root";
+
+            string? parent = Directory.GetParent(trimmed)?.FullName;
+            if (string.IsNullOrWhiteSpace(parent))
+                throw new InvalidOperationException("Unable to resolve addon parent folder for map output.");
+
+            string basePath = Path.Combine(parent, $"{name}_mapassets_optimized");
+            if (!Directory.Exists(basePath) && !File.Exists(basePath))
+                return basePath;
+
+            return Path.Combine(parent, $"{name}_mapassets_optimized_{DateTime.Now:yyyyMMdd_HHmmss}");
+        }
+
+        private static string BuildMapScanCancelFilePath()
+        {
+            return Path.Combine(ToolPaths.WorkRoot, "_map_scan_cancel_tokens", $"cancel_{Guid.NewGuid():N}.flag");
+        }
+
+        private void ClearMapScanCancelFile()
+        {
+            if (string.IsNullOrWhiteSpace(_mapScanCancelFile))
+                return;
+
+            try
+            {
+                if (File.Exists(_mapScanCancelFile))
+                    File.Delete(_mapScanCancelFile);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                string? cancelDir = Path.GetDirectoryName(_mapScanCancelFile);
+                if (!string.IsNullOrWhiteSpace(cancelDir) && Directory.Exists(cancelDir) && !Directory.EnumerateFileSystemEntries(cancelDir).Any())
+                    Directory.Delete(cancelDir);
+            }
+            catch
+            {
+            }
+
+            _mapScanCancelFile = null;
+        }
+
+        private void PrepareMapScanRunState()
+        {
+            SaveSettings();
+            ClearMapScanCancelFile();
+
+            _mapScanCts?.Cancel();
+            _mapScanCts = new CancellationTokenSource();
+            _mapScanRunning = true;
+            _mapScanCancelRequested = false;
+            _mapScanSummaryPath = null;
+            _mapStageOptimizeSummaryPath = null;
+            _mapBuildSummaryPath = null;
+            _mapBuildOutputPath = null;
+            _mapScanStagingDirs.Clear();
+            _mapScanWorkDir = BuildMapScanWorkDir(TextBox_MapScanRootPath.Text.Trim());
+            _mapScanCancelFile = BuildMapScanCancelFilePath();
+
+            ProgressBar_MapScan.IsIndeterminate = true;
+            ProgressBar_MapScan.Minimum = 0;
+            ProgressBar_MapScan.Maximum = 100;
+            ProgressBar_MapScan.Value = 0;
+            TextBlock_MapScanPhase.Text = "Starting";
+            TextBlock_MapScanCurrent.Text = "Scanning BSP files and preparing staging...";
+            TextBlock_MapScanStatus.Text = "Running";
+            TextBox_MapScanSummary.Text = "Scanning maps/*.bsp, analyzing internal pakfile data and extracting eligible pak content into staging...";
+
+            AppendMapScanLog(string.Empty);
+            AppendMapScanLog("=== Scanning BSP files and extracting staging for Optimize Maps (Phase 2) ===");
+            UpdateMapScanActionStates();
+        }
+
+        private async void Button_MapScanRun_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mapScanRunning)
+                return;
+
+            if (!ValidateMapScanInputs(out var errorMessage))
+            {
+                MessageBox.Show(errorMessage, "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                TextBlock_MapScanStatus.Text = "Error";
+                TextBox_MapScanSummary.Text = errorMessage;
+                return;
+            }
+
+            if (!EnsureToolsAvailable("Optimize Maps"))
+                return;
+
+            PrepareMapScanRunState();
+            await RunMapScanAsync();
+        }
+
+        private async Task RunMapScanAsync()
+        {
+            if (!File.Exists(ToolPaths.WorkerExePath))
+            {
+                _mapScanRunning = false;
+                TextBlock_MapScanStatus.Text = "FAIL";
+                TextBox_MapScanSummary.Text = "SourceAddonOptimizer worker not found.";
+                UpdateMapScanActionStates();
+                return;
+            }
+
+            var options = new MapBspAnalysisRunOptions
+            {
+                WorkerExePath = ToolPaths.WorkerExePath,
+                RootPath = TextBox_MapScanRootPath.Text.Trim(),
+                WorkDir = _mapScanWorkDir ?? BuildMapScanWorkDir(TextBox_MapScanRootPath.Text.Trim()),
+                CancelFilePath = _mapScanCancelFile
+            };
+
+            int exitCode;
+            try
+            {
+                exitCode = await _mapBspAnalysisRunner.RunAsync(options, _mapScanCts?.Token ?? CancellationToken.None);
+            }
+            catch (OperationCanceledException)
+            {
+                exitCode = 130;
+            }
+            catch (Exception ex)
+            {
+                _mapScanRunning = false;
+                ProgressBar_MapScan.IsIndeterminate = false;
+                ClearMapScanCancelFile();
+                TextBlock_MapScanPhase.Text = "Error";
+                TextBlock_MapScanStatus.Text = "FAIL";
+                TextBox_MapScanSummary.Text = $"Execution failed before summary.{Environment.NewLine}{ex.Message}";
+                AppendMapScanLog($"[GUI] {ex}");
+                UpdateMapScanActionStates();
+                return;
+            }
+
+            FinishMapScanRun(exitCode);
+        }
+
+        private void Button_MapScanCancel_Click(object sender, RoutedEventArgs e)
+        {
+            if ((!_mapScanRunning && !_mapBuildRunning) || _mapScanCancelRequested)
+                return;
+
+            _mapScanCancelRequested = true;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(_mapScanCancelFile))
+                {
+                    string? cancelDir = Path.GetDirectoryName(_mapScanCancelFile);
+                    if (!string.IsNullOrWhiteSpace(cancelDir))
+                        Directory.CreateDirectory(cancelDir);
+                    File.WriteAllText(_mapScanCancelFile, "cancel");
+                }
+            }
+            catch
+            {
+            }
+
+            TextBlock_MapScanStatus.Text = "Canceling";
+            TextBox_MapScanSummary.Text = "Cancellation requested. Waiting for worker cleanup...";
+            AppendMapScanLog("[GUI] Cancellation requested. Waiting for safe shutdown...");
+            UpdateMapScanActionStates();
+            _ = ForceStopMapScanIfNeededAsync();
+        }
+
+        private async Task ForceStopMapScanIfNeededAsync()
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            if ((!_mapScanRunning && !_mapBuildRunning) ||
+                ((_mapScanCts == null || _mapScanCts.IsCancellationRequested) &&
+                 (_mapBuildCts == null || _mapBuildCts.IsCancellationRequested)))
+                return;
+
+            AppendMapScanLog("[GUI] Worker still running after timeout. Forcing stop.");
+            _mapScanCts?.Cancel();
+            _mapBuildCts?.Cancel();
+        }
+
+        private void MapScanProgressUpdate(MapBspAnalysisProgressUpdate update)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (!string.IsNullOrWhiteSpace(update.Phase))
+                {
+                    TextBlock_MapScanPhase.Text = update.Phase;
+                    if (!update.ItemIndex.HasValue)
+                    {
+                        ProgressBar_MapScan.IsIndeterminate = true;
+                        TextBlock_MapScanCurrent.Text = update.Phase;
+                    }
+                }
+
+                if (update.ItemIndex.HasValue && update.ItemTotal.HasValue)
+                {
+                    ProgressBar_MapScan.IsIndeterminate = false;
+                    ProgressBar_MapScan.Minimum = 0;
+                    ProgressBar_MapScan.Maximum = update.ItemTotal.Value;
+                    ProgressBar_MapScan.Value = update.ItemIndex.Value;
+                    TextBlock_MapScanCurrent.Text = string.IsNullOrWhiteSpace(update.CurrentPath)
+                        ? $"Current: {update.ItemIndex}/{update.ItemTotal}"
+                        : $"Current: {update.ItemIndex}/{update.ItemTotal} | {update.CurrentPath}";
+                }
+            });
+        }
+
+        private void MapScanSummaryPathFound(string path)
+        {
+            _mapScanSummaryPath = path;
+        }
+
+        private void MapScanWorkDirFound(string path)
+        {
+            _mapScanWorkDir = path;
+        }
+
+        private void MapScanLogLine(string line)
+        {
+            Dispatcher.Invoke(() => AppendMapScanLog(line));
+        }
+
+        private void AppendMapScanLog(string line)
+        {
+            const int trimThreshold = 400000;
+            const int trimTarget = 250000;
+
+            if (TextBox_MapScanLog.Text.Length > trimThreshold)
+                TextBox_MapScanLog.Text = TextBox_MapScanLog.Text[^trimTarget..];
+
+            if (TextBox_MapScanLog.Text.Length > 0)
+                TextBox_MapScanLog.AppendText(Environment.NewLine);
+
+            TextBox_MapScanLog.AppendText(line);
+            TextBox_MapScanLog.ScrollToEnd();
+        }
+
+        private void FinishMapScanRun(int exitCode)
+        {
+            _mapScanRunning = false;
+            ProgressBar_MapScan.IsIndeterminate = false;
+            ClearMapScanCancelFile();
+
+            bool loadedSummary = LoadMapScanSummary();
+            if (loadedSummary)
+            {
+                if (exitCode == 130)
+                {
+                    TextBlock_MapScanPhase.Text = "Canceled";
+                    TextBlock_MapScanStatus.Text = "Canceled";
+                }
+                else if (exitCode != 0)
+                {
+                    TextBlock_MapScanPhase.Text = "Completed";
+                    TextBlock_MapScanStatus.Text = "Completed with warnings";
+                }
+                else
+                {
+                    TextBlock_MapScanPhase.Text = "Completed";
+                    TextBlock_MapScanStatus.Text = "OK";
+                    ProgressBar_MapScan.Minimum = 0;
+                    ProgressBar_MapScan.Maximum = 100;
+                    ProgressBar_MapScan.Value = 100;
+                }
+            }
+            else
+            {
+                TextBlock_MapScanPhase.Text = exitCode == 130 ? "Canceled" : "Completed";
+                TextBlock_MapScanStatus.Text = exitCode == 0 ? "OK" : exitCode == 130 ? "Canceled" : $"FAIL ({exitCode})";
+                TextBox_MapScanSummary.Text = exitCode == 130
+                    ? "Execution canceled before summary was generated. Check the log."
+                    : "Execution ended without map_bsp_scan_summary.json. Check the log.";
+            }
+
+            _mapScanCancelRequested = false;
+            UpdateMapScanActionStates();
+        }
+
+        private async void Button_MapStageOptimize_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mapScanRunning || _mapStageOptimizeRunning)
+                return;
+
+            if (!LoadMapScanSummary())
+            {
+                MessageBox.Show("Run Scan + Stage first so the staging inventory exists.", "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var stageRoots = _mapScanStagingDirs
+                .Where(path => !string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (stageRoots.Length == 0)
+            {
+                MessageBox.Show("No staged pak content was found. Run Scan + Stage first.", "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            _mapStageOptimizeRunning = true;
+            _context.UnlockedUI = false;
+            _mapStageOptimizeSummaryPath = Path.Combine(_mapScanWorkDir ?? ToolPaths.WorkRoot, "map_stage_optimize_summary.json");
+
+            ProgressBar_MapScan.IsIndeterminate = true;
+            ProgressBar_MapScan.Minimum = 0;
+            ProgressBar_MapScan.Maximum = 100;
+            ProgressBar_MapScan.Value = 0;
+            TextBlock_MapScanPhase.Text = "Optimize Staging";
+            TextBlock_MapScanCurrent.Text = "Preparing staged asset optimization...";
+            TextBlock_MapScanStatus.Text = "Running";
+            AppendMapScanLog(string.Empty);
+            AppendMapScanLog("=== Optimizing staged pak assets for Optimize Maps (Phase 3) ===");
+            AppendMapScanLog($"[MAP-OPT] Staging roots: {stageRoots.Length}");
+            UpdateMapScanActionStates();
+
+            bool audioAvailable = true;
+            bool needsAudioProcessing = _context.CompressWAV || _context.CompressMP3 || _context.CompressOGG;
+            if (needsAudioProcessing && !EnsureFfmpegAvailable("Map staging audio compression"))
+                audioAvailable = false;
+
+            try
+            {
+                int resolutionIndex = _context.ImageReducingResolutionListIndex;
+                int targetWidth = (int)_context.ImageSizeLimitList[_context.ImageWidthLimitIndex];
+                int targetHeight = (int)_context.ImageSizeLimitList[_context.ImageHeightLimitIndex];
+
+                var options = new MapStageOptimizationOptions
+                {
+                    StageRoots = stageRoots,
+                    WorkDir = _mapScanWorkDir ?? ToolPaths.WorkRoot,
+                    SummaryPath = _mapStageOptimizeSummaryPath,
+                    IncludeVtf = _context.CompressVTF,
+                    IncludeWav = audioAvailable && _context.CompressWAV,
+                    IncludeMp3 = audioAvailable && _context.CompressMP3,
+                    IncludeOgg = audioAvailable && _context.CompressOGG,
+                    IncludeJpg = _context.CompressJPG,
+                    IncludePng = _context.CompressPNG,
+                    IncludeLua = _context.CompressLUA,
+                    WavSampleRate = _context.WavRateList[Math.Clamp(_context.WavRateListIndex, 0, _context.WavRateList.Length - 1)],
+                    WavChannels = _context.WavChannelsIndex == 0 ? 2 : 1,
+                    WavCodec = _context.WavCodecIndex == 1 ? AudioContext.WavCodecKind.AdpcmMs : AudioContext.WavCodecKind.Pcm16,
+                    Mp3SampleRate = _context.WavRateList[Math.Clamp(_context.Mp3RateIndex, 0, _context.WavRateList.Length - 1)],
+                    Mp3BitrateKbps = _context.AudioBitrateList[Math.Clamp(_context.Mp3BitrateIndex, 0, _context.AudioBitrateList.Length - 1)],
+                    OggSampleRate = _context.WavRateList[Math.Clamp(_context.OggRateIndex, 0, _context.WavRateList.Length - 1)],
+                    OggChannels = _context.OggChannelsIndex == 0 ? 2 : 1,
+                    OggQuality = MapOggQualityFromIndex(_context.OggQualityIndex),
+                    PreserveLoopMetadata = _context.AudioLoopSafe,
+                    ImageResolution = _context.ImageReducingResolutionList[resolutionIndex],
+                    TargetWidth = targetWidth,
+                    TargetHeight = targetHeight,
+                    SkipWidth = (int)_context.ImageSkipWidth,
+                    SkipHeight = (int)_context.ImageSkipHeight,
+                    ReduceExactlyToLimits = _context.ReduceExactlyToLimits,
+                    KeepImageAspectRatio = _context.KeepImageAspectRatio,
+                    ImageMagickVtfCompress = _context.ImageMagickVTFCompress,
+                    LuaMinimalistic = _context.ChangeOriginalCodeToMinimalistic,
+                    Log = message => Dispatcher.Invoke(() => AppendMapScanLog(message)),
+                    Progress = (filePath, fileIndex, filesCount) =>
+                    {
+                        Dispatcher.Invoke(() =>
+                        {
+                            ProgressBar_MapScan.IsIndeterminate = false;
+                            ProgressBar_MapScan.Minimum = 0;
+                            ProgressBar_MapScan.Maximum = Math.Max(filesCount, 1);
+                            ProgressBar_MapScan.Value = Math.Min(fileIndex, Math.Max(filesCount, 1));
+                            TextBlock_MapScanCurrent.Text = $"Current: File {fileIndex}/{filesCount} | {filePath}";
+                            TextBlock_MapScanStatus.Text = "Optimizing staged assets";
+                        });
+                    }
+                };
+
+                if (needsAudioProcessing)
+                {
+                    AppendMapScanLog(
+                        $"[MAP-OPT] AudioSettings | WAV {options.WavSampleRate}Hz {options.WavChannels}ch {options.WavCodec} | " +
+                        $"MP3 {options.Mp3SampleRate}Hz {options.Mp3BitrateKbps}kbps | " +
+                        $"OGG {options.OggSampleRate}Hz {options.OggChannels}ch q={options.OggQuality:0.0} (VBR) | Enabled={audioAvailable}");
+                }
+
+                var result = await MapStageOptimizationService.RunAsync(options);
+
+                ProgressBar_MapScan.IsIndeterminate = false;
+                ProgressBar_MapScan.Minimum = 0;
+                ProgressBar_MapScan.Maximum = 100;
+                ProgressBar_MapScan.Value = 100;
+                TextBlock_MapScanPhase.Text = "Optimize Staging";
+                TextBlock_MapScanCurrent.Text = "Current: Completed.";
+                TextBlock_MapScanStatus.Text = "OK";
+                AppendMapScanLog($"[MAP-OPT] Summary: {result.SummaryPath}");
+
+                LoadMapScanSummary();
+            }
+            catch (Exception ex)
+            {
+                ProgressBar_MapScan.IsIndeterminate = false;
+                TextBlock_MapScanPhase.Text = "Optimize Staging";
+                TextBlock_MapScanStatus.Text = "FAIL";
+                TextBlock_MapScanCurrent.Text = "Current: Failed.";
+                AppendMapScanLog($"[MAP-OPT] {ex}");
+                TextBox_MapScanSummary.Text = $"{TextBox_MapScanSummary.Text}{Environment.NewLine}{Environment.NewLine}Staging optimization failed.{Environment.NewLine}{ex.Message}";
+            }
+            finally
+            {
+                _mapStageOptimizeRunning = false;
+                _context.UnlockedUI = true;
+                UpdateMapScanActionStates();
+            }
+        }
+
+        private async void Button_MapBuildRun_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mapScanRunning || _mapStageOptimizeRunning || _mapBuildRunning)
+                return;
+
+            if (!LoadMapScanSummary())
+            {
+                MessageBox.Show("Run Scan + Stage first so the BSP summary exists.", "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_mapStageOptimizeSummaryPath) || !File.Exists(_mapStageOptimizeSummaryPath))
+            {
+                MessageBox.Show("Run Optimize Staging first so the staged asset summary exists.", "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            string plannedOutputDir;
+            try
+            {
+                plannedOutputDir = BuildMapBuildOutputDir(TextBox_MapScanRootPath.Text.Trim());
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            string? outputParent = Directory.GetParent(plannedOutputDir)?.FullName;
+            if (string.IsNullOrWhiteSpace(outputParent) || !CanWriteToDirectory(outputParent))
+            {
+                MessageBox.Show("No write permission in addon parent folder (map output needs to be created there).", "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (!EnsureToolsAvailable("Optimize Maps"))
+                return;
+
+            SaveSettings();
+            ClearMapScanCancelFile();
+            _mapBuildCts?.Cancel();
+            _mapBuildCts = new CancellationTokenSource();
+            _mapBuildRunning = true;
+            _mapScanCancelRequested = false;
+            _mapBuildSummaryPath = null;
+            _mapBuildOutputPath = plannedOutputDir;
+            _mapScanCancelFile = BuildMapScanCancelFilePath();
+
+            ProgressBar_MapScan.IsIndeterminate = true;
+            ProgressBar_MapScan.Minimum = 0;
+            ProgressBar_MapScan.Maximum = 100;
+            ProgressBar_MapScan.Value = 0;
+            TextBlock_MapScanPhase.Text = "Rebuild + Inject";
+            TextBlock_MapScanCurrent.Text = "Preparing EOF-only BSP rebuild...";
+            TextBlock_MapScanStatus.Text = "Running";
+            AppendMapScanLog(string.Empty);
+            AppendMapScanLog("=== Rebuilding staged pak ZIPs and reinjecting them into BSPs (Phase 4, EOF-only) ===");
+            AppendMapScanLog($"[MAP-BUILD] Output dir: {_mapBuildOutputPath}");
+            _context.UnlockedUI = false;
+            UpdateMapScanActionStates();
+
+            try
+            {
+                var options = new MapBspBuildRunOptions
+                {
+                    WorkerExePath = ToolPaths.WorkerExePath,
+                    RootPath = TextBox_MapScanRootPath.Text.Trim(),
+                    WorkDir = _mapScanWorkDir ?? BuildMapScanWorkDir(TextBox_MapScanRootPath.Text.Trim()),
+                    OutputDir = _mapBuildOutputPath ?? BuildMapBuildOutputDir(TextBox_MapScanRootPath.Text.Trim()),
+                    CancelFilePath = _mapScanCancelFile
+                };
+
+                int exitCode = await _mapBspBuildRunner.RunAsync(options, _mapBuildCts.Token);
+                FinishMapBuildRun(exitCode);
+            }
+            catch (OperationCanceledException)
+            {
+                FinishMapBuildRun(130);
+            }
+            catch (Exception ex)
+            {
+                _mapBuildRunning = false;
+                ProgressBar_MapScan.IsIndeterminate = false;
+                ClearMapScanCancelFile();
+                TextBlock_MapScanPhase.Text = "Rebuild + Inject";
+                TextBlock_MapScanStatus.Text = "FAIL";
+                TextBlock_MapScanCurrent.Text = "Current: Failed.";
+                AppendMapScanLog($"[MAP-BUILD] {ex}");
+                TextBox_MapScanSummary.Text = $"{TextBox_MapScanSummary.Text}{Environment.NewLine}{Environment.NewLine}BSP rebuild failed.{Environment.NewLine}{ex.Message}";
+                _context.UnlockedUI = true;
+                UpdateMapScanActionStates();
+            }
+        }
+
+        private void MapBuildProgressUpdate(MapBspBuildProgressUpdate update)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (!string.IsNullOrWhiteSpace(update.Phase))
+                {
+                    TextBlock_MapScanPhase.Text = update.Phase;
+                    if (!update.ItemIndex.HasValue)
+                    {
+                        ProgressBar_MapScan.IsIndeterminate = true;
+                        TextBlock_MapScanCurrent.Text = update.Phase;
+                    }
+                }
+
+                if (update.ItemIndex.HasValue && update.ItemTotal.HasValue)
+                {
+                    ProgressBar_MapScan.IsIndeterminate = false;
+                    ProgressBar_MapScan.Minimum = 0;
+                    ProgressBar_MapScan.Maximum = update.ItemTotal.Value;
+                    ProgressBar_MapScan.Value = update.ItemIndex.Value;
+                    TextBlock_MapScanCurrent.Text = string.IsNullOrWhiteSpace(update.CurrentPath)
+                        ? $"Current: {update.ItemIndex}/{update.ItemTotal}"
+                        : $"Current: {update.ItemIndex}/{update.ItemTotal} | {update.CurrentPath}";
+                }
+            });
+        }
+
+        private void MapBuildSummaryPathFound(string path)
+        {
+            _mapBuildSummaryPath = path;
+        }
+
+        private void MapBuildWorkDirFound(string path)
+        {
+            _mapScanWorkDir = path;
+        }
+
+        private void MapBuildOutputDirFound(string path)
+        {
+            _mapBuildOutputPath = path;
+        }
+
+        private void FinishMapBuildRun(int exitCode)
+        {
+            _mapBuildRunning = false;
+            ProgressBar_MapScan.IsIndeterminate = false;
+            ClearMapScanCancelFile();
+
+            bool loadedSummary = LoadMapScanSummary();
+            if (loadedSummary)
+            {
+                if (exitCode == 130)
+                {
+                    TextBlock_MapScanPhase.Text = "Canceled";
+                    TextBlock_MapScanStatus.Text = "Canceled";
+                }
+                else if (exitCode != 0)
+                {
+                    TextBlock_MapScanPhase.Text = "Completed";
+                    TextBlock_MapScanStatus.Text = "Completed with warnings";
+                }
+                else
+                {
+                    TextBlock_MapScanPhase.Text = "Rebuild + Inject";
+                    TextBlock_MapScanStatus.Text = "OK";
+                    TextBlock_MapScanCurrent.Text = "Current: Completed.";
+                    ProgressBar_MapScan.Minimum = 0;
+                    ProgressBar_MapScan.Maximum = 100;
+                    ProgressBar_MapScan.Value = 100;
+                }
+            }
+            else
+            {
+                TextBlock_MapScanPhase.Text = exitCode == 130 ? "Canceled" : "Completed";
+                TextBlock_MapScanStatus.Text = exitCode == 0 ? "OK" : exitCode == 130 ? "Canceled" : $"FAIL ({exitCode})";
+                TextBox_MapScanSummary.Text = exitCode == 130
+                    ? "Execution canceled before build summary was generated. Check the log."
+                    : "Execution ended without map_bsp_build_summary.json. Check the log.";
+            }
+
+            _mapScanCancelRequested = false;
+            _context.UnlockedUI = true;
+            UpdateMapScanActionStates();
+        }
+
+        private bool LoadMapScanSummary()
+        {
+            if (string.IsNullOrWhiteSpace(_mapScanSummaryPath) || !File.Exists(_mapScanSummaryPath))
+                return false;
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(_mapScanSummaryPath));
+                var root = document.RootElement;
+                var counts = root.TryGetProperty("counts", out var countsElement) ? countsElement : default;
+                var sizes = root.TryGetProperty("sizes", out var sizesElement) ? sizesElement : default;
+                var run = root.TryGetProperty("run", out var runElement) ? runElement : default;
+                var futureValidation = root.TryGetProperty("future_validation", out var validationElement) ? validationElement : default;
+
+                int bspTotal = GetJsonInt(counts, "bsp_total");
+                int validPakZip = GetJsonInt(counts, "bsp_with_valid_zip");
+                int stagedBspCount = GetJsonInt(counts, "staged_bsp_count");
+                int stagedFilesTotal = GetJsonInt(counts, "staged_files_total");
+                int candidateCount = GetJsonInt(counts, "phase2_candidate_count");
+                int blockedCount = GetJsonInt(counts, "phase2_blocked_count");
+                int analysisErrors = GetJsonInt(counts, "analysis_errors");
+                int scanErrors = GetJsonInt(counts, "scan_errors");
+
+                long addonTotalBytes = GetJsonLong(sizes, "addon_total_bytes");
+                long pakTotalBytes = GetJsonLong(sizes, "pak_total_bytes");
+                long stagedTotalBytes = GetJsonLong(sizes, "staged_total_bytes");
+                double pakShareOfBsp = GetJsonDouble(sizes, "pak_share_of_all_bsp_percent");
+                string rootPath = GetJsonString(run, "root") ?? TextBox_MapScanRootPath.Text.Trim();
+                string stagingRoot = string.Empty;
+                var stagingDirs = new List<string>();
+                if (root.TryGetProperty("staging", out var stagingElement) && stagingElement.ValueKind == JsonValueKind.Object)
+                    stagingRoot = GetJsonString(stagingElement, "root") ?? string.Empty;
+
+                TextBlock_MapScanBspCount.Text = bspTotal.ToString();
+                TextBlock_MapScanPakZipCount.Text = validPakZip.ToString();
+                TextBlock_MapScanStagedBspCount.Text = stagedBspCount.ToString();
+                TextBlock_MapScanStagedFileCount.Text = stagedFilesTotal.ToString();
+                TextBlock_MapScanCandidateCount.Text = candidateCount.ToString();
+                TextBlock_MapScanBlockedCount.Text = blockedCount.ToString();
+                TextBlock_MapScanAddonSize.Text = FormatBytes(addonTotalBytes);
+                TextBlock_MapScanPakTotalSize.Text = FormatBytes(pakTotalBytes);
+
+                var summaryLines = new List<string>
+                {
+                    $"Root: {rootPath}",
+                    $"Addon total size: {FormatBytes(addonTotalBytes)}",
+                    $"BSP files found: {bspTotal}",
+                    $"BSPs with valid embedded pak ZIP: {validPakZip}",
+                    $"Staging extracted: {stagedBspCount} BSP(s), {stagedFilesTotal} file(s), {FormatBytes(stagedTotalBytes)}",
+                    $"Future phase-2 candidates (safe layout only): {candidateCount}",
+                    $"Blocked for future reinjection: {blockedCount}",
+                    $"Combined PAKFILE size: {FormatBytes(pakTotalBytes)} ({pakShareOfBsp:0.##}% of all BSP bytes)",
+                };
+                if (!string.IsNullOrWhiteSpace(stagingRoot))
+                    summaryLines.Add($"Staging root: {stagingRoot}");
+
+                if (analysisErrors > 0 || scanErrors > 0)
+                    summaryLines.Add($"Warnings: analysis_errors={analysisErrors}, scan_errors={scanErrors}");
+
+                if (root.TryGetProperty("staging", out var overallStagingElement) &&
+                    overallStagingElement.ValueKind == JsonValueKind.Object &&
+                    overallStagingElement.TryGetProperty("inventory_overall", out var overallInventoryElement) &&
+                    overallInventoryElement.ValueKind == JsonValueKind.Array)
+                {
+                    summaryLines.Add(string.Empty);
+                    summaryLines.Add("Overall staged inventory:");
+                    foreach (var entry in overallInventoryElement.EnumerateArray())
+                    {
+                        string ext = GetJsonString(entry, "extension") ?? "(unknown)";
+                        int fileCount = GetJsonInt(entry, "file_count");
+                        long totalBytes = GetJsonLong(entry, "total_bytes");
+                        summaryLines.Add($"- {ext}: {fileCount} file(s), {FormatBytes(totalBytes)}");
+                    }
+                }
+
+                summaryLines.Add(string.Empty);
+                summaryLines.Add("Per BSP:");
+
+                if (root.TryGetProperty("items", out var itemsElement) && itemsElement.ValueKind == JsonValueKind.Array && itemsElement.GetArrayLength() > 0)
+                {
+                    foreach (var item in itemsElement.EnumerateArray())
+                    {
+                        string relativePath = GetJsonString(item, "relative_path") ?? "(unknown)";
+                        long bspSize = GetJsonLong(item, "bsp_size");
+                        long pakSize = GetJsonLong(item, "pak_size");
+                        double pakPercent = GetJsonDouble(item, "pak_percent_of_bsp");
+                        bool pakZipValid = GetJsonBool(item, "pak_zip_valid");
+                        bool pakAtEof = GetJsonBool(item, "pak_at_eof");
+                        string stagingStatus = GetJsonString(item, "staging_status") ?? "not_attempted";
+                        string stagingDir = GetJsonString(item, "staging_dir") ?? string.Empty;
+                        int stagedFileCount = GetJsonInt(item, "staged_file_count");
+                        long stagedBytes = GetJsonLong(item, "staged_total_bytes");
+                        bool phase2Candidate = GetJsonBool(item, "phase2_candidate");
+                        int pakEntryCount = GetJsonInt(item, "pak_entry_count");
+                        string message = GetJsonString(item, "message") ?? string.Empty;
+
+                        summaryLines.Add($"- {relativePath}");
+                        summaryLines.Add($"  BSP: {FormatBytes(bspSize)} | PAKFILE: {FormatBytes(pakSize)} | {pakPercent:0.##}%");
+                        summaryLines.Add($"  ZIP valid: {YesNo(pakZipValid)} | Entries: {pakEntryCount} | PAK at EOF: {YesNo(pakAtEof)} | Future candidate: {YesNo(phase2Candidate)}");
+                        summaryLines.Add($"  Staging: {stagingStatus} | Files: {stagedFileCount} | Size: {FormatBytes(stagedBytes)}");
+                        if (!string.IsNullOrWhiteSpace(stagingDir))
+                        {
+                            if (string.Equals(stagingStatus, "extracted", StringComparison.OrdinalIgnoreCase) && Directory.Exists(stagingDir))
+                                stagingDirs.Add(stagingDir);
+                            summaryLines.Add($"  Staging dir: {stagingDir}");
+                        }
+
+                        if (item.TryGetProperty("inventory_by_extension", out var inventoryElement) &&
+                            inventoryElement.ValueKind == JsonValueKind.Array &&
+                            inventoryElement.GetArrayLength() > 0)
+                        {
+                            summaryLines.Add("  Inventory:");
+                            foreach (var entry in inventoryElement.EnumerateArray())
+                            {
+                                string ext = GetJsonString(entry, "extension") ?? "(unknown)";
+                                int fileCount = GetJsonInt(entry, "file_count");
+                                long totalBytes = GetJsonLong(entry, "total_bytes");
+                                summaryLines.Add($"    {ext}: {fileCount} file(s), {FormatBytes(totalBytes)}");
+                            }
+                        }
+
+                        if (item.TryGetProperty("phase2_blockers", out var blockersElement) && blockersElement.ValueKind == JsonValueKind.Array && blockersElement.GetArrayLength() > 0)
+                        {
+                            var blockers = blockersElement
+                                .EnumerateArray()
+                                .Select(v => v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString())
+                                .Where(v => !string.IsNullOrWhiteSpace(v))
+                                .ToArray();
+                            if (blockers.Length > 0)
+                                summaryLines.Add($"  Blockers: {string.Join(", ", blockers)}");
+                        }
+                        else if (!string.IsNullOrWhiteSpace(message))
+                        {
+                            summaryLines.Add($"  Note: {message}");
+                        }
+                    }
+                }
+                else
+                {
+                    summaryLines.Add("- No maps/*.bsp found under this root.");
+                }
+
+                _mapScanStagingDirs = stagingDirs
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (futureValidation.ValueKind == JsonValueKind.Object &&
+                    futureValidation.TryGetProperty("required_checks", out var checksElement) &&
+                    checksElement.ValueKind == JsonValueKind.Array)
+                {
+                    summaryLines.Add(string.Empty);
+                    summaryLines.Add("Future reinjection validation (not implemented in Phase 2):");
+                    foreach (var check in checksElement.EnumerateArray())
+                    {
+                        string text = check.ValueKind == JsonValueKind.String ? check.GetString() ?? string.Empty : check.ToString();
+                        if (!string.IsNullOrWhiteSpace(text))
+                            summaryLines.Add($"- {text}");
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(_mapStageOptimizeSummaryPath) && File.Exists(_mapStageOptimizeSummaryPath))
+                    AppendMapStageOptimizeSummary(summaryLines);
+
+                if (!string.IsNullOrWhiteSpace(_mapBuildSummaryPath) && File.Exists(_mapBuildSummaryPath))
+                    AppendMapBuildSummary(summaryLines);
+
+                TextBox_MapScanSummary.Text = string.Join(Environment.NewLine, summaryLines);
+                UpdateMapScanActionStates();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                TextBox_MapScanSummary.Text = $"Failed to read map_bsp_scan_summary.json.{Environment.NewLine}{ex.Message}";
+                return false;
+            }
+        }
+
+        private void AppendMapStageOptimizeSummary(List<string> summaryLines)
+        {
+            if (string.IsNullOrWhiteSpace(_mapStageOptimizeSummaryPath) || !File.Exists(_mapStageOptimizeSummaryPath))
+                return;
+
+            using var document = JsonDocument.Parse(File.ReadAllText(_mapStageOptimizeSummaryPath));
+            var root = document.RootElement;
+            var run = root.TryGetProperty("run", out var runElement) ? runElement : default;
+            var totals = root.TryGetProperty("totals", out var totalsElement) ? totalsElement : default;
+
+            long beforeBytes = GetJsonLong(totals, "before_bytes");
+            long afterBytes = GetJsonLong(totals, "after_bytes");
+            long deltaBytes = GetJsonLong(totals, "delta_bytes");
+            int beforeFiles = GetJsonInt(totals, "before_files");
+            int afterFiles = GetJsonInt(totals, "after_files");
+            double deltaPercent = GetJsonDouble(totals, "delta_percent");
+            int visitedRoots = GetJsonInt(run, "visited_stage_roots");
+
+            summaryLines.Add(string.Empty);
+            summaryLines.Add("Staging optimization:");
+            summaryLines.Add($"- Stage roots processed: {visitedRoots}");
+            summaryLines.Add($"- Total staged size: {FormatBytes(beforeBytes)} -> {FormatBytes(afterBytes)} ({FormatSignedBytes(deltaBytes)}, {deltaPercent:0.##}%)");
+            summaryLines.Add($"- File count: {beforeFiles} -> {afterFiles}");
+
+            if (run.TryGetProperty("processed_extensions", out var processedElement) &&
+                processedElement.ValueKind == JsonValueKind.Array)
+            {
+                var processed = processedElement
+                    .EnumerateArray()
+                    .Where(value => value.ValueKind == JsonValueKind.String)
+                    .Select(value => value.GetString())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .ToArray();
+                summaryLines.Add($"- Processed by compressor: {(processed.Length > 0 ? string.Join(", ", processed) : "(none)")}");
+            }
+
+            if (run.TryGetProperty("inventoried_only_extensions", out var inventoriedElement) &&
+                inventoriedElement.ValueKind == JsonValueKind.Array)
+            {
+                var inventoried = inventoriedElement
+                    .EnumerateArray()
+                    .Where(value => value.ValueKind == JsonValueKind.String)
+                    .Select(value => value.GetString())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .ToArray();
+                summaryLines.Add($"- Inventoried only: {(inventoried.Length > 0 ? string.Join(", ", inventoried) : "(none)")}");
+            }
+
+            if (root.TryGetProperty("entries", out var entriesElement) && entriesElement.ValueKind == JsonValueKind.Array)
+            {
+                summaryLines.Add(string.Empty);
+                summaryLines.Add("Staged assets by type:");
+                foreach (var entry in entriesElement.EnumerateArray())
+                {
+                    string extension = GetJsonString(entry, "extension") ?? "(unknown)";
+                    bool processed = GetJsonBool(entry, "processed");
+                    long extBefore = GetJsonLong(entry, "before_bytes");
+                    long extAfter = GetJsonLong(entry, "after_bytes");
+                    long extDelta = GetJsonLong(entry, "delta_bytes");
+                    int beforeCount = GetJsonInt(entry, "before_files");
+                    int afterCount = GetJsonInt(entry, "after_files");
+                    string prefix = processed ? "*" : "-";
+                    summaryLines.Add($"{prefix} {extension}: {FormatBytes(extBefore)} -> {FormatBytes(extAfter)} ({FormatSignedBytes(extDelta)}) | files {beforeCount}->{afterCount}");
+                }
+            }
+        }
+
+        private void AppendMapBuildSummary(List<string> summaryLines)
+        {
+            if (string.IsNullOrWhiteSpace(_mapBuildSummaryPath) || !File.Exists(_mapBuildSummaryPath))
+                return;
+
+            using var document = JsonDocument.Parse(File.ReadAllText(_mapBuildSummaryPath));
+            var root = document.RootElement;
+            var run = root.TryGetProperty("run", out var runElement) ? runElement : default;
+            var counts = root.TryGetProperty("counts", out var countsElement) ? countsElement : default;
+            var sizes = root.TryGetProperty("sizes", out var sizesElement) ? sizesElement : default;
+
+            int eligibleTotal = GetJsonInt(counts, "eligible_total");
+            int reinjectedTotal = GetJsonInt(counts, "reinjected_total");
+            int unsupportedTotal = GetJsonInt(counts, "unsupported_total");
+            int failedTotal = GetJsonInt(counts, "failed_total");
+
+            long inputAddonBytes = GetJsonLong(sizes, "input_addon_total_bytes");
+            long outputAddonBytes = GetJsonLong(sizes, "output_addon_total_bytes");
+            long addonDeltaBytes = GetJsonLong(sizes, "addon_delta_bytes");
+            double addonDeltaPercent = GetJsonDouble(sizes, "addon_delta_percent");
+            long sourceBspBytes = GetJsonLong(sizes, "reinjected_source_bsp_total_bytes");
+            long outputBspBytes = GetJsonLong(sizes, "reinjected_output_bsp_total_bytes");
+            long sourcePakBytes = GetJsonLong(sizes, "reinjected_source_pak_total_bytes");
+            long outputPakBytes = GetJsonLong(sizes, "reinjected_output_pak_total_bytes");
+            bool outputCreated = GetJsonBool(run, "output_created");
+            string outputDir = GetJsonString(run, "output_dir") ?? string.Empty;
+            string mode = GetJsonString(run, "mode") ?? "EOF-only";
+            string fatalError = GetJsonString(run, "fatal_error") ?? string.Empty;
+
+            if (!string.IsNullOrWhiteSpace(outputDir))
+                _mapBuildOutputPath = outputDir;
+
+            summaryLines.Add(string.Empty);
+            summaryLines.Add("BSP rebuild + reinjection:");
+            summaryLines.Add($"- Mode: {mode}");
+            summaryLines.Add($"- Eligible BSPs: {eligibleTotal}");
+            summaryLines.Add($"- Reinjected: {reinjectedTotal}");
+            summaryLines.Add($"- Unsupported: {unsupportedTotal}");
+            summaryLines.Add($"- Failed: {failedTotal}");
+            summaryLines.Add($"- Output created: {YesNo(outputCreated)}");
+            if (!string.IsNullOrWhiteSpace(outputDir))
+                summaryLines.Add($"- Output dir: {outputDir}");
+            if (outputCreated)
+                summaryLines.Add($"- Addon size: {FormatBytes(inputAddonBytes)} -> {FormatBytes(outputAddonBytes)} ({FormatSignedBytes(addonDeltaBytes)}, {addonDeltaPercent:0.##}%)");
+            summaryLines.Add($"- Reinjected BSP bytes: {FormatBytes(sourceBspBytes)} -> {FormatBytes(outputBspBytes)}");
+            summaryLines.Add($"- Reinjected pak bytes: {FormatBytes(sourcePakBytes)} -> {FormatBytes(outputPakBytes)}");
+
+            if (!string.IsNullOrWhiteSpace(fatalError))
+                summaryLines.Add($"- Fatal error: {fatalError}");
+
+            if (root.TryGetProperty("items", out var itemsElement) && itemsElement.ValueKind == JsonValueKind.Array)
+            {
+                summaryLines.Add(string.Empty);
+                summaryLines.Add("Reinjection results:");
+                foreach (var item in itemsElement.EnumerateArray())
+                {
+                    string relativePath = GetJsonString(item, "relative_path") ?? "(unknown)";
+                    string status = GetJsonString(item, "status") ?? "unknown";
+                    string reason = GetJsonString(item, "reason") ?? string.Empty;
+                    bool reinjected = GetJsonBool(item, "reinjected");
+                    long sourceBspSize = GetJsonLong(item, "source_bsp_size");
+                    long outputBspSize = GetJsonLong(item, "output_bsp_size");
+                    long originalPakSize = GetJsonLong(item, "original_pak_size");
+                    long rebuiltPakSize = GetJsonLong(item, "rebuilt_pak_size");
+                    bool hashMatch = GetJsonBool(item, "pak_hash_match");
+                    string rebuiltHash = GetJsonString(item, "rebuilt_pak_sha256") ?? string.Empty;
+                    string outputHash = GetJsonString(item, "output_pak_sha256") ?? string.Empty;
+                    string outputBspPath = GetJsonString(item, "output_bsp_path") ?? string.Empty;
+
+                    summaryLines.Add($"- {relativePath}");
+                    summaryLines.Add($"  Status: {status} | Reinjected: {YesNo(reinjected)}");
+                    summaryLines.Add($"  Reason: {reason}");
+                    if (sourceBspSize > 0 || outputBspSize > 0)
+                        summaryLines.Add($"  BSP: {FormatBytes(sourceBspSize)} -> {FormatBytes(outputBspSize)}");
+                    if (originalPakSize > 0 || rebuiltPakSize > 0)
+                        summaryLines.Add($"  PAK: {FormatBytes(originalPakSize)} -> {FormatBytes(rebuiltPakSize)}");
+                    if (!string.IsNullOrWhiteSpace(rebuiltHash))
+                        summaryLines.Add($"  rebuilt_pak.zip SHA256: {rebuiltHash}");
+                    if (!string.IsNullOrWhiteSpace(outputHash))
+                        summaryLines.Add($"  Re-read BSP pak SHA256: {outputHash}");
+                    if (!string.IsNullOrWhiteSpace(rebuiltHash) || !string.IsNullOrWhiteSpace(outputHash))
+                        summaryLines.Add($"  Hash match: {YesNo(hashMatch)}");
+                    if (!string.IsNullOrWhiteSpace(outputBspPath))
+                        summaryLines.Add($"  Output BSP: {outputBspPath}");
+                }
+            }
+        }
+
+        private static long GetJsonLong(JsonElement element, string propertyName)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var value))
+                return 0;
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number))
+                return number;
+
+            if (value.ValueKind == JsonValueKind.String && long.TryParse(value.GetString(), out var parsed))
+                return parsed;
+
+            return 0;
+        }
+
+        private static double GetJsonDouble(JsonElement element, string propertyName)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var value))
+                return 0.0;
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number))
+                return number;
+
+            if (value.ValueKind == JsonValueKind.String && double.TryParse(value.GetString(), out var parsed))
+                return parsed;
+
+            return 0.0;
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            double value = bytes;
+            string[] units = { "B", "KB", "MB", "GB", "TB" };
+            int unitIndex = 0;
+
+            while (value >= 1024 && unitIndex < units.Length - 1)
+            {
+                value /= 1024;
+                unitIndex++;
+            }
+
+            return $"{value:0.##} {units[unitIndex]}";
+        }
+
+        private static string FormatSignedBytes(long bytes)
+        {
+            string sign = bytes > 0 ? "+" : bytes < 0 ? "-" : "";
+            return $"{sign}{FormatBytes(Math.Abs(bytes))}";
+        }
+
+        private static string YesNo(bool value) => value ? "Yes" : "No";
+
+        private void Button_MapScanOpenRoot_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFolder(TextBox_MapScanRootPath.Text.Trim(), "Optimize Maps");
+        }
+
+        private void Button_MapScanOpenWork_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFolder(_mapScanWorkDir, "Optimize Maps");
+        }
+
+        private void Button_MapBuildOpenOutput_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFolder(_mapBuildOutputPath, "Optimize Maps");
         }
 
         private void Button_Compress_Click(object sender, RoutedEventArgs e)
@@ -662,8 +2361,15 @@ namespace GmodAddonCompressor
             _settings = SettingsSystem.Load();
 
             _context.AddonDirectoryPath = _settings.LastAddonPath ?? string.Empty;
+            TextBox_UnpackRootPath.Text = _settings.UnpackRootPath ?? string.Empty;
+            TextBox_MapScanRootPath.Text = _settings.MapOptimizeRootPath ?? string.Empty;
+            TextBox_UnpackGmadPath.Text = _settings.GmadPath ?? string.Empty;
             _context.BlenderPath = _settings.BlenderPath ?? string.Empty;
             _context.StudioMdlPath = _settings.StudioMdlPath ?? string.Empty;
+            CheckBox_UnpackOpenOnFinish.IsChecked = _settings.UnpackOpenOnFinish ?? false;
+            CheckBox_UnpackExtractMapPak.IsChecked = _settings.UnpackExtractMapPak ?? true;
+            CheckBox_UnpackDeleteMapBsp.IsChecked = _settings.UnpackDeleteMapBsp ?? false;
+            SetSelectedUnpackExistingMode(_settings.UnpackExistingMode);
             _context.OptimizerSuffix = string.IsNullOrWhiteSpace(_settings.OptimizerSuffix) ? "_optimized" : _settings.OptimizerSuffix;
             _context.OptimizerPresetIndex = PresetIndexFromName(_settings.OptimizerPreset);
             if (_settings.OptimizerRestoreSkins.HasValue)
@@ -735,6 +2441,11 @@ namespace GmodAddonCompressor
             {
                 ApplyPresetValues(_context.OptimizerPresetIndex);
             }
+
+            ResetUnpackSummary();
+            UpdateUnpackActionStates();
+            ResetMapScanSummary();
+            UpdateMapScanActionStates();
         }
 
         private void SaveSettings()
@@ -742,8 +2453,15 @@ namespace GmodAddonCompressor
             var settings = new AppSettingsModel
             {
                 LastAddonPath = _context.AddonDirectoryPath,
+                UnpackRootPath = TextBox_UnpackRootPath.Text.Trim(),
+                MapOptimizeRootPath = TextBox_MapScanRootPath.Text.Trim(),
+                GmadPath = TextBox_UnpackGmadPath.Text.Trim(),
                 BlenderPath = _context.BlenderPath,
                 StudioMdlPath = _context.StudioMdlPath,
+                UnpackExistingMode = GetSelectedUnpackExistingMode(),
+                UnpackOpenOnFinish = CheckBox_UnpackOpenOnFinish.IsChecked == true,
+                UnpackExtractMapPak = CheckBox_UnpackExtractMapPak.IsChecked == true,
+                UnpackDeleteMapBsp = CheckBox_UnpackDeleteMapBsp.IsChecked == true,
                 OptimizerSuffix = _context.OptimizerSuffix,
                 OptimizerPreset = PresetNameFromIndex(_context.OptimizerPresetIndex),
                 OptimizerRestoreSkins = _context.OptimizerRestoreSkins,
@@ -989,6 +2707,57 @@ namespace GmodAddonCompressor
             return candidates.FirstOrDefault(File.Exists);
         }
 
+        private static string? DetectGmadPath()
+        {
+            var envCandidates = new[]
+            {
+                Environment.GetEnvironmentVariable("GMAD_EXE"),
+                Environment.GetEnvironmentVariable("GMAD_PATH"),
+                Environment.GetEnvironmentVariable("GARRYSMOD_DIR")
+            };
+
+            foreach (var candidate in envCandidates)
+            {
+                var resolved = ResolveGmadCandidate(candidate);
+                if (!string.IsNullOrWhiteSpace(resolved))
+                    return resolved;
+            }
+
+            var fromPath = FindOnPath("gmad.exe");
+            if (!string.IsNullOrWhiteSpace(fromPath))
+                return fromPath;
+
+            var directCandidates = new[]
+            {
+                @"C:\Program Files (x86)\Steam\steamapps\common\GarrysMod\bin\gmad.exe",
+                @"C:\Program Files\Steam\steamapps\common\GarrysMod\bin\gmad.exe",
+            };
+
+            var direct = directCandidates.FirstOrDefault(File.Exists);
+            if (!string.IsNullOrWhiteSpace(direct))
+                return direct;
+
+            foreach (var steamRoot in GetSteamRootCandidates())
+            {
+                string? resolved = ResolveGmadCandidate(Path.Combine(steamRoot, "steamapps", "common", "GarrysMod"));
+                if (!string.IsNullOrWhiteSpace(resolved))
+                    return resolved;
+
+                string libraryVdf = Path.Combine(steamRoot, "steamapps", "libraryfolders.vdf");
+                if (!File.Exists(libraryVdf))
+                    continue;
+
+                foreach (var libraryPath in ParseSteamLibraryFolders(libraryVdf))
+                {
+                    resolved = ResolveGmadCandidate(Path.Combine(libraryPath, "steamapps", "common", "GarrysMod"));
+                    if (!string.IsNullOrWhiteSpace(resolved))
+                        return resolved;
+                }
+            }
+
+            return null;
+        }
+
         private static string? DetectStudioMdlPath()
         {
             var candidates = new[]
@@ -998,6 +2767,76 @@ namespace GmodAddonCompressor
             };
 
             return candidates.FirstOrDefault(File.Exists);
+        }
+
+        private static IEnumerable<string> GetSteamRootCandidates()
+        {
+            var candidates = new[]
+            {
+                @"C:\Program Files (x86)\Steam",
+                @"C:\Program Files\Steam",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Steam")
+            };
+
+            return candidates
+                .Where(path => !string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<string> ParseSteamLibraryFolders(string vdfPath)
+        {
+            var results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var rawLine in File.ReadLines(vdfPath))
+            {
+                string line = rawLine.Trim();
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                if (line.IndexOf("\"path\"", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    var parts = line.Split('"', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2)
+                    {
+                        string candidate = parts[^1].Replace(@"\\", @"\");
+                        if (Directory.Exists(candidate))
+                            results.Add(candidate);
+                    }
+                    continue;
+                }
+
+                if (line.StartsWith("\"") && line.Count(ch => ch == '"') >= 4)
+                {
+                    var parts = line.Split('"', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2 && parts[0].All(char.IsDigit))
+                    {
+                        string candidate = parts[1].Replace(@"\\", @"\");
+                        if (Directory.Exists(candidate))
+                            results.Add(candidate);
+                    }
+                }
+            }
+
+            return results;
+        }
+
+        private static string? ResolveGmadCandidate(string? rawPath)
+        {
+            if (string.IsNullOrWhiteSpace(rawPath))
+                return null;
+
+            if (File.Exists(rawPath) && string.Equals(Path.GetFileName(rawPath), "gmad.exe", StringComparison.OrdinalIgnoreCase))
+                return rawPath;
+
+            if (Directory.Exists(rawPath))
+            {
+                string candidate = Path.Combine(rawPath, "bin", "gmad.exe");
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+
+            return null;
         }
 
         private static string? FindOnPath(string exeName)

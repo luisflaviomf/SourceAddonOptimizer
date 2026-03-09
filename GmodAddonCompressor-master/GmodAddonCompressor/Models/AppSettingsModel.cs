@@ -19,8 +19,15 @@ namespace GmodAddonCompressor.Models
     {
         public int SchemaVersion { get; set; } = 1;
         public string? LastAddonPath { get; set; }
+        public string? UnpackRootPath { get; set; }
+        public string? MapOptimizeRootPath { get; set; }
+        public string? GmadPath { get; set; }
         public string? BlenderPath { get; set; }
         public string? StudioMdlPath { get; set; }
+        public string? UnpackExistingMode { get; set; }
+        public bool? UnpackOpenOnFinish { get; set; }
+        public bool? UnpackExtractMapPak { get; set; }
+        public bool? UnpackDeleteMapBsp { get; set; }
         public string? OptimizerSuffix { get; set; }
         public string? OptimizerPreset { get; set; }
         public OptimizerCustomParams OptimizerCustom { get; set; } = new OptimizerCustomParams();

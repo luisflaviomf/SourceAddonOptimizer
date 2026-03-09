@@ -698,6 +698,433 @@
             </ScrollViewer>
         </TabItem>
 
+        <TabItem Header="Descompactar addons">
+            <Grid Background="{DynamicResource AppBackground}" Margin="4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1*" />
+                    <ColumnDefinition Width="1.25*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,12">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Root Folder" />
+                        <TextBlock Style="{StaticResource MutedText}"
+                                   Margin="0,8,0,0"
+                                   Text="Scan recursivo para .gma e .bin. Cada arquivo suportado e extraido em uma pasta _extraido ao lado do arquivo original." />
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="TextBox_UnpackRootPath"
+                                     TextChanged="TextBox_UnpackRootPath_TextChanged"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     TextWrapping="NoWrap" />
+                            <Button x:Name="Button_SelectUnpackRoot"
+                                    Click="Button_SelectUnpackRoot_Click"
+                                    Grid.Column="1"
+                                    Margin="8,0,0,0"
+                                    Style="{StaticResource ButtonAccent}"
+                                    Content="Select Root"
+                                    Width="110" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Tool and Options" />
+
+                        <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="gmad.exe" />
+                        <Grid Margin="0,6,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="TextBox_UnpackGmadPath"
+                                     TextChanged="TextBox_UnpackGmadPath_TextChanged"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     TextWrapping="NoWrap" />
+                            <Button x:Name="Button_AutoDetectGmad"
+                                    Click="Button_AutoDetectGmad_Click"
+                                    Grid.Column="1"
+                                    Margin="8,0,0,0"
+                                    Content="Auto-detect"
+                                    Width="100" />
+                            <Button x:Name="Button_BrowseGmad"
+                                    Click="Button_BrowseGmad_Click"
+                                    Grid.Column="2"
+                                    Margin="8,0,0,0"
+                                    Content="Browse"
+                                    Width="80" />
+                        </Grid>
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource LabelText}" Text="Existing output" />
+                                <ComboBox x:Name="ComboBox_UnpackExistingMode">
+                                    <ComboBoxItem Tag="skip" Content="Skip existing" />
+                                    <ComboBoxItem Tag="overwrite" Content="Overwrite existing" />
+                                    <ComboBoxItem Tag="fail" Content="Fail if exists" />
+                                </ComboBox>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                <TextBlock Style="{StaticResource LabelText}" Text="Behavior" />
+                                <CheckBox x:Name="CheckBox_UnpackOpenOnFinish"
+                                          Margin="0,6,0,0"
+                                          Content="Open root folder on finish" />
+                                <CheckBox x:Name="CheckBox_UnpackExtractMapPak"
+                                          Margin="0,6,0,0"
+                                          IsChecked="True"
+                                          Content="Extract internal map content (BSP pakfile)"
+                                          ToolTip="After normal .gma/.bin extraction, auto-detect maps/*.bsp and extract the internal BSP pakfile into the same _extraido folder." />
+                                <CheckBox x:Name="CheckBox_UnpackDeleteMapBsp"
+                                          Margin="0,6,0,0"
+                                          IsChecked="False"
+                                          Content="Delete extracted .bsp after map content extraction"
+                                          ToolTip="If the BSP pakfile was extracted successfully, remove the extracted maps/*.bsp file afterward. Disable this if you want to keep the BSP." />
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBlock Style="{StaticResource MutedText}"
+                                   Margin="0,12,0,0"
+                                   Text="BIN suportado: stream LZMA cujo payload e GMAD. BIN com payload nao-GMAD e listado como unsupported, sem interromper o lote." />
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,0">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Summary" />
+                        <TextBox x:Name="TextBox_UnpackSummary"
+                                 Margin="0,12,0,0"
+                                 IsReadOnly="True"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto"
+                                 MinHeight="120" />
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Found" />
+                            <TextBlock Grid.Row="0" Grid.Column="1" x:Name="TextBlock_UnpackFoundCount" Text="0" />
+                            <TextBlock Grid.Row="0" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="GMA" />
+                            <TextBlock Grid.Row="0" Grid.Column="3" x:Name="TextBlock_UnpackGmaCount" Text="0/0" />
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelText}" Text="BIN supported" />
+                            <TextBlock Grid.Row="1" Grid.Column="1" x:Name="TextBlock_UnpackBinSupportedCount" Text="0" />
+                            <TextBlock Grid.Row="1" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="BIN unsupported" />
+                            <TextBlock Grid.Row="1" Grid.Column="3" x:Name="TextBlock_UnpackBinUnsupportedCount" Text="0" />
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource LabelText}" Text="OK" />
+                            <TextBlock Grid.Row="2" Grid.Column="1" x:Name="TextBlock_UnpackOkCount" Text="0" />
+                            <TextBlock Grid.Row="2" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="Skipped" />
+                            <TextBlock Grid.Row="2" Grid.Column="3" x:Name="TextBlock_UnpackSkippedCount" Text="0" />
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource LabelText}" Text="Failed" />
+                            <TextBlock Grid.Row="3" Grid.Column="1" x:Name="TextBlock_UnpackFailedCount" Text="0" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource Card}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0">
+                            <TextBlock Style="{StaticResource SectionTitleText}" Text="Run" />
+                            <WrapPanel Margin="0,12,0,0">
+                                <Button x:Name="Button_UnpackScan"
+                                        Style="{StaticResource ButtonAccent}"
+                                        Click="Button_UnpackScan_Click"
+                                        Content="Scan"
+                                        Width="100"
+                                        Margin="0,0,8,8" />
+                                <Button x:Name="Button_UnpackRun"
+                                        Style="{StaticResource ButtonAccent}"
+                                        Click="Button_UnpackRun_Click"
+                                        Content="Extract"
+                                        Width="100"
+                                        Margin="0,0,8,8"
+                                        IsEnabled="False" />
+                                <Button x:Name="Button_UnpackCancel"
+                                        Style="{StaticResource ButtonDanger}"
+                                        Click="Button_UnpackCancel_Click"
+                                        Content="Cancel"
+                                        Width="100"
+                                        Margin="0,0,8,8"
+                                        IsEnabled="False" />
+                                <Button x:Name="Button_UnpackOpenRoot"
+                                        Click="Button_UnpackOpenRoot_Click"
+                                        Content="Open Root"
+                                        Width="100"
+                                        Margin="0,0,0,8"
+                                        IsEnabled="False" />
+                            </WrapPanel>
+                        </StackPanel>
+
+                        <ProgressBar x:Name="ProgressBar_Unpack"
+                                     Grid.Row="1"
+                                     Margin="0,12,0,0"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Value="0" />
+
+                        <StackPanel Grid.Row="2" Margin="0,12,0,0">
+                            <TextBlock Style="{StaticResource LabelText}" Text="Phase" />
+                            <TextBlock x:Name="TextBlock_UnpackPhase"
+                                       Style="{StaticResource StatusTextBlockStyle}"
+                                       Text="Idle" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="3" Margin="0,12,0,0">
+                            <TextBlock Style="{StaticResource LabelText}" Text="Current item" />
+                            <TextBlock x:Name="TextBlock_UnpackCurrent" Text="Idle" />
+                            <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Status" />
+                            <TextBlock x:Name="TextBlock_UnpackStatus" Text="Idle" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="4" Margin="0,12,0,0">
+                            <TextBlock Style="{StaticResource LabelText}" Text="Log" />
+                            <TextBox x:Name="TextBox_UnpackLog"
+                                     Margin="0,6,0,0"
+                                     IsReadOnly="True"
+                                     AcceptsReturn="True"
+                                     TextWrapping="NoWrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     FontFamily="Consolas" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+        </TabItem>
+
+        <TabItem Header="Optimize Maps">
+            <Grid Background="{DynamicResource AppBackground}" Margin="4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1*" />
+                    <ColumnDefinition Width="1.25*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,12">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Extracted Addon Folder" />
+                        <TextBlock Style="{StaticResource MutedText}"
+                                   Margin="0,8,0,0"
+                                   Text="Optimize Maps scans maps/*.bsp inside an already extracted addon folder, stages the internal PAKFILE, can optimize only the staged assets and, in the conservative EOF-only path, can rebuild the pak and reinject it into a copied BSP without touching the original addon." />
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="TextBox_MapScanRootPath"
+                                     TextChanged="TextBox_MapScanRootPath_TextChanged"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     TextWrapping="NoWrap" />
+                            <Button x:Name="Button_SelectMapScanRoot"
+                                    Click="Button_SelectMapScanRoot_Click"
+                                    Grid.Column="1"
+                                    Margin="8,0,0,0"
+                                    Style="{StaticResource ButtonAccent}"
+                                    Content="Select Root"
+                                    Width="110" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Current Scope" />
+                        <TextBlock Style="{StaticResource MutedText}" Margin="0,12,0,0" TextWrapping="Wrap">
+                            Current conservative scope: scan, staging, staged asset optimization and EOF-only pak rebuild + BSP reinjection into a new output folder.
+                        </TextBlock>
+                        <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Future reinjection gate" />
+                        <TextBlock Style="{StaticResource MutedText}" Margin="0,6,0,0" TextWrapping="Wrap">
+                            Reinjection only runs when the BSP stays readable as VBSP, the PAKFILE remains a valid ZIP, offsets stay in range and the layout is safe to rewrite.
+                        </TextBlock>
+                        <TextBlock Style="{StaticResource MutedText}" Margin="0,12,0,0" TextWrapping="Wrap">
+                            Conservative v1 target: only optimize content embedded in the BSP pak, prioritizing VTF. No geometry, lightmaps, visibility or structural lump changes.
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,0">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Technical Summary" />
+                        <TextBox x:Name="TextBox_MapScanSummary"
+                                 Margin="0,12,0,0"
+                                 IsReadOnly="True"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto"
+                                 MinHeight="160" />
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="BSP found" />
+                            <TextBlock Grid.Row="0" Grid.Column="1" x:Name="TextBlock_MapScanBspCount" Text="0" />
+                            <TextBlock Grid.Row="0" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="Valid pak ZIP" />
+                            <TextBlock Grid.Row="0" Grid.Column="3" x:Name="TextBlock_MapScanPakZipCount" Text="0" />
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelText}" Text="Staged BSP" />
+                            <TextBlock Grid.Row="1" Grid.Column="1" x:Name="TextBlock_MapScanStagedBspCount" Text="0" />
+                            <TextBlock Grid.Row="1" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="Staged files" />
+                            <TextBlock Grid.Row="1" Grid.Column="3" x:Name="TextBlock_MapScanStagedFileCount" Text="0" />
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource LabelText}" Text="Future candidate" />
+                            <TextBlock Grid.Row="2" Grid.Column="1" x:Name="TextBlock_MapScanCandidateCount" Text="0" />
+                            <TextBlock Grid.Row="2" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="Blocked" />
+                            <TextBlock Grid.Row="2" Grid.Column="3" x:Name="TextBlock_MapScanBlockedCount" Text="0" />
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource LabelText}" Text="Addon total" />
+                            <TextBlock Grid.Row="3" Grid.Column="1" x:Name="TextBlock_MapScanAddonSize" Text="0 B" />
+                            <TextBlock Grid.Row="3" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="PAK total" />
+                            <TextBlock Grid.Row="3" Grid.Column="3" x:Name="TextBlock_MapScanPakTotalSize" Text="0 B" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource Card}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0">
+                            <TextBlock Style="{StaticResource SectionTitleText}" Text="Run" />
+                            <WrapPanel Margin="0,12,0,0">
+                                <Button x:Name="Button_MapScanRun"
+                                        Style="{StaticResource ButtonAccent}"
+                                        Click="Button_MapScanRun_Click"
+                                        Content="Scan + Stage"
+                                        Width="110"
+                                        Margin="0,0,8,8" />
+                                <Button x:Name="Button_MapStageOptimize"
+                                        Style="{StaticResource ButtonAccent}"
+                                        Click="Button_MapStageOptimize_Click"
+                                        Content="Optimize Staging"
+                                        Width="130"
+                                        Margin="0,0,8,8"
+                                        IsEnabled="False" />
+                                <Button x:Name="Button_MapBuildRun"
+                                        Style="{StaticResource ButtonAccent}"
+                                        Click="Button_MapBuildRun_Click"
+                                        Content="Build + Inject"
+                                        Width="120"
+                                        Margin="0,0,8,8"
+                                        IsEnabled="False" />
+                                <Button x:Name="Button_MapScanCancel"
+                                        Style="{StaticResource ButtonDanger}"
+                                        Click="Button_MapScanCancel_Click"
+                                        Content="Cancel"
+                                        Width="100"
+                                        Margin="0,0,8,8"
+                                        IsEnabled="False" />
+                                <Button x:Name="Button_MapScanOpenRoot"
+                                        Click="Button_MapScanOpenRoot_Click"
+                                        Content="Open Root"
+                                        Width="100"
+                                        Margin="0,0,8,8"
+                                        IsEnabled="False" />
+                                <Button x:Name="Button_MapScanOpenWork"
+                                        Click="Button_MapScanOpenWork_Click"
+                                        Content="Open Work"
+                                        Width="100"
+                                        Margin="0,0,8,8"
+                                        IsEnabled="False" />
+                                <Button x:Name="Button_MapBuildOpenOutput"
+                                        Click="Button_MapBuildOpenOutput_Click"
+                                        Content="Open Output"
+                                        Width="110"
+                                        Margin="0,0,0,8"
+                                        IsEnabled="False" />
+                            </WrapPanel>
+                        </StackPanel>
+
+                        <ProgressBar x:Name="ProgressBar_MapScan"
+                                     Grid.Row="1"
+                                     Margin="0,12,0,0"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Value="0" />
+
+                        <StackPanel Grid.Row="2" Margin="0,12,0,0">
+                            <TextBlock Style="{StaticResource LabelText}" Text="Phase" />
+                            <TextBlock x:Name="TextBlock_MapScanPhase"
+                                       Style="{StaticResource StatusTextBlockStyle}"
+                                       Text="Idle" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="3" Margin="0,12,0,0">
+                            <TextBlock Style="{StaticResource LabelText}" Text="Current item" />
+                            <TextBlock x:Name="TextBlock_MapScanCurrent" Text="Idle" />
+                            <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Status" />
+                            <TextBlock x:Name="TextBlock_MapScanStatus" Text="Idle" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="4" Margin="0,12,0,0">
+                            <TextBlock Style="{StaticResource LabelText}" Text="Log" />
+                            <TextBox x:Name="TextBox_MapScanLog"
+                                     Margin="0,6,0,0"
+                                     IsReadOnly="True"
+                                     AcceptsReturn="True"
+                                     TextWrapping="NoWrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     FontFamily="Consolas" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+        </TabItem>
+
         <TabItem Header="Pipeline">
             <Grid Background="{DynamicResource AppBackground}" Margin="4">
                 <Grid.ColumnDefinitions>

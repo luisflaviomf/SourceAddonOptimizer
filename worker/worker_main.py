@@ -14,6 +14,9 @@ if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
 import batch_decompile_organize
+import batch_build_map_bsp
+import batch_scan_map_bsp
+import batch_unpack_addons
 import build_optimized_addon
 
 
@@ -487,6 +490,12 @@ def main(argv: list[str]) -> int:
     _ensure_crowbar_env()
     if argv and argv[0] == "preview":
         return _run_preview(argv[1:])
+    if argv and argv[0] == "unpack":
+        return batch_unpack_addons.main(argv[1:])
+    if argv and argv[0] == "mapscan":
+        return batch_scan_map_bsp.main(argv[1:])
+    if argv and argv[0] == "mapbuild":
+        return batch_build_map_bsp.main(argv[1:])
     return build_optimized_addon.main(argv)
 
 
