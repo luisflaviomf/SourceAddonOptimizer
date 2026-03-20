@@ -6,32 +6,35 @@
              StartupUri="MainWindow.xaml">
     <Application.Resources>
         <!-- Palette -->
-        <SolidColorBrush x:Key="AppBackground" Color="#121417" />
-        <SolidColorBrush x:Key="Surface1" Color="#1A1F24" />
-        <SolidColorBrush x:Key="Surface2" Color="#20262D" />
-        <SolidColorBrush x:Key="Surface3" Color="#262E37" />
-        <SolidColorBrush x:Key="Border" Color="#2F3A45" />
+        <SolidColorBrush x:Key="AppBackground" Color="#0D1115" />
+        <SolidColorBrush x:Key="Surface1" Color="#151B21" />
+        <SolidColorBrush x:Key="Surface2" Color="#1C232B" />
+        <SolidColorBrush x:Key="Surface3" Color="#252E38" />
+        <SolidColorBrush x:Key="SurfaceRaised" Color="#11171C" />
+        <SolidColorBrush x:Key="SurfaceAccent" Color="#0E1B2D" />
+        <SolidColorBrush x:Key="Border" Color="#303A44" />
+        <SolidColorBrush x:Key="BorderStrong" Color="#41505E" />
 
         <SolidColorBrush x:Key="TextPrimary" Color="#E6EDF3" />
         <SolidColorBrush x:Key="TextSecondary" Color="#A9B4C0" />
         <SolidColorBrush x:Key="TextMuted" Color="#7C8794" />
         <SolidColorBrush x:Key="TextDisabled" Color="#55606B" />
 
-        <SolidColorBrush x:Key="Accent" Color="#59C1A5" />
-        <SolidColorBrush x:Key="AccentHover" Color="#6ED6BA" />
-        <SolidColorBrush x:Key="AccentPressed" Color="#46A78F" />
-        <SolidColorBrush x:Key="AccentForeground" Color="#0B0F12" />
+        <SolidColorBrush x:Key="Accent" Color="#3B82F6" />
+        <SolidColorBrush x:Key="AccentHover" Color="#60A5FA" />
+        <SolidColorBrush x:Key="AccentPressed" Color="#2563EB" />
+        <SolidColorBrush x:Key="AccentForeground" Color="#07111F" />
 
         <SolidColorBrush x:Key="Success" Color="#2ECC71" />
         <SolidColorBrush x:Key="Warning" Color="#F4C542" />
         <SolidColorBrush x:Key="Danger" Color="#FF5C5C" />
         <SolidColorBrush x:Key="Info" Color="#4DA3FF" />
 
-        <SolidColorBrush x:Key="ProgressTrack" Color="#0E1114" />
-        <SolidColorBrush x:Key="ButtonDisabledBackground" Color="#161A1E" />
-        <SolidColorBrush x:Key="ButtonDisabledBorder" Color="#232A33" />
-        <SolidColorBrush x:Key="ButtonAccentDisabledBackground" Color="#2A3A37" />
-        <SolidColorBrush x:Key="ButtonAccentDisabledForeground" Color="#7FAFA3" />
+        <SolidColorBrush x:Key="ProgressTrack" Color="#0A0D10" />
+        <SolidColorBrush x:Key="ButtonDisabledBackground" Color="#14191E" />
+        <SolidColorBrush x:Key="ButtonDisabledBorder" Color="#242C34" />
+        <SolidColorBrush x:Key="ButtonAccentDisabledBackground" Color="#243349" />
+        <SolidColorBrush x:Key="ButtonAccentDisabledForeground" Color="#86A7D8" />
         <SolidColorBrush x:Key="DangerHover" Color="#FF5C5C" Opacity="0.9" />
         <SolidColorBrush x:Key="DangerPressed" Color="#FF5C5C" Opacity="0.8" />
 
@@ -45,7 +48,7 @@
         <SolidColorBrush x:Key="{x:Static SystemColors.ControlDarkBrushKey}" Color="#2F3A45" />
         <SolidColorBrush x:Key="{x:Static SystemColors.ControlDarkDarkBrushKey}" Color="#2F3A45" />
         <SolidColorBrush x:Key="{x:Static SystemColors.GrayTextBrushKey}" Color="#55606B" />
-        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#59C1A5" />
+        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#60A5FA" />
         <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#0B0F12" />
         <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#262E37" />
         <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#E6EDF3" />
@@ -54,14 +57,15 @@
 
         <!-- Radii -->
         <CornerRadius x:Key="CornerRadiusControl">8</CornerRadius>
-        <CornerRadius x:Key="CornerRadiusCard">10</CornerRadius>
-        <CornerRadius x:Key="CornerRadiusProgress">6</CornerRadius>
+        <CornerRadius x:Key="CornerRadiusCard">12</CornerRadius>
+        <CornerRadius x:Key="CornerRadiusProgress">999</CornerRadius>
 
         <!-- Spacing -->
         <Thickness x:Key="ControlPadding">10,8</Thickness>
-        <Thickness x:Key="CardPadding">16</Thickness>
+        <Thickness x:Key="CardPadding">18</Thickness>
 
         <conv:TextContainsConverter x:Key="TextContainsConverter" />
+        <conv:OptimizerRatioConverter x:Key="OptimizerRatioConverter" />
 
         <!-- Base typography -->
         <Style TargetType="{x:Type Window}">
@@ -82,19 +86,39 @@
         </Style>
 
         <Style x:Key="SectionTitleText" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">
-            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontSize" Value="16" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         </Style>
 
+        <Style x:Key="CardEyebrowText" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource Accent}" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+        </Style>
+
         <Style x:Key="LabelText" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         </Style>
 
         <Style x:Key="MutedText" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="FontSize" Value="11" />
             <Setter Property="Foreground" Value="{DynamicResource TextMuted}" />
+        </Style>
+
+        <Style x:Key="HintText" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+
+        <Style x:Key="ValueText" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         </Style>
 
         <Style x:Key="StatusTextBlockStyle" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">
@@ -119,6 +143,23 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="{DynamicResource CornerRadiusCard}" />
             <Setter Property="Padding" Value="{DynamicResource CardPadding}" />
+        </Style>
+
+        <Style x:Key="CardInnerPanel" TargetType="{x:Type Border}">
+            <Setter Property="Background" Value="{DynamicResource Surface2}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource Border}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="{DynamicResource CornerRadiusControl}" />
+            <Setter Property="Padding" Value="14" />
+        </Style>
+
+        <Style x:Key="ActionBarCard" TargetType="{x:Type Border}" BasedOn="{StaticResource CardInnerPanel}">
+            <Setter Property="Background" Value="{DynamicResource SurfaceRaised}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderStrong}" />
+        </Style>
+
+        <Style x:Key="CardHeaderTitle" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource SectionTitleText}">
+            <Setter Property="Margin" Value="0,0,0,4" />
         </Style>
 
         <!-- Tabs -->
@@ -352,6 +393,31 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <Style x:Key="ReportTextBox" TargetType="{x:Type TextBox}" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="Background" Value="{DynamicResource SurfaceRaised}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource Border}" />
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="AcceptsReturn" Value="True" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+            <Setter Property="Padding" Value="12,10" />
+            <Setter Property="MinHeight" Value="112" />
+        </Style>
+
+        <Style x:Key="LogTextBox" TargetType="{x:Type TextBox}" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="Background" Value="{DynamicResource SurfaceRaised}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderStrong}" />
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="AcceptsReturn" Value="True" />
+            <Setter Property="TextWrapping" Value="NoWrap" />
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+            <Setter Property="HorizontalScrollBarVisibility" Value="Auto" />
+            <Setter Property="FontFamily" Value="Consolas" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Padding" Value="12,10" />
         </Style>
 
         <Style TargetType="{x:Type ComboBox}">

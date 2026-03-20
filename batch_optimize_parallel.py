@@ -51,6 +51,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--ratio", type=float, default=0.75, help="Decimate ratio (1.0 = no decimate)")
     ap.add_argument("--merge", type=float, default=0.0001, help="Merge by distance")
     ap.add_argument("--autosmooth", type=float, default=45.0, help="Auto smooth angle in degrees")
+    ap.add_argument("--use-planar", action="store_true", help="Enable planar decimate before collapse decimate.")
+    ap.add_argument("--planar-angle", type=float, default=2.0, help="Planar decimate angle in degrees.")
     ap.add_argument("--format", type=str, default="smd", choices=["smd", "dmx"], help="Export format")
     ap.add_argument(
         "--fix-physics",
@@ -62,6 +64,18 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--include-opt", action="store_true", help="Also process *_OPT.qc files.")
     ap.add_argument("--jobs", type=int, default=0, help="Parallel Blender jobs (0 = auto).")
     ap.add_argument("--resume", action="store_true", help="Skip QCs already optimized.")
+    ap.add_argument(
+        "--optimize-script",
+        default=None,
+        help="Optional optimize wrapper script. Defaults to batch_optimize_qc.py.",
+    )
+    ap.add_argument(
+        "--optimize-extra-arg",
+        dest="optimize_extra_args",
+        action="append",
+        default=[],
+        help="Extra argument forwarded to the optimize wrapper script. Repeat for multiple args.",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -79,7 +93,7 @@ def main(argv: list[str]) -> int:
         print(f"[ERROR] Blender not found: {blender}", flush=True)
         return 2
 
-    optimize_script = Path(__file__).resolve().parent / "batch_optimize_qc.py"
+    optimize_script = Path(args.optimize_script).expanduser().resolve() if args.optimize_script else (Path(__file__).resolve().parent / "batch_optimize_qc.py")
     if not optimize_script.exists():
         print(f"[ERROR] Missing script: {optimize_script}", flush=True)
         return 2
@@ -131,10 +145,12 @@ def main(argv: list[str]) -> int:
             str(args.merge),
             "--autosmooth",
             str(args.autosmooth),
+            *(["--use-planar", "--planar-angle", str(args.planar_angle)] if args.use_planar else []),
             "--format",
             str(args.format),
             "--fix-physics",
             str(args.fix_physics),
+            *list(args.optimize_extra_args or []),
         ]
         if args.include_opt:
             cmd.append("--include-opt")

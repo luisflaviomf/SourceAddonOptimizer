@@ -51,6 +51,13 @@ namespace GmodAddonCompressor.Systems.Maps
         internal IReadOnlyList<string> ProcessedExtensions { get; init; } = Array.Empty<string>();
         internal IReadOnlyList<string> InventoriedOnlyExtensions { get; init; } = Array.Empty<string>();
         internal int StageRootsVisited { get; init; }
+        internal int SafeVtfCount { get; init; }
+        internal int SkippedSpecialVtfCount { get; init; }
+        internal long SkippedSpecialVtfBytes { get; init; }
+        internal IReadOnlyList<MapVtfSkipReasonSummary> SkippedSpecialVtfReasons { get; init; } = Array.Empty<MapVtfSkipReasonSummary>();
+        internal int OptimizedSpecialVtfCount { get; init; }
+        internal long OptimizedSpecialVtfBeforeBytes { get; init; }
+        internal long OptimizedSpecialVtfAfterBytes { get; init; }
     }
 
     internal static class MapStageOptimizationService
@@ -70,15 +77,69 @@ namespace GmodAddonCompressor.Systems.Maps
             options.Log?.Invoke($"[MAP-OPT] Stage roots: {stageRoots.Length}");
 
             var before = await DirectoryExtensionInventoryScanner.ScanAsync(stageRoots, default);
+
+            MapVtfSafetyReport? vtfSafety = null;
+            MapSpecialVtfOptimizationSummary specialVtfOptimization = new();
+            if (options.IncludeVtf)
+            {
+                vtfSafety = MapVtfSafetyClassifier.Analyze(stageRoots);
+                if (vtfSafety.SkippedVtfCount > 0)
+                {
+                    string topReasons = string.Join(
+                        ", ",
+                        vtfSafety.ReasonSummaries
+                            .Take(4)
+                            .Select(reason => $"{reason.Reason}={reason.FileCount}"));
+                    options.Log?.Invoke(
+                        $"[MAP-OPT] Preserving {vtfSafety.SkippedVtfCount} special VTF(s) unchanged " +
+                        $"({FormatBytes(vtfSafety.SkippedVtfBytes)}). Reasons: {topReasons}");
+                }
+                else
+                {
+                    options.Log?.Invoke("[MAP-OPT] No special staged VTFs needed preservation.");
+                }
+
+                specialVtfOptimization = await new MapSpecialVtfOptimizer()
+                    .OptimizeSkyboxAsync(vtfSafety.SkippedFiles, options.WorkDir, options.Log, options.Progress);
+
+                if (specialVtfOptimization.OptimizedCount > 0)
+                {
+                    options.Log?.Invoke(
+                        $"[MAP-OPT] Optimized {specialVtfOptimization.OptimizedCount} special skybox VTF(s): " +
+                        $"{FormatBytes(specialVtfOptimization.BeforeBytes)} -> {FormatBytes(specialVtfOptimization.AfterBytes)}");
+                }
+            }
+
             var enabledExtensions = BuildEnabledExtensions(options);
             var processedExtensions = before.Entries
-                .Where(entry => enabledExtensions.Contains(entry.Extension))
+                .Where(entry =>
+                {
+                    if (!enabledExtensions.Contains(entry.Extension))
+                        return false;
+
+                    if (string.Equals(entry.Extension, ".vtf", StringComparison.OrdinalIgnoreCase) &&
+                        vtfSafety != null &&
+                        vtfSafety.SafeVtfCount == 0)
+                    {
+                        return false;
+                    }
+
+                    return true;
+                })
                 .Select(entry => entry.Extension)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(ext => ext, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             var inventoriedOnlyExtensions = before.Entries
-                .Where(entry => !enabledExtensions.Contains(entry.Extension))
+                .Where(entry =>
+                {
+                    if (!enabledExtensions.Contains(entry.Extension))
+                        return true;
+
+                    return string.Equals(entry.Extension, ".vtf", StringComparison.OrdinalIgnoreCase) &&
+                        vtfSafety != null &&
+                        vtfSafety.SafeVtfCount == 0;
+                })
                 .Select(entry => entry.Extension)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(ext => ext, StringComparer.OrdinalIgnoreCase)
@@ -90,8 +151,7 @@ namespace GmodAddonCompressor.Systems.Maps
             int visitedRoots = 0;
             foreach (string stageRoot in stageRoots)
             {
-                var stageInventory = await DirectoryExtensionInventoryScanner.ScanAsync(new[] { stageRoot }, default);
-                bool hasTargets = stageInventory.Entries.Any(entry => enabledExtensions.Contains(entry.Extension));
+                bool hasTargets = StageHasEnabledTargets(stageRoot, enabledExtensions, vtfSafety);
                 if (!hasTargets)
                 {
                     options.Log?.Invoke($"[MAP-OPT] Skipping {stageRoot}: no supported staged assets.");
@@ -100,7 +160,7 @@ namespace GmodAddonCompressor.Systems.Maps
 
                 visitedRoots++;
                 options.Log?.Invoke($"[MAP-OPT] Compressing staged assets in {stageRoot}");
-                await RunCompressStageAsync(stageRoot, options);
+                await RunCompressStageAsync(stageRoot, options, vtfSafety);
             }
 
             var after = await DirectoryExtensionInventoryScanner.ScanAsync(stageRoots, default);
@@ -110,7 +170,9 @@ namespace GmodAddonCompressor.Systems.Maps
                 : options.SummaryPath;
 
             Directory.CreateDirectory(Path.GetDirectoryName(summaryPath) ?? options.WorkDir);
-            WriteSummary(summaryPath, options, before, after, processedExtensions, inventoriedOnlyExtensions, visitedRoots);
+            WriteSummary(summaryPath, options, before, after, processedExtensions, inventoriedOnlyExtensions, visitedRoots, vtfSafety, specialVtfOptimization);
+
+            var remainingSkippedFiles = BuildRemainingSkippedFiles(vtfSafety, specialVtfOptimization);
 
             return new MapStageOptimizationResult
             {
@@ -119,13 +181,32 @@ namespace GmodAddonCompressor.Systems.Maps
                 After = after,
                 ProcessedExtensions = processedExtensions,
                 InventoriedOnlyExtensions = inventoriedOnlyExtensions,
-                StageRootsVisited = visitedRoots
+                StageRootsVisited = visitedRoots,
+                SafeVtfCount = vtfSafety?.SafeVtfCount ?? 0,
+                SkippedSpecialVtfCount = remainingSkippedFiles.Count,
+                SkippedSpecialVtfBytes = remainingSkippedFiles.Sum(file => file.TotalBytes),
+                SkippedSpecialVtfReasons = BuildReasonSummaries(remainingSkippedFiles),
+                OptimizedSpecialVtfCount = specialVtfOptimization.OptimizedCount,
+                OptimizedSpecialVtfBeforeBytes = specialVtfOptimization.BeforeBytes,
+                OptimizedSpecialVtfAfterBytes = specialVtfOptimization.AfterBytes
             };
         }
 
-        private static async Task RunCompressStageAsync(string stageRoot, MapStageOptimizationOptions options)
+        private static async Task RunCompressStageAsync(string stageRoot, MapStageOptimizationOptions options, MapVtfSafetyReport? vtfSafety)
         {
-            var compressSystem = new CompressAddonSystem(stageRoot);
+            Func<FileInfo, bool>? fileFilter = null;
+            if (vtfSafety != null)
+            {
+                fileFilter = file =>
+                {
+                    if (!string.Equals(file.Extension, ".vtf", StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    return vtfSafety.IsSafeVtf(file.FullName);
+                };
+            }
+
+            var compressSystem = new CompressAddonSystem(stageRoot, fileFilter);
 
             if (options.IncludeVtf) compressSystem.IncludeVTF();
             if (options.IncludeWav) compressSystem.IncludeWAV();
@@ -166,6 +247,27 @@ namespace GmodAddonCompressor.Systems.Maps
             return extensions;
         }
 
+        private static bool StageHasEnabledTargets(string stageRoot, HashSet<string> enabledExtensions, MapVtfSafetyReport? vtfSafety)
+        {
+            foreach (string filePath in Directory.EnumerateFiles(stageRoot, "*", SearchOption.AllDirectories))
+            {
+                string extension = Path.GetExtension(filePath);
+                if (!enabledExtensions.Contains(extension))
+                    continue;
+
+                if (string.Equals(extension, ".vtf", StringComparison.OrdinalIgnoreCase) &&
+                    vtfSafety != null &&
+                    !vtfSafety.IsSafeVtf(filePath))
+                {
+                    continue;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
         private static void ConfigureContexts(MapStageOptimizationOptions options)
         {
             AudioContext.WavSampleRate = options.WavSampleRate;
@@ -197,7 +299,9 @@ namespace GmodAddonCompressor.Systems.Maps
             DirectoryExtensionInventorySnapshot after,
             IReadOnlyList<string> processedExtensions,
             IReadOnlyList<string> inventoriedOnlyExtensions,
-            int visitedRoots)
+            int visitedRoots,
+            MapVtfSafetyReport? vtfSafety,
+            MapSpecialVtfOptimizationSummary specialVtfOptimization)
         {
             var beforeByExtension = before.Entries.ToDictionary(entry => entry.Extension, StringComparer.OrdinalIgnoreCase);
             var afterByExtension = after.Entries.ToDictionary(entry => entry.Extension, StringComparer.OrdinalIgnoreCase);
@@ -244,6 +348,11 @@ namespace GmodAddonCompressor.Systems.Maps
                 ? Math.Round(((double)deltaTotalBytes / before.TotalBytes) * 100.0, 2)
                 : null;
 
+            var remainingSkippedFiles = BuildRemainingSkippedFiles(vtfSafety, specialVtfOptimization);
+            long skippedSpecialBytes = remainingSkippedFiles.Sum(file => file.TotalBytes);
+            int skippedSpecialCount = remainingSkippedFiles.Count;
+            var remainingReasonSummaries = BuildReasonSummaries(remainingSkippedFiles);
+
             var summary = new
             {
                 summary_version = 1,
@@ -265,6 +374,23 @@ namespace GmodAddonCompressor.Systems.Maps
                     delta_bytes = deltaTotalBytes,
                     delta_percent = deltaTotalPercent
                 },
+                vtf_safety = new
+                {
+                    safe_vtf_count = vtfSafety?.SafeVtfCount ?? 0,
+                    optimized_special_vtf_count = specialVtfOptimization.OptimizedCount,
+                    optimized_special_vtf_before_bytes = specialVtfOptimization.BeforeBytes,
+                    optimized_special_vtf_after_bytes = specialVtfOptimization.AfterBytes,
+                    skipped_special_vtf_count = skippedSpecialCount,
+                    skipped_special_vtf_bytes = skippedSpecialBytes,
+                    skipped_special_vtf_reasons = remainingReasonSummaries
+                        .Select(reason => new
+                        {
+                            reason = reason.Reason,
+                            file_count = reason.FileCount,
+                            total_bytes = reason.TotalBytes
+                        })
+                        .ToArray()
+                },
                 entries = entryDiffs
             };
 
@@ -274,6 +400,51 @@ namespace GmodAddonCompressor.Systems.Maps
             });
 
             File.WriteAllText(summaryPath, json);
+        }
+
+        private static IReadOnlyList<MapVtfSkippedFile> BuildRemainingSkippedFiles(
+            MapVtfSafetyReport? vtfSafety,
+            MapSpecialVtfOptimizationSummary specialVtfOptimization)
+        {
+            if (vtfSafety == null || vtfSafety.SkippedFiles.Count == 0)
+                return Array.Empty<MapVtfSkippedFile>();
+
+            if (specialVtfOptimization.OptimizedPaths.Count == 0)
+                return vtfSafety.SkippedFiles.ToArray();
+
+            var optimizedPaths = new HashSet<string>(specialVtfOptimization.OptimizedPaths, StringComparer.OrdinalIgnoreCase);
+            return vtfSafety.SkippedFiles
+                .Where(file => !optimizedPaths.Contains(file.FullPath))
+                .ToArray();
+        }
+
+        private static IReadOnlyList<MapVtfSkipReasonSummary> BuildReasonSummaries(IReadOnlyList<MapVtfSkippedFile> skippedFiles)
+        {
+            return skippedFiles
+                .GroupBy(file => file.PrimaryReason, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new MapVtfSkipReasonSummary(
+                    group.Key,
+                    group.Count(),
+                    group.Sum(file => file.TotalBytes)))
+                .Where(item => item.FileCount > 0 || item.TotalBytes > 0)
+                .OrderByDescending(item => item.TotalBytes)
+                .ThenBy(item => item.Reason, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            double value = bytes;
+            string[] units = { "B", "KB", "MB", "GB", "TB" };
+            int unitIndex = 0;
+
+            while (value >= 1024 && unitIndex < units.Length - 1)
+            {
+                value /= 1024;
+                unitIndex++;
+            }
+
+            return $"{value:0.##} {units[unitIndex]}";
         }
     }
 }

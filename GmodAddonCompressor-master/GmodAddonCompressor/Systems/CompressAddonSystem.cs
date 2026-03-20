@@ -1,6 +1,7 @@
 ﻿using GmodAddonCompressor.CustomExtensions;
 using GmodAddonCompressor.DataContexts;
 using GmodAddonCompressor.Interfaces;
+using GmodAddonCompressor.Models;
 using GmodAddonCompressor.Objects;
 using Microsoft.Extensions.Logging;
 using System;
@@ -26,10 +27,14 @@ namespace GmodAddonCompressor.Systems
         private string _directoryPath;
         private Dictionary<string, ICompress> _compressServices = new Dictionary<string, ICompress>();
         private readonly ILogger _logger = LogSystem.CreateLogger<CompressAddonSystem>();
+        private readonly Func<FileInfo, bool>? _fileFilter;
+        private readonly CompressPipelineOptions _pipelineOptions;
 
-        public CompressAddonSystem(string directoryPath)
+        public CompressAddonSystem(string directoryPath, Func<FileInfo, bool>? fileFilter = null, CompressPipelineOptions? pipelineOptions = null)
         {
             _directoryPath = directoryPath;
+            _fileFilter = fileFilter;
+            _pipelineOptions = pipelineOptions ?? new CompressPipelineOptions();
             CompressDirectoryContext.DirectoryPath = _directoryPath;
         }
 
@@ -65,7 +70,10 @@ namespace GmodAddonCompressor.Systems
         {
             string extension = ".vtf";
             AddValidFileExtensions(extension);
-            _compressServices.Add(extension, new VTFEdit());
+            if (_pipelineOptions.ShouldUseMagickForCommonVtf)
+                _compressServices.Add(extension, new MagickVtfEdit(_directoryPath));
+            else
+                _compressServices.Add(extension, new VTFEdit());
         }
 
         internal void IncludeJPG()
@@ -83,7 +91,10 @@ namespace GmodAddonCompressor.Systems
         {
             string extension = ".png";
             AddValidFileExtensions(extension);
-            _compressServices.Add(extension, new PNGEdit());
+            if (_pipelineOptions.ShouldUseMagickForAggressivePng)
+                _compressServices.Add(extension, new MagickPngEdit());
+            else
+                _compressServices.Add(extension, new PNGEdit());
         }
 
         internal void StartCompress()
@@ -91,6 +102,7 @@ namespace GmodAddonCompressor.Systems
             _hasStarted = true;
 
             ParseDirectory(_directoryPath);
+            PrepareServices();
 
             _compressThread = new Thread(CompressThread);
             _compressThread.IsBackground = true;
@@ -117,6 +129,24 @@ namespace GmodAddonCompressor.Systems
             if (_compressServices.TryGetValue(extension, out var service))
                 return service;
             return null;
+        }
+
+        private void PrepareServices()
+        {
+            foreach (ICompress service in _compressServices.Values)
+            {
+                if (service is ICompressPreparation preparation)
+                {
+                    try
+                    {
+                        preparation.Prepare();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex.ToString());
+                    }
+                }
+            }
         }
 
         private void CompressThread()
@@ -163,8 +193,11 @@ namespace GmodAddonCompressor.Systems
 
             foreach (FileInfo file in files)
             {
-                if (_validFileExtensions.Contains(file.Extension))
+                if (_validFileExtensions.Contains(file.Extension) &&
+                    (_fileFilter == null || _fileFilter(file)))
+                {
                     _registredFiles.Enqueue(file);
+                }
             }
 
             foreach (DirectoryInfo directory in currentDirectory.GetDirectories())

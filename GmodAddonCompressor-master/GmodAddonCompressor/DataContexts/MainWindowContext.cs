@@ -1,11 +1,21 @@
 ﻿using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows;
 
 namespace GmodAddonCompressor.DataContexts
 {
     internal class MainWindowContext : INotifyPropertyChanged
     {
+        private static double ClampOptimizerRatio(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value))
+                return 0.50;
+
+            return System.Math.Clamp(value, 0.01, 1.00);
+        }
+
         private string _addonDirectoryPath = string.Empty;
+        private string _addonWorkshopWarningText = string.Empty;
         private string _progressBarText = string.Empty;
         private int _progressBarMinValue = 0;
         private int _progressBarMaxValue = 100;
@@ -34,6 +44,11 @@ namespace GmodAddonCompressor.DataContexts
         private double _optimizerRatio = 0.50;
         private double _optimizerMerge = 0.0;
         private double _optimizerAutoSmooth = 45.0;
+        private bool _optimizerUsePlanar = false;
+        private double _optimizerPlanarAngle = 2.0;
+        private bool _optimizerUseExperimentalGroundPolicy = false;
+        private bool _optimizerUseExperimentalRoundPartsPolicy = false;
+        private bool _optimizerUseExperimentalSteerTurnBasisFix = false;
         private int _optimizerFormatIndex = 0;
         private int _optimizerJobs = 0;
         private int _optimizerDecompileJobs = 1;
@@ -44,6 +59,7 @@ namespace GmodAddonCompressor.DataContexts
         private bool _optimizerOverwriteWork = false;
         private bool _optimizerRestoreSkins = true;
         private bool _optimizerCompileVerbose = false;
+        private bool _optimizerCleanupWorkModelArtifacts = true;
         private bool _compressVTF = true;
         private bool _compressWAV = true;
         private bool _compressMP3 = true;
@@ -57,6 +73,9 @@ namespace GmodAddonCompressor.DataContexts
         private bool _reduceExactlyToResolution = true;
         private bool _keepImageAspectRatio = true;
         private bool _imageMagickVTFCompress = false;
+        private int _compressModeIndex = 0;
+        private bool _compressMagickUseCommonVtf = true;
+        private bool _compressMagickUseAggressivePng = false;
         private uint _imageSkipWidth = 0;
         private uint _imageSkipHeight = 0;
         private int _wavRate = 22050;
@@ -145,6 +164,11 @@ namespace GmodAddonCompressor.DataContexts
             "smd",
             "dmx"
         };
+        private string[] _compressModeList = new string[]
+        {
+            "Padrao",
+            "Magick"
+        };
 
         public uint ImageSkipHeight
         {
@@ -163,6 +187,82 @@ namespace GmodAddonCompressor.DataContexts
             {
                 _imageSkipWidth = value;
                 OnPropertyChanged();
+            }
+        }
+
+        public string[] CompressModeList
+        {
+            get { return _compressModeList; }
+            set
+            {
+                _compressModeList = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public int CompressModeIndex
+        {
+            get { return _compressModeIndex; }
+            set
+            {
+                _compressModeIndex = value;
+                OnPropertyChanged();
+                NotifyCompressModePropertiesChanged();
+            }
+        }
+
+        public bool CompressModeIsStandard => _compressModeIndex == 0;
+        public bool CompressModeIsMagick => _compressModeIndex == 1;
+        public Visibility CompressStandardOptionsVisibility => CompressModeIsStandard ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility CompressMagickOptionsVisibility => CompressModeIsMagick ? Visibility.Visible : Visibility.Collapsed;
+
+        public bool CompressMagickUseCommonVtf
+        {
+            get { return _compressMagickUseCommonVtf; }
+            set
+            {
+                _compressMagickUseCommonVtf = value;
+                OnPropertyChanged();
+                NotifyCompressModePropertiesChanged();
+            }
+        }
+
+        public bool CompressMagickUseAggressivePng
+        {
+            get { return _compressMagickUseAggressivePng; }
+            set
+            {
+                _compressMagickUseAggressivePng = value;
+                OnPropertyChanged();
+                NotifyCompressModePropertiesChanged();
+            }
+        }
+
+        public string CompressModeDescriptionText =>
+            CompressModeIsMagick
+                ? "Magick mode adds a second path without replacing the current compressor. Common VTF goes through Magick first and special/problematic VTF falls back to the current standard pipeline."
+                : "Standard mode keeps the current Compress behavior for every selected type. The existing pipeline stays the default.";
+
+        public string CompressModeRoutingText
+        {
+            get
+            {
+                if (CompressModeIsStandard)
+                {
+                    string legacy = ImageMagickVTFCompress
+                        ? " Legacy standard VTF demo is enabled for Standard mode."
+                        : string.Empty;
+                    return "Selected types use the current compressor. VTF, PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on the existing path." + legacy;
+                }
+
+                string vtfText = CompressMagickUseCommonVtf
+                    ? "Common VTF: Magick path first, with automatic fallback to Standard for special/problematic VTF or when Magick cannot improve the file."
+                    : "VTF: Standard path only.";
+                string pngText = CompressMagickUseAggressivePng
+                    ? "PNG: Magick q256 aggressive path first, with Standard fallback on failure or no gain."
+                    : "PNG: Standard path only.";
+
+                return $"{vtfText} {pngText} JPG/JPEG, WAV, MP3, OGG and LUA always stay on the Standard path. The legacy VTF demo checkbox is ignored while Magick mode is selected.";
             }
         }
 
@@ -293,6 +393,7 @@ namespace GmodAddonCompressor.DataContexts
             {
                 _imageMagickVTFCompress = value;
                 OnPropertyChanged();
+                NotifyCompressModePropertiesChanged();
             }
         }
 
@@ -394,6 +495,7 @@ namespace GmodAddonCompressor.DataContexts
             {
                 _compressOGG = value;
                 OnPropertyChanged();
+                NotifyCompressAudioProfilePropertiesChanged();
             }
         }
 
@@ -404,6 +506,7 @@ namespace GmodAddonCompressor.DataContexts
             {
                 _compressMP3 = value;
                 OnPropertyChanged();
+                NotifyCompressAudioProfilePropertiesChanged();
             }
         }
 
@@ -414,6 +517,7 @@ namespace GmodAddonCompressor.DataContexts
             {
                 _compressWAV = value;
                 OnPropertyChanged();
+                NotifyCompressAudioProfilePropertiesChanged();
             }
         }
 
@@ -520,6 +624,64 @@ namespace GmodAddonCompressor.DataContexts
                 OnPropertyChanged();
             }
         }
+
+        public string AddonWorkshopWarningText
+        {
+            get { return _addonWorkshopWarningText; }
+            set
+            {
+                _addonWorkshopWarningText = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(AddonWorkshopWarningVisibility));
+                OnPropertyChanged(nameof(AddonWorkshopWarningCount));
+                OnPropertyChanged(nameof(AddonWorkshopWarningHeaderText));
+            }
+        }
+
+        public Visibility AddonWorkshopWarningVisibility =>
+            string.IsNullOrWhiteSpace(_addonWorkshopWarningText) ? Visibility.Collapsed : Visibility.Visible;
+
+        public int AddonWorkshopWarningCount
+        {
+            get
+            {
+                if (string.IsNullOrWhiteSpace(_addonWorkshopWarningText))
+                    return 0;
+
+                int count = 0;
+                var lines = _addonWorkshopWarningText.Split(new[] { "\r\n", "\n" }, System.StringSplitOptions.None);
+
+                foreach (string line in lines)
+                {
+                    string trimmed = line.Trim();
+                    if (trimmed.StartsWith("- "))
+                    {
+                        count++;
+                        continue;
+                    }
+
+                    if (!trimmed.StartsWith("+ "))
+                        continue;
+
+                    var hiddenPrefix = trimmed.Substring(2).Split(' ', 2, System.StringSplitOptions.RemoveEmptyEntries);
+                    if (hiddenPrefix.Length == 0)
+                        continue;
+
+                    if (int.TryParse(hiddenPrefix[0], out int hiddenMatches))
+                        count += hiddenMatches;
+                }
+
+                return count > 0 ? count : 1;
+            }
+        }
+
+        public string AddonWorkshopWarningHeaderText => $"Workshop warning ({AddonWorkshopWarningCount})";
+
+        public Visibility CompressWavProfileVisibility => _compressWAV ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility CompressMp3ProfileVisibility => _compressMP3 ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility CompressOggProfileVisibility => _compressOGG ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility CompressAnyAudioProfileVisibility => (_compressWAV || _compressMP3 || _compressOGG) ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility CompressNoAudioProfileVisibility => (_compressWAV || _compressMP3 || _compressOGG) ? Visibility.Collapsed : Visibility.Visible;
 
         public int ProgressBarMinValue
         {
@@ -637,7 +799,7 @@ namespace GmodAddonCompressor.DataContexts
             get { return _optimizerRatio; }
             set
             {
-                _optimizerRatio = value;
+                _optimizerRatio = ClampOptimizerRatio(value);
                 OnPropertyChanged();
             }
         }
@@ -658,6 +820,56 @@ namespace GmodAddonCompressor.DataContexts
             set
             {
                 _optimizerAutoSmooth = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public bool OptimizerUsePlanar
+        {
+            get { return _optimizerUsePlanar; }
+            set
+            {
+                _optimizerUsePlanar = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public double OptimizerPlanarAngle
+        {
+            get { return _optimizerPlanarAngle; }
+            set
+            {
+                _optimizerPlanarAngle = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public bool OptimizerUseExperimentalGroundPolicy
+        {
+            get { return _optimizerUseExperimentalGroundPolicy; }
+            set
+            {
+                _optimizerUseExperimentalGroundPolicy = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public bool OptimizerUseExperimentalRoundPartsPolicy
+        {
+            get { return _optimizerUseExperimentalRoundPartsPolicy; }
+            set
+            {
+                _optimizerUseExperimentalRoundPartsPolicy = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public bool OptimizerUseExperimentalSteerTurnBasisFix
+        {
+            get { return _optimizerUseExperimentalSteerTurnBasisFix; }
+            set
+            {
+                _optimizerUseExperimentalSteerTurnBasisFix = value;
                 OnPropertyChanged();
             }
         }
@@ -768,6 +980,16 @@ namespace GmodAddonCompressor.DataContexts
             set
             {
                 _optimizerCompileVerbose = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public bool OptimizerCleanupWorkModelArtifacts
+        {
+            get { return _optimizerCleanupWorkModelArtifacts; }
+            set
+            {
+                _optimizerCleanupWorkModelArtifacts = value;
                 OnPropertyChanged();
             }
         }
@@ -903,6 +1125,26 @@ namespace GmodAddonCompressor.DataContexts
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
+
+        private void NotifyCompressModePropertiesChanged()
+        {
+            OnPropertyChanged(nameof(CompressModeIsStandard));
+            OnPropertyChanged(nameof(CompressModeIsMagick));
+            OnPropertyChanged(nameof(CompressStandardOptionsVisibility));
+            OnPropertyChanged(nameof(CompressMagickOptionsVisibility));
+            OnPropertyChanged(nameof(CompressModeDescriptionText));
+            OnPropertyChanged(nameof(CompressModeRoutingText));
+        }
+
+        private void NotifyCompressAudioProfilePropertiesChanged()
+        {
+            OnPropertyChanged(nameof(CompressWavProfileVisibility));
+            OnPropertyChanged(nameof(CompressMp3ProfileVisibility));
+            OnPropertyChanged(nameof(CompressOggProfileVisibility));
+            OnPropertyChanged(nameof(CompressAnyAudioProfileVisibility));
+            OnPropertyChanged(nameof(CompressNoAudioProfileVisibility));
+        }
+
         public void OnPropertyChanged([CallerMemberName] string? propertyName = null)
         {
             if (PropertyChanged != null && propertyName != null)

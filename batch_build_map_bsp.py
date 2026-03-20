@@ -152,6 +152,26 @@ def _safe_arcname(stage_root: Path, file_path: Path) -> str:
     return rel
 
 
+def _build_source_compatible_zipinfo(stage_root: Path, file_path: Path) -> zipfile.ZipInfo:
+    arcname = _safe_arcname(stage_root, file_path)
+    timestamp = datetime.fromtimestamp(file_path.stat().st_mtime)
+    dos_time = (
+        max(1980, min(timestamp.year, 2107)),
+        timestamp.month,
+        timestamp.day,
+        timestamp.hour,
+        timestamp.minute,
+        timestamp.second,
+    )
+
+    info = zipfile.ZipInfo(arcname, date_time=dos_time)
+    info.compress_type = zipfile.ZIP_STORED
+    info.create_version = 10
+    info.extract_version = 10
+    info.flag_bits = 0
+    return info
+
+
 def _build_rebuilt_zip(stage_dir: Path, destination_zip: Path, cancel_file: Path | None) -> tuple[int, int]:
     if not stage_dir.exists() or not stage_dir.is_dir():
         raise MapBuildError(f"Staging directory not found: {stage_dir}")
@@ -164,10 +184,11 @@ def _build_rebuilt_zip(stage_dir: Path, destination_zip: Path, cancel_file: Path
     if destination_zip.exists():
         destination_zip.unlink()
 
-    with zipfile.ZipFile(destination_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    with zipfile.ZipFile(destination_zip, "w", compression=zipfile.ZIP_STORED) as archive:
         for file_path in files:
             _raise_if_cancelled(cancel_file, context="ZIP rebuild")
-            archive.write(file_path, arcname=_safe_arcname(stage_dir, file_path))
+            info = _build_source_compatible_zipinfo(stage_dir, file_path)
+            archive.writestr(info, file_path.read_bytes())
 
     if destination_zip.stat().st_size <= 0:
         raise MapBuildError(f"Rebuilt pak ZIP is empty: {destination_zip}")

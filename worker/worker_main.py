@@ -15,6 +15,7 @@ if str(_repo_root) not in sys.path:
 
 import batch_decompile_organize
 import batch_build_map_bsp
+import batch_merge_addons
 import batch_scan_map_bsp
 import batch_unpack_addons
 import build_optimized_addon
@@ -492,6 +493,8 @@ def main(argv: list[str]) -> int:
         return _run_preview(argv[1:])
     if argv and argv[0] == "unpack":
         return batch_unpack_addons.main(argv[1:])
+    if argv and argv[0] == "addonmerge":
+        return batch_merge_addons.main(argv[1:])
     if argv and argv[0] == "mapscan":
         return batch_scan_map_bsp.main(argv[1:])
     if argv and argv[0] == "mapbuild":

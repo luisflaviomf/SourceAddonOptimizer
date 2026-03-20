@@ -27,12 +27,34 @@ namespace GmodAddonCompressor
     public partial class MainWindow : Window
     {
         private static readonly TimeSpan SizeScanTimeout = TimeSpan.FromSeconds(8);
+        private static readonly string[] ModelsAddonMarkerDirectories =
+        {
+            "cfg",
+            "data",
+            "effects",
+            "entities",
+            "gamemodes",
+            "lua",
+            "maps",
+            "materials",
+            "models",
+            "particles",
+            "resource",
+            "scripts",
+            "sound"
+        };
+        private static readonly string[] ModelsAddonMarkerFiles =
+        {
+            "addon.json",
+            "addon.txt"
+        };
         private MainWindowContext _context = new MainWindowContext();
         private const string _version = "v1.0.1";
         private readonly SourceAddonOptimizerRunner _optimizerRunner = new SourceAddonOptimizerRunner();
         private readonly AddonUnpackRunner _unpackRunner = new AddonUnpackRunner();
         private readonly MapBspAnalysisRunner _mapBspAnalysisRunner = new MapBspAnalysisRunner();
         private readonly MapBspBuildRunner _mapBspBuildRunner = new MapBspBuildRunner();
+        private CancellationTokenSource? _addonWorkshopWarningCts = null;
         private CancellationTokenSource? _optimizerCts = null;
         private CancellationTokenSource? _unpackCts = null;
         private CancellationTokenSource? _mapScanCts = null;
@@ -43,12 +65,16 @@ namespace GmodAddonCompressor
         private int _modelsStepIndex = 0;
         private int _modelsStepTotal = 0;
         private string _modelsPhase = string.Empty;
+        private int _modelsBatchAddonIndex = 0;
+        private int _modelsBatchAddonTotal = 0;
+        private string _modelsBatchAddonName = string.Empty;
         private CancellationTokenSource? _pipelineCts = null;
         private CompressAddonSystem? _pipelineCompressSystem = null;
         private bool _pipelineRunning = false;
         private PipelineStage _pipelineStage = PipelineStage.None;
         private string? _pipelineOutputPath = null;
         private string? _pipelineLogsDir = null;
+        private string? _addonWorkshopWarningScannedPath = null;
         private bool _pipelineModelsOk = false;
         private bool _pipelineCompressOk = false;
         private int _pipelineCompressFilesProcessed = 0;
@@ -85,6 +111,9 @@ namespace GmodAddonCompressor
         private string? _mapStageOptimizeSummaryPath = null;
         private string? _mapBuildSummaryPath = null;
         private string? _mapBuildOutputPath = null;
+        private string? _mapEffectiveRootPath = null;
+        private string? _mapPreparedInputRootPath = null;
+        private string? _mapInputModeDescription = null;
         private List<string> _mapScanStagingDirs = new List<string>();
 
         private const int PresetSafeIndex = 0;
@@ -141,6 +170,7 @@ namespace GmodAddonCompressor
             _mapBspBuildRunner.WorkDirFound += MapBuildWorkDirFound;
             _mapBspBuildRunner.OutputDirFound += MapBuildOutputDirFound;
             _mapBspBuildRunner.LogLine += MapScanLogLine;
+            InitializeAddonMerge();
 
             LoadSettings();
         }
@@ -151,6 +181,72 @@ namespace GmodAddonCompressor
             if (dialog.ShowDialog(this).GetValueOrDefault())
             {
                 _context.AddonDirectoryPath = dialog.SelectedPath;
+                _ = RefreshAddonWorkshopWarningAsync(dialog.SelectedPath, force: true);
+            }
+        }
+
+        private void ClearAddonWorkshopWarning()
+        {
+            _addonWorkshopWarningScannedPath = null;
+            _context.AddonWorkshopWarningText = string.Empty;
+        }
+
+        private async Task RefreshAddonWorkshopWarningAsync(string addonDirectoryPath, bool force = false)
+        {
+            string normalizedPath = string.IsNullOrWhiteSpace(addonDirectoryPath)
+                ? string.Empty
+                : addonDirectoryPath.Trim();
+
+            if (string.IsNullOrWhiteSpace(normalizedPath) || !Directory.Exists(normalizedPath))
+            {
+                _addonWorkshopWarningCts?.Cancel();
+                _addonWorkshopWarningCts?.Dispose();
+                _addonWorkshopWarningCts = null;
+                ClearAddonWorkshopWarning();
+                return;
+            }
+
+            normalizedPath = Path.GetFullPath(normalizedPath);
+            if (!force &&
+                string.Equals(_addonWorkshopWarningScannedPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _addonWorkshopWarningCts?.Cancel();
+            _addonWorkshopWarningCts?.Dispose();
+
+            var cts = new CancellationTokenSource();
+            _addonWorkshopWarningCts = cts;
+            ClearAddonWorkshopWarning();
+
+            try
+            {
+                string warningText = await Task.Run(
+                    () => WorkshopReferenceScanner.BuildWarningText(normalizedPath, cts.Token),
+                    cts.Token);
+
+                if (!ReferenceEquals(_addonWorkshopWarningCts, cts) || cts.IsCancellationRequested)
+                    return;
+
+                _addonWorkshopWarningScannedPath = normalizedPath;
+                _context.AddonWorkshopWarningText = warningText;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Workshop warning scan failed for '{normalizedPath}': {ex}");
+                if (ReferenceEquals(_addonWorkshopWarningCts, cts))
+                    ClearAddonWorkshopWarning();
+            }
+            finally
+            {
+                if (ReferenceEquals(_addonWorkshopWarningCts, cts))
+                    _addonWorkshopWarningCts = null;
+
+                cts.Dispose();
             }
         }
 
@@ -793,13 +889,150 @@ namespace GmodAddonCompressor
             Button_MapBuildOpenOutput.IsEnabled = !isBusy && hasOutput;
         }
 
+        private static bool DirectoryContainsMapBsp(string rootPath)
+        {
+            try
+            {
+                foreach (string file in Directory.EnumerateFiles(rootPath, "*.bsp", SearchOption.AllDirectories))
+                {
+                    string? parent = Path.GetDirectoryName(file);
+                    if (string.IsNullOrWhiteSpace(parent))
+                        continue;
+
+                    var parts = parent.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    if (parts.Any(part => string.Equals(part, "maps", StringComparison.OrdinalIgnoreCase)))
+                        return true;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        private static bool DirectoryContainsAddonArchives(string rootPath)
+        {
+            try
+            {
+                return Directory.EnumerateFiles(rootPath, "*.gma", SearchOption.AllDirectories).Any()
+                    || Directory.EnumerateFiles(rootPath, "*.bin", SearchOption.AllDirectories).Any();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string BuildMapPreparedInputRoot(string workDir)
+        {
+            return Path.Combine(workDir, "prepared_input");
+        }
+
+        private async Task<string> PrepareMapInputRootAsync(string selectedRootPath, CancellationToken cancellationToken)
+        {
+            if (DirectoryContainsMapBsp(selectedRootPath))
+            {
+                _mapPreparedInputRootPath = null;
+                _mapInputModeDescription = "Existing extracted addon (maps/*.bsp already present)";
+                return selectedRootPath;
+            }
+
+            if (!DirectoryContainsAddonArchives(selectedRootPath))
+                throw new InvalidOperationException("No maps/*.bsp or .gma/.bin archives were found under this root.");
+
+            string gmadPath = TextBox_UnpackGmadPath.Text.Trim();
+            if (!File.Exists(gmadPath))
+            {
+                string? detected = DetectGmadPath();
+                if (!string.IsNullOrWhiteSpace(detected))
+                {
+                    TextBox_UnpackGmadPath.Text = detected;
+                    gmadPath = detected;
+                }
+            }
+
+            if (!File.Exists(gmadPath))
+                throw new InvalidOperationException("This root only contains .gma/.bin archives, so gmad.exe is required. Set the GMAD path first.");
+
+            string workDir = _mapScanWorkDir ?? BuildMapScanWorkDir(selectedRootPath);
+            string preparedRoot = BuildMapPreparedInputRoot(workDir);
+            string unpackWorkDir = Path.Combine(workDir, "prepare_unpack");
+
+            _mapPreparedInputRootPath = preparedRoot;
+            _mapInputModeDescription = "Raw archive root (.gma/.bin) extracted into work before map scan";
+
+            AppendMapScanLog("[MAP-PREP] No maps/*.bsp found in the selected root. Preparing raw .gma/.bin archives into work...");
+            AppendMapScanLog($"[MAP-PREP] Prepared input root: {preparedRoot}");
+
+            var prepareRunner = new AddonUnpackRunner();
+            prepareRunner.ProgressUpdate += update =>
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    if (!string.IsNullOrWhiteSpace(update.Phase))
+                    {
+                        TextBlock_MapScanPhase.Text = $"Prepare input: {update.Phase}";
+                        ProgressBar_MapScan.IsIndeterminate = true;
+                    }
+
+                    if (update.ItemIndex.HasValue && update.ItemTotal.HasValue)
+                    {
+                        ProgressBar_MapScan.IsIndeterminate = false;
+                        ProgressBar_MapScan.Minimum = 0;
+                        ProgressBar_MapScan.Maximum = update.ItemTotal.Value;
+                        ProgressBar_MapScan.Value = update.ItemIndex.Value;
+                        TextBlock_MapScanCurrent.Text = string.IsNullOrWhiteSpace(update.CurrentPath)
+                            ? $"Current: Addon {update.ItemIndex}/{update.ItemTotal}"
+                            : $"Current: Addon {update.ItemIndex}/{update.ItemTotal} | {update.CurrentPath}";
+                    }
+                });
+            };
+            prepareRunner.LogLine += line => Dispatcher.Invoke(() => AppendMapScanLog($"[MAP-PREP] {line}"));
+            prepareRunner.ErrorLine += line => Dispatcher.Invoke(() => AppendMapScanLog($"[MAP-PREP][ERR] {line}"));
+
+            var options = new AddonUnpackRunOptions
+            {
+                WorkerExePath = ToolPaths.WorkerExePath,
+                RootPath = selectedRootPath,
+                WorkDir = unpackWorkDir,
+                GmadExePath = gmadPath,
+                OutputRootPath = preparedRoot,
+                ExistingMode = "overwrite",
+                ScanOnly = false,
+                ExtractMapPakContent = false,
+                DeleteMapBspAfterExtract = false,
+                CancelFilePath = _mapScanCancelFile
+            };
+
+            int exitCode = await prepareRunner.RunAsync(options, cancellationToken);
+            if (exitCode != 0 && exitCode != 130)
+                throw new InvalidOperationException($"Preparing raw .gma/.bin archives failed with exit code {exitCode}.");
+            if (exitCode == 130)
+                throw new OperationCanceledException("Raw addon preparation was cancelled.");
+            if (!Directory.Exists(preparedRoot))
+                throw new InvalidOperationException("Prepared input root was not created.");
+            if (!DirectoryContainsMapBsp(preparedRoot))
+                throw new InvalidOperationException("Raw addon extraction finished, but no maps/*.bsp were found in the prepared input.");
+
+            AppendMapScanLog("[MAP-PREP] Raw archive extraction completed. Continuing with BSP scan...");
+            return preparedRoot;
+        }
+
         private bool ValidateMapScanInputs(out string errorMessage)
         {
             var errors = new List<string>();
             string rootPath = TextBox_MapScanRootPath.Text.Trim();
 
             if (!Directory.Exists(rootPath))
-                errors.Add("Extracted addon root folder not found.");
+                errors.Add("Addon root folder not found.");
+
+            if (Directory.Exists(rootPath) &&
+                !DirectoryContainsMapBsp(rootPath) &&
+                !DirectoryContainsAddonArchives(rootPath))
+            {
+                errors.Add("The selected root does not contain maps/*.bsp or .gma/.bin archives.");
+            }
 
             if (!CanWriteToDirectory(ToolPaths.WorkRoot))
                 errors.Add("No write permission in work directory root.");
@@ -879,6 +1112,9 @@ namespace GmodAddonCompressor
             _mapStageOptimizeSummaryPath = null;
             _mapBuildSummaryPath = null;
             _mapBuildOutputPath = null;
+            _mapEffectiveRootPath = null;
+            _mapPreparedInputRootPath = null;
+            _mapInputModeDescription = null;
             _mapScanStagingDirs.Clear();
             _mapScanWorkDir = BuildMapScanWorkDir(TextBox_MapScanRootPath.Text.Trim());
             _mapScanCancelFile = BuildMapScanCancelFilePath();
@@ -888,12 +1124,12 @@ namespace GmodAddonCompressor
             ProgressBar_MapScan.Maximum = 100;
             ProgressBar_MapScan.Value = 0;
             TextBlock_MapScanPhase.Text = "Starting";
-            TextBlock_MapScanCurrent.Text = "Scanning BSP files and preparing staging...";
+            TextBlock_MapScanCurrent.Text = "Preparing map input...";
             TextBlock_MapScanStatus.Text = "Running";
-            TextBox_MapScanSummary.Text = "Scanning maps/*.bsp, analyzing internal pakfile data and extracting eligible pak content into staging...";
+            TextBox_MapScanSummary.Text = "Preparing map input and staged analysis...";
 
             AppendMapScanLog(string.Empty);
-            AppendMapScanLog("=== Scanning BSP files and extracting staging for Optimize Maps (Phase 2) ===");
+            AppendMapScanLog("=== Preparing input, scanning BSP files and extracting staging for Optimize Maps ===");
             UpdateMapScanActionStates();
         }
 
@@ -928,17 +1164,25 @@ namespace GmodAddonCompressor
                 return;
             }
 
-            var options = new MapBspAnalysisRunOptions
-            {
-                WorkerExePath = ToolPaths.WorkerExePath,
-                RootPath = TextBox_MapScanRootPath.Text.Trim(),
-                WorkDir = _mapScanWorkDir ?? BuildMapScanWorkDir(TextBox_MapScanRootPath.Text.Trim()),
-                CancelFilePath = _mapScanCancelFile
-            };
-
             int exitCode;
             try
             {
+                string selectedRoot = TextBox_MapScanRootPath.Text.Trim();
+                _mapEffectiveRootPath = await PrepareMapInputRootAsync(selectedRoot, _mapScanCts?.Token ?? CancellationToken.None);
+
+                ProgressBar_MapScan.IsIndeterminate = true;
+                TextBlock_MapScanPhase.Text = "Scan + Stage";
+                TextBlock_MapScanCurrent.Text = "Scanning maps/*.bsp and extracting staging...";
+                TextBlock_MapScanStatus.Text = "Running";
+
+                var options = new MapBspAnalysisRunOptions
+                {
+                    WorkerExePath = ToolPaths.WorkerExePath,
+                    RootPath = _mapEffectiveRootPath,
+                    WorkDir = _mapScanWorkDir ?? BuildMapScanWorkDir(selectedRoot),
+                    CancelFilePath = _mapScanCancelFile
+                };
+
                 exitCode = await _mapBspAnalysisRunner.RunAsync(options, _mapScanCts?.Token ?? CancellationToken.None);
             }
             catch (OperationCanceledException)
@@ -1222,7 +1466,14 @@ namespace GmodAddonCompressor
                 TextBlock_MapScanStatus.Text = "FAIL";
                 TextBlock_MapScanCurrent.Text = "Current: Failed.";
                 AppendMapScanLog($"[MAP-OPT] {ex}");
-                TextBox_MapScanSummary.Text = $"{TextBox_MapScanSummary.Text}{Environment.NewLine}{Environment.NewLine}Staging optimization failed.{Environment.NewLine}{ex.Message}";
+                TextBox_MapScanSummary.Text = string.Join(Environment.NewLine, new[]
+                {
+                    "Step: Optimize Staging",
+                    $"Selected root: {TextBox_MapScanRootPath.Text.Trim()}",
+                    !string.IsNullOrWhiteSpace(_mapInputModeDescription) ? $"Input mode: {_mapInputModeDescription}" : null,
+                    "Result: FAIL",
+                    $"Reason: {ex.Message}"
+                }.Where(line => !string.IsNullOrWhiteSpace(line)));
             }
             finally
             {
@@ -1298,7 +1549,7 @@ namespace GmodAddonCompressor
                 var options = new MapBspBuildRunOptions
                 {
                     WorkerExePath = ToolPaths.WorkerExePath,
-                    RootPath = TextBox_MapScanRootPath.Text.Trim(),
+                    RootPath = _mapEffectiveRootPath ?? TextBox_MapScanRootPath.Text.Trim(),
                     WorkDir = _mapScanWorkDir ?? BuildMapScanWorkDir(TextBox_MapScanRootPath.Text.Trim()),
                     OutputDir = _mapBuildOutputPath ?? BuildMapBuildOutputDir(TextBox_MapScanRootPath.Text.Trim()),
                     CancelFilePath = _mapScanCancelFile
@@ -1320,7 +1571,14 @@ namespace GmodAddonCompressor
                 TextBlock_MapScanStatus.Text = "FAIL";
                 TextBlock_MapScanCurrent.Text = "Current: Failed.";
                 AppendMapScanLog($"[MAP-BUILD] {ex}");
-                TextBox_MapScanSummary.Text = $"{TextBox_MapScanSummary.Text}{Environment.NewLine}{Environment.NewLine}BSP rebuild failed.{Environment.NewLine}{ex.Message}";
+                TextBox_MapScanSummary.Text = string.Join(Environment.NewLine, new[]
+                {
+                    "Step: Build + Inject",
+                    $"Selected root: {TextBox_MapScanRootPath.Text.Trim()}",
+                    !string.IsNullOrWhiteSpace(_mapInputModeDescription) ? $"Input mode: {_mapInputModeDescription}" : null,
+                    "Result: FAIL",
+                    $"Reason: {ex.Message}"
+                }.Where(line => !string.IsNullOrWhiteSpace(line)));
                 _context.UnlockedUI = true;
                 UpdateMapScanActionStates();
             }
@@ -1441,6 +1699,7 @@ namespace GmodAddonCompressor
                 string rootPath = GetJsonString(run, "root") ?? TextBox_MapScanRootPath.Text.Trim();
                 string stagingRoot = string.Empty;
                 var stagingDirs = new List<string>();
+                _mapEffectiveRootPath = rootPath;
                 if (root.TryGetProperty("staging", out var stagingElement) && stagingElement.ValueKind == JsonValueKind.Object)
                     stagingRoot = GetJsonString(stagingElement, "root") ?? string.Empty;
 
@@ -1452,42 +1711,6 @@ namespace GmodAddonCompressor
                 TextBlock_MapScanBlockedCount.Text = blockedCount.ToString();
                 TextBlock_MapScanAddonSize.Text = FormatBytes(addonTotalBytes);
                 TextBlock_MapScanPakTotalSize.Text = FormatBytes(pakTotalBytes);
-
-                var summaryLines = new List<string>
-                {
-                    $"Root: {rootPath}",
-                    $"Addon total size: {FormatBytes(addonTotalBytes)}",
-                    $"BSP files found: {bspTotal}",
-                    $"BSPs with valid embedded pak ZIP: {validPakZip}",
-                    $"Staging extracted: {stagedBspCount} BSP(s), {stagedFilesTotal} file(s), {FormatBytes(stagedTotalBytes)}",
-                    $"Future phase-2 candidates (safe layout only): {candidateCount}",
-                    $"Blocked for future reinjection: {blockedCount}",
-                    $"Combined PAKFILE size: {FormatBytes(pakTotalBytes)} ({pakShareOfBsp:0.##}% of all BSP bytes)",
-                };
-                if (!string.IsNullOrWhiteSpace(stagingRoot))
-                    summaryLines.Add($"Staging root: {stagingRoot}");
-
-                if (analysisErrors > 0 || scanErrors > 0)
-                    summaryLines.Add($"Warnings: analysis_errors={analysisErrors}, scan_errors={scanErrors}");
-
-                if (root.TryGetProperty("staging", out var overallStagingElement) &&
-                    overallStagingElement.ValueKind == JsonValueKind.Object &&
-                    overallStagingElement.TryGetProperty("inventory_overall", out var overallInventoryElement) &&
-                    overallInventoryElement.ValueKind == JsonValueKind.Array)
-                {
-                    summaryLines.Add(string.Empty);
-                    summaryLines.Add("Overall staged inventory:");
-                    foreach (var entry in overallInventoryElement.EnumerateArray())
-                    {
-                        string ext = GetJsonString(entry, "extension") ?? "(unknown)";
-                        int fileCount = GetJsonInt(entry, "file_count");
-                        long totalBytes = GetJsonLong(entry, "total_bytes");
-                        summaryLines.Add($"- {ext}: {fileCount} file(s), {FormatBytes(totalBytes)}");
-                    }
-                }
-
-                summaryLines.Add(string.Empty);
-                summaryLines.Add("Per BSP:");
 
                 if (root.TryGetProperty("items", out var itemsElement) && itemsElement.ValueKind == JsonValueKind.Array && itemsElement.GetArrayLength() > 0)
                 {
@@ -1501,83 +1724,33 @@ namespace GmodAddonCompressor
                         bool pakAtEof = GetJsonBool(item, "pak_at_eof");
                         string stagingStatus = GetJsonString(item, "staging_status") ?? "not_attempted";
                         string stagingDir = GetJsonString(item, "staging_dir") ?? string.Empty;
-                        int stagedFileCount = GetJsonInt(item, "staged_file_count");
-                        long stagedBytes = GetJsonLong(item, "staged_total_bytes");
-                        bool phase2Candidate = GetJsonBool(item, "phase2_candidate");
-                        int pakEntryCount = GetJsonInt(item, "pak_entry_count");
-                        string message = GetJsonString(item, "message") ?? string.Empty;
-
-                        summaryLines.Add($"- {relativePath}");
-                        summaryLines.Add($"  BSP: {FormatBytes(bspSize)} | PAKFILE: {FormatBytes(pakSize)} | {pakPercent:0.##}%");
-                        summaryLines.Add($"  ZIP valid: {YesNo(pakZipValid)} | Entries: {pakEntryCount} | PAK at EOF: {YesNo(pakAtEof)} | Future candidate: {YesNo(phase2Candidate)}");
-                        summaryLines.Add($"  Staging: {stagingStatus} | Files: {stagedFileCount} | Size: {FormatBytes(stagedBytes)}");
                         if (!string.IsNullOrWhiteSpace(stagingDir))
                         {
                             if (string.Equals(stagingStatus, "extracted", StringComparison.OrdinalIgnoreCase) && Directory.Exists(stagingDir))
                                 stagingDirs.Add(stagingDir);
-                            summaryLines.Add($"  Staging dir: {stagingDir}");
-                        }
-
-                        if (item.TryGetProperty("inventory_by_extension", out var inventoryElement) &&
-                            inventoryElement.ValueKind == JsonValueKind.Array &&
-                            inventoryElement.GetArrayLength() > 0)
-                        {
-                            summaryLines.Add("  Inventory:");
-                            foreach (var entry in inventoryElement.EnumerateArray())
-                            {
-                                string ext = GetJsonString(entry, "extension") ?? "(unknown)";
-                                int fileCount = GetJsonInt(entry, "file_count");
-                                long totalBytes = GetJsonLong(entry, "total_bytes");
-                                summaryLines.Add($"    {ext}: {fileCount} file(s), {FormatBytes(totalBytes)}");
-                            }
-                        }
-
-                        if (item.TryGetProperty("phase2_blockers", out var blockersElement) && blockersElement.ValueKind == JsonValueKind.Array && blockersElement.GetArrayLength() > 0)
-                        {
-                            var blockers = blockersElement
-                                .EnumerateArray()
-                                .Select(v => v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString())
-                                .Where(v => !string.IsNullOrWhiteSpace(v))
-                                .ToArray();
-                            if (blockers.Length > 0)
-                                summaryLines.Add($"  Blockers: {string.Join(", ", blockers)}");
-                        }
-                        else if (!string.IsNullOrWhiteSpace(message))
-                        {
-                            summaryLines.Add($"  Note: {message}");
                         }
                     }
-                }
-                else
-                {
-                    summaryLines.Add("- No maps/*.bsp found under this root.");
                 }
 
                 _mapScanStagingDirs = stagingDirs
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
-                if (futureValidation.ValueKind == JsonValueKind.Object &&
-                    futureValidation.TryGetProperty("required_checks", out var checksElement) &&
-                    checksElement.ValueKind == JsonValueKind.Array)
+                List<string> summaryLines;
+                if (!string.IsNullOrWhiteSpace(_mapBuildSummaryPath) && File.Exists(_mapBuildSummaryPath))
                 {
-                    summaryLines.Add(string.Empty);
-                    summaryLines.Add("Future reinjection validation (not implemented in Phase 2):");
-                    foreach (var check in checksElement.EnumerateArray())
-                    {
-                        string text = check.ValueKind == JsonValueKind.String ? check.GetString() ?? string.Empty : check.ToString();
-                        if (!string.IsNullOrWhiteSpace(text))
-                            summaryLines.Add($"- {text}");
-                    }
+                    summaryLines = BuildMapBuildSummaryLines(root, counts, sizes, run);
+                }
+                else if (!string.IsNullOrWhiteSpace(_mapStageOptimizeSummaryPath) && File.Exists(_mapStageOptimizeSummaryPath))
+                {
+                    summaryLines = BuildMapStageOptimizeSummaryLines(root, counts, sizes, run);
+                }
+                else
+                {
+                    summaryLines = BuildMapScanSummaryLines(root, counts, sizes, run, futureValidation, analysisErrors, scanErrors);
                 }
 
-                if (!string.IsNullOrWhiteSpace(_mapStageOptimizeSummaryPath) && File.Exists(_mapStageOptimizeSummaryPath))
-                    AppendMapStageOptimizeSummary(summaryLines);
-
-                if (!string.IsNullOrWhiteSpace(_mapBuildSummaryPath) && File.Exists(_mapBuildSummaryPath))
-                    AppendMapBuildSummary(summaryLines);
-
-                TextBox_MapScanSummary.Text = string.Join(Environment.NewLine, summaryLines);
+                TextBox_MapScanSummary.Text = string.Join(Environment.NewLine, summaryLines.Where(line => line != null));
                 UpdateMapScanActionStates();
                 return true;
             }
@@ -1588,15 +1761,137 @@ namespace GmodAddonCompressor
             }
         }
 
-        private void AppendMapStageOptimizeSummary(List<string> summaryLines)
+        private List<string> BuildMapSummaryHeader(string stepTitle, JsonElement run)
         {
+            string selectedRoot = TextBox_MapScanRootPath.Text.Trim();
+            string effectiveRoot = GetJsonString(run, "root")
+                ?? _mapEffectiveRootPath
+                ?? selectedRoot;
+
+            var lines = new List<string>
+            {
+                $"Step: {stepTitle}",
+                $"Selected root: {selectedRoot}"
+            };
+
+            if (!string.IsNullOrWhiteSpace(_mapInputModeDescription))
+                lines.Add($"Input mode: {_mapInputModeDescription}");
+
+            if (!string.Equals(selectedRoot, effectiveRoot, StringComparison.OrdinalIgnoreCase))
+                lines.Add($"Effective scan root: {effectiveRoot}");
+
+            return lines;
+        }
+
+        private List<string> BuildMapScanSummaryLines(
+            JsonElement root,
+            JsonElement counts,
+            JsonElement sizes,
+            JsonElement run,
+            JsonElement futureValidation,
+            int analysisErrors,
+            int scanErrors)
+        {
+            int bspTotal = GetJsonInt(counts, "bsp_total");
+            int validPakZip = GetJsonInt(counts, "bsp_with_valid_zip");
+            int stagedBspCount = GetJsonInt(counts, "staged_bsp_count");
+            int stagedFilesTotal = GetJsonInt(counts, "staged_files_total");
+            int candidateCount = GetJsonInt(counts, "phase2_candidate_count");
+            int blockedCount = GetJsonInt(counts, "phase2_blocked_count");
+            long addonTotalBytes = GetJsonLong(sizes, "addon_total_bytes");
+            long pakTotalBytes = GetJsonLong(sizes, "pak_total_bytes");
+            long stagedTotalBytes = GetJsonLong(sizes, "staged_total_bytes");
+            double pakShareOfBsp = GetJsonDouble(sizes, "pak_share_of_all_bsp_percent");
+            string stagingRoot = string.Empty;
+
+            if (root.TryGetProperty("staging", out var stagingElement) && stagingElement.ValueKind == JsonValueKind.Object)
+                stagingRoot = GetJsonString(stagingElement, "root") ?? string.Empty;
+
+            var summaryLines = BuildMapSummaryHeader("Scan + Stage", run);
+            summaryLines.Add($"BSP files found: {bspTotal}");
+            summaryLines.Add($"Valid embedded pak ZIPs: {validPakZip}");
+            summaryLines.Add($"Staging extracted: {stagedBspCount} BSP(s), {stagedFilesTotal} file(s), {FormatBytes(stagedTotalBytes)}");
+            summaryLines.Add($"Future EOF-only candidates: {candidateCount}");
+            summaryLines.Add($"Blocked from future reinjection: {blockedCount}");
+            summaryLines.Add($"Addon total size: {FormatBytes(addonTotalBytes)}");
+            summaryLines.Add($"Combined pak size: {FormatBytes(pakTotalBytes)} ({pakShareOfBsp:0.##}% of all BSP bytes)");
+            if (!string.IsNullOrWhiteSpace(stagingRoot))
+                summaryLines.Add($"Staging root: {stagingRoot}");
+
+            if (analysisErrors > 0 || scanErrors > 0)
+                summaryLines.Add($"Warnings: analysis={analysisErrors}, scan={scanErrors}");
+
+            summaryLines.Add(string.Empty);
+            summaryLines.Add("BSP analysis:");
+
+            if (root.TryGetProperty("items", out var itemsElement) && itemsElement.ValueKind == JsonValueKind.Array && itemsElement.GetArrayLength() > 0)
+            {
+                foreach (var item in itemsElement.EnumerateArray())
+                {
+                    string relativePath = GetJsonString(item, "relative_path") ?? "(unknown)";
+                    long bspSize = GetJsonLong(item, "bsp_size");
+                    long pakSize = GetJsonLong(item, "pak_size");
+                    double pakPercent = GetJsonDouble(item, "pak_percent_of_bsp");
+                    bool pakZipValid = GetJsonBool(item, "pak_zip_valid");
+                    bool pakAtEof = GetJsonBool(item, "pak_at_eof");
+                    bool phase2Candidate = GetJsonBool(item, "phase2_candidate");
+                    string message = GetJsonString(item, "message") ?? string.Empty;
+
+                    summaryLines.Add($"- {relativePath} | BSP {FormatBytes(bspSize)} | PAK {FormatBytes(pakSize)} | {pakPercent:0.##}% | ZIP {YesNo(pakZipValid)} | EOF {YesNo(pakAtEof)} | Candidate {YesNo(phase2Candidate)}");
+
+                    if (item.TryGetProperty("phase2_blockers", out var blockersElement) &&
+                        blockersElement.ValueKind == JsonValueKind.Array &&
+                        blockersElement.GetArrayLength() > 0)
+                    {
+                        var blockers = blockersElement
+                            .EnumerateArray()
+                            .Where(v => v.ValueKind == JsonValueKind.String)
+                            .Select(v => v.GetString())
+                            .Where(v => !string.IsNullOrWhiteSpace(v))
+                            .ToArray();
+                        if (blockers.Length > 0)
+                            summaryLines.Add($"  Reason: {string.Join(", ", blockers)}");
+                    }
+                    else if (!string.IsNullOrWhiteSpace(message))
+                    {
+                        summaryLines.Add($"  Note: {message}");
+                    }
+                }
+            }
+            else
+            {
+                summaryLines.Add("- No maps/*.bsp found under the effective scan root.");
+            }
+
+            if (futureValidation.ValueKind == JsonValueKind.Object &&
+                futureValidation.TryGetProperty("phase2_candidate_rule", out var candidateRuleElement) &&
+                candidateRuleElement.ValueKind == JsonValueKind.String)
+            {
+                string candidateRule = candidateRuleElement.GetString() ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(candidateRule))
+                {
+                    summaryLines.Add(string.Empty);
+                    summaryLines.Add($"Future reinjection gate: {candidateRule}");
+                }
+            }
+
+            return summaryLines;
+        }
+
+        private List<string> BuildMapStageOptimizeSummaryLines(JsonElement scanRoot, JsonElement scanCounts, JsonElement scanSizes, JsonElement scanRun)
+        {
+            var summaryLines = BuildMapSummaryHeader("Optimize Staging", scanRun);
+            summaryLines.Add($"Staged BSPs available: {GetJsonInt(scanCounts, "staged_bsp_count")}");
+            summaryLines.Add($"Current staged file count: {GetJsonInt(scanCounts, "staged_files_total")}");
+
             if (string.IsNullOrWhiteSpace(_mapStageOptimizeSummaryPath) || !File.Exists(_mapStageOptimizeSummaryPath))
-                return;
+                return summaryLines;
 
             using var document = JsonDocument.Parse(File.ReadAllText(_mapStageOptimizeSummaryPath));
             var root = document.RootElement;
             var run = root.TryGetProperty("run", out var runElement) ? runElement : default;
             var totals = root.TryGetProperty("totals", out var totalsElement) ? totalsElement : default;
+            var vtfSafety = root.TryGetProperty("vtf_safety", out var vtfSafetyElement) ? vtfSafetyElement : default;
 
             long beforeBytes = GetJsonLong(totals, "before_bytes");
             long afterBytes = GetJsonLong(totals, "after_bytes");
@@ -1606,14 +1901,25 @@ namespace GmodAddonCompressor
             double deltaPercent = GetJsonDouble(totals, "delta_percent");
             int visitedRoots = GetJsonInt(run, "visited_stage_roots");
 
-            summaryLines.Add(string.Empty);
-            summaryLines.Add("Staging optimization:");
-            summaryLines.Add($"- Stage roots processed: {visitedRoots}");
-            summaryLines.Add($"- Total staged size: {FormatBytes(beforeBytes)} -> {FormatBytes(afterBytes)} ({FormatSignedBytes(deltaBytes)}, {deltaPercent:0.##}%)");
-            summaryLines.Add($"- File count: {beforeFiles} -> {afterFiles}");
+            summaryLines.Add($"Stage roots processed: {visitedRoots}");
+            summaryLines.Add($"Staged size: {FormatBytes(beforeBytes)} -> {FormatBytes(afterBytes)} ({FormatSignedBytes(deltaBytes)}, {deltaPercent:0.##}%)");
+            summaryLines.Add($"File count: {beforeFiles} -> {afterFiles}");
 
-            if (run.TryGetProperty("processed_extensions", out var processedElement) &&
-                processedElement.ValueKind == JsonValueKind.Array)
+            int safeVtfCount = GetJsonInt(vtfSafety, "safe_vtf_count");
+            int optimizedSpecialVtfCount = GetJsonInt(vtfSafety, "optimized_special_vtf_count");
+            long optimizedSpecialVtfBeforeBytes = GetJsonLong(vtfSafety, "optimized_special_vtf_before_bytes");
+            long optimizedSpecialVtfAfterBytes = GetJsonLong(vtfSafety, "optimized_special_vtf_after_bytes");
+            int skippedSpecialVtfCount = GetJsonInt(vtfSafety, "skipped_special_vtf_count");
+            long skippedSpecialVtfBytes = GetJsonLong(vtfSafety, "skipped_special_vtf_bytes");
+            if (safeVtfCount > 0 || optimizedSpecialVtfCount > 0 || skippedSpecialVtfCount > 0)
+            {
+                summaryLines.Add($"Safe VTFs processed as plain textures: {safeVtfCount}");
+                if (optimizedSpecialVtfCount > 0)
+                    summaryLines.Add($"Special skybox VTFs optimized with preserved metadata: {optimizedSpecialVtfCount} ({FormatBytes(optimizedSpecialVtfBeforeBytes)} -> {FormatBytes(optimizedSpecialVtfAfterBytes)})");
+                summaryLines.Add($"Special VTFs preserved unchanged: {skippedSpecialVtfCount} ({FormatBytes(skippedSpecialVtfBytes)})");
+            }
+
+            if (run.TryGetProperty("processed_extensions", out var processedElement) && processedElement.ValueKind == JsonValueKind.Array)
             {
                 var processed = processedElement
                     .EnumerateArray()
@@ -1621,11 +1927,10 @@ namespace GmodAddonCompressor
                     .Select(value => value.GetString())
                     .Where(value => !string.IsNullOrWhiteSpace(value))
                     .ToArray();
-                summaryLines.Add($"- Processed by compressor: {(processed.Length > 0 ? string.Join(", ", processed) : "(none)")}");
+                summaryLines.Add($"Processed: {(processed.Length > 0 ? string.Join(", ", processed) : "(none)")}");
             }
 
-            if (run.TryGetProperty("inventoried_only_extensions", out var inventoriedElement) &&
-                inventoriedElement.ValueKind == JsonValueKind.Array)
+            if (run.TryGetProperty("inventoried_only_extensions", out var inventoriedElement) && inventoriedElement.ValueKind == JsonValueKind.Array)
             {
                 var inventoried = inventoriedElement
                     .EnumerateArray()
@@ -1633,32 +1938,50 @@ namespace GmodAddonCompressor
                     .Select(value => value.GetString())
                     .Where(value => !string.IsNullOrWhiteSpace(value))
                     .ToArray();
-                summaryLines.Add($"- Inventoried only: {(inventoried.Length > 0 ? string.Join(", ", inventoried) : "(none)")}");
+                summaryLines.Add($"Inventoried only: {(inventoried.Length > 0 ? string.Join(", ", inventoried) : "(none)")}");
             }
 
             if (root.TryGetProperty("entries", out var entriesElement) && entriesElement.ValueKind == JsonValueKind.Array)
             {
                 summaryLines.Add(string.Empty);
-                summaryLines.Add("Staged assets by type:");
-                foreach (var entry in entriesElement.EnumerateArray())
+                summaryLines.Add("Top staged types:");
+                foreach (var entry in entriesElement.EnumerateArray().Take(8))
                 {
                     string extension = GetJsonString(entry, "extension") ?? "(unknown)";
                     bool processed = GetJsonBool(entry, "processed");
                     long extBefore = GetJsonLong(entry, "before_bytes");
                     long extAfter = GetJsonLong(entry, "after_bytes");
                     long extDelta = GetJsonLong(entry, "delta_bytes");
-                    int beforeCount = GetJsonInt(entry, "before_files");
-                    int afterCount = GetJsonInt(entry, "after_files");
-                    string prefix = processed ? "*" : "-";
-                    summaryLines.Add($"{prefix} {extension}: {FormatBytes(extBefore)} -> {FormatBytes(extAfter)} ({FormatSignedBytes(extDelta)}) | files {beforeCount}->{afterCount}");
+                    summaryLines.Add($"- {extension} {(processed ? "[processed]" : "[inventory]")} | {FormatBytes(extBefore)} -> {FormatBytes(extAfter)} ({FormatSignedBytes(extDelta)})");
                 }
             }
+
+            if (vtfSafety.ValueKind == JsonValueKind.Object &&
+                vtfSafety.TryGetProperty("skipped_special_vtf_reasons", out var reasonElement) &&
+                reasonElement.ValueKind == JsonValueKind.Array &&
+                reasonElement.GetArrayLength() > 0)
+            {
+                summaryLines.Add(string.Empty);
+                summaryLines.Add("Preserved VTF classes:");
+                foreach (var reason in reasonElement.EnumerateArray().Take(6))
+                {
+                    string reasonName = GetJsonString(reason, "reason") ?? "(unknown)";
+                    int reasonFileCount = GetJsonInt(reason, "file_count");
+                    long reasonBytes = GetJsonLong(reason, "total_bytes");
+                    summaryLines.Add($"- {reasonName}: {reasonFileCount} file(s), {FormatBytes(reasonBytes)}");
+                }
+            }
+
+            return summaryLines;
         }
 
-        private void AppendMapBuildSummary(List<string> summaryLines)
+        private List<string> BuildMapBuildSummaryLines(JsonElement scanRoot, JsonElement scanCounts, JsonElement scanSizes, JsonElement scanRun)
         {
+            var summaryLines = BuildMapSummaryHeader("Build + Inject", scanRun);
+            summaryLines.Add($"Scanned BSPs: {GetJsonInt(scanCounts, "bsp_total")}");
+
             if (string.IsNullOrWhiteSpace(_mapBuildSummaryPath) || !File.Exists(_mapBuildSummaryPath))
-                return;
+                return summaryLines;
 
             using var document = JsonDocument.Parse(File.ReadAllText(_mapBuildSummaryPath));
             var root = document.RootElement;
@@ -1687,28 +2010,26 @@ namespace GmodAddonCompressor
             if (!string.IsNullOrWhiteSpace(outputDir))
                 _mapBuildOutputPath = outputDir;
 
-            summaryLines.Add(string.Empty);
-            summaryLines.Add("BSP rebuild + reinjection:");
-            summaryLines.Add($"- Mode: {mode}");
-            summaryLines.Add($"- Eligible BSPs: {eligibleTotal}");
-            summaryLines.Add($"- Reinjected: {reinjectedTotal}");
-            summaryLines.Add($"- Unsupported: {unsupportedTotal}");
-            summaryLines.Add($"- Failed: {failedTotal}");
-            summaryLines.Add($"- Output created: {YesNo(outputCreated)}");
+            summaryLines.Add($"Mode: {mode}");
+            summaryLines.Add($"Eligible BSPs: {eligibleTotal}");
+            summaryLines.Add($"Reinjected: {reinjectedTotal}");
+            summaryLines.Add($"Unsupported: {unsupportedTotal}");
+            summaryLines.Add($"Failed: {failedTotal}");
+            summaryLines.Add($"Output created: {YesNo(outputCreated)}");
             if (!string.IsNullOrWhiteSpace(outputDir))
-                summaryLines.Add($"- Output dir: {outputDir}");
+                summaryLines.Add($"Output dir: {outputDir}");
             if (outputCreated)
-                summaryLines.Add($"- Addon size: {FormatBytes(inputAddonBytes)} -> {FormatBytes(outputAddonBytes)} ({FormatSignedBytes(addonDeltaBytes)}, {addonDeltaPercent:0.##}%)");
-            summaryLines.Add($"- Reinjected BSP bytes: {FormatBytes(sourceBspBytes)} -> {FormatBytes(outputBspBytes)}");
-            summaryLines.Add($"- Reinjected pak bytes: {FormatBytes(sourcePakBytes)} -> {FormatBytes(outputPakBytes)}");
+                summaryLines.Add($"Addon size: {FormatBytes(inputAddonBytes)} -> {FormatBytes(outputAddonBytes)} ({FormatSignedBytes(addonDeltaBytes)}, {addonDeltaPercent:0.##}%)");
+            summaryLines.Add($"Reinjected BSP bytes: {FormatBytes(sourceBspBytes)} -> {FormatBytes(outputBspBytes)}");
+            summaryLines.Add($"Reinjected pak bytes: {FormatBytes(sourcePakBytes)} -> {FormatBytes(outputPakBytes)}");
 
             if (!string.IsNullOrWhiteSpace(fatalError))
-                summaryLines.Add($"- Fatal error: {fatalError}");
+                summaryLines.Add($"Fatal error: {fatalError}");
 
             if (root.TryGetProperty("items", out var itemsElement) && itemsElement.ValueKind == JsonValueKind.Array)
             {
                 summaryLines.Add(string.Empty);
-                summaryLines.Add("Reinjection results:");
+                summaryLines.Add("Per BSP result:");
                 foreach (var item in itemsElement.EnumerateArray())
                 {
                     string relativePath = GetJsonString(item, "relative_path") ?? "(unknown)";
@@ -1722,25 +2043,15 @@ namespace GmodAddonCompressor
                     bool hashMatch = GetJsonBool(item, "pak_hash_match");
                     string rebuiltHash = GetJsonString(item, "rebuilt_pak_sha256") ?? string.Empty;
                     string outputHash = GetJsonString(item, "output_pak_sha256") ?? string.Empty;
-                    string outputBspPath = GetJsonString(item, "output_bsp_path") ?? string.Empty;
-
-                    summaryLines.Add($"- {relativePath}");
-                    summaryLines.Add($"  Status: {status} | Reinjected: {YesNo(reinjected)}");
-                    summaryLines.Add($"  Reason: {reason}");
-                    if (sourceBspSize > 0 || outputBspSize > 0)
-                        summaryLines.Add($"  BSP: {FormatBytes(sourceBspSize)} -> {FormatBytes(outputBspSize)}");
-                    if (originalPakSize > 0 || rebuiltPakSize > 0)
-                        summaryLines.Add($"  PAK: {FormatBytes(originalPakSize)} -> {FormatBytes(rebuiltPakSize)}");
-                    if (!string.IsNullOrWhiteSpace(rebuiltHash))
-                        summaryLines.Add($"  rebuilt_pak.zip SHA256: {rebuiltHash}");
-                    if (!string.IsNullOrWhiteSpace(outputHash))
-                        summaryLines.Add($"  Re-read BSP pak SHA256: {outputHash}");
+                    summaryLines.Add($"- {relativePath} | {status} | Reinjected {YesNo(reinjected)} | Reason: {reason}");
+                    if (sourceBspSize > 0 || outputBspSize > 0 || originalPakSize > 0 || rebuiltPakSize > 0)
+                        summaryLines.Add($"  BSP {FormatBytes(sourceBspSize)} -> {FormatBytes(outputBspSize)} | PAK {FormatBytes(originalPakSize)} -> {FormatBytes(rebuiltPakSize)}");
                     if (!string.IsNullOrWhiteSpace(rebuiltHash) || !string.IsNullOrWhiteSpace(outputHash))
                         summaryLines.Add($"  Hash match: {YesNo(hashMatch)}");
-                    if (!string.IsNullOrWhiteSpace(outputBspPath))
-                        summaryLines.Add($"  Output BSP: {outputBspPath}");
                 }
             }
+
+            return summaryLines;
         }
 
         private static long GetJsonLong(JsonElement element, string propertyName)
@@ -1809,14 +2120,15 @@ namespace GmodAddonCompressor
             OpenFolder(_mapBuildOutputPath, "Optimize Maps");
         }
 
-        private void Button_Compress_Click(object sender, RoutedEventArgs e)
+        private async void Button_Compress_Click(object sender, RoutedEventArgs e)
         {
             string addonDirectoryPath = _context.AddonDirectoryPath;
 
             if (Directory.Exists(addonDirectoryPath))
             {
+                await RefreshAddonWorkshopWarningAsync(addonDirectoryPath, force: true);
                 SaveSettings();
-                Task.Run(async () =>
+                _ = Task.Run(async () =>
                 {
                     await StartCompressProcessAsync(addonDirectoryPath);
                 });
@@ -1887,6 +2199,8 @@ namespace GmodAddonCompressor
                 return;
             }
 
+            await RefreshAddonWorkshopWarningAsync(addonDirectoryPath, force: true);
+
             if (!EnsureToolsAvailable("Models"))
                 return;
 
@@ -1902,6 +2216,12 @@ namespace GmodAddonCompressor
             _modelsOutputPath = null;
             _modelsLastErrorLine = null;
             _modelsSizeAfter = null;
+            _modelsStepIndex = 0;
+            _modelsStepTotal = 0;
+            _modelsPhase = string.Empty;
+            _modelsBatchAddonIndex = 0;
+            _modelsBatchAddonTotal = 0;
+            _modelsBatchAddonName = string.Empty;
             SaveSettings();
             _modelsWorkDir = ToolPaths.GetWorkDir(addonDirectoryPath, _context.OptimizerSuffix);
             Button_OpenModelsOutput.IsEnabled = false;
@@ -1926,6 +2246,11 @@ namespace GmodAddonCompressor
                 Ratio = _context.OptimizerRatio,
                 Merge = _context.OptimizerMerge,
                 AutoSmooth = _context.OptimizerAutoSmooth,
+                UsePlanar = _context.OptimizerUsePlanar,
+                PlanarAngle = _context.OptimizerPlanarAngle,
+                ExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
+                ExperimentalRoundPartsPolicy = _context.OptimizerUseExperimentalRoundPartsPolicy,
+                ExperimentalSteerTurnBasisFix = _context.OptimizerUseExperimentalSteerTurnBasisFix,
                 Format = GetOptimizerFormat(),
                 Jobs = _context.OptimizerJobs,
                 DecompileJobs = _context.OptimizerDecompileJobs,
@@ -1935,7 +2260,9 @@ namespace GmodAddonCompressor
                 Overwrite = _context.OptimizerOverwrite,
                 OverwriteWork = _context.OptimizerOverwriteWork,
                 RestoreSkins = _context.OptimizerRestoreSkins,
-                CompileVerbose = _context.OptimizerCompileVerbose
+                CompileVerbose = _context.OptimizerCompileVerbose,
+                CleanupWorkModelArtifacts = _context.OptimizerCleanupWorkModelArtifacts,
+                SingleAddonOnly = false
             };
 
             _optimizerCts?.Cancel();
@@ -1962,22 +2289,25 @@ namespace GmodAddonCompressor
                 {
                     Button_OpenModelsOutput.IsEnabled = true;
                     Button_OpenModelsWork.IsEnabled = true;
-                    _context.ModelsSizeReportText = "Size report: computing (after)...";
-                    _modelsSizeAfter = await TryScanSizeAsync(_modelsOutputPath, CancellationToken.None);
-                    _context.ModelsSizeReportText = BuildSizeReportText(_modelsSizeBefore, _modelsSizeAfter);
+                    if (GetModelsBatchSummaryPath() == null)
+                    {
+                        _context.ModelsSizeReportText = "Size report: computing (after)...";
+                        _modelsSizeAfter = await TryScanSizeAsync(_modelsOutputPath, CancellationToken.None);
+                    }
+                    _context.ModelsSizeReportText = BuildModelsSizeReportText();
                 }
                 else
                 {
-                    _context.ModelsSizeReportText = BuildSizeReportText(_modelsSizeBefore, _modelsSizeAfter);
+                    _context.ModelsSizeReportText = BuildModelsSizeReportText();
                 }
             }
             else
             {
                 var errorSuffix = string.IsNullOrWhiteSpace(_modelsLastErrorLine) ? string.Empty : $" | {_modelsLastErrorLine}";
                 _context.ModelsStatusText = $"FAIL ({exitCode}){errorSuffix}";
-                Button_OpenModelsOutput.IsEnabled = false;
-                Button_OpenModelsWork.IsEnabled = false;
-                _context.ModelsSizeReportText = BuildSizeReportText(_modelsSizeBefore, _modelsSizeAfter);
+                Button_OpenModelsOutput.IsEnabled = !string.IsNullOrWhiteSpace(_modelsOutputPath) && Directory.Exists(_modelsOutputPath);
+                Button_OpenModelsWork.IsEnabled = !string.IsNullOrWhiteSpace(_modelsWorkDir) && Directory.Exists(_modelsWorkDir);
+                _context.ModelsSizeReportText = BuildModelsSizeReportText();
                 if (!string.IsNullOrWhiteSpace(_modelsWorkDir) && Directory.Exists(_modelsWorkDir))
                     OpenFolder(_modelsWorkDir, "Models");
             }
@@ -1997,6 +2327,18 @@ namespace GmodAddonCompressor
                 MessageBox.Show(errorMessage, "Pipeline", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
+
+            if (IsModelsBatchFolderInput(addonDirectoryPath))
+            {
+                MessageBox.Show(
+                    "Pipeline currently supports only a single addon root. Use Models directly when selecting a folder of addons.",
+                    "Pipeline",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            await RefreshAddonWorkshopWarningAsync(addonDirectoryPath, force: true);
 
             if (!EnsureToolsAvailable("Pipeline"))
                 return;
@@ -2023,6 +2365,12 @@ namespace GmodAddonCompressor
             _pipelineCompressExitCode = null;
             _modelsLastErrorLine = null;
             _modelsOutputPath = null;
+            _modelsStepIndex = 0;
+            _modelsStepTotal = 0;
+            _modelsPhase = string.Empty;
+            _modelsBatchAddonIndex = 0;
+            _modelsBatchAddonTotal = 0;
+            _modelsBatchAddonName = string.Empty;
             _modelsWorkDir = ToolPaths.GetWorkDir(addonDirectoryPath, _context.OptimizerSuffix);
             _context.PipelineSummaryText = string.Empty;
             _context.PipelineSizeReportText = string.Empty;
@@ -2088,6 +2436,11 @@ namespace GmodAddonCompressor
                     Ratio = _context.OptimizerRatio,
                     Merge = _context.OptimizerMerge,
                     AutoSmooth = _context.OptimizerAutoSmooth,
+                    UsePlanar = _context.OptimizerUsePlanar,
+                    PlanarAngle = _context.OptimizerPlanarAngle,
+                    ExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
+                    ExperimentalRoundPartsPolicy = _context.OptimizerUseExperimentalRoundPartsPolicy,
+                    ExperimentalSteerTurnBasisFix = _context.OptimizerUseExperimentalSteerTurnBasisFix,
                     Format = GetOptimizerFormat(),
                     Jobs = _context.OptimizerJobs,
                     DecompileJobs = _context.OptimizerDecompileJobs,
@@ -2097,7 +2450,9 @@ namespace GmodAddonCompressor
                     Overwrite = _context.OptimizerOverwrite,
                     OverwriteWork = _context.OptimizerOverwriteWork,
                     RestoreSkins = _context.OptimizerRestoreSkins,
-                    CompileVerbose = _context.OptimizerCompileVerbose
+                    CompileVerbose = _context.OptimizerCompileVerbose,
+                    CleanupWorkModelArtifacts = _context.OptimizerCleanupWorkModelArtifacts,
+                    SingleAddonOnly = true
                 };
 
                 int exitCode = await _optimizerRunner.RunAsync(options, token);
@@ -2203,46 +2558,130 @@ namespace GmodAddonCompressor
                 ? $"{_pipelineCompressFilesProcessed}/{_pipelineCompressFilesTotal}"
                 : "n/a";
 
-            _context.PipelineSummaryText = $"Summary: Models {modelsStatus} | Output: {modelsOutput} | Compress {compressStatus} | Files: {compressCount}";
-            _context.PipelineSizeReportText = BuildPipelineSizeReportText();
+            string compressMode = BuildCompressPipelineOptions().ModeLabel;
+            _context.PipelineSummaryText = $"Summary: Models {modelsStatus} | Output: {modelsOutput} | Compress {compressStatus} | Files: {compressCount} | Mode: {compressMode}";
+            _context.PipelineSizeReportText = BuildPipelineSizeReportText(BuildCompressPipelineOptions());
+        }
+
+        private static string BuildOptimizerItemProgressText(SourceAddonOptimizerProgressUpdate update)
+        {
+            string itemType = string.IsNullOrWhiteSpace(update.ItemType) ? "Item" : update.ItemType!;
+            string prefix = update.IsItemCompletion ? "Completed" : "Running";
+            string text = $"{prefix}: {itemType} {update.ItemIndex}/{update.ItemTotal}";
+
+            if (!string.IsNullOrWhiteSpace(update.ItemPath))
+            {
+                string itemName = Path.GetFileName(update.ItemPath);
+                if (!string.IsNullOrWhiteSpace(itemName))
+                    text += $" | {itemName}";
+            }
+
+            return text;
+        }
+
+        private string BuildModelsBatchLabel()
+        {
+            if (_modelsBatchAddonIndex <= 0 || _modelsBatchAddonTotal <= 0 || string.IsNullOrWhiteSpace(_modelsBatchAddonName))
+                return string.Empty;
+
+            return $"Addon {_modelsBatchAddonIndex}/{_modelsBatchAddonTotal}: {_modelsBatchAddonName}";
+        }
+
+        private string AppendModelsBatchLabel(string text)
+        {
+            string batchLabel = BuildModelsBatchLabel();
+            if (string.IsNullOrWhiteSpace(batchLabel))
+                return text;
+            if (string.IsNullOrWhiteSpace(text))
+                return batchLabel;
+            return $"{text} | {batchLabel}";
         }
 
         private void OptimizerProgressUpdate(SourceAddonOptimizerProgressUpdate update)
         {
             Dispatcher.Invoke(() =>
             {
+                if (!string.IsNullOrWhiteSpace(update.WorkDirPath))
+                    _modelsWorkDir = update.WorkDirPath;
+
+                if (update.BatchAddonIndex.HasValue && update.BatchAddonTotal.HasValue)
+                {
+                    _modelsBatchAddonIndex = update.BatchAddonIndex.Value;
+                    _modelsBatchAddonTotal = update.BatchAddonTotal.Value;
+                    _modelsBatchAddonName = update.BatchAddonName ?? string.Empty;
+                    string batchLabel = BuildModelsBatchLabel();
+                    if (!string.IsNullOrWhiteSpace(batchLabel))
+                    {
+                        _context.ModelsProgressText = batchLabel;
+                        if (_pipelineRunning && _pipelineStage == PipelineStage.Models)
+                            _context.PipelineProgressText = batchLabel;
+                    }
+                    return;
+                }
+
                 if (update.StepIndex.HasValue)
                 {
                     _modelsStepIndex = update.StepIndex.Value;
                     _modelsStepTotal = update.StepTotal ?? 0;
                     _modelsPhase = update.Phase ?? string.Empty;
-                    _context.ModelsStatusText = $"Phase: {_modelsPhase} (Step {_modelsStepIndex}/{_modelsStepTotal})";
+                    _context.ModelsStatusText = AppendModelsBatchLabel($"Phase: {_modelsPhase} (Step {_modelsStepIndex}/{_modelsStepTotal})");
                     _context.ModelsProgressValue = 0;
                     _context.ModelsProgressMaxValue = 1;
 
                     if (_pipelineRunning && _pipelineStage == PipelineStage.Models)
-                        _context.PipelineStatusText = $"Models Phase: {_modelsPhase} (Step {_modelsStepIndex}/{_modelsStepTotal})";
+                        _context.PipelineStatusText = AppendModelsBatchLabel($"Models Phase: {_modelsPhase} (Step {_modelsStepIndex}/{_modelsStepTotal})");
                 }
 
                 if (update.IsPackaging)
                 {
-                    _context.ModelsStatusText = $"Packaging: {update.Phase}";
+                    string phaseText = update.Phase ?? "Packaging";
+                    _context.ModelsStatusText = AppendModelsBatchLabel($"Packaging: {phaseText}");
+                    _context.ModelsProgressText = AppendModelsBatchLabel($"Current: {phaseText}");
+
+                    if (_pipelineRunning && _pipelineStage == PipelineStage.Models)
+                    {
+                        _context.PipelineStatusText = AppendModelsBatchLabel($"Models Phase: Packaging - {phaseText}");
+                        _context.PipelineProgressText = AppendModelsBatchLabel($"Current: {phaseText}");
+                    }
+                    return;
+                }
+
+                if (update.IsFinalize)
+                {
+                    string phaseText = update.Phase ?? "Finalizing";
+                    _context.ModelsStatusText = AppendModelsBatchLabel($"Finalizing: {phaseText}");
+                    _context.ModelsProgressText = AppendModelsBatchLabel($"Current: {phaseText}");
+
+                    if (_pipelineRunning && _pipelineStage == PipelineStage.Models)
+                    {
+                        _context.PipelineStatusText = AppendModelsBatchLabel($"Models Phase: Finalizing - {phaseText}");
+                        _context.PipelineProgressText = AppendModelsBatchLabel($"Current: {phaseText}");
+                    }
                     return;
                 }
 
                 if (update.ItemIndex.HasValue && update.ItemTotal.HasValue)
                 {
-                    _context.ModelsProgressMinValue = 0;
-                    _context.ModelsProgressMaxValue = update.ItemTotal.Value;
-                    _context.ModelsProgressValue = update.ItemIndex.Value;
-                    _context.ModelsProgressText = $"Current: {update.ItemType} {update.ItemIndex}/{update.ItemTotal}";
+                    bool useCompletionDrivenProgress = _modelsStepIndex == 3
+                        && string.Equals(update.ItemType, "QC", StringComparison.OrdinalIgnoreCase);
+                    string progressText = BuildOptimizerItemProgressText(update);
+                    if (!useCompletionDrivenProgress || update.IsItemCompletion)
+                    {
+                        _context.ModelsProgressMinValue = 0;
+                        _context.ModelsProgressMaxValue = update.ItemTotal.Value;
+                        _context.ModelsProgressValue = update.ItemIndex.Value;
+                    }
+                    _context.ModelsProgressText = AppendModelsBatchLabel(progressText);
 
                     if (_pipelineRunning && _pipelineStage == PipelineStage.Models)
                     {
-                        _context.PipelineProgressMinValue = 0;
-                        _context.PipelineProgressMaxValue = update.ItemTotal.Value;
-                        _context.PipelineProgressValue = update.ItemIndex.Value;
-                        _context.PipelineProgressText = $"Current: {update.ItemType} {update.ItemIndex}/{update.ItemTotal}";
+                        if (!useCompletionDrivenProgress || update.IsItemCompletion)
+                        {
+                            _context.PipelineProgressMinValue = 0;
+                            _context.PipelineProgressMaxValue = update.ItemTotal.Value;
+                            _context.PipelineProgressValue = update.ItemIndex.Value;
+                        }
+                        _context.PipelineProgressText = AppendModelsBatchLabel(progressText);
                     }
                 }
             });
@@ -2318,6 +2757,254 @@ namespace GmodAddonCompressor
             return _modelsWorkDir;
         }
 
+        private string? GetModelsPolicySummaryPath()
+        {
+            var logsDir = GetModelsLogsDir();
+            if (string.IsNullOrWhiteSpace(logsDir))
+                return null;
+            var summaryPath = Path.Combine(logsDir, "selective_policy_summary.json");
+            return File.Exists(summaryPath) ? summaryPath : null;
+        }
+
+        private string? GetModelsRoundPartsPolicySummaryPath()
+        {
+            var logsDir = GetModelsLogsDir();
+            if (string.IsNullOrWhiteSpace(logsDir))
+                return null;
+            var summaryPath = Path.Combine(logsDir, "round_parts_policy_summary.json");
+            return File.Exists(summaryPath) ? summaryPath : null;
+        }
+
+        private string? GetModelsSteerTurnBasisSummaryPath()
+        {
+            var logsDir = GetModelsLogsDir();
+            if (string.IsNullOrWhiteSpace(logsDir))
+                return null;
+            var summaryPath = Path.Combine(logsDir, "vehicle_steer_turn_basis_fix_summary.json");
+            return File.Exists(summaryPath) ? summaryPath : null;
+        }
+
+        private string? GetModelsBatchSummaryPath()
+        {
+            var logsDir = GetModelsLogsDir();
+            if (string.IsNullOrWhiteSpace(logsDir))
+                return null;
+            var summaryPath = Path.Combine(logsDir, "models_batch_summary.json");
+            return File.Exists(summaryPath) ? summaryPath : null;
+        }
+
+        private string BuildModelsSizeReportText()
+        {
+            var batchSummaryPath = GetModelsBatchSummaryPath();
+            if (!string.IsNullOrWhiteSpace(batchSummaryPath))
+                return BuildModelsBatchSummaryText(batchSummaryPath);
+
+            return AppendSteerTurnBasisSummary(AppendRoundPartsPolicySummary(AppendPolicySummary(BuildSizeReportText(_modelsSizeBefore, _modelsSizeAfter))));
+        }
+
+        private string BuildModelsBatchSummaryText(string summaryPath)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(summaryPath));
+                var root = document.RootElement;
+                var totals = root.TryGetProperty("totals", out var totalsElement) ? totalsElement : default;
+                long beforeBytes = GetJsonLong(totals, "before_bytes");
+                long afterBytes = GetJsonLong(totals, "after_bytes");
+                long deltaBytes = GetJsonLong(totals, "delta_bytes");
+                int totalUnits = (int)GetJsonLong(root, "total_units");
+                int okCount = (int)GetJsonLong(root, "ok");
+                int failCount = (int)GetJsonLong(root, "fail");
+                int skippedCount = 0;
+                if (root.TryGetProperty("skipped_without_models", out var skippedElement) && skippedElement.ValueKind == JsonValueKind.Array)
+                    skippedCount = skippedElement.GetArrayLength();
+
+                var lines = new List<string>
+                {
+                    "Batch mode: folder of addons",
+                    $"Processed addons: {okCount}/{totalUnits} OK | Failed: {failCount}" +
+                    (skippedCount > 0 ? $" | Skipped without models: {skippedCount}" : string.Empty)
+                };
+
+                if (beforeBytes > 0 || afterBytes > 0)
+                {
+                    string deltaText = FormatSignedBytes(deltaBytes);
+                    if (beforeBytes > 0)
+                    {
+                        double deltaPercent = (double)deltaBytes / beforeBytes * 100.0;
+                        lines.Add($"Total: {FormatBytes(beforeBytes)} -> {FormatBytes(afterBytes)} ({deltaText}, {deltaPercent:+0.0;-0.0;0.0}%)");
+                    }
+                    else
+                    {
+                        lines.Add($"Total: {FormatBytes(beforeBytes)} -> {FormatBytes(afterBytes)} ({deltaText})");
+                    }
+                }
+
+                if (root.TryGetProperty("results", out var resultsElement) && resultsElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in resultsElement.EnumerateArray())
+                    {
+                        string name = GetJsonString(item, "name") ?? "(unknown)";
+                        string status = (GetJsonString(item, "status") ?? "unknown").ToUpperInvariant();
+                        int exitCode = (int)GetJsonLong(item, "exit_code");
+                        long itemBeforeBytes = GetJsonLong(item, "before_bytes");
+                        long itemAfterBytes = GetJsonLong(item, "after_bytes");
+                        long itemDeltaBytes = itemAfterBytes - itemBeforeBytes;
+                        string line;
+                        if (itemBeforeBytes > 0)
+                        {
+                            double itemPercent = (double)itemDeltaBytes / itemBeforeBytes * 100.0;
+                            line = $"{name}/: {FormatBytes(itemBeforeBytes)} -> {FormatBytes(itemAfterBytes)} ({FormatSignedBytes(itemDeltaBytes)}, {itemPercent:+0.0;-0.0;0.0}%) [{status}]";
+                        }
+                        else
+                        {
+                            line = $"{name}/: {FormatBytes(itemBeforeBytes)} -> {FormatBytes(itemAfterBytes)} ({FormatSignedBytes(itemDeltaBytes)}) [{status}]";
+                        }
+
+                        if (exitCode != 0)
+                            line += $" | exit={exitCode}";
+
+                        lines.Add(line);
+                    }
+                }
+
+                return string.Join(Environment.NewLine, lines);
+            }
+            catch
+            {
+                return "Batch size report unavailable.";
+            }
+        }
+
+        private string AppendPolicySummary(string baseReport)
+        {
+            var summaryPath = GetModelsPolicySummaryPath();
+            if (string.IsNullOrWhiteSpace(summaryPath))
+                return baseReport;
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(summaryPath));
+                var root = document.RootElement;
+                var summary = root.TryGetProperty("summary", out var summaryElement) ? summaryElement : default;
+                var interpretation = root.TryGetProperty("interpretation", out var interpretationElement) ? interpretationElement : default;
+                var counts = summary.ValueKind == JsonValueKind.Object && summary.TryGetProperty("counts", out var countsElement)
+                    ? countsElement
+                    : default;
+                var lines = new List<string>();
+                lines.Add("Experimental Models policy:");
+                lines.Add($"Mode: {GetJsonString(root, "mode") ?? "experimental_ground_policy"}");
+                lines.Add($"Addon shape: {GetJsonString(interpretation, "label") ?? "unknown"}");
+                lines.Add($"Reason: {GetJsonString(interpretation, "why") ?? "n/a"}");
+
+                foreach (var groupName in new[]
+                {
+                    "experimental_ground_main",
+                    "baseline_aircraft",
+                    "baseline_wheel",
+                    "baseline_rotor",
+                    "baseline_attachment",
+                    "baseline_detached",
+                    "baseline_uncertain_main",
+                    "baseline_small_unknown",
+                    "baseline_other",
+                })
+                {
+                    int count = GetJsonInt(counts, groupName);
+                    if (count > 0)
+                        lines.Add($"{groupName}: {count}");
+                }
+
+                int classified = GetJsonInt(summary, "classified_entry_count");
+                int skipped = GetJsonInt(summary, "skipped_entry_count");
+                if (classified > 0 || skipped > 0)
+                    lines.Add($"Classified models: {classified} | skipped: {skipped}");
+
+                return string.IsNullOrWhiteSpace(baseReport)
+                    ? string.Join(Environment.NewLine, lines)
+                    : $"{baseReport}{Environment.NewLine}{Environment.NewLine}{string.Join(Environment.NewLine, lines)}";
+            }
+            catch
+            {
+                return baseReport;
+            }
+        }
+
+        private string AppendSteerTurnBasisSummary(string baseReport)
+        {
+            var summaryPath = GetModelsSteerTurnBasisSummaryPath();
+            if (string.IsNullOrWhiteSpace(summaryPath))
+                return baseReport;
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(summaryPath));
+                var root = document.RootElement;
+                var summary = root.TryGetProperty("summary", out var summaryElement) ? summaryElement : default;
+                var lines = new List<string>();
+                lines.Add("Experimental steer turn-basis fix:");
+                lines.Add($"Mode: {GetJsonString(root, "mode") ?? "experimental_vehicle_steer_turn_basis_fix"}");
+                lines.Add($"Detected QCs: {GetJsonInt(summary, "detected_qc_count")}");
+                lines.Add($"Patched turn files: {GetJsonInt(summary, "patched_turn_file_count")}");
+
+                return string.IsNullOrWhiteSpace(baseReport)
+                    ? string.Join(Environment.NewLine, lines)
+                    : $"{baseReport}{Environment.NewLine}{Environment.NewLine}{string.Join(Environment.NewLine, lines)}";
+            }
+            catch
+            {
+                return baseReport;
+            }
+        }
+
+        private string AppendRoundPartsPolicySummary(string baseReport)
+        {
+            var summaryPath = GetModelsRoundPartsPolicySummaryPath();
+            if (string.IsNullOrWhiteSpace(summaryPath))
+                return baseReport;
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(summaryPath));
+                var root = document.RootElement;
+                var summary = root.TryGetProperty("summary", out var summaryElement) ? summaryElement : default;
+                var lines = new List<string>();
+                lines.Add("Experimental round-parts policy:");
+                lines.Add($"Mode: {GetJsonString(root, "mode") ?? "experimental_round_parts_policy"}");
+                lines.Add($"Wheel variant: {GetJsonString(root, "wheel_variant") ?? "silhouette_floor_20"}");
+                lines.Add($"Embedded variant: {GetJsonString(root, "embedded_variant") ?? "floor_24"}");
+
+                int wheelModels = GetJsonInt(summary, "wheel_models");
+                int wheelRoundObjects = GetJsonInt(summary, "wheel_round_objects");
+                int wheelAdaptiveFloorHits = GetJsonInt(summary, "wheel_adaptive_floor_hits");
+                if (wheelModels > 0 || wheelRoundObjects > 0 || wheelAdaptiveFloorHits > 0)
+                    lines.Add($"Wheel models: {wheelModels} | round objects: {wheelRoundObjects} | floor hits: {wheelAdaptiveFloorHits}");
+
+                int embeddedCandidateObjects = GetJsonInt(summary, "embedded_candidate_objects");
+                int embeddedQualifiedRoundParts = GetJsonInt(summary, "embedded_qualified_round_parts");
+                int embeddedRejectedFaces = GetJsonInt(summary, "embedded_rejected_candidate_faces");
+                int embeddedAdaptiveFloorHits = GetJsonInt(summary, "embedded_adaptive_floor_hits");
+                if (embeddedCandidateObjects > 0 || embeddedQualifiedRoundParts > 0 || embeddedRejectedFaces > 0 || embeddedAdaptiveFloorHits > 0)
+                {
+                    lines.Add(
+                        $"Embedded candidates: {embeddedCandidateObjects} | qualified round parts: {embeddedQualifiedRoundParts} | rejected faces: {embeddedRejectedFaces} | floor hits: {embeddedAdaptiveFloorHits}"
+                    );
+                }
+
+                int rigidFixVertices = GetJsonInt(summary, "rigid_primary_bone_fix_vertices");
+                if (rigidFixVertices > 0)
+                    lines.Add($"Rigid primary-bone fix vertices: {rigidFixVertices}");
+
+                return string.IsNullOrWhiteSpace(baseReport)
+                    ? string.Join(Environment.NewLine, lines)
+                    : $"{baseReport}{Environment.NewLine}{Environment.NewLine}{string.Join(Environment.NewLine, lines)}";
+            }
+            catch
+            {
+                return baseReport;
+            }
+        }
+
         private void OpenFolder(string? path, string title)
         {
             if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
@@ -2372,10 +3059,22 @@ namespace GmodAddonCompressor
             SetSelectedUnpackExistingMode(_settings.UnpackExistingMode);
             _context.OptimizerSuffix = string.IsNullOrWhiteSpace(_settings.OptimizerSuffix) ? "_optimized" : _settings.OptimizerSuffix;
             _context.OptimizerPresetIndex = PresetIndexFromName(_settings.OptimizerPreset);
+            if (_settings.OptimizerUsePlanar.HasValue)
+                _context.OptimizerUsePlanar = _settings.OptimizerUsePlanar.Value;
+            if (_settings.OptimizerPlanarAngle.HasValue)
+                _context.OptimizerPlanarAngle = _settings.OptimizerPlanarAngle.Value;
+            if (_settings.OptimizerUseExperimentalGroundPolicy.HasValue)
+                _context.OptimizerUseExperimentalGroundPolicy = _settings.OptimizerUseExperimentalGroundPolicy.Value;
+            if (_settings.OptimizerUseExperimentalRoundPartsPolicy.HasValue)
+                _context.OptimizerUseExperimentalRoundPartsPolicy = _settings.OptimizerUseExperimentalRoundPartsPolicy.Value;
+            if (_settings.OptimizerUseExperimentalSteerTurnBasisFix.HasValue)
+                _context.OptimizerUseExperimentalSteerTurnBasisFix = _settings.OptimizerUseExperimentalSteerTurnBasisFix.Value;
             if (_settings.OptimizerRestoreSkins.HasValue)
                 _context.OptimizerRestoreSkins = _settings.OptimizerRestoreSkins.Value;
             if (_settings.OptimizerCompileVerbose.HasValue)
                 _context.OptimizerCompileVerbose = _settings.OptimizerCompileVerbose.Value;
+            if (_settings.OptimizerCleanupWorkModelArtifacts.HasValue)
+                _context.OptimizerCleanupWorkModelArtifacts = _settings.OptimizerCleanupWorkModelArtifacts.Value;
             if (_settings.AudioWavSampleRateIndex.HasValue)
             {
                 int index = _settings.AudioWavSampleRateIndex.Value;
@@ -2432,6 +3131,16 @@ namespace GmodAddonCompressor
                 if (legacyIndex >= 0 && legacyIndex < _context.AudioBitrateList.Length)
                     _context.OggQualityIndex = MapOggQualityIndexFromBitrate(_context.AudioBitrateList[legacyIndex]);
             }
+            if (_settings.CompressModeIndex.HasValue)
+            {
+                int index = _settings.CompressModeIndex.Value;
+                if (index >= 0 && index < _context.CompressModeList.Length)
+                    _context.CompressModeIndex = index;
+            }
+            if (_settings.CompressMagickUseCommonVtf.HasValue)
+                _context.CompressMagickUseCommonVtf = _settings.CompressMagickUseCommonVtf.Value;
+            if (_settings.CompressMagickUseAggressivePng.HasValue)
+                _context.CompressMagickUseAggressivePng = _settings.CompressMagickUseAggressivePng.Value;
 
             if (_context.OptimizerPresetIndex == PresetCustomIndex)
             {
@@ -2444,8 +3153,10 @@ namespace GmodAddonCompressor
 
             ResetUnpackSummary();
             UpdateUnpackActionStates();
+            LoadAddonMergeSettings();
             ResetMapScanSummary();
             UpdateMapScanActionStates();
+            _ = RefreshAddonWorkshopWarningAsync(_context.AddonDirectoryPath, force: true);
         }
 
         private void SaveSettings()
@@ -2464,8 +3175,14 @@ namespace GmodAddonCompressor
                 UnpackDeleteMapBsp = CheckBox_UnpackDeleteMapBsp.IsChecked == true,
                 OptimizerSuffix = _context.OptimizerSuffix,
                 OptimizerPreset = PresetNameFromIndex(_context.OptimizerPresetIndex),
+                OptimizerUsePlanar = _context.OptimizerUsePlanar,
+                OptimizerPlanarAngle = _context.OptimizerPlanarAngle,
+                OptimizerUseExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
+                OptimizerUseExperimentalRoundPartsPolicy = _context.OptimizerUseExperimentalRoundPartsPolicy,
+                OptimizerUseExperimentalSteerTurnBasisFix = _context.OptimizerUseExperimentalSteerTurnBasisFix,
                 OptimizerRestoreSkins = _context.OptimizerRestoreSkins,
                 OptimizerCompileVerbose = _context.OptimizerCompileVerbose,
+                OptimizerCleanupWorkModelArtifacts = _context.OptimizerCleanupWorkModelArtifacts,
                 OptimizerCustom = new OptimizerCustomParams
                 {
                     Ratio = _context.OptimizerRatio,
@@ -2488,8 +3205,12 @@ namespace GmodAddonCompressor
                 AudioMp3BitrateIndex = _context.Mp3BitrateIndex,
                 AudioOggSampleRateIndex = _context.OggRateIndex,
                 AudioOggChannelsIndex = _context.OggChannelsIndex,
-                AudioOggQualityIndex = _context.OggQualityIndex
+                AudioOggQualityIndex = _context.OggQualityIndex,
+                CompressModeIndex = _context.CompressModeIndex,
+                CompressMagickUseCommonVtf = _context.CompressMagickUseCommonVtf,
+                CompressMagickUseAggressivePng = _context.CompressMagickUseAggressivePng
             };
+            SaveAddonMergeSettings(settings);
 
             SettingsSystem.Save(settings);
         }
@@ -2656,15 +3377,18 @@ namespace GmodAddonCompressor
             if (_context.OptimizerCompileJobs < 0)
                 errors.Add("Compile jobs must be 0 (auto) or greater.");
 
-            if (_context.OptimizerRatio <= 0 || _context.OptimizerRatio > 1.0)
-                errors.Add("Ratio must be between 0 and 1.");
+            if (_context.OptimizerRatio < 0.01 || _context.OptimizerRatio > 1.0)
+                errors.Add("Ratio must be between 0.01 and 1.00.");
 
             if (_context.OptimizerAutoSmooth < 0 || _context.OptimizerAutoSmooth > 180)
                 errors.Add("AutoSmooth must be between 0 and 180.");
 
-            var parentDir = Directory.GetParent(addonDirectoryPath);
-            if (parentDir == null || !CanWriteToDirectory(parentDir.FullName))
-                errors.Add("No write permission in addon parent folder (output needs to be created there).");
+            if (_context.OptimizerUsePlanar && (_context.OptimizerPlanarAngle < 0 || _context.OptimizerPlanarAngle > 180))
+                errors.Add("Planar Angle must be between 0 and 180 when Use Planar is enabled.");
+
+            string outputWriteProbePath = GetModelsOutputWriteProbePath(addonDirectoryPath);
+            if (string.IsNullOrWhiteSpace(outputWriteProbePath) || !CanWriteToDirectory(outputWriteProbePath))
+                errors.Add("No write permission in the folder where Models output will be created.");
 
             if (!CanWriteToDirectory(ToolPaths.WorkRoot))
                 errors.Add("No write permission in work directory root.");
@@ -2687,6 +3411,59 @@ namespace GmodAddonCompressor
             {
                 return false;
             }
+        }
+
+        private static bool LooksLikeAddonRoot(string directoryPath)
+        {
+            if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
+                return false;
+
+            foreach (var markerFile in ModelsAddonMarkerFiles)
+            {
+                if (File.Exists(Path.Combine(directoryPath, markerFile)))
+                    return true;
+            }
+
+            foreach (var markerDirectory in ModelsAddonMarkerDirectories)
+            {
+                if (Directory.Exists(Path.Combine(directoryPath, markerDirectory)))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsModelsBatchFolderInput(string directoryPath)
+        {
+            if (LooksLikeAddonRoot(directoryPath))
+                return false;
+
+            try
+            {
+                foreach (var childDirectory in Directory.EnumerateDirectories(directoryPath))
+                {
+                    if (!LooksLikeAddonRoot(childDirectory))
+                        continue;
+
+                    if (Directory.Exists(Path.Combine(childDirectory, "models")))
+                        return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+
+            return false;
+        }
+
+        private static string GetModelsOutputWriteProbePath(string addonDirectoryPath)
+        {
+            if (IsModelsBatchFolderInput(addonDirectoryPath))
+                return addonDirectoryPath;
+
+            var parentDir = Directory.GetParent(addonDirectoryPath);
+            return parentDir?.FullName ?? addonDirectoryPath;
         }
 
         private static string? DetectBlenderPath()
@@ -2860,6 +3637,7 @@ namespace GmodAddonCompressor
 
             await Task.Delay(500);
 
+            CompressPipelineOptions compressOptions = BuildCompressPipelineOptions();
             int rateIndex = _context.WavRateListIndex;
             int resolutionIndex = _context.ImageReducingResolutionListIndex;
             int targetWidth = (int)_context.ImageSizeLimitList[_context.ImageWidthLimitIndex];
@@ -2885,7 +3663,7 @@ namespace GmodAddonCompressor
             ImageContext.SkipHeight = (int)_context.ImageSkipHeight;
             ImageContext.ReduceExactlyToLimits = _context.ReduceExactlyToLimits;
             ImageContext.KeepImageAspectRatio = _context.KeepImageAspectRatio;
-            ImageContext.ImageMagickVTFCompress = _context.ImageMagickVTFCompress;
+            ImageContext.ImageMagickVTFCompress = compressOptions.UseLegacyStandardVtfDemo;
             LuaContext.ChangeOriginalCodeToMinimalistic = _context.ChangeOriginalCodeToMinimalistic;
 
             bool isPipelineCompress = _pipelineRunning && _pipelineStage == PipelineStage.Compress;
@@ -2893,13 +3671,19 @@ namespace GmodAddonCompressor
             if (isPipelineCompress)
             {
                 _pipelineCompressSizeAfter = null;
-                _context.PipelineSizeReportText = "Size report: computing (before compress)...";
+                _context.PipelineSizeReportText =
+                    $"Compress mode: {compressOptions.ModeLabel}{Environment.NewLine}" +
+                    $"{compressOptions.BuildRoutingSummary()}{Environment.NewLine}{Environment.NewLine}" +
+                    "Size report: computing (before compress)...";
                 _pipelineCompressSizeBefore = await TryScanSizeAsync(addonDirectoryPath, sizeToken);
             }
             else
             {
                 _compressSizeAfter = null;
-                _context.CompressSizeReportText = "Size report: computing (before)...";
+                _context.CompressSizeReportText =
+                    $"Compress mode: {compressOptions.ModeLabel}{Environment.NewLine}" +
+                    $"{compressOptions.BuildRoutingSummary()}{Environment.NewLine}{Environment.NewLine}" +
+                    "Size report: computing (before)...";
                 _compressSizeBefore = await TryScanSizeAsync(addonDirectoryPath, CancellationToken.None);
             }
 
@@ -2915,7 +3699,7 @@ namespace GmodAddonCompressor
                     $"OGG {AudioContext.OggSampleRate}Hz {AudioContext.OggChannels}ch q={AudioContext.OggQuality:0.0} (VBR) | Enabled={audioAvailable}");
             }
 
-            var compressSystem = new CompressAddonSystem(addonDirectoryPath);
+            var compressSystem = new CompressAddonSystem(addonDirectoryPath, pipelineOptions: compressOptions);
 
             if (_context.CompressVTF) compressSystem.IncludeVTF();
             if (audioAvailable)
@@ -2938,13 +3722,13 @@ namespace GmodAddonCompressor
                 {
                     _context.PipelineSizeReportText = "Size report: computing (after compress)...";
                     _pipelineCompressSizeAfter = await TryScanSizeAsync(addonDirectoryPath, sizeToken);
-                    _context.PipelineSizeReportText = BuildPipelineSizeReportText();
+                    _context.PipelineSizeReportText = BuildPipelineSizeReportText(compressOptions);
                 }
                 else
                 {
                     _context.CompressSizeReportText = "Size report: computing (after)...";
                     _compressSizeAfter = await TryScanSizeAsync(addonDirectoryPath, CancellationToken.None);
-                    _context.CompressSizeReportText = DirectorySizeReportFormatter.BuildReport(_compressSizeBefore, _compressSizeAfter);
+                    _context.CompressSizeReportText = BuildCompressSizeReportText(compressOptions, _compressSizeBefore, _compressSizeAfter);
                 }
 
                 CompressCompleted(unlockUiOnComplete);
@@ -3001,14 +3785,35 @@ namespace GmodAddonCompressor
             return DirectorySizeReportFormatter.BuildReport(before, after);
         }
 
-        private string BuildPipelineSizeReportText()
+        private static string BuildCompressSizeReportText(CompressPipelineOptions options, DirectorySizeSnapshot? before, DirectorySizeSnapshot? after)
+        {
+            return
+                $"Compress mode: {options.ModeLabel}{Environment.NewLine}" +
+                $"{options.BuildRoutingSummary()}{Environment.NewLine}{Environment.NewLine}" +
+                DirectorySizeReportFormatter.BuildReport(before, after);
+        }
+
+        private CompressPipelineOptions BuildCompressPipelineOptions()
+        {
+            bool isMagickMode = _context.CompressModeIsMagick;
+
+            return new CompressPipelineOptions
+            {
+                Mode = isMagickMode ? CompressPipelineMode.Magick : CompressPipelineMode.Standard,
+                UseLegacyStandardVtfDemo = !isMagickMode && _context.ImageMagickVTFCompress,
+                UseMagickForCommonVtf = isMagickMode && _context.CompressMagickUseCommonVtf,
+                UseMagickForAggressivePng = isMagickMode && _context.CompressMagickUseAggressivePng
+            };
+        }
+
+        private string BuildPipelineSizeReportText(CompressPipelineOptions? compressOptions = null)
         {
             var sb = new StringBuilder();
 
             if (_pipelineModelsSizeBefore != null || _pipelineModelsSizeAfter != null)
             {
                 sb.AppendLine("Models size report:");
-                sb.AppendLine(BuildSizeReportText(_pipelineModelsSizeBefore, _pipelineModelsSizeAfter));
+                sb.AppendLine(AppendSteerTurnBasisSummary(AppendRoundPartsPolicySummary(AppendPolicySummary(BuildSizeReportText(_pipelineModelsSizeBefore, _pipelineModelsSizeAfter)))));
             }
 
             if (_pipelineCompressSizeBefore != null || _pipelineCompressSizeAfter != null)
@@ -3016,7 +3821,10 @@ namespace GmodAddonCompressor
                 if (sb.Length > 0)
                     sb.AppendLine().AppendLine();
                 sb.AppendLine("Compress size report:");
-                sb.AppendLine(BuildSizeReportText(_pipelineCompressSizeBefore, _pipelineCompressSizeAfter));
+                if (compressOptions == null)
+                    sb.AppendLine(BuildSizeReportText(_pipelineCompressSizeBefore, _pipelineCompressSizeAfter));
+                else
+                    sb.AppendLine(BuildCompressSizeReportText(compressOptions, _pipelineCompressSizeBefore, _pipelineCompressSizeAfter));
             }
 
             return sb.ToString().TrimEnd();

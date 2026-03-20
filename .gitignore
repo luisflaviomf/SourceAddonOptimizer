@@ -28,8 +28,20 @@ build/
 # Local test archives
 teste*.zip
 
+# Local test data directories
+/addonsparateste/
+/addonsparajuntar/
+/mapasparateste/
+/arc9junto_merged/
+/arc9junto_merged_optimized/
+/lvsjunto/
+/experiments/
+
 # Large local archives (do not commit)
 /*.zip
+
+# Local scratch files
+/tmp_testfile*.txt
 
 # PyInstaller
 *.spec

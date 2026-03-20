@@ -18,6 +18,11 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal double? Ratio { get; init; }
         internal double? Merge { get; init; }
         internal double? AutoSmooth { get; init; }
+        internal bool UsePlanar { get; init; }
+        internal double? PlanarAngle { get; init; }
+        internal bool ExperimentalGroundPolicy { get; init; }
+        internal bool ExperimentalRoundPartsPolicy { get; init; }
+        internal bool ExperimentalSteerTurnBasisFix { get; init; }
         internal string? Format { get; init; }
         internal int? Jobs { get; init; }
         internal int? DecompileJobs { get; init; }
@@ -28,6 +33,8 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal bool OverwriteWork { get; init; }
         internal bool RestoreSkins { get; init; }
         internal bool CompileVerbose { get; init; }
+        internal bool CleanupWorkModelArtifacts { get; init; }
+        internal bool SingleAddonOnly { get; init; }
     }
 
     internal sealed class SourceAddonOptimizerRunner
@@ -100,6 +107,26 @@ namespace GmodAddonCompressor.Systems.Optimizer
                 startInfo.ArgumentList.Add(options.AutoSmooth.Value.ToString(CultureInfo.InvariantCulture));
             }
 
+            if (options.UsePlanar)
+            {
+                startInfo.ArgumentList.Add("--use-planar");
+
+                if (options.PlanarAngle.HasValue)
+                {
+                    startInfo.ArgumentList.Add("--planar-angle");
+                    startInfo.ArgumentList.Add(options.PlanarAngle.Value.ToString(CultureInfo.InvariantCulture));
+                }
+            }
+
+            if (options.ExperimentalGroundPolicy)
+                startInfo.ArgumentList.Add("--experimental-ground-policy");
+
+            if (options.ExperimentalRoundPartsPolicy)
+                startInfo.ArgumentList.Add("--experimental-round-parts-policy");
+
+            if (options.ExperimentalSteerTurnBasisFix)
+                startInfo.ArgumentList.Add("--experimental-steer-turn-basis-fix");
+
             if (!string.IsNullOrWhiteSpace(options.Format))
             {
                 startInfo.ArgumentList.Add("--format");
@@ -141,6 +168,12 @@ namespace GmodAddonCompressor.Systems.Optimizer
 
             if (options.CompileVerbose)
                 startInfo.ArgumentList.Add("--compile-verbose");
+
+            if (options.CleanupWorkModelArtifacts)
+                startInfo.ArgumentList.Add("--cleanup-work-model-artifacts");
+
+            if (options.SingleAddonOnly)
+                startInfo.ArgumentList.Add("--single-addon-only");
 
             using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
 

@@ -25,9 +25,14 @@ MAX_AUTO_COMPILE_JOBS = 4
 MODELNAME_RE = re.compile(r'^\s*\$modelname\s+(".*?"|\S+)', re.IGNORECASE)
 ERROR_RE = re.compile(r"(error|fatal|cannot|can't|could not|failed|missing)", re.IGNORECASE)
 DIRECTIVE_RE = re.compile(r'^\s*\$(animation|sequence)\s+(".*?"|\S+)', re.IGNORECASE)
+WEIGHTLIST_RE = re.compile(r'^\s*\$weightlist\s+(".*?"|\S+)', re.IGNORECASE)
 QUOTED_RE = re.compile(r'"([^"]+)"')
 DUP_ANIM_RE = re.compile(r"Duplicate animation name", re.IGNORECASE)
 DUP_SEQ_RE = re.compile(r"Duplicate sequence name", re.IGNORECASE)
+ROOT_WEIGHT_LINE_RE = re.compile(
+    r'^(\s*"?(?:root)"?\s+)([-+]?(?:\d+(?:\.\d*)?|\.\d+))(.*)$',
+    re.IGNORECASE,
+)
 
 GAMEINFO_TEMPLATE = """\
 "GameInfo"
@@ -601,6 +606,76 @@ def _scan_directive_blocks(lines: list[str]):
     return blocks
 
 
+def _scan_weightlist_blocks(lines: list[str]):
+    blocks = []
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        stripped = strip_line_comments(raw)
+        m = WEIGHTLIST_RE.match(stripped)
+        if not m:
+            i += 1
+            continue
+
+        name = m.group(1).strip()
+        if name.startswith('"') and name.endswith('"') and len(name) >= 2:
+            name = name[1:-1]
+
+        start = i
+        block_lines = [raw]
+        depth = _count_braces(stripped)
+        j = i + 1
+
+        if depth == 0 and "{" not in stripped:
+            k = j
+            pending = []
+            found_brace = False
+            while k < len(lines):
+                s = strip_line_comments(lines[k])
+                if not s.strip():
+                    pending.append(lines[k])
+                    k += 1
+                    continue
+                if "{" in s:
+                    found_brace = True
+                    block_lines.extend(pending)
+                    block_lines.append(lines[k])
+                    depth += _count_braces(s)
+                    k += 1
+                break
+            if found_brace:
+                j = k
+            else:
+                blocks.append(
+                    {
+                        "name": name,
+                        "start": start,
+                        "end": start,
+                        "lines": block_lines,
+                    }
+                )
+                i = start + 1
+                continue
+
+        while depth > 0 and j < len(lines):
+            line = lines[j]
+            block_lines.append(line)
+            depth += _count_braces(strip_line_comments(line))
+            j += 1
+
+        end = j - 1
+        blocks.append(
+            {
+                "name": name,
+                "start": start,
+                "end": end,
+                "lines": block_lines,
+            }
+        )
+        i = end + 1
+    return blocks
+
+
 def sanitize_qc_duplicates(qc_path: Path, out_path: Path):
     try:
         lines = qc_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
@@ -645,6 +720,103 @@ def sanitize_qc_duplicates(qc_path: Path, out_path: Path):
     return True, report
 
 
+def apply_vehicle_steer_root_weight_fix(qc_path: Path, out_path: Path):
+    try:
+        lines = qc_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+    except Exception:
+        return False, []
+
+    directive_blocks = _scan_directive_blocks(lines)
+    animation_weightlists = {}
+    for blk in directive_blocks:
+        if blk["kind"] != "animation":
+            continue
+        for raw_line in blk["lines"]:
+            stripped = strip_line_comments(raw_line)
+            m = re.search(r'\bweightlist\s+(".*?"|\S+)', stripped, re.IGNORECASE)
+            if not m:
+                continue
+            token = m.group(1).strip()
+            if token.startswith('"') and token.endswith('"') and len(token) >= 2:
+                token = token[1:-1]
+            animation_weightlists[blk["name"]] = token
+            break
+
+    sequence_to_anims = {}
+    target_sequences = []
+    for blk in directive_blocks:
+        if blk["kind"] != "sequence":
+            continue
+        seq_lines = [strip_line_comments(x) for x in blk["lines"]]
+        lowered = "\n".join(seq_lines).lower()
+        if "delta" not in lowered or "vehicle_steer" not in lowered or "blend" not in lowered:
+            continue
+
+        refs = []
+        for raw_line in seq_lines:
+            refs.extend(QUOTED_RE.findall(raw_line))
+        refs = [r for r in refs if r and r != blk["name"] and r.lower() != "vehicle_steer"]
+        anim_refs = [r for r in refs if r in animation_weightlists]
+        if not anim_refs:
+            continue
+        target_sequences.append(blk["name"])
+        sequence_to_anims[blk["name"]] = anim_refs
+
+    if not sequence_to_anims:
+        return False, []
+
+    target_weightlists = set()
+    for anim_names in sequence_to_anims.values():
+        for anim_name in anim_names:
+            wl = animation_weightlists.get(anim_name)
+            if wl:
+                target_weightlists.add(wl)
+
+    if not target_weightlists:
+        return False, []
+
+    changed = False
+    details = []
+    out_lines = list(lines)
+
+    for blk in _scan_weightlist_blocks(lines):
+        if blk["name"] not in target_weightlists:
+            continue
+
+        local_changes = 0
+        root_values = []
+        for line_idx in range(blk["start"] + 1, blk["end"] + 1):
+            raw_line = out_lines[line_idx]
+            stripped = strip_line_comments(raw_line)
+            m = ROOT_WEIGHT_LINE_RE.match(stripped)
+            if not m:
+                continue
+            try:
+                current_val = float(m.group(2))
+            except Exception:
+                continue
+            if abs(current_val) <= 1e-8:
+                continue
+            line_break = "\r\n" if raw_line.endswith("\r\n") else "\n" if raw_line.endswith("\n") else ""
+            out_lines[line_idx] = f"{m.group(1)}0{m.group(3)}{line_break}"
+            root_values.append(current_val)
+            local_changes += 1
+            changed = True
+
+        if local_changes > 0:
+            details.append(
+                "vehicle_steer root disabled: "
+                f"weightlist={blk['name']} sequence_refs={sorted(set(seq for seq, anims in sequence_to_anims.items() if any(animation_weightlists.get(a) == blk['name'] for a in anims)))} "
+                f"root_values={root_values}"
+            )
+
+    if not changed:
+        return False, []
+
+    out_path.write_text("".join(out_lines), encoding="utf-8", errors="replace")
+    return True, details
+
+
 def _has_duplicate_name_error(error_lines: list[str]) -> bool:
     for line in error_lines:
         if DUP_ANIM_RE.search(line) or DUP_SEQ_RE.search(line):
@@ -671,6 +843,7 @@ def _exception_result(entry: dict, exc: Exception, *, log_path: Path | None = No
         "log_path": str(log_path) if log_path else None,
         "log_path_initial": None,
         "log_path_autofix": None,
+        "log_path_steerfix": None,
         "status": "fail",
         "returncode": 1,
         "duration_sec": 0.0,
@@ -683,6 +856,10 @@ def _exception_result(entry: dict, exc: Exception, *, log_path: Path | None = No
         "autofix_retry": False,
         "autofix_qc_path": None,
         "autofix_details": [],
+        "steerfix_applied": False,
+        "steerfix_retry": False,
+        "steerfix_qc_path": None,
+        "steerfix_details": [],
         "phy_restore_requested": None,
         "phy_restore_attempted": None,
         "phy_backup_path": None,
@@ -715,6 +892,7 @@ def _compile_one(
     require_phy_backup: bool,
     skin_backup_models_dir: Path | None,
     print_lock: LockType | None,
+    completion_state: dict | None,
 ):
     qc = entry["qc"]
     idx = entry["index"]
@@ -726,10 +904,15 @@ def _compile_one(
     log_path = qc_dir / "output" / f"compile_studiomdl_{log_id}.log"
     log_path_initial = None
     log_path_autofix = qc_dir / "output" / f"compile_studiomdl_{log_id}_autofix.log"
+    log_path_steerfix = qc_dir / "output" / f"compile_studiomdl_{log_id}_steerfix.log"
     autofix_applied = False
     autofix_details = []
     autofix_qc_path = None
     autofix_retry = False
+    steerfix_applied = False
+    steerfix_details = []
+    steerfix_qc_path = None
+    steerfix_retry = False
 
     modelname_raw = entry["modelname_raw"]
     model_rel = entry["model_rel"]
@@ -763,6 +946,30 @@ def _compile_one(
             log_path = log_path_autofix
         else:
             autofix_details = ["duplicate error detected, but no duplicates found to fix"]
+    compile_qc_for_fix = autofix_qc_path if autofix_retry and autofix_qc_path else qc
+    if rc == 0:
+        steerfix_qc_path = compile_qc_for_fix.with_name(compile_qc_for_fix.stem + "_STEERFIX.qc")
+        changed, details = apply_vehicle_steer_root_weight_fix(compile_qc_for_fix, steerfix_qc_path)
+        if changed:
+            steerfix_applied = True
+            steerfix_details = details
+            steerfix_retry = True
+            _print_locked(
+                print_lock,
+                f"[STEERFIX] Recompiling with vehicle_steer root disabled: {compile_qc_for_fix.name}",
+            )
+            rc, last_lines, error_lines = run_studiomdl(
+                steerfix_qc_path,
+                studiomdl,
+                compile_dir,
+                log_path_steerfix,
+                verbose=verbose,
+                log_detail=log_detail,
+            )
+            if rc == 0:
+                log_path = log_path_steerfix
+            else:
+                steerfix_details.append(f"recompile_failed rc={rc}")
     duration = time.monotonic() - compile_start
 
     expected_mdl = None
@@ -848,6 +1055,7 @@ def _compile_one(
         "log_path": str(log_path),
         "log_path_initial": str(log_path_initial) if log_path_initial else None,
         "log_path_autofix": str(log_path_autofix) if autofix_retry else None,
+        "log_path_steerfix": str(log_path_steerfix) if steerfix_retry else None,
         "status": status,
         "returncode": rc,
         "duration_sec": round(duration, 3),
@@ -860,6 +1068,10 @@ def _compile_one(
         "autofix_retry": autofix_retry,
         "autofix_qc_path": str(autofix_qc_path) if autofix_qc_path else None,
         "autofix_details": autofix_details,
+        "steerfix_applied": steerfix_applied,
+        "steerfix_retry": steerfix_retry,
+        "steerfix_qc_path": str(steerfix_qc_path) if steerfix_qc_path else None,
+        "steerfix_details": steerfix_details,
         "phy_restore_requested": phy_restore_requested,
         "phy_restore_attempted": phy_restore_attempted if phy_restore_requested else None,
         "phy_backup_path": str(phy_backup_path) if phy_backup_path else None,
@@ -879,6 +1091,11 @@ def _compile_one(
     _print_locked(print_lock, f"Status: {status.upper()} | Time: {duration:.2f}s | Log: {log_path}")
     if message:
         _print_locked(print_lock, f"Note: {message}")
+    if completion_state is not None:
+        with completion_state["lock"]:
+            completion_state["done"] += 1
+            done = int(completion_state["done"])
+        _print_locked(print_lock, f">>> DONE ({done}/{total}) QC: {qc}")
 
     return result
 
@@ -920,6 +1137,13 @@ def write_summary_txt(out_dir: Path, summary: dict):
             f"restored={sr.get('restored', 0)} "
             f"skipped={sr.get('skipped', 0)} "
             f"errors={sr.get('errors', 0)}"
+        )
+    if "steerfix" in summary:
+        sf = summary["steerfix"]
+        lines.append(
+            "STEER fix: "
+            f"applied={sf.get('applied', 0)} "
+            f"failed={sf.get('failed', 0)}"
         )
     lines.append(f"Duration sec: {summary['duration_sec']:.2f}")
     lines.append("")
@@ -1082,6 +1306,8 @@ def main():
         elif compile_jobs > len(parallel_entries):
             compile_jobs = len(parallel_entries)
 
+        completion_state = {"done": 0, "lock": threading.Lock()}
+
         if compile_jobs <= 1:
             for entry in qc_entries:
                 try:
@@ -1100,6 +1326,7 @@ def main():
                             require_phy_backup=bool(args.require_phy_backup),
                             skin_backup_models_dir=skin_backup_models_dir,
                             print_lock=None,
+                            completion_state=completion_state,
                         )
                     )
                 except Exception as exc:
@@ -1132,6 +1359,7 @@ def main():
                         require_phy_backup=bool(args.require_phy_backup),
                         skin_backup_models_dir=skin_backup_models_dir,
                         print_lock=print_lock,
+                        completion_state=completion_state,
                     )
                     future_to_entry[future] = entry
 
@@ -1160,12 +1388,14 @@ def main():
                             require_phy_backup=bool(args.require_phy_backup),
                             skin_backup_models_dir=skin_backup_models_dir,
                             print_lock=None,
+                            completion_state=completion_state,
                         )
                     )
                 except Exception as exc:
                     _print_locked(None, f"[ERROR] QC exception: {entry.get('qc')} | {exc}")
                     results.append(_exception_result(entry, exc))
 
+            print("== Finalize: Merge parallel compile outputs ==")
             try:
                 merge_conflicts = _merge_job_outputs(job_dirs, compile_models_dir)
             except Exception as exc:
@@ -1202,12 +1432,21 @@ def main():
             and r.get("skin_restore_reason")
         )
         skin_error_count = sum(1 for r in results if r.get("skin_restore_error"))
+        steerfix_applied_count = sum(1 for r in results if r.get("steerfix_applied"))
+        steerfix_failed_count = sum(
+            1
+            for r in results
+            if r.get("steerfix_applied")
+            and any("recompile_failed" in str(item) for item in (r.get("steerfix_details") or []))
+        )
 
         top_errors = sorted(
             [{"line": k, "count": v} for k, v in error_counts.items()],
             key=lambda x: x["count"],
             reverse=True,
         )[:10]
+
+        print("== Finalize: Writing compile summary ==")
 
         summary = {
             "root": str(root),
@@ -1237,6 +1476,10 @@ def main():
                 "restored": skin_restored_count if skin_backup_models_dir else 0,
                 "skipped": skin_skipped_count if skin_backup_models_dir else 0,
                 "errors": skin_error_count if skin_backup_models_dir else 0,
+            },
+            "steerfix": {
+                "applied": steerfix_applied_count,
+                "failed": steerfix_failed_count,
             },
             "top_errors": top_errors,
             "results": results,

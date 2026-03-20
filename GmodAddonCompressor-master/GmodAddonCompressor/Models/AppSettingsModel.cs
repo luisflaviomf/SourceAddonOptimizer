@@ -20,6 +20,9 @@ namespace GmodAddonCompressor.Models
         public int SchemaVersion { get; set; } = 1;
         public string? LastAddonPath { get; set; }
         public string? UnpackRootPath { get; set; }
+        public string? AddonMergeRootPath { get; set; }
+        public string? AddonMergeOutputRootPath { get; set; }
+        public string? AddonMergeBundleName { get; set; }
         public string? MapOptimizeRootPath { get; set; }
         public string? GmadPath { get; set; }
         public string? BlenderPath { get; set; }
@@ -28,11 +31,21 @@ namespace GmodAddonCompressor.Models
         public bool? UnpackOpenOnFinish { get; set; }
         public bool? UnpackExtractMapPak { get; set; }
         public bool? UnpackDeleteMapBsp { get; set; }
+        public string? AddonMergeConflictPolicy { get; set; }
+        public string? AddonMergePriorityMode { get; set; }
+        public bool? AddonMergeGenerateGma { get; set; }
+        public string? AddonMergePackageMode { get; set; }
         public string? OptimizerSuffix { get; set; }
         public string? OptimizerPreset { get; set; }
         public OptimizerCustomParams OptimizerCustom { get; set; } = new OptimizerCustomParams();
+        public bool? OptimizerUsePlanar { get; set; }
+        public double? OptimizerPlanarAngle { get; set; }
+        public bool? OptimizerUseExperimentalGroundPolicy { get; set; }
+        public bool? OptimizerUseExperimentalRoundPartsPolicy { get; set; }
+        public bool? OptimizerUseExperimentalSteerTurnBasisFix { get; set; }
         public bool? OptimizerRestoreSkins { get; set; }
         public bool? OptimizerCompileVerbose { get; set; }
+        public bool? OptimizerCleanupWorkModelArtifacts { get; set; }
         public int? AudioWavSampleRateIndex { get; set; }
         public int? AudioWavChannelsIndex { get; set; }
         public int? AudioWavCodecIndex { get; set; }
@@ -43,5 +56,8 @@ namespace GmodAddonCompressor.Models
         public int? AudioOggChannelsIndex { get; set; }
         public int? AudioOggQualityIndex { get; set; }
         public int? AudioOggBitrateIndex { get; set; }
+        public int? CompressModeIndex { get; set; }
+        public bool? CompressMagickUseCommonVtf { get; set; }
+        public bool? CompressMagickUseAggressivePng { get; set; }
     }
 }
