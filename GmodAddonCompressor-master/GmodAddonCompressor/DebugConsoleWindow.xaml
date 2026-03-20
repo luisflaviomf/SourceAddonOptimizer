@@ -7,44 +7,65 @@
         Background="{DynamicResource AppBackground}"
         Foreground="{DynamicResource TextPrimary}"
         WindowStartupLocation="CenterOwner">
-    <Grid Margin="12">
+    <Grid Margin="14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <Border Style="{StaticResource Card}">
-            <DockPanel LastChildFill="False">
-                <TextBlock Style="{StaticResource SectionTitleText}"
-                           Text="Debug Console"
-                           VerticalAlignment="Center"
-                           DockPanel.Dock="Left" />
-                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
-                    <Button x:Name="Button_Copy"
-                            Margin="0,0,8,0"
-                            Content="Copy" />
-                    <Button x:Name="Button_Clear"
-                            Margin="0,0,8,0"
-                            Content="Clear" />
-                    <Button x:Name="Button_Hide"
-                            Style="{StaticResource ButtonAccent}"
-                            Content="Hide" />
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Style="{StaticResource CardEyebrowText}"
+                               Text="SESSION OUTPUT" />
+                    <TextBlock Style="{StaticResource CardHeaderTitle}"
+                               Text="Debug Console" />
+                    <TextBlock Style="{StaticResource HintText}"
+                               Text="Worker output and debug traces for the current session." />
                 </StackPanel>
-            </DockPanel>
+                <Border Grid.Column="1"
+                        Style="{StaticResource ActionBarCard}"
+                        Padding="10"
+                        Margin="16,0,0,0"
+                        VerticalAlignment="Top">
+                    <StackPanel Orientation="Horizontal">
+                        <Button x:Name="Button_Copy"
+                                Margin="0,0,8,0"
+                                Content="Copy" />
+                        <Button x:Name="Button_Clear"
+                                Margin="0,0,8,0"
+                                Content="Clear" />
+                        <Button x:Name="Button_Hide"
+                                Style="{StaticResource ButtonAccent}"
+                                Content="Hide" />
+                    </StackPanel>
+                </Border>
+            </Grid>
         </Border>
 
         <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,12,0,0">
-            <TextBox x:Name="TextBox_Log"
-                     FontFamily="Consolas"
-                     FontSize="12"
-                     Background="{DynamicResource Surface2}"
-                     Foreground="{DynamicResource TextPrimary}"
-                     BorderBrush="{DynamicResource Border}"
-                     BorderThickness="1"
-                     IsReadOnly="True"
-                     TextWrapping="NoWrap"
-                     VerticalScrollBarVisibility="Auto"
-                     HorizontalScrollBarVisibility="Auto" />
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <StackPanel>
+                    <TextBlock Style="{StaticResource CardEyebrowText}"
+                               Text="LIVE LOG" />
+                    <TextBlock Style="{StaticResource CardHeaderTitle}"
+                               Text="Console Output" />
+                    <TextBlock Style="{StaticResource HintText}"
+                               Text="Read-only stream for diagnostics, worker messages, and failure context." />
+                </StackPanel>
+                <TextBox x:Name="TextBox_Log"
+                         Grid.Row="1"
+                         Style="{StaticResource LogTextBox}"
+                         Margin="0,12,0,0" />
+            </Grid>
         </Border>
     </Grid>
 </Window>

@@ -17,6 +17,7 @@ import itertools
 import math
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -28,6 +29,54 @@ import bpy
 # ---------------------------
 
 _SOURCE_OPS_LOGGED = False
+
+SENSITIVE_BODYGROUP_STRUCTURAL_TOKENS = (
+    "hood",
+    "bonnet",
+    "trunk",
+    "boot",
+    "door",
+    "bumper",
+    "fender",
+    "wing",
+    "spoiler",
+    "splitter",
+    "diffuser",
+    "skirt",
+    "flare",
+    "vent",
+    "scoop",
+    "lip",
+    "canard",
+)
+
+SENSITIVE_BODYGROUP_DETAIL_TOKENS = (
+    "mirror",
+    "grille",
+    "grill",
+    "headlight",
+    "headlights",
+    "taillight",
+    "taillights",
+    "light",
+    "lights",
+    "trim",
+)
+
+SENSITIVE_BODYGROUP_TOKENS = tuple(
+    dict.fromkeys(SENSITIVE_BODYGROUP_STRUCTURAL_TOKENS + SENSITIVE_BODYGROUP_DETAIL_TOKENS)
+)
+
+SENSITIVE_BODYGROUP_PROFILE_DEFAULTS = {
+    "structural_panel": {"floor": 0.90, "retry_floor": 0.96},
+    "detail_panel": {"floor": 0.95, "retry_floor": 0.98},
+    "generic_sensitive": {"floor": 0.92, "retry_floor": 0.97},
+}
+
+SENSITIVE_BODYGROUP_AUTOSMOOTH_FLOOR = 35.0
+SENSITIVE_BODYGROUP_OPEN_EDGE_ABS_GROWTH_LIMIT = 24
+SENSITIVE_BODYGROUP_OPEN_EDGE_REL_GROWTH_LIMIT = 0.35
+SENSITIVE_BODYGROUP_TOPOLOGY_ROUND_DIGITS = 6
 
 
 def _op_exists(op_path: str) -> bool:
@@ -551,7 +600,28 @@ def select_all_objects() -> None:
             bpy.context.view_layer.objects.active = any_obj
 
 
-def apply_mesh_ops(merge_dist: float, decimate_ratio: float, autosmooth_deg: float) -> None:
+def _apply_planar_decimate(obj, planar_angle_deg: float) -> None:
+    if planar_angle_deg <= 0.0:
+        return
+
+    mod = obj.modifiers.new(name="DECIMATE_PLANAR", type="DECIMATE")
+    try:
+        mod.decimate_type = "DISSOLVE"
+    except Exception:
+        pass
+    if hasattr(mod, "angle_limit"):
+        mod.angle_limit = math.radians(float(planar_angle_deg))
+    if hasattr(mod, "use_dissolve_boundaries"):
+        mod.use_dissolve_boundaries = False
+    if hasattr(mod, "delimit"):
+        try:
+            mod.delimit = {"NORMAL", "MATERIAL", "SEAM"}
+        except Exception:
+            pass
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+
+
+def apply_mesh_ops(merge_dist: float, decimate_ratio: float, autosmooth_deg: float, use_planar: bool = False, planar_angle_deg: float = 2.0) -> None:
     # autosmooth em todas as malhas
     angle = math.radians(float(autosmooth_deg))
     for obj in bpy.context.scene.objects:
@@ -585,6 +655,12 @@ def apply_mesh_ops(merge_dist: float, decimate_ratio: float, autosmooth_deg: flo
                     bpy.ops.object.mode_set(mode="OBJECT")
                 except Exception:
                     pass
+
+        if use_planar:
+            try:
+                _apply_planar_decimate(obj, planar_angle_deg)
+            except Exception as e:
+                print(f"[WARN] Falhou planar decimate em '{obj.name}': {e}")
 
         # Decimate (ratio)
         if decimate_ratio < 1.0:
@@ -693,6 +769,87 @@ def extract_file_refs_from_qc(qc_text: str):
         out.append((full_tok, path_tok, kind))
     return out
 
+
+def _extract_bodygroup_name(line: str) -> str:
+    quoted = _re_quoted.findall(line)
+    if quoted:
+        return quoted[0].strip()
+    parts = line.split(None, 1)
+    if len(parts) < 2:
+        return ""
+    tail = parts[1].strip()
+    if tail.startswith("{"):
+        return ""
+    return tail.split("{", 1)[0].strip().strip('"')
+
+
+def _normalize_context_label(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _contains_any_token(text: str, token_set) -> bool:
+    normalized = _normalize_context_label(text)
+    if not normalized:
+        return False
+    tokens = set(normalized.split())
+    return any(token in tokens or token in normalized for token in token_set)
+
+
+def _contains_sensitive_bodygroup_token(text: str) -> bool:
+    return _contains_any_token(text, SENSITIVE_BODYGROUP_TOKENS)
+
+
+def extract_file_ref_metadata_from_qc(qc_text: str) -> dict[str, dict]:
+    metadata: dict[str, dict] = {}
+    lines = qc_text.splitlines()
+
+    in_bodygroup = False
+    current_bodygroup = ""
+    for raw in lines:
+        line = _strip_comments(raw).strip()
+        if not line:
+            continue
+
+        low = line.lower()
+        if low.startswith("$bodygroup"):
+            current_bodygroup = _extract_bodygroup_name(line)
+            in_bodygroup = True
+            if "}" in line:
+                in_bodygroup = False
+            continue
+
+        if in_bodygroup and "}" in line:
+            in_bodygroup = False
+            current_bodygroup = ""
+            continue
+
+        full_tok, path_tok = _extract_smd_dmx_token(line)
+        if not full_tok or not path_tok:
+            continue
+
+        key = normalize_qc_path_token(path_tok).lower()
+        if in_bodygroup and "studio" in low:
+            metadata[key] = {
+                "context_type": "bodygroup",
+                "context_name": current_bodygroup,
+            }
+            continue
+
+        if low.startswith("$body") or low.startswith("$model"):
+            metadata[key] = {
+                "context_type": "model",
+                "context_name": "",
+            }
+            continue
+
+        if low.startswith("$collisionmodel") or low.startswith("$collisionjoints"):
+            metadata[key] = {
+                "context_type": "physics",
+                "context_name": "",
+            }
+
+    return metadata
+
 def _strip_comments(line: str) -> str:
     # QC normalmente usa // comentário
     if "//" in line:
@@ -796,6 +953,86 @@ def extract_mesh_file_refs_from_qc(qc_text: str):
 def normalize_qc_path_token(path_token: str) -> str:
     # QC costuma aceitar / ou \. Vamos padronizar para /
     return path_token.replace("\\", "/").lstrip("./")
+
+
+def _is_sensitive_bodygroup_mesh(src_file: Path, kind: str, ref_meta: dict | None) -> bool:
+    if kind != "mesh":
+        return False
+    if not ref_meta or ref_meta.get("context_type") != "bodygroup":
+        return False
+
+    bodygroup_name = str(ref_meta.get("context_name") or "")
+    stem = src_file.stem
+    return _contains_sensitive_bodygroup_token(bodygroup_name) or _contains_sensitive_bodygroup_token(stem)
+
+
+def _classify_sensitive_bodygroup_mesh(src_file: Path, kind: str, ref_meta: dict | None) -> dict | None:
+    if not _is_sensitive_bodygroup_mesh(src_file, kind, ref_meta):
+        return None
+
+    bodygroup_name = str((ref_meta or {}).get("context_name") or "")
+    combined = f"{bodygroup_name} {src_file.stem}"
+    if _contains_any_token(combined, SENSITIVE_BODYGROUP_STRUCTURAL_TOKENS):
+        label = "structural_panel"
+    elif _contains_any_token(combined, SENSITIVE_BODYGROUP_DETAIL_TOKENS):
+        label = "detail_panel"
+    else:
+        label = "generic_sensitive"
+
+    defaults = SENSITIVE_BODYGROUP_PROFILE_DEFAULTS[label]
+    return {
+        "label": label,
+        "bodygroup": bodygroup_name,
+        "floor": float(defaults["floor"]),
+        "retry_floor": float(defaults["retry_floor"]),
+    }
+
+
+def _copy_ref_passthrough(src_file: Path, out_file: Path, out_fmt: str) -> bool:
+    desired_ext = ".dmx" if str(out_fmt).lower() == "dmx" else ".smd"
+    if src_file.suffix.lower() != desired_ext:
+        return False
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_file, out_file)
+    return True
+
+
+def _export_ref_with_settings(
+    src_file: Path,
+    out_file: Path,
+    kind: str,
+    out_fmt: str,
+    *,
+    merge_dist: float,
+    decimate_ratio: float,
+    autosmooth_deg: float,
+    use_planar: bool,
+    planar_angle_deg: float,
+) -> bool:
+    clean_scene()
+
+    try:
+        import_source_file(src_file)
+    except Exception as e:
+        print(f"[ERRO] falhou import '{src_file}': {e}")
+        clean_scene()
+        return False
+
+    if kind == "mesh":
+        try:
+            apply_mesh_ops(merge_dist, decimate_ratio, autosmooth_deg, use_planar, planar_angle_deg)
+        except Exception as e:
+            print(f"[WARN] Falhou otimizacao em '{src_file.name}': {e}")
+
+    try:
+        export_source_file(out_file, out_fmt)
+    except Exception as e:
+        print(f"[ERRO] falhou export '{out_file}': {e}")
+        clean_scene()
+        return False
+
+    clean_scene()
+    return True
 
 
 def extract_skinfamilies_from_qc(qc_text: str):
@@ -916,6 +1153,92 @@ def compute_smd_bbox(filepath: Path):
         if not any_v:
             return None
         return ((minx, miny, minz), (maxx, maxy, maxz))
+
+
+def compute_smd_topology_stats(filepath: Path):
+    """
+    Retorna estatísticas topológicas aproximadas para um SMD:
+    - triangles: quantidade de triângulos
+    - open_edges: arestas que aparecem uma única vez
+
+    A contagem usa as posições dos vértices com arredondamento estável.
+    É suficiente para detectar quando uma malha fechada passa a abrir
+    durante o decimate em painéis/bodygroups sensíveis.
+    """
+    try:
+        lines = filepath.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return None
+
+    try:
+        i = lines.index("triangles") + 1
+    except ValueError:
+        return None
+
+    triangles = 0
+    edges = {}
+
+    def _vertex_key(line: str):
+        parts = line.split()
+        if len(parts) < 4:
+            raise ValueError(f"vertex line incompleta: {line!r}")
+        return (
+            round(float(parts[1]), SENSITIVE_BODYGROUP_TOPOLOGY_ROUND_DIGITS),
+            round(float(parts[2]), SENSITIVE_BODYGROUP_TOPOLOGY_ROUND_DIGITS),
+            round(float(parts[3]), SENSITIVE_BODYGROUP_TOPOLOGY_ROUND_DIGITS),
+        )
+
+    while i < len(lines):
+        if lines[i].strip() == "end":
+            break
+        if i + 3 >= len(lines):
+            return None
+        try:
+            v1 = _vertex_key(lines[i + 1])
+            v2 = _vertex_key(lines[i + 2])
+            v3 = _vertex_key(lines[i + 3])
+        except Exception:
+            return None
+
+        triangles += 1
+        for edge in (
+            tuple(sorted((v1, v2))),
+            tuple(sorted((v2, v3))),
+            tuple(sorted((v3, v1))),
+        ):
+            edges[edge] = edges.get(edge, 0) + 1
+        i += 4
+
+    return {
+        "triangles": triangles,
+        "open_edges": sum(1 for count in edges.values() if count == 1),
+    }
+
+
+def _validate_sensitive_bodygroup_topology(src_file: Path, out_file: Path):
+    src_stats = compute_smd_topology_stats(src_file)
+    out_stats = compute_smd_topology_stats(out_file)
+    if not src_stats or not out_stats:
+        return False, "topology_stats_unavailable", src_stats, out_stats
+
+    open_before = int(src_stats["open_edges"])
+    open_after = int(out_stats["open_edges"])
+    if open_after <= open_before:
+        return True, "ok", src_stats, out_stats
+
+    if open_before == 0:
+        return False, "closed_mesh_opened", src_stats, out_stats
+
+    open_delta = open_after - open_before
+    abs_limit = SENSITIVE_BODYGROUP_OPEN_EDGE_ABS_GROWTH_LIMIT
+    rel_limit = math.ceil(open_before * SENSITIVE_BODYGROUP_OPEN_EDGE_REL_GROWTH_LIMIT)
+    trigger_delta = max(abs_limit, rel_limit)
+    trigger_after = max(open_before + abs_limit, math.ceil(open_before * (1.0 + SENSITIVE_BODYGROUP_OPEN_EDGE_REL_GROWTH_LIMIT)))
+
+    if open_delta >= trigger_delta and open_after >= trigger_after:
+        return False, "open_edges_regressed", src_stats, out_stats
+
+    return True, "ok", src_stats, out_stats
 
 
 def _read_smd_triangles(filepath: Path):
@@ -1511,6 +1834,7 @@ def process_qc(qc_path: Path, cfg) -> None:
     qc_text = qc_path.read_text(encoding="utf-8", errors="ignore")
 
     refs = extract_file_refs_from_qc(qc_text)
+    ref_metadata = extract_file_ref_metadata_from_qc(qc_text)
     print(f"SMDs/DMXs detectadas no QC: {len(refs)}")
 
     if not refs:
@@ -1534,31 +1858,138 @@ def process_qc(qc_path: Path, cfg) -> None:
 
         out_name = build_output_name(src_file, cfg.format)
         out_file = (out_dir / out_name).resolve()
+        ref_meta = ref_metadata.get(rel_norm.lower())
+        sensitive_profile = _classify_sensitive_bodygroup_mesh(src_file, kind, ref_meta)
+        processed_ok = False
 
-        print(f"  [{i}/{len(refs)}] Import: {src_file.name} ({kind})")
-        clean_scene()
+        if sensitive_profile:
+            bodygroup_name = str(sensitive_profile["bodygroup"] or "(unknown)")
+            local_merge = 0.0
+            local_use_planar = False
+            local_planar_angle = cfg.planar_angle
+            local_autosmooth = max(float(cfg.autosmooth), SENSITIVE_BODYGROUP_AUTOSMOOTH_FLOOR)
 
-        # Import
-        try:
-            import_source_file(src_file)
-        except Exception as e:
-            print(f"[ERRO] falhou import '{src_file}': {e}")
-            clean_scene()
-            continue
+            if cfg.format.lower() == "smd" and src_file.suffix.lower() == ".smd":
+                conservative_ratio = max(float(cfg.ratio), float(sensitive_profile["floor"]))
+                retry_ratio = max(float(cfg.ratio), float(sensitive_profile["retry_floor"]))
+                attempts = [("Conservative", conservative_ratio)]
+                if retry_ratio > conservative_ratio + 1e-6:
+                    attempts.append(("Conservative retry", retry_ratio))
 
-        # Otimizacoes (apenas malha)
-        if kind == "mesh":
-            try:
-                apply_mesh_ops(cfg.merge, cfg.ratio, cfg.autosmooth)
-            except Exception as e:
-                print(f"[WARN] Falhou otimizacao em '{src_file.name}': {e}")
+                last_topology_reason = "topology_guardrail_rejected"
+                for attempt_label, local_ratio in attempts:
+                    print(
+                        "  "
+                        f"[{i}/{len(refs)}] {attempt_label}: {src_file.name} ({kind}) "
+                        f"[class={sensitive_profile['label']} bodygroup={bodygroup_name} "
+                        f"ratio={local_ratio:.2f} merge={local_merge:.4f}]"
+                    )
+                    processed_ok = _export_ref_with_settings(
+                        src_file,
+                        out_file,
+                        kind,
+                        cfg.format,
+                        merge_dist=local_merge,
+                        decimate_ratio=local_ratio,
+                        autosmooth_deg=local_autosmooth,
+                        use_planar=local_use_planar,
+                        planar_angle_deg=local_planar_angle,
+                    )
+                    if not processed_ok:
+                        continue
 
-        # Export
-        try:
-            export_source_file(out_file, cfg.format)
-        except Exception as e:
-            print(f"[ERRO] falhou export '{out_file}': {e}")
-            clean_scene()
+                    topo_ok, topo_reason, src_stats, out_stats = _validate_sensitive_bodygroup_topology(
+                        src_file, out_file
+                    )
+                    if topo_ok:
+                        if src_stats and out_stats:
+                            print(
+                                "[TOPOGUARD] Accept: "
+                                f"{out_file.name} class={sensitive_profile['label']} "
+                                f"open_edges={src_stats['open_edges']}->{out_stats['open_edges']} "
+                                f"triangles={src_stats['triangles']}->{out_stats['triangles']}"
+                            )
+                        processed_ok = True
+                        break
+
+                    last_topology_reason = topo_reason
+                    before_open = src_stats["open_edges"] if src_stats else "?"
+                    after_open = out_stats["open_edges"] if out_stats else "?"
+                    before_tri = src_stats["triangles"] if src_stats else "?"
+                    after_tri = out_stats["triangles"] if out_stats else "?"
+                    print(
+                        "[TOPOGUARD] Reject: "
+                        f"{out_file.name} class={sensitive_profile['label']} "
+                        f"reason={topo_reason} "
+                        f"open_edges={before_open}->{after_open} "
+                        f"triangles={before_tri}->{after_tri}"
+                    )
+                    processed_ok = False
+
+                if not processed_ok and _copy_ref_passthrough(src_file, out_file, cfg.format):
+                    print(
+                        "[TOPOGUARD] Passthrough fallback: "
+                        f"{src_file.name} ({kind}) [class={sensitive_profile['label']} "
+                        f"bodygroup={bodygroup_name} reason={last_topology_reason}]"
+                    )
+                    processed_ok = True
+
+                if not processed_ok:
+                    print(
+                        "  "
+                        f"[{i}/{len(refs)}] Safe baseline fallback: {src_file.name} ({kind}) "
+                        f"[class={sensitive_profile['label']} bodygroup={bodygroup_name}]"
+                    )
+                    processed_ok = _export_ref_with_settings(
+                        src_file,
+                        out_file,
+                        kind,
+                        cfg.format,
+                        merge_dist=0.0,
+                        decimate_ratio=1.0,
+                        autosmooth_deg=local_autosmooth,
+                        use_planar=False,
+                        planar_angle_deg=local_planar_angle,
+                    )
+            elif _copy_ref_passthrough(src_file, out_file, cfg.format):
+                print(
+                    "  "
+                    f"[{i}/{len(refs)}] Passthrough: {src_file.name} ({kind}) "
+                    f"[class={sensitive_profile['label']} bodygroup={bodygroup_name}]"
+                )
+                processed_ok = True
+            else:
+                print(
+                    "  "
+                    f"[{i}/{len(refs)}] Safe baseline: {src_file.name} ({kind}) "
+                    f"[class={sensitive_profile['label']} bodygroup={bodygroup_name}]"
+                )
+                processed_ok = _export_ref_with_settings(
+                    src_file,
+                    out_file,
+                    kind,
+                    cfg.format,
+                    merge_dist=0.0,
+                    decimate_ratio=1.0,
+                    autosmooth_deg=local_autosmooth,
+                    use_planar=False,
+                    planar_angle_deg=local_planar_angle,
+                )
+        else:
+            print(f"  [{i}/{len(refs)}] Import: {src_file.name} ({kind})")
+            processed_ok = _export_ref_with_settings(
+                src_file,
+                out_file,
+                kind,
+                cfg.format,
+                merge_dist=cfg.merge,
+                decimate_ratio=cfg.ratio,
+                autosmooth_deg=cfg.autosmooth,
+                use_planar=cfg.use_planar,
+                planar_angle_deg=cfg.planar_angle,
+            )
+
+        if not processed_ok:
             continue
         if kind == "mesh" and cfg.format.lower() == "smd":
             mesh_outputs.append(out_file)
@@ -1753,6 +2184,8 @@ def parse_args(argv):
     ap.add_argument("--ratio", type=float, default=0.75, help="Decimate ratio (1.0 = sem decimate)")
     ap.add_argument("--merge", type=float, default=0.0001, help="Merge by distance")
     ap.add_argument("--autosmooth", type=float, default=45.0, help="Auto smooth em graus")
+    ap.add_argument("--use-planar", action="store_true", help="Aplica planar decimate antes do collapse decimate.")
+    ap.add_argument("--planar-angle", type=float, default=2.0, help="Planar angle em graus quando --use-planar estiver ativo.")
     ap.add_argument("--format", type=str, default="smd", choices=["smd", "dmx"], help="Formato de export")
     ap.add_argument(
         "--fix-physics",
@@ -1785,6 +2218,7 @@ def main():
     print(f"ROOT: {root}")
     print(
         f"Config: ratio={cfg.ratio} merge={cfg.merge} autosmooth={cfg.autosmooth} "
+        f"use_planar={'ON' if cfg.use_planar else 'OFF'} planar_angle={cfg.planar_angle} "
         f"format={cfg.format} fix_physics={getattr(cfg, 'fix_physics', 'auto')} "
         f"include_opt={'ON' if cfg.include_opt else 'OFF'}"
     )

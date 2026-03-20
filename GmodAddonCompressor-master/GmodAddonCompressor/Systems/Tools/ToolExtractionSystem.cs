@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace GmodAddonCompressor.Systems.Tools
@@ -33,16 +34,17 @@ namespace GmodAddonCompressor.Systems.Tools
         {
             string toolRoot = Path.Combine(ToolPaths.ToolsRoot, toolName, toolVersion);
             string lockPath = Path.Combine(ToolPaths.ToolsRoot, toolName, "extract.lock");
+            string packageHash = ComputePackageHash(zipBytes);
 
             Directory.CreateDirectory(ToolPaths.ToolsRoot);
             using var lockStream = AcquireLock(lockPath);
 
-            if (IsExtracted(toolRoot, expectedFiles))
+            if (IsExtracted(toolRoot, toolName, toolVersion, packageHash, expectedFiles))
                 return toolRoot;
 
             RecreateToolRoot(toolRoot);
             ExtractZipBytes(zipBytes, toolRoot);
-            WriteManifest(toolName, toolVersion, toolRoot);
+            WriteManifest(toolName, toolVersion, packageHash, toolRoot);
 
             if (expectedFiles != null && expectedFiles.Count > 0)
             {
@@ -63,9 +65,13 @@ namespace GmodAddonCompressor.Systems.Tools
             return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         }
 
-        private static bool IsExtracted(string toolRoot, IReadOnlyCollection<string> expectedFiles)
+        private static bool IsExtracted(string toolRoot, string toolName, string toolVersion, string packageHash, IReadOnlyCollection<string> expectedFiles)
         {
-            if (!File.Exists(Path.Combine(toolRoot, "manifest.json")))
+            string manifestPath = Path.Combine(toolRoot, "manifest.json");
+            if (!File.Exists(manifestPath))
+                return false;
+
+            if (!ManifestMatches(manifestPath, toolName, toolVersion, packageHash))
                 return false;
 
             if (expectedFiles == null || expectedFiles.Count == 0)
@@ -105,7 +111,39 @@ namespace GmodAddonCompressor.Systems.Tools
             }
         }
 
-        private static void WriteManifest(string toolName, string toolVersion, string toolRoot)
+        private static bool ManifestMatches(string manifestPath, string toolName, string toolVersion, string packageHash)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+                JsonElement root = document.RootElement;
+
+                return string.Equals(TryGetString(root, "toolName"), toolName, StringComparison.Ordinal)
+                    && string.Equals(TryGetString(root, "toolVersion"), toolVersion, StringComparison.Ordinal)
+                    && string.Equals(TryGetString(root, "packageHash"), packageHash, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string? TryGetString(JsonElement element, string propertyName)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out JsonElement value))
+                return null;
+            if (value.ValueKind == JsonValueKind.String)
+                return value.GetString();
+            return value.ToString();
+        }
+
+        private static string ComputePackageHash(byte[] zipBytes)
+        {
+            using SHA256 sha256 = SHA256.Create();
+            return Convert.ToHexString(sha256.ComputeHash(zipBytes));
+        }
+
+        private static void WriteManifest(string toolName, string toolVersion, string packageHash, string toolRoot)
         {
             var files = new List<object>();
             foreach (var file in Directory.GetFiles(toolRoot, "*", SearchOption.AllDirectories))
@@ -122,6 +160,7 @@ namespace GmodAddonCompressor.Systems.Tools
             {
                 toolName,
                 toolVersion,
+                packageHash,
                 extractedAt = DateTimeOffset.UtcNow.ToString("o"),
                 files
             };

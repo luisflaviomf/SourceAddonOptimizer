@@ -5,15 +5,25 @@ using GmodAddonCompressor.Systems;
 using Microsoft.Extensions.Logging;
 using NAudio.Wave;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading.Tasks;
 
 namespace GmodAddonCompressor.Objects
 {
-    internal class WAVEdit : ICompress
+    internal class WAVEdit : ICompress, ICompressPreparation
     {
         private readonly ILogger _logger = LogSystem.CreateLogger<WAVEdit>();
+        private readonly Lazy<AudioWebSafetyReport> _webAudioSafetyReport;
+
+        public WAVEdit()
+        {
+            string addonRoot = CompressDirectoryContext.DirectoryPath;
+            _webAudioSafetyReport = new Lazy<AudioWebSafetyReport>(
+                () => AudioWebSafetyClassifier.Analyze(addonRoot),
+                isThreadSafe: true);
+        }
 
         private sealed class LoopChunks
         {
@@ -33,12 +43,30 @@ namespace GmodAddonCompressor.Objects
             public bool HasAny => HasSmpl || HasCue || HasAdtl;
         }
 
+        private sealed class LoopMetadataSummary
+        {
+            public bool HasSmpl;
+            public int CueCount;
+            public List<string> Labels { get; } = new List<string>();
+            public bool HasAny => HasSmpl || CueCount > 0;
+            public bool IsSingleCueLoopLabel =>
+                !HasSmpl &&
+                CueCount == 1 &&
+                Labels.Count == 1 &&
+                Labels[0].Equals("loop", StringComparison.OrdinalIgnoreCase);
+        }
+
         private sealed class WaveInfo
         {
             public int SampleRate;
             public int Channels;
             public WaveFormatEncoding Encoding;
             public int BitsPerSample;
+        }
+
+        public void Prepare()
+        {
+            _ = _webAudioSafetyReport.Value;
         }
 
         public async Task Compress(string wavFilePath)
@@ -48,58 +76,37 @@ namespace GmodAddonCompressor.Objects
             if (File.Exists(newWavFilePath))
                 File.Delete(newWavFilePath);
 
-            bool wavIsLooping = false;
+            var loopMetadata = AnalyzeLoopMetadata(wavFilePath);
+            bool wavIsLooping = loopMetadata.HasAny;
             LoopChunks? loopChunks = null;
-
-            try
-            {
-                using (var fs = new FileStream(wavFilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                {
-                    while (fs.Position < fs.Length)
-                    {
-                        long chunkStartPos = fs.Position;
-                        string chunkId = ReadBytesToString(fs, 4);
-                        uint chunkSize = ReadBytesToInt(fs, 4);
-                        long chunkEndPos = chunkStartPos + chunkSize + 8;
-
-                        switch (chunkId.ToUpper().Trim())
-                        {
-                            case "RIFF":
-                                ReadBytes(fs, 4);
-                                break;
-                            case "SMPL":
-                                wavIsLooping = true;
-                                break;
-                            case "CUE":
-                                wavIsLooping = true;
-                                break;
-                            default:
-                                fs.Position = chunkEndPos;
-                                break;
-                        }
-
-                        if (wavIsLooping)
-                            break;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex.ToString());
-            }
 
             try
             {
                 if (!TryGetWaveInfo(wavFilePath, out var info))
                     return;
 
-                if (!NeedsReencode(info))
+                int targetSampleRate = AudioContext.WavSampleRate;
+                int targetChannels = AudioContext.WavChannels;
+                AudioContext.WavCodecKind targetCodec = GetTargetCodec(wavFilePath);
+
+                if (AudioContext.PreserveLoopMetadata && loopMetadata.IsSingleCueLoopLabel)
+                {
+                    targetCodec = AudioContext.WavCodecKind.Pcm16;
+                    targetChannels = info.Channels;
+
+                    string localPath = wavFilePath.GAC_ToLocalPath();
+                    _logger.LogInformation($"Protecting single-cue loop WAV with PCM16/original channels: {localPath}");
+                    FFMpegSystem.AppendAudioLog(
+                        $"WAV-SINGLE-CUE-LOOP-PROTECT | {wavFilePath} | forcing pcm_s16le | keep-channels={targetChannels} | sample-rate={targetSampleRate}");
+                }
+
+                if (!NeedsReencode(info, targetSampleRate, targetChannels, targetCodec))
                     return;
 
                 if (wavIsLooping)
                 {
                     if (AudioContext.PreserveLoopMetadata)
-                        loopChunks = ExtractLoopChunks(wavFilePath, info.SampleRate, AudioContext.WavSampleRate);
+                        loopChunks = ExtractLoopChunks(wavFilePath, info.SampleRate, targetSampleRate);
                     else
                         _logger.LogWarning($"Loop metadata may be lost: {wavFilePath.GAC_ToLocalPath()}");
                 }
@@ -107,9 +114,9 @@ namespace GmodAddonCompressor.Objects
                 bool converted = await new FFMpegSystem().ReencodeWavAsync(
                     wavFilePath,
                     newWavFilePath,
-                    AudioContext.WavSampleRate,
-                    AudioContext.WavChannels,
-                    AudioContext.WavCodec);
+                    targetSampleRate,
+                    targetChannels,
+                    targetCodec);
 
                 if (!converted)
                 {
@@ -171,12 +178,8 @@ namespace GmodAddonCompressor.Objects
             return true;
         }
 
-        private bool NeedsReencode(WaveInfo info)
+        private bool NeedsReencode(WaveInfo info, int targetRate, int targetChannels, AudioContext.WavCodecKind targetCodec)
         {
-            int targetRate = AudioContext.WavSampleRate;
-            int targetChannels = AudioContext.WavChannels;
-            var targetCodec = AudioContext.WavCodec;
-
             bool isPcm16 = info.Encoding == WaveFormatEncoding.Pcm && info.BitsPerSample == 16;
             bool isAdpcm = info.Encoding == WaveFormatEncoding.Adpcm;
 
@@ -189,6 +192,110 @@ namespace GmodAddonCompressor.Objects
             }
 
             return true;
+        }
+
+        private AudioContext.WavCodecKind GetTargetCodec(string wavFilePath)
+        {
+            if (AudioContext.WavCodec != AudioContext.WavCodecKind.AdpcmMs)
+                return AudioContext.WavCodec;
+
+            try
+            {
+                if (_webAudioSafetyReport.Value.IsProtectedWebAudioWav(wavFilePath))
+                {
+                    string localPath = wavFilePath.GAC_ToLocalPath();
+                    _logger.LogInformation($"Preserving PCM16 for WebAudio WAV: {localPath}");
+                    FFMpegSystem.AppendAudioLog($"WAV-WEBAUDIO-PROTECT | {wavFilePath} | forcing pcm_s16le");
+                    return AudioContext.WavCodecKind.Pcm16;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex.ToString());
+            }
+
+            return AudioContext.WavCodec;
+        }
+
+        private static LoopMetadataSummary AnalyzeLoopMetadata(string wavFilePath)
+        {
+            var result = new LoopMetadataSummary();
+
+            try
+            {
+                using var fs = new FileStream(wavFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var reader = new BinaryReader(fs, Encoding.ASCII, leaveOpen: true);
+
+                if (!TryReadFourCC(reader, out var riff) || !riff.Equals("RIFF", StringComparison.OrdinalIgnoreCase))
+                    return result;
+
+                _ = reader.ReadInt32();
+
+                if (!TryReadFourCC(reader, out var wave) || !wave.Equals("WAVE", StringComparison.OrdinalIgnoreCase))
+                    return result;
+
+                while (fs.Position + 8 <= fs.Length)
+                {
+                    if (!TryReadFourCC(reader, out var chunkId))
+                        break;
+
+                    int size = reader.ReadInt32();
+                    long dataStart = fs.Position;
+                    if (size < 0 || dataStart + size > fs.Length)
+                        break;
+
+                    if (chunkId.Equals("smpl", StringComparison.OrdinalIgnoreCase))
+                    {
+                        result.HasSmpl = true;
+                    }
+                    else if (chunkId.Equals("cue ", StringComparison.OrdinalIgnoreCase) && size >= 4)
+                    {
+                        result.CueCount = reader.ReadInt32();
+                    }
+                    else if (chunkId.Equals("LIST", StringComparison.OrdinalIgnoreCase) && size >= 4)
+                    {
+                        string listType = Encoding.ASCII.GetString(reader.ReadBytes(4));
+                        if (listType.Equals("adtl", StringComparison.OrdinalIgnoreCase))
+                        {
+                            long listEnd = dataStart + size;
+                            while (fs.Position + 8 <= listEnd)
+                            {
+                                if (!TryReadFourCC(reader, out var subChunkId))
+                                    break;
+
+                                int subChunkSize = reader.ReadInt32();
+                                long subChunkStart = fs.Position;
+                                if (subChunkSize < 0 || subChunkStart + subChunkSize > listEnd)
+                                    break;
+
+                                if (subChunkId.Equals("labl", StringComparison.OrdinalIgnoreCase) && subChunkSize >= 4)
+                                {
+                                    _ = reader.ReadInt32();
+                                    string label = Encoding.ASCII
+                                        .GetString(reader.ReadBytes(subChunkSize - 4))
+                                        .TrimEnd('\0')
+                                        .Trim();
+
+                                    if (!string.IsNullOrWhiteSpace(label))
+                                        result.Labels.Add(label);
+                                }
+
+                                fs.Position = subChunkStart + subChunkSize + (subChunkSize % 2);
+                            }
+
+                            continue;
+                        }
+                    }
+
+                    fs.Position = dataStart + size + (size % 2);
+                }
+            }
+            catch
+            {
+                return result;
+            }
+
+            return result;
         }
 
         private static LoopChunks ExtractLoopChunks(string wavFilePath, int sourceSampleRate, int targetSampleRate)

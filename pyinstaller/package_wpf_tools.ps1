@@ -12,11 +12,16 @@ function Get-WorkerSourceFiles {
         (Join-Path $PWD "batch_compile_opt_qc.py"),
         (Join-Path $PWD "batch_build_map_bsp.py"),
         (Join-Path $PWD "batch_decompile_organize.py"),
+        (Join-Path $PWD "batch_merge_addons.py"),
         (Join-Path $PWD "batch_scan_map_bsp.py"),
         (Join-Path $PWD "batch_optimize_parallel.py"),
         (Join-Path $PWD "batch_optimize_qc.py"),
+        (Join-Path $PWD "batch_optimize_selective_policy.py"),
+        (Join-Path $PWD "batch_optimize_round_parts_policy.py"),
         (Join-Path $PWD "batch_unpack_addons.py"),
         (Join-Path $PWD "render_previews.py"),
+        (Join-Path $PWD "selective_policy_models.py"),
+        (Join-Path $PWD "vehicle_steer_turn_basis_fix.py"),
         (Join-Path $PWD "pyinstaller\\worker.spec")
     )
 

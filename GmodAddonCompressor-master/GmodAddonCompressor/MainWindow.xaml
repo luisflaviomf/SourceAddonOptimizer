@@ -12,12 +12,13 @@
         MinWidth="900"
         Height="720"
         Width="1280">
+    <Grid Background="{DynamicResource AppBackground}">
     <TabControl Margin="12"
                 Background="{DynamicResource AppBackground}"
                 BorderBrush="{DynamicResource Border}">
         <TabItem Header="Compress">
             <ScrollViewer VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
                           Background="{DynamicResource AppBackground}">
                 <Grid Background="{DynamicResource AppBackground}">
                     <Grid.RowDefinitions>
@@ -25,15 +26,22 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="2*" />
-                        <ColumnDefinition Width="1.3*" />
-                        <ColumnDefinition Width="2.1*" />
+                        <ColumnDefinition Width="1.1*" />
+                        <ColumnDefinition Width="1.2*" />
+                        <ColumnDefinition Width="1.45*" />
                     </Grid.ColumnDefinitions>
 
-                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,12">
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,14">
                     <StackPanel>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="COMPRESS INPUT" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Addon" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,10"
+                                   Text="Pick the addon root. Compress writes to a separate output folder so the original stays untouched." />
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Style="{StaticResource SectionTitleText}" Text="Addon" />
+                            <TextBlock Style="{StaticResource LabelText}" Text="Source addon" />
                             <Button Style="{StaticResource HelpIconButton}"
                                     Content="?"
                                     Margin="8,0,0,0"
@@ -52,15 +60,15 @@
                             </Button>
                         </StackPanel>
 
-                        <Grid Margin="0,12,0,0">
+                        <Grid Margin="0,10,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <Button x:Name="Button_SelectDirectory"
                                     Style="{StaticResource ButtonAccent}"
-                                    Content="Select"
-                                    Width="90"
+                                    Content="Select Addon"
+                                    Width="110"
                                     IsEnabled="{Binding UnlockedUI}" />
                             <TextBox x:Name="TextBox_DirectoryPath"
                                      Grid.Column="1"
@@ -71,34 +79,200 @@
                                      HorizontalScrollBarVisibility="Auto" />
                         </Grid>
 
-                        <Button x:Name="Button_Compress"
-                                Style="{StaticResource ButtonAccent}"
-                                Content="Compress"
+                        <Border Style="{StaticResource CardInnerPanel}"
                                 Margin="0,12,0,0"
-                                Height="36"
-                                IsEnabled="{Binding UnlockedUI}" />
+                                Visibility="{Binding AddonWorkshopWarningVisibility}"
+                                BorderBrush="{DynamicResource Danger}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}"
+                                           Foreground="{DynamicResource Danger}"
+                                           Text="{Binding AddonWorkshopWarningHeaderText}" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,4,0,0"
+                                           Text="This addon still references workshop content that should be updated before publishing." />
+                                <Expander Margin="0,8,0,0" Header="Show locations">
+                                    <TextBox Margin="0,8,0,0"
+                                             Text="{Binding AddonWorkshopWarningText}"
+                                             Style="{StaticResource ReportTextBox}"
+                                             Foreground="{DynamicResource Danger}"
+                                             BorderBrush="{DynamicResource Danger}"
+                                             MinHeight="72" />
+                                </Expander>
+                            </StackPanel>
+                        </Border>
 
-                        <ProgressBar x:Name="ProgressBar_Compress"
-                                     Margin="0,12,0,0"
-                                     Minimum="{Binding ProgressBarMinValue}"
-                                     Maximum="{Binding ProgressBarMaxValue}"
-                                     Value="{Binding ProgressBarValue}" />
+                        <Border Style="{StaticResource ActionBarCard}" Margin="0,10,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
 
-                        <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Current" />
-                        <TextBlock Text="{Binding ProgressBarText}" />
+                                <StackPanel>
+                                    <Button x:Name="Button_Compress"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Content="Compress"
+                                            Width="140"
+                                            Height="40"
+                                            IsEnabled="{Binding UnlockedUI}" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,6,0,0"
+                                               Text="Runs on the enabled asset types with the settings from this tab." />
+                                </StackPanel>
 
-                        <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Size report" />
-                        <TextBox Text="{Binding CompressSizeReportText}"
-                                 IsReadOnly="True"
-                                 TextWrapping="Wrap"
-                                 MinHeight="90" />
+                                <StackPanel Grid.Column="1"
+                                            Margin="18,0,0,0"
+                                            VerticalAlignment="Center"
+                                            HorizontalAlignment="Right">
+                                    <TextBlock Style="{StaticResource MutedText}" Text="Optional diagnostics" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                        <CheckBox x:Name="CheckBox_DebugConsole"
+                                                  Content="Debug Console"
+                                                  Checked="CheckBox_EnableDebugConsole"
+                                                  Unchecked="CheckBox_DisableDebugConsole" />
+                                        <Button Style="{StaticResource HelpIconButton}"
+                                                Content="?"
+                                                Margin="8,0,0,0"
+                                                ToolTipService.Placement="Mouse"
+                                                ToolTipService.InitialShowDelay="250"
+                                                ToolTipService.ShowDuration="35000">
+                                            <Button.ToolTip>
+                                                <TextBlock TextWrapping="Wrap">
+                                                    <Run Text="Abre um console para ver logs/saÃ­das de debug enquanto o programa roda." />
+                                                    <LineBreak />
+                                                    <Run Text="Recomendado: habilite apenas se precisar reportar bug ou acompanhar detalhes de processamento." />
+                                                    <LineBreak />
+                                                    <Run Text="Dica: se fechar o console, o app continua aberto (o console serve sÃ³ para diagnÃ³stico)." />
+                                                </TextBlock>
+                                            </Button.ToolTip>
+                                        </Button>
+                                    </StackPanel>
+                                </StackPanel>
+
+                            </Grid>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,10,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Live status" />
+                                <ProgressBar x:Name="ProgressBar_Compress"
+                                             Margin="0,8,0,0"
+                                             Minimum="{Binding ProgressBarMinValue}"
+                                             Maximum="{Binding ProgressBarMaxValue}"
+                                             Value="{Binding ProgressBarValue}" />
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0"
+                                               Style="{StaticResource LabelText}"
+                                               Text="Status" />
+                                    <TextBlock Grid.Column="1"
+                                               Margin="14,0,0,0">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock" BasedOn="{StaticResource StatusTextBlockStyle}">
+                                                <Setter Property="Text" Value="Ready" />
+                                                <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding UnlockedUI}" Value="False">
+                                                        <Setter Property="Text" Value="Working" />
+                                                        <Setter Property="Foreground" Value="{DynamicResource Accent}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+
+                                <TextBlock Margin="0,8,0,0" Text="Waiting to start.">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding ProgressBarText}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ProgressBarText}" Value="{x:Null}">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding UnlockedUI}" Value="False">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.Style>
+                                        <Style TargetType="Grid">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding ProgressBarText}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ProgressBarText}" Value="{x:Null}">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Grid.Style>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0"
+                                               Style="{StaticResource LabelText}"
+                                               Text="Current item" />
+                                    <TextBlock Grid.Column="1"
+                                               Margin="14,0,0,0"
+                                               Style="{StaticResource ValueText}"
+                                               Text="{Binding ProgressBarText}"
+                                               TextWrapping="Wrap" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Margin="0,10,0,0">
+                            <Border.Style>
+                                <Style TargetType="Border" BasedOn="{StaticResource CardInnerPanel}">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding CompressSizeReportText}" Value="">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding CompressSizeReportText}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Size report" />
+                                <TextBox Text="{Binding CompressSizeReportText}"
+                                         Style="{StaticResource ReportTextBox}"
+                                         Margin="0,8,0,0"
+                                         MinHeight="96" />
+                            </StackPanel>
+                        </Border>
+
+                    </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 
-                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,12,12">
+                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,14,14">
                     <StackPanel>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="ASSET TYPES" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Types" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,10"
+                                   Text="Choose which file groups can be processed. Disabled types stay untouched." />
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Style="{StaticResource SectionTitleText}" Text="Types" />
+                            <TextBlock Style="{StaticResource LabelText}" Text="Processing types" />
                             <Button Style="{StaticResource HelpIconButton}"
                                     Content="?"
                                     Margin="8,0,0,0"
@@ -116,7 +290,8 @@
                                 </Button.ToolTip>
                             </Button>
                         </StackPanel>
-                        <UniformGrid Columns="2" Margin="0,12,0,0">
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <UniformGrid Columns="2">
                             <CheckBox Margin="0,0,0,8" Content="WAV" IsChecked="{Binding CompressWAV}" />
                             <CheckBox Margin="0,0,0,8" Content="MP3" IsChecked="{Binding CompressMP3}" />
                             <CheckBox Margin="0,0,0,8" Content="OGG" IsChecked="{Binding CompressOGG}" />
@@ -124,11 +299,13 @@
                             <CheckBox Margin="0,0,0,8" Content="JPG" IsChecked="{Binding CompressJPG}" />
                             <CheckBox Margin="0,0,0,8" Content="PNG" IsChecked="{Binding CompressPNG}" />
                             <CheckBox Margin="0,0,0,8" Content="LUA" IsChecked="{Binding CompressLUA}" />
-                        </UniformGrid>
+                            </UniformGrid>
+                        </Border>
 
-                        <StackPanel Margin="0,16,0,0">
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,10,0,0">
+                            <StackPanel>
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Style="{StaticResource SectionTitleText}" Text="Audio" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Audio profiles" />
                                 <Button Style="{StaticResource HelpIconButton}"
                                         Content="?"
                                         Margin="8,0,0,0"
@@ -155,105 +332,122 @@
                                 </Button>
                             </StackPanel>
                             <TextBlock Style="{StaticResource MutedText}" Margin="0,6,0,0"
-                                       Text="Compress?o adaptativa por extens?o: cada tipo usa suas pr?prias op??es." />
+                                       Text="Only enabled audio types show settings. Formats stay the same." />
 
-                            <StackPanel Margin="0,12,0,0" IsEnabled="{Binding CompressWAV}">
-                                <TextBlock Style="{StaticResource LabelText}" Text="WAV" />
-                                <Grid Margin="0,6,0,0">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Row="0" Grid.Column="0">
-                                        <TextBlock Style="{StaticResource LabelText}" Text="Sample rate" />
-                                        <ComboBox ItemsSource="{Binding WavRateList, Mode=OneTime}"
-                                                  SelectedIndex="{Binding WavRateListIndex, Mode=TwoWay}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="0" Grid.Column="1" Margin="12,0,0,0">
-                                        <TextBlock Style="{StaticResource LabelText}" Text="Channels" />
-                                        <ComboBox ItemsSource="{Binding WavChannelList, Mode=OneTime}"
-                                                  SelectedIndex="{Binding WavChannelsIndex, Mode=TwoWay}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,8,0,0">
-                                        <TextBlock Style="{StaticResource LabelText}" Text="Codec WAV" />
-                                        <ComboBox ItemsSource="{Binding WavCodecList, Mode=OneTime}"
-                                                  SelectedIndex="{Binding WavCodecIndex, Mode=TwoWay}" />
-                                    </StackPanel>
-                                </Grid>
-                                <CheckBox Margin="0,8,0,0"
-                                          Content="Preserve loop points (copy to re-encoded WAV)"
-                                          IsChecked="{Binding AudioLoopSafe}" />
-                                <TextBlock Style="{StaticResource MutedText}" Margin="0,6,0,0"
-                                           Text="Recomendado: 22050 Hz + Mono + ADPCM (boa redu??o mantendo qualidade)." />
+                            <TextBlock Style="{StaticResource MutedText}"
+                                       Margin="0,10,0,0"
+                                       Visibility="{Binding CompressNoAudioProfileVisibility}"
+                                       Text="Enable WAV, MP3 or OGG above to reveal per-format settings." />
+
+                            <StackPanel Visibility="{Binding CompressAnyAudioProfileVisibility}">
+                                <StackPanel Margin="0,10,0,0"
+                                            IsEnabled="{Binding CompressWAV}"
+                                            Visibility="{Binding CompressWavProfileVisibility}">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="WAV" />
+                                    <Grid Margin="0,6,0,0">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Row="0" Grid.Column="0">
+                                            <TextBlock Style="{StaticResource LabelText}" Text="Sample rate" />
+                                            <ComboBox ItemsSource="{Binding WavRateList, Mode=OneTime}"
+                                                      SelectedIndex="{Binding WavRateListIndex, Mode=TwoWay}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="0" Grid.Column="1" Margin="12,0,0,0">
+                                            <TextBlock Style="{StaticResource LabelText}" Text="Channels" />
+                                            <ComboBox ItemsSource="{Binding WavChannelList, Mode=OneTime}"
+                                                      SelectedIndex="{Binding WavChannelsIndex, Mode=TwoWay}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,8,0,0">
+                                            <TextBlock Style="{StaticResource LabelText}" Text="Codec WAV" />
+                                            <ComboBox ItemsSource="{Binding WavCodecList, Mode=OneTime}"
+                                                      SelectedIndex="{Binding WavCodecIndex, Mode=TwoWay}" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <CheckBox Margin="0,8,0,0"
+                                              Content="Protect WAV loop behavior when possible"
+                                              IsChecked="{Binding AudioLoopSafe}" />
+                                    <TextBlock Style="{StaticResource MutedText}" Margin="0,6,0,0"
+                                               Text="Recommended starting point: 22050 Hz, mono, ADPCM." />
+                                </StackPanel>
+
+                                <StackPanel Margin="0,10,0,0"
+                                            IsEnabled="{Binding CompressMP3}"
+                                            Visibility="{Binding CompressMp3ProfileVisibility}">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="MP3" />
+                                    <Grid Margin="0,6,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Style="{StaticResource LabelText}" Text="Sample rate" />
+                                            <ComboBox ItemsSource="{Binding WavRateList, Mode=OneTime}"
+                                                      SelectedIndex="{Binding Mp3RateIndex, Mode=TwoWay}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                            <TextBlock Style="{StaticResource LabelText}" Text="Bitrate (CBR)" />
+                                            <ComboBox ItemsSource="{Binding AudioBitrateList, Mode=OneTime}"
+                                                      SelectedIndex="{Binding Mp3BitrateIndex, Mode=TwoWay}" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock Style="{StaticResource MutedText}" Margin="0,6,0,0"
+                                               Text="Avoid MP3 for seamless loops." />
+                                </StackPanel>
+
+                                <StackPanel Margin="0,10,0,0"
+                                            IsEnabled="{Binding CompressOGG}"
+                                            Visibility="{Binding CompressOggProfileVisibility}">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="OGG" />
+                                    <Grid Margin="0,6,0,0">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Row="0" Grid.Column="0">
+                                            <TextBlock Style="{StaticResource LabelText}" Text="Sample rate" />
+                                            <ComboBox ItemsSource="{Binding WavRateList, Mode=OneTime}"
+                                                      SelectedIndex="{Binding OggRateIndex, Mode=TwoWay}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="0" Grid.Column="1" Margin="12,0,0,0">
+                                            <TextBlock Style="{StaticResource LabelText}" Text="Quality (Vorbis)" />
+                                            <ComboBox ItemsSource="{Binding OggQualityList, Mode=OneTime}"
+                                                      SelectedIndex="{Binding OggQualityIndex, Mode=TwoWay}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,8,0,0">
+                                            <TextBlock Style="{StaticResource LabelText}" Text="Channels" />
+                                            <ComboBox ItemsSource="{Binding WavChannelList, Mode=OneTime}"
+                                                      SelectedIndex="{Binding OggChannelsIndex, Mode=TwoWay}" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock Style="{StaticResource MutedText}" Margin="0,6,0,0"
+                                               Text="VBR target; 22050 Hz mono q3 is the default starting point." />
+                                </StackPanel>
                             </StackPanel>
 
-                            <StackPanel Margin="0,12,0,0" IsEnabled="{Binding CompressMP3}">
-                                <TextBlock Style="{StaticResource LabelText}" Text="MP3" />
-                                <Grid Margin="0,6,0,0">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Column="0">
-                                        <TextBlock Style="{StaticResource LabelText}" Text="Sample rate" />
-                                        <ComboBox ItemsSource="{Binding WavRateList, Mode=OneTime}"
-                                                  SelectedIndex="{Binding Mp3RateIndex, Mode=TwoWay}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Margin="12,0,0,0">
-                                        <TextBlock Style="{StaticResource LabelText}" Text="Bitrate (CBR)" />
-                                        <ComboBox ItemsSource="{Binding AudioBitrateList, Mode=OneTime}"
-                                                  SelectedIndex="{Binding Mp3BitrateIndex, Mode=TwoWay}" />
-                                    </StackPanel>
-                                </Grid>
-                                <TextBlock Style="{StaticResource MutedText}" Margin="0,6,0,0"
-                                           Text="Evite MP3 para loop perfeito (pode gerar gap)." />
-                            </StackPanel>
-
-                            <StackPanel Margin="0,12,0,0" IsEnabled="{Binding CompressOGG}">
-                                <TextBlock Style="{StaticResource LabelText}" Text="OGG" />
-                                <Grid Margin="0,6,0,0">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Row="0" Grid.Column="0">
-                                        <TextBlock Style="{StaticResource LabelText}" Text="Sample rate" />
-                                        <ComboBox ItemsSource="{Binding WavRateList, Mode=OneTime}"
-                                                  SelectedIndex="{Binding OggRateIndex, Mode=TwoWay}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="0" Grid.Column="1" Margin="12,0,0,0">
-                                        <TextBlock Style="{StaticResource LabelText}" Text="Quality (Vorbis)" />
-                                        <ComboBox ItemsSource="{Binding OggQualityList, Mode=OneTime}"
-                                                  SelectedIndex="{Binding OggQualityIndex, Mode=TwoWay}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,8,0,0">
-                                        <TextBlock Style="{StaticResource LabelText}" Text="Channels" />
-                                        <ComboBox ItemsSource="{Binding WavChannelList, Mode=OneTime}"
-                                                  SelectedIndex="{Binding OggChannelsIndex, Mode=TwoWay}" />
-                                    </StackPanel>
-                                </Grid>
-                                <TextBlock Style="{StaticResource MutedText}" Margin="0,6,0,0"
-                                           Text="OGG usa VBR; o valor e um alvo e pode variar. Default: 22050 Hz mono q3." />
-                            </StackPanel>
-
-                            <TextBlock Style="{StaticResource MutedText}" Margin="0,12,0,0"
-                                       Text="FFmpeg ? necess?rio para compress?o de ?udio." />
                         </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 
-                <Border Grid.Row="0" Grid.Column="2" Style="{StaticResource Card}" Margin="0,0,0,12">
+                <Border Grid.Row="0" Grid.Column="2" Style="{StaticResource Card}" Margin="0,0,0,14">
                     <StackPanel>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="SETTINGS" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Options" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Shared image limits stay explicit while Standard and Magick remain clearly separated and optional." />
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Style="{StaticResource SectionTitleText}" Text="Options" />
+                            <TextBlock Style="{StaticResource LabelText}" Text="Image and routing rules" />
                             <Button Style="{StaticResource HelpIconButton}"
                                     Content="?"
                                     Margin="8,0,0,0"
@@ -274,7 +468,29 @@
                             </Button>
                         </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Compression mode" />
+                                <ComboBox ItemsSource="{Binding CompressModeList, Mode=OneTime}"
+                                          Margin="0,10,0,0"
+                                          SelectedIndex="{Binding CompressModeIndex, Mode=TwoWay}" />
+
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,8,0,0"
+                                           Text="{Binding CompressModeDescriptionText}"
+                                           TextWrapping="Wrap" />
+
+                                <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Routing" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,6,0,0"
+                                           Text="{Binding CompressModeRoutingText}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                        <StackPanel Orientation="Horizontal">
                             <TextBlock Style="{StaticResource LabelText}" Text="Reducing resolution" />
                             <Button Style="{StaticResource HelpIconButton}"
                                     Content="?"
@@ -293,7 +509,12 @@
                                 </Button.ToolTip>
                             </Button>
                         </StackPanel>
+                        <TextBlock Style="{StaticResource MutedText}"
+                                   Margin="0,6,0,0"
+                                   Text="These shared image settings stay the same in both Standard and Magick modes; only eligible files change route."
+                                   TextWrapping="Wrap" />
                         <ComboBox ItemsSource="{Binding ImageReducingResolutionList, Mode=OneTime}"
+                                  Margin="0,10,0,0"
                                   SelectedIndex="{Binding ImageReducingResolutionListIndex, Mode=TwoWay}" />
 
                         <Grid Margin="0,12,0,0">
@@ -331,19 +552,76 @@
                         <StackPanel Margin="0,12,0,0">
                             <CheckBox Content="Reduce exactly to limits" IsChecked="{Binding ReduceExactlyToLimits}" />
                             <CheckBox Margin="0,8,0,0" Content="Maintain image aspect ratio" IsChecked="{Binding KeepImageAspectRatio}" />
-                            <CheckBox Margin="0,8,0,0" Content="ImageMagick VTF compress (Demo)" IsChecked="{Binding ImageMagickVTFCompress}" />
                         </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0" Visibility="{Binding CompressStandardOptionsVisibility}">
+                            <StackPanel>
+                            <TextBlock Style="{StaticResource LabelText}" Text="Standard mode extras" />
+                            <CheckBox Margin="0,8,0,0"
+                                      IsChecked="{Binding ImageMagickVTFCompress}">
+                                <TextBlock Text="Legacy ImageMagick VTF demo inside Standard mode"
+                                           TextWrapping="Wrap" />
+                            </CheckBox>
+                            <TextBlock Style="{StaticResource MutedText}"
+                                       Margin="0,6,0,0"
+                                       Text="This keeps the old demo toggle available without changing the new Magick mode."
+                                       TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0" Visibility="{Binding CompressMagickOptionsVisibility}">
+                            <StackPanel>
+                            <TextBlock Style="{StaticResource LabelText}" Text="Magick mode extras" />
+                            <CheckBox Margin="0,8,0,0"
+                                      IsChecked="{Binding CompressMagickUseCommonVtf}"
+                                      IsEnabled="{Binding CompressVTF}">
+                                <TextBlock Text="Use Magick for common VTF textures (recommended)"
+                                           TextWrapping="Wrap" />
+                            </CheckBox>
+                            <CheckBox Margin="0,8,0,0"
+                                      IsChecked="{Binding CompressMagickUseAggressivePng}"
+                                      IsEnabled="{Binding CompressPNG}">
+                                <TextBlock Text="Use aggressive PNG q256 (smaller, more destructive)"
+                                           TextWrapping="Wrap" />
+                            </CheckBox>
+                            <TextBlock Style="{StaticResource MutedText}"
+                                       Margin="0,6,0,0"
+                                       Text="Guardrails: special/problematic VTF keep the Standard path. JPG/JPEG and audio stay on Standard."
+                                       TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
 
                     </StackPanel>
                 </Border>
 
-                <Grid Grid.Row="1" Grid.ColumnSpan="3">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                        <CheckBox x:Name="CheckBox_DebugConsole"
+                <Border Grid.Row="1" Grid.ColumnSpan="3" Style="{StaticResource Card}" Visibility="Collapsed">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="EXECUTION" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Run" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Start compression, watch the current item, inspect the size report, and only open the debug console when you need runtime detail." />
+
+                        <Border Style="{StaticResource ActionBarCard}" Margin="0,16,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <Button x:Name="Button_Compress_LegacyRun"
+                                        Style="{StaticResource ButtonAccent}"
+                                        Content="Compress"
+                                        Width="140"
+                                        Height="40"
+                                        IsEnabled="{Binding UnlockedUI}" />
+                                <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Diagnostics" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <CheckBox x:Name="CheckBox_DebugConsole_Legacy"
                                   Content="Debug Console"
                                   Checked="CheckBox_EnableDebugConsole"
                                   Unchecked="CheckBox_DisableDebugConsole" />
@@ -364,31 +642,69 @@
                             </Button.ToolTip>
                         </Button>
                     </StackPanel>
-                    <StackPanel Grid.Column="1" HorizontalAlignment="Right">
-                        <TextBlock x:Name="VersionId" Style="{StaticResource MutedText}" Text="VERSION" />
-                        <TextBlock Style="{StaticResource MutedText}" Text="Author: Hanic" />
-                    </StackPanel>
+                                </StackPanel>
                 </Grid>
+                        </Border>
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="0.95*" />
+                                <ColumnDefinition Width="1.05*" />
+                            </Grid.ColumnDefinitions>
+
+                            <Border Grid.Column="0" Style="{StaticResource CardInnerPanel}" Margin="0,0,12,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Progress" />
+                                    <ProgressBar x:Name="ProgressBar_Compress_Legacy"
+                                                 Margin="0,10,0,0"
+                                                 Minimum="{Binding ProgressBarMinValue}"
+                                                 Maximum="{Binding ProgressBarMaxValue}"
+                                                 Value="{Binding ProgressBarValue}" />
+
+                                    <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Current item" />
+                                    <TextBlock Style="{StaticResource ValueText}"
+                                               Margin="0,6,0,0"
+                                               Text="{Binding ProgressBarText}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Grid.Column="1" Style="{StaticResource CardInnerPanel}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Size report" />
+                                    <TextBox Text="{Binding CompressSizeReportText}"
+                                             Style="{StaticResource ReportTextBox}"
+                                             Margin="0,10,0,0"
+                                             MinHeight="112" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </StackPanel>
+                </Border>
                 </Grid>
             </ScrollViewer>
         </TabItem>
 
         <TabItem Header="Models">
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <Grid Background="{DynamicResource AppBackground}" Margin="4">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Background="{DynamicResource AppBackground}">
+                <Grid Background="{DynamicResource AppBackground}" Margin="8">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="1*" />
-                        <ColumnDefinition Width="1*" />
+                        <ColumnDefinition Width="1.28*" />
+                        <ColumnDefinition Width="0.82*" />
                     </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
 
-                    <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,12">
+                    <StackPanel Grid.Column="0" Margin="0,0,14,0">
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
                         <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="MODEL SETUP" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Addon" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Margin="0,0,0,10"
+                                       Text="Pick the addon root first. Models still writes to a separate output folder so the original stays untouched." />
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Style="{StaticResource SectionTitleText}" Text="Addon" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Source addon" />
                                 <Button Style="{StaticResource HelpIconButton}"
                                         Content="?"
                                         Margin="8,0,0,0"
@@ -406,7 +722,7 @@
                                     </Button.ToolTip>
                                 </Button>
                             </StackPanel>
-                            <Grid Margin="0,12,0,0">
+                            <Grid Margin="0,10,0,0">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="*" />
@@ -423,13 +739,40 @@
                                          TextWrapping="NoWrap"
                                          HorizontalScrollBarVisibility="Auto" />
                             </Grid>
+
+                            <Border Style="{StaticResource CardInnerPanel}"
+                                    Margin="0,12,0,0"
+                                    Visibility="{Binding AddonWorkshopWarningVisibility}"
+                                    BorderBrush="{DynamicResource Danger}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}"
+                                               Foreground="{DynamicResource Danger}"
+                                               Text="Workshop warning" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,4,0,0"
+                                               Text="This addon still references workshop content that should be reviewed before publishing." />
+                                    <Expander Margin="0,8,0,0" Header="Show details">
+                                        <TextBox Margin="0,8,0,0"
+                                                 Text="{Binding AddonWorkshopWarningText}"
+                                                 Style="{StaticResource ReportTextBox}"
+                                                 Foreground="{DynamicResource Danger}"
+                                                 BorderBrush="{DynamicResource Danger}"
+                                                 MinHeight="72" />
+                                    </Expander>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </Border>
 
-                    <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,0,12">
+                    <Border Style="{StaticResource Card}" Margin="0,0,0,14">
                         <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="TOOLING" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Paths" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Margin="0,0,0,10"
+                                       Text="Blender and StudioMDL drive the rebuild. Keep both paths valid and easy to verify." />
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Style="{StaticResource SectionTitleText}" Text="Paths" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Required tools" />
                                 <Button Style="{StaticResource HelpIconButton}"
                                         Content="?"
                                         Margin="8,0,0,0"
@@ -450,88 +793,106 @@
                                 </Button>
                             </StackPanel>
 
-                            <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Blender" />
-                            <Grid Margin="0,6,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBox Text="{Binding BlenderPath, UpdateSourceTrigger=PropertyChanged}" />
-                                <Button x:Name="Button_AutoDetectBlender"
-                                        Grid.Column="1"
-                                        Margin="8,0,0,0"
-                                        Content="Auto-detect"
-                                        IsEnabled="{Binding UnlockedUI}" />
-                                <Button x:Name="Button_BrowseBlender"
-                                        Grid.Column="2"
-                                        Margin="8,0,0,0"
-                                        Content="Browse"
-                                        IsEnabled="{Binding UnlockedUI}" />
-                            </Grid>
-                            <TextBlock Margin="0,6,0,0">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock" BasedOn="{StaticResource LabelText}">
-                                        <Setter Property="Text" Value="OK" />
-                                        <Setter Property="Foreground" Value="{DynamicResource Info}" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding BlenderPath}" Value="">
-                                                <Setter Property="Text" Value="Not set" />
-                                                <Setter Property="Foreground" Value="{DynamicResource Warning}" />
-                                            </DataTrigger>
-                                            <DataTrigger Binding="{Binding BlenderPath}" Value="{x:Null}">
-                                                <Setter Property="Text" Value="Not set" />
-                                                <Setter Property="Foreground" Value="{DynamicResource Warning}" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,10,0,0">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
 
-                            <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="StudioMDL" />
-                            <Grid Margin="0,6,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBox Text="{Binding StudioMdlPath, UpdateSourceTrigger=PropertyChanged}" />
-                                <Button x:Name="Button_AutoDetectStudioMdl"
-                                        Grid.Column="1"
-                                        Margin="8,0,0,0"
-                                        Content="Auto-detect"
-                                        IsEnabled="{Binding UnlockedUI}" />
-                                <Button x:Name="Button_BrowseStudioMdl"
-                                        Grid.Column="2"
-                                        Margin="8,0,0,0"
-                                        Content="Browse"
-                                        IsEnabled="{Binding UnlockedUI}" />
-                            </Grid>
-                            <TextBlock Margin="0,6,0,0">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock" BasedOn="{StaticResource LabelText}">
-                                        <Setter Property="Text" Value="OK" />
-                                        <Setter Property="Foreground" Value="{DynamicResource Info}" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding StudioMdlPath}" Value="">
-                                                <Setter Property="Text" Value="Not set" />
-                                                <Setter Property="Foreground" Value="{DynamicResource Warning}" />
-                                            </DataTrigger>
-                                            <DataTrigger Binding="{Binding StudioMdlPath}" Value="{x:Null}">
-                                                <Setter Property="Text" Value="Not set" />
-                                                <Setter Property="Foreground" Value="{DynamicResource Warning}" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
+                                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                        <TextBlock Style="{StaticResource LabelText}" Text="Blender" />
+                                        <Grid Margin="0,6,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox Text="{Binding BlenderPath, UpdateSourceTrigger=PropertyChanged}" />
+                                            <Button x:Name="Button_AutoDetectBlender"
+                                                    Grid.Column="1"
+                                                    Margin="8,0,0,0"
+                                                    Content="Auto-detect"
+                                                    IsEnabled="{Binding UnlockedUI}" />
+                                            <Button x:Name="Button_BrowseBlender"
+                                                    Grid.Column="2"
+                                                    Margin="8,0,0,0"
+                                                    Content="Browse"
+                                                    IsEnabled="{Binding UnlockedUI}" />
+                                        </Grid>
+                                        <TextBlock Margin="0,4,0,0">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource LabelText}">
+                                                    <Setter Property="Text" Value="Status: ready" />
+                                                    <Setter Property="Foreground" Value="{DynamicResource Info}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding BlenderPath}" Value="">
+                                                            <Setter Property="Text" Value="Status: not set" />
+                                                            <Setter Property="Foreground" Value="{DynamicResource Warning}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding BlenderPath}" Value="{x:Null}">
+                                                            <Setter Property="Text" Value="Status: not set" />
+                                                            <Setter Property="Foreground" Value="{DynamicResource Warning}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                                        <TextBlock Style="{StaticResource LabelText}" Text="StudioMDL" />
+                                        <Grid Margin="0,6,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox Text="{Binding StudioMdlPath, UpdateSourceTrigger=PropertyChanged}" />
+                                            <Button x:Name="Button_AutoDetectStudioMdl"
+                                                    Grid.Column="1"
+                                                    Margin="8,0,0,0"
+                                                    Content="Auto-detect"
+                                                    IsEnabled="{Binding UnlockedUI}" />
+                                            <Button x:Name="Button_BrowseStudioMdl"
+                                                    Grid.Column="2"
+                                                    Margin="8,0,0,0"
+                                                    Content="Browse"
+                                                    IsEnabled="{Binding UnlockedUI}" />
+                                        </Grid>
+                                        <TextBlock Margin="0,4,0,0">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource LabelText}">
+                                                    <Setter Property="Text" Value="Status: ready" />
+                                                    <Setter Property="Foreground" Value="{DynamicResource Info}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding StudioMdlPath}" Value="">
+                                                            <Setter Property="Text" Value="Status: not set" />
+                                                            <Setter Property="Foreground" Value="{DynamicResource Warning}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding StudioMdlPath}" Value="{x:Null}">
+                                                            <Setter Property="Text" Value="Status: not set" />
+                                                            <Setter Property="Foreground" Value="{DynamicResource Warning}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
                         </StackPanel>
                     </Border>
 
-                    <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,0">
+                    <Border Style="{StaticResource Card}">
                         <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="PIPELINE CONFIG" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Configuration" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Margin="0,0,0,10"
+                                       Text="Keep the frequently used controls visible, and move the less common toggles into Advanced so the screen stays easier to scan." />
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Style="{StaticResource SectionTitleText}" Text="Preset and Settings" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Options" />
                                 <Button Style="{StaticResource HelpIconButton}"
                                         Content="?"
                                         Margin="8,0,0,0"
@@ -573,67 +934,154 @@
                                 </StackPanel>
                             </Grid>
 
-                            <Grid Margin="0,12,0,0" IsEnabled="{Binding OptimizerPresetIsCustom}">
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,0,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource CardEyebrowText}" Text="CUSTOM TUNING" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,0,0,10"
+                                               Text="These fields only apply when the Custom preset is active." />
+                            <Grid IsEnabled="{Binding OptimizerPresetIsCustom}">
                                 <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
-                                <StackPanel Grid.Row="0" Grid.Column="0">
+                                <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,8,0">
                                     <TextBlock Style="{StaticResource LabelText}" Text="Ratio" />
-                                    <TextBox Text="{Binding OptimizerRatio, UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBox Text="{Binding OptimizerRatio, Converter={StaticResource OptimizerRatioConverter}, UpdateSourceTrigger=LostFocus}" />
                                 </StackPanel>
-                                <StackPanel Grid.Row="0" Grid.Column="1" Margin="12,0,0,0">
+                                <StackPanel Grid.Row="0" Grid.Column="1" Margin="4,0,4,0">
                                     <TextBlock Style="{StaticResource LabelText}" Text="Merge" />
                                     <TextBox Text="{Binding OptimizerMerge, UpdateSourceTrigger=PropertyChanged}" />
                                 </StackPanel>
-                                <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,12,0,0">
+                                <StackPanel Grid.Row="0" Grid.Column="2" Margin="8,0,4,0">
                                     <TextBlock Style="{StaticResource LabelText}" Text="AutoSmooth" />
                                     <TextBox Text="{Binding OptimizerAutoSmooth, UpdateSourceTrigger=PropertyChanged}" />
                                 </StackPanel>
-                                <StackPanel Grid.Row="1" Grid.Column="1" Margin="12,12,0,0">
+                                <StackPanel Grid.Row="0" Grid.Column="3" Margin="8,0,0,0">
                                     <TextBlock Style="{StaticResource LabelText}" Text="Format" />
                                     <ComboBox ItemsSource="{Binding OptimizerFormatList}"
                                               SelectedIndex="{Binding OptimizerFormatIndex}" />
                                 </StackPanel>
-                                <StackPanel Grid.Row="2" Grid.Column="0" Margin="0,12,0,0">
+                                <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,10,8,0">
                                     <TextBlock Style="{StaticResource LabelText}" Text="Jobs" />
                                     <TextBox Text="{Binding OptimizerJobs, UpdateSourceTrigger=PropertyChanged}" />
                                 </StackPanel>
-                                <StackPanel Grid.Row="2" Grid.Column="1" Margin="12,12,0,0">
+                                <StackPanel Grid.Row="1" Grid.Column="1" Margin="4,10,4,0">
                                     <TextBlock Style="{StaticResource LabelText}" Text="Decompile jobs" />
                                     <TextBox Text="{Binding OptimizerDecompileJobs, UpdateSourceTrigger=PropertyChanged}" />
                                 </StackPanel>
-                                <StackPanel Grid.Row="3" Grid.Column="0" Margin="0,12,0,0">
+                                <StackPanel Grid.Row="1" Grid.Column="2" Margin="8,10,4,0">
                                     <TextBlock Style="{StaticResource LabelText}" Text="Compile jobs" />
                                     <TextBox Text="{Binding OptimizerCompileJobs, UpdateSourceTrigger=PropertyChanged}" />
                                 </StackPanel>
                             </Grid>
+                                </StackPanel>
+                            </Border>
 
-                            <UniformGrid Columns="2" Margin="0,12,0,0">
-                                <CheckBox Content="Strict" IsChecked="{Binding OptimizerStrict}" />
-                                <CheckBox Content="Resume" IsChecked="{Binding OptimizerResumeOpt}" />
-                                <CheckBox Content="Overwrite output" IsChecked="{Binding OptimizerOverwrite}" />
-                                <CheckBox Content="Overwrite work" IsChecked="{Binding OptimizerOverwriteWork}" />
-                                <CheckBox Content="Restore skins (slower)"
-                                          IsChecked="{Binding OptimizerRestoreSkins}"
-                                          ToolTip="If some models have wrong skins after compile, enable this. Slower." />
-                                <CheckBox Content="Full compile logs (slower)"
-                                          IsChecked="{Binding OptimizerCompileVerbose}"
-                                          ToolTip="Writes full StudioMDL output logs for debugging. Slower." />
-                            </UniformGrid>
+                            <Expander Margin="0,12,0,0" Header="Advanced options">
+                                <StackPanel Margin="0,10,0,0">
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,0,0,0">
+                                <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                    <CheckBox Content="Use Planar"
+                                              IsChecked="{Binding OptimizerUsePlanar}"
+                                              ToolTip="Optional planar-collapse pass before the current collapse decimate. Disabled keeps the current Models pipeline unchanged." />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Planar Angle" />
+                                    <TextBox Text="{Binding OptimizerPlanarAngle, UpdateSourceTrigger=PropertyChanged}"
+                                             IsEnabled="{Binding OptimizerUsePlanar}" />
+                                </StackPanel>
+                            </Grid>
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               Text="Disabled keeps the baseline model pipeline unchanged. Enabled adds the optional planar-collapse pass." />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <CheckBox Content="Experimental: selective ground-vehicle main body repair"
+                                              IsChecked="{Binding OptimizerUseExperimentalGroundPolicy}"
+                                              ToolTip="Opt-in experimental policy. Helps some ground vehicles by repairing main-body shading after decimate. Aircraft and unknown cases stay on the defensive baseline." />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               TextWrapping="Wrap"
+                                               Text="Opt-in experimental mode. It mainly helps some ground vehicles and armored bodies. Aircraft, wheels, rotors, detached parts and unknown cases remain on the defensive baseline. The standard Models behavior stays unchanged while this is off." />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <CheckBox Content="Experimental: embedded round-part preservation"
+                                              IsChecked="{Binding OptimizerUseExperimentalRoundPartsPolicy}"
+                                              ToolTip="Opt-in experimental optimize policy. Preserves wheel detail and also protects embedded round parts such as steering wheels and gauges using structural detection. It applies at the current ratio and stays fully off when disabled." />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               TextWrapping="Wrap"
+                                               Text="Use this when you want the experimental round-parts path from the validated sandbox line. It keeps the normal Models flow unchanged while off, uses the current ratio while on, and does not rely on model-name hardcodes." />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <CheckBox Content="Experimental: steering-wheel turn basis fix"
+                                              IsChecked="{Binding OptimizerUseExperimentalSteerTurnBasisFix}"
+                                              ToolTip="Opt-in experimental compile-time fix. Detects a structural vehicle_steer steering-wheel signature and precompensates turn animations before compile. Disabled keeps the current pipeline unchanged." />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               TextWrapping="Wrap"
+                                               Text="Use this only when you want the experimental steering-wheel turn-basis repair. It does not use model-name hardcodes. While this is off, the current Models compile behavior stays unchanged." />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <UniformGrid Columns="2">
+                                        <CheckBox Content="Strict" IsChecked="{Binding OptimizerStrict}" />
+                                        <CheckBox Content="Resume" IsChecked="{Binding OptimizerResumeOpt}" />
+                                        <CheckBox Content="Overwrite output" IsChecked="{Binding OptimizerOverwrite}" />
+                                        <CheckBox Content="Overwrite work" IsChecked="{Binding OptimizerOverwriteWork}" />
+                                        <CheckBox Content="Restore skins (slower)"
+                                                  IsChecked="{Binding OptimizerRestoreSkins}"
+                                                  ToolTip="If some models have wrong skins after compile, enable this. Slower." />
+                                        <CheckBox Content="Full compile logs (slower)"
+                                                  IsChecked="{Binding OptimizerCompileVerbose}"
+                                                  ToolTip="Writes full StudioMDL output logs for debugging. Slower." />
+                                    </UniformGrid>
+                                    <CheckBox Content="Remove compiled and src from work when finished"
+                                              Margin="0,8,0,0"
+                                              IsChecked="{Binding OptimizerCleanupWorkModelArtifacts}"
+                                              ToolTip="Enabled by default. After a successful Models run, removes only the heavy compiled and src folders from the work directory. Logs and other diagnostic files stay available." />
+                                </StackPanel>
+                            </Border>
+                                </StackPanel>
+                            </Expander>
                         </StackPanel>
                     </Border>
 
-                    <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource Card}">
+                    </StackPanel>
+
+                    <Border Grid.Column="1" Style="{StaticResource Card}">
                         <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="EXECUTION" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Run" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Margin="0,0,0,10"
+                                       Text="Use this side panel to start the worker, watch live status, and open output, work, or logs when needed." />
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Style="{StaticResource SectionTitleText}" Text="Run" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Actions" />
                                 <Button Style="{StaticResource HelpIconButton}"
                                         Content="?"
                                         Margin="8,0,0,0"
@@ -654,44 +1102,106 @@
                                 </Button>
                             </StackPanel>
 
-                            <Button x:Name="Button_OptimizeModels"
-                                    Style="{StaticResource ButtonAccent}"
-                                    Content="Optimize Models"
-                                    Height="36"
-                                    Margin="0,12,0,0"
-                                    IsEnabled="{Binding UnlockedUI}" />
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <Button x:Name="Button_OptimizeModels"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Content="Optimize Models"
+                                            Height="38"
+                                            IsEnabled="{Binding UnlockedUI}" />
 
-                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                                <Button x:Name="Button_OpenModelsOutput"
-                                        Content="Open Output"
-                                        IsEnabled="False"
-                                        Margin="0,0,8,0" />
-                                <Button x:Name="Button_OpenModelsWork"
-                                        Content="Open Work"
-                                        IsEnabled="False"
-                                        Margin="0,0,8,0" />
-                                <Button x:Name="Button_OpenModelsLogs"
-                                        Content="Open Logs"
-                                        IsEnabled="False" />
-                            </StackPanel>
+                                    <UniformGrid Columns="3" Margin="0,8,0,0">
+                                        <Button x:Name="Button_OpenModelsOutput"
+                                                Content="Open Output"
+                                                IsEnabled="False"
+                                                Margin="0,0,8,0" />
+                                        <Button x:Name="Button_OpenModelsWork"
+                                                Content="Open Work"
+                                                IsEnabled="False"
+                                                Margin="0,0,8,0" />
+                                        <Button x:Name="Button_OpenModelsLogs"
+                                                Content="Open Logs"
+                                                IsEnabled="False" />
+                                    </UniformGrid>
+                                </StackPanel>
+                            </Border>
 
-                            <ProgressBar x:Name="ProgressBar_Models"
-                                         Margin="0,12,0,0"
-                                         Minimum="{Binding ModelsProgressMinValue}"
-                                         Maximum="{Binding ModelsProgressMaxValue}"
-                                         Value="{Binding ModelsProgressValue}" />
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,10,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Live status" />
+                                    <ProgressBar x:Name="ProgressBar_Models"
+                                                 Margin="0,8,0,0"
+                                                 Minimum="{Binding ModelsProgressMinValue}"
+                                                 Maximum="{Binding ModelsProgressMaxValue}"
+                                                 Value="{Binding ModelsProgressValue}" />
+                                </StackPanel>
+                            </Border>
 
-                            <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Phase" />
-                            <TextBlock Style="{StaticResource StatusTextBlockStyle}" Text="{Binding ModelsStatusText}" />
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,10,0,0">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
 
-                            <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Current item" />
-                            <TextBlock Text="{Binding ModelsProgressText}" />
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Phase" />
+                                    <TextBlock Grid.Row="0" Grid.Column="1"
+                                               Margin="14,0,0,0"
+                                               Text="{Binding ModelsStatusText}">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock" BasedOn="{StaticResource StatusTextBlockStyle}">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding ModelsStatusText}" Value="">
+                                                        <Setter Property="Text" Value="Ready" />
+                                                        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding ModelsStatusText}" Value="{x:Null}">
+                                                        <Setter Property="Text" Value="Ready" />
+                                                        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
 
-                            <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Size report" />
-                            <TextBox Text="{Binding ModelsSizeReportText}"
-                                     IsReadOnly="True"
-                                     TextWrapping="Wrap"
-                                     MinHeight="90" />
+                                    <TextBlock Grid.Row="1" Grid.Column="0"
+                                               Margin="0,8,0,0"
+                                               Style="{StaticResource LabelText}"
+                                               Text="Current item" />
+                                    <TextBlock Grid.Row="1" Grid.Column="1"
+                                               Margin="14,8,0,0"
+                                               Style="{StaticResource ValueText}"
+                                               Text="{Binding ModelsProgressText}"
+                                               TextWrapping="Wrap" />
+                                </Grid>
+                            </Border>
+
+                            <Border Margin="0,10,0,0">
+                                <Border.Style>
+                                    <Style TargetType="Border" BasedOn="{StaticResource CardInnerPanel}">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding ModelsSizeReportText}" Value="">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding ModelsSizeReportText}" Value="{x:Null}">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Size report" />
+                                    <TextBox Text="{Binding ModelsSizeReportText}"
+                                             Style="{StaticResource ReportTextBox}"
+                                             Margin="0,8,0,0"
+                                             MinHeight="96" />
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </Border>
                 </Grid>
@@ -699,7 +1209,7 @@
         </TabItem>
 
         <TabItem Header="Descompactar addons">
-            <Grid Background="{DynamicResource AppBackground}" Margin="4">
+            <Grid Background="{DynamicResource AppBackground}" Margin="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1*" />
                     <ColumnDefinition Width="1.25*" />
@@ -709,13 +1219,14 @@
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
-                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,12">
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,14">
                     <StackPanel>
-                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Root Folder" />
-                        <TextBlock Style="{StaticResource MutedText}"
-                                   Margin="0,8,0,0"
-                                   Text="Scan recursivo para .gma e .bin. Cada arquivo suportado e extraido em uma pasta _extraido ao lado do arquivo original." />
-                        <Grid Margin="0,12,0,0">
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="SCAN INPUT" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Root Folder" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Scan the selected root for .gma and .bin files and extract each supported archive into a sibling _extraido folder." />
+                        <Grid Margin="0,16,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
@@ -735,12 +1246,18 @@
                     </StackPanel>
                 </Border>
 
-                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,0,12">
+                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,0,14">
                     <StackPanel>
-                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Tool and Options" />
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="TOOLS AND OPTIONS" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Tool and Options" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Point to gmad.exe, define existing-output handling, and choose optional post-extraction behavior." />
 
-                        <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="gmad.exe" />
-                        <Grid Margin="0,6,0,0">
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                            <StackPanel>
+                        <TextBlock Style="{StaticResource LabelText}" Margin="0,0,0,0" Text="gmad.exe" />
+                        <Grid Margin="0,8,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
@@ -763,8 +1280,11 @@
                                     Content="Browse"
                                     Width="80" />
                         </Grid>
+                            </StackPanel>
+                        </Border>
 
-                        <Grid Margin="0,12,0,0">
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="*" />
@@ -793,7 +1313,8 @@
                                           Content="Delete extracted .bsp after map content extraction"
                                           ToolTip="If the BSP pakfile was extracted successfully, remove the extracted maps/*.bsp file afterward. Disable this if you want to keep the BSP." />
                             </StackPanel>
-                        </Grid>
+                            </Grid>
+                        </Border>
 
                         <TextBlock Style="{StaticResource MutedText}"
                                    Margin="0,12,0,0"
@@ -801,18 +1322,20 @@
                     </StackPanel>
                 </Border>
 
-                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,0">
+                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,0">
                     <StackPanel>
-                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Summary" />
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="RESULTS" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Summary" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Review the extraction overview first, then inspect the live counters for found, supported, skipped, and failed items." />
                         <TextBox x:Name="TextBox_UnpackSummary"
-                                 Margin="0,12,0,0"
-                                 IsReadOnly="True"
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 VerticalScrollBarVisibility="Auto"
-                                 MinHeight="120" />
+                                 Margin="0,16,0,0"
+                                 Style="{StaticResource ReportTextBox}"
+                                 MinHeight="128" />
 
-                        <Grid Margin="0,12,0,0">
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
@@ -827,23 +1350,24 @@
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Found" />
-                            <TextBlock Grid.Row="0" Grid.Column="1" x:Name="TextBlock_UnpackFoundCount" Text="0" />
+                            <TextBlock Grid.Row="0" Grid.Column="1" x:Name="TextBlock_UnpackFoundCount" Style="{StaticResource ValueText}" Text="0" />
                             <TextBlock Grid.Row="0" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="GMA" />
-                            <TextBlock Grid.Row="0" Grid.Column="3" x:Name="TextBlock_UnpackGmaCount" Text="0/0" />
+                            <TextBlock Grid.Row="0" Grid.Column="3" x:Name="TextBlock_UnpackGmaCount" Style="{StaticResource ValueText}" Text="0/0" />
 
                             <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelText}" Text="BIN supported" />
-                            <TextBlock Grid.Row="1" Grid.Column="1" x:Name="TextBlock_UnpackBinSupportedCount" Text="0" />
+                            <TextBlock Grid.Row="1" Grid.Column="1" x:Name="TextBlock_UnpackBinSupportedCount" Style="{StaticResource ValueText}" Text="0" />
                             <TextBlock Grid.Row="1" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="BIN unsupported" />
-                            <TextBlock Grid.Row="1" Grid.Column="3" x:Name="TextBlock_UnpackBinUnsupportedCount" Text="0" />
+                            <TextBlock Grid.Row="1" Grid.Column="3" x:Name="TextBlock_UnpackBinUnsupportedCount" Style="{StaticResource ValueText}" Text="0" />
 
                             <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource LabelText}" Text="OK" />
-                            <TextBlock Grid.Row="2" Grid.Column="1" x:Name="TextBlock_UnpackOkCount" Text="0" />
+                            <TextBlock Grid.Row="2" Grid.Column="1" x:Name="TextBlock_UnpackOkCount" Style="{StaticResource ValueText}" Text="0" />
                             <TextBlock Grid.Row="2" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="Skipped" />
-                            <TextBlock Grid.Row="2" Grid.Column="3" x:Name="TextBlock_UnpackSkippedCount" Text="0" />
+                            <TextBlock Grid.Row="2" Grid.Column="3" x:Name="TextBlock_UnpackSkippedCount" Style="{StaticResource ValueText}" Text="0" />
 
                             <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource LabelText}" Text="Failed" />
-                            <TextBlock Grid.Row="3" Grid.Column="1" x:Name="TextBlock_UnpackFailedCount" Text="0" />
-                        </Grid>
+                            <TextBlock Grid.Row="3" Grid.Column="1" x:Name="TextBlock_UnpackFailedCount" Style="{StaticResource ValueText}" Text="0" />
+                            </Grid>
+                        </Border>
                     </StackPanel>
                 </Border>
 
@@ -858,76 +1382,114 @@
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0">
-                            <TextBlock Style="{StaticResource SectionTitleText}" Text="Run" />
-                            <WrapPanel Margin="0,12,0,0">
-                                <Button x:Name="Button_UnpackScan"
-                                        Style="{StaticResource ButtonAccent}"
-                                        Click="Button_UnpackScan_Click"
-                                        Content="Scan"
-                                        Width="100"
-                                        Margin="0,0,8,8" />
-                                <Button x:Name="Button_UnpackRun"
-                                        Style="{StaticResource ButtonAccent}"
-                                        Click="Button_UnpackRun_Click"
-                                        Content="Extract"
-                                        Width="100"
-                                        Margin="0,0,8,8"
-                                        IsEnabled="False" />
-                                <Button x:Name="Button_UnpackCancel"
-                                        Style="{StaticResource ButtonDanger}"
-                                        Click="Button_UnpackCancel_Click"
-                                        Content="Cancel"
-                                        Width="100"
-                                        Margin="0,0,8,8"
-                                        IsEnabled="False" />
-                                <Button x:Name="Button_UnpackOpenRoot"
-                                        Click="Button_UnpackOpenRoot_Click"
-                                        Content="Open Root"
-                                        Width="100"
-                                        Margin="0,0,0,8"
-                                        IsEnabled="False" />
-                            </WrapPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="EXECUTION" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Run" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Margin="0,0,0,12"
+                                       Text="Scan, extract, cancel, and open the output root from one consistent execution panel." />
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,16,0,0">
+                                <WrapPanel>
+                                    <Button x:Name="Button_UnpackScan"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Click="Button_UnpackScan_Click"
+                                            Content="Scan"
+                                            Width="100"
+                                            Margin="0,0,8,8" />
+                                    <Button x:Name="Button_UnpackRun"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Click="Button_UnpackRun_Click"
+                                            Content="Extract"
+                                            Width="100"
+                                            Margin="0,0,8,8"
+                                            IsEnabled="False" />
+                                    <Button x:Name="Button_UnpackCancel"
+                                            Style="{StaticResource ButtonDanger}"
+                                            Click="Button_UnpackCancel_Click"
+                                            Content="Cancel"
+                                            Width="100"
+                                            Margin="0,0,8,8"
+                                            IsEnabled="False" />
+                                    <Button x:Name="Button_UnpackOpenRoot"
+                                            Click="Button_UnpackOpenRoot_Click"
+                                            Content="Open Root"
+                                            Width="100"
+                                            Margin="0,0,0,8"
+                                            IsEnabled="False" />
+                                </WrapPanel>
+                            </Border>
                         </StackPanel>
 
-                        <ProgressBar x:Name="ProgressBar_Unpack"
-                                     Grid.Row="1"
-                                     Margin="0,12,0,0"
-                                     Minimum="0"
-                                     Maximum="100"
-                                     Value="0" />
+                        <Border Grid.Row="1" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Progress" />
+                                <ProgressBar x:Name="ProgressBar_Unpack"
+                                             Margin="0,10,0,0"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Value="0" />
+                            </StackPanel>
+                        </Border>
 
-                        <StackPanel Grid.Row="2" Margin="0,12,0,0">
-                            <TextBlock Style="{StaticResource LabelText}" Text="Phase" />
-                            <TextBlock x:Name="TextBlock_UnpackPhase"
-                                       Style="{StaticResource StatusTextBlockStyle}"
-                                       Text="Idle" />
-                        </StackPanel>
+                        <Border Grid.Row="2" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
 
-                        <StackPanel Grid.Row="3" Margin="0,12,0,0">
-                            <TextBlock Style="{StaticResource LabelText}" Text="Current item" />
-                            <TextBlock x:Name="TextBlock_UnpackCurrent" Text="Idle" />
-                            <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Status" />
-                            <TextBlock x:Name="TextBlock_UnpackStatus" Text="Idle" />
-                        </StackPanel>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Phase" />
+                                <TextBlock Grid.Row="0" Grid.Column="1"
+                                           Margin="16,0,0,0"
+                                           x:Name="TextBlock_UnpackPhase"
+                                           Style="{StaticResource StatusTextBlockStyle}"
+                                           Text="Idle" />
 
-                        <StackPanel Grid.Row="4" Margin="0,12,0,0">
-                            <TextBlock Style="{StaticResource LabelText}" Text="Log" />
-                            <TextBox x:Name="TextBox_UnpackLog"
-                                     Margin="0,6,0,0"
-                                     IsReadOnly="True"
-                                     AcceptsReturn="True"
-                                     TextWrapping="NoWrap"
-                                     VerticalScrollBarVisibility="Auto"
-                                     HorizontalScrollBarVisibility="Auto"
-                                     FontFamily="Consolas" />
-                        </StackPanel>
+                                <TextBlock Grid.Row="1" Grid.Column="0"
+                                           Margin="0,10,0,0"
+                                           Style="{StaticResource LabelText}"
+                                           Text="Current item" />
+                                <TextBlock Grid.Row="1" Grid.Column="1"
+                                           Margin="16,10,0,0"
+                                           x:Name="TextBlock_UnpackCurrent"
+                                           Style="{StaticResource ValueText}"
+                                           Text="Idle" />
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="3" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Style="{StaticResource LabelText}" Text="Status" />
+                                <TextBlock Grid.Column="1"
+                                           Margin="16,0,0,0"
+                                           x:Name="TextBlock_UnpackStatus"
+                                           Style="{StaticResource ValueText}"
+                                           Text="Idle" />
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="4" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Log" />
+                                <TextBox x:Name="TextBox_UnpackLog"
+                                         Style="{StaticResource LogTextBox}"
+                                         Margin="0,10,0,0" />
+                            </StackPanel>
+                        </Border>
                     </Grid>
                 </Border>
             </Grid>
         </TabItem>
 
-        <TabItem Header="Optimize Maps">
-            <Grid Background="{DynamicResource AppBackground}" Margin="4">
+        <TabItem Header="Juntar addons">
+            <Grid Background="{DynamicResource AppBackground}" Margin="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1*" />
                     <ColumnDefinition Width="1.25*" />
@@ -937,93 +1499,189 @@
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
-                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,12">
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,14">
                     <StackPanel>
-                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Extracted Addon Folder" />
-                        <TextBlock Style="{StaticResource MutedText}"
-                                   Margin="0,8,0,0"
-                                   Text="Optimize Maps scans maps/*.bsp inside an already extracted addon folder, stages the internal PAKFILE, can optimize only the staged assets and, in the conservative EOF-only path, can rebuild the pak and reinject it into a copied BSP without touching the original addon." />
-                        <Grid Margin="0,12,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="TextBox_MapScanRootPath"
-                                     TextChanged="TextBox_MapScanRootPath_TextChanged"
-                                     HorizontalScrollBarVisibility="Auto"
-                                     TextWrapping="NoWrap" />
-                            <Button x:Name="Button_SelectMapScanRoot"
-                                    Click="Button_SelectMapScanRoot_Click"
-                                    Grid.Column="1"
-                                    Margin="8,0,0,0"
-                                    Style="{StaticResource ButtonAccent}"
-                                    Content="Select Root"
-                                    Width="110" />
-                        </Grid>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="MERGE INPUT" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Root Folder" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Select a root folder that contains multiple addon folders. The merge stays defensive by default and does not overwrite conflicting content blindly." />
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Addon root" />
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="TextBox_AddonMergeRootPath"
+                                             TextChanged="TextBox_AddonMergeRootPath_TextChanged"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             TextWrapping="NoWrap" />
+                                    <Button x:Name="Button_SelectAddonMergeRoot"
+                                            Grid.Column="1"
+                                            Margin="8,0,0,0"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Click="Button_SelectAddonMergeRoot_Click"
+                                            Content="Select Root"
+                                            Width="110" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Safe default" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,8,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="Default behavior keeps the higher-priority addon on real same-path conflicts. Priority order decides the winner and discarded files are still reported." />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 
-                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,0,12">
+                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,0,14">
                     <StackPanel>
-                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Current Scope" />
-                        <TextBlock Style="{StaticResource MutedText}" Margin="0,12,0,0" TextWrapping="Wrap">
-                            Current conservative scope: scan, staging, staged asset optimization and EOF-only pak rebuild + BSP reinjection into a new output folder.
-                        </TextBlock>
-                        <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Future reinjection gate" />
-                        <TextBlock Style="{StaticResource MutedText}" Margin="0,6,0,0" TextWrapping="Wrap">
-                            Reinjection only runs when the BSP stays readable as VBSP, the PAKFILE remains a valid ZIP, offsets stay in range and the layout is safe to rewrite.
-                        </TextBlock>
-                        <TextBlock Style="{StaticResource MutedText}" Margin="0,12,0,0" TextWrapping="Wrap">
-                            Conservative v1 target: only optimize content embedded in the BSP pak, prioritizing VTF. No geometry, lightmaps, visibility or structural lump changes.
-                        </TextBlock>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="POLICY AND PACKAGING" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Options" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Scan first, choose how conflicts should be handled, and optionally generate a .gma only when you actually need workshop packaging." />
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                            <StackPanel>
+                                <CheckBox x:Name="CheckBox_AddonMergeGenerateGma"
+                                          Content="Generate .gma package at the end"
+                                          IsChecked="False"
+                                          Checked="CheckBox_AddonMergeGenerateGma_Changed"
+                                          Unchecked="CheckBox_AddonMergeGenerateGma_Changed" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,8,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="Disabled by default. When unchecked, the tool only creates the merged addon folder and skips gmad packaging." />
+
+                                <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="gmad.exe" />
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="TextBox_AddonMergeGmadPath"
+                                             Text="{Binding ElementName=TextBox_UnpackGmadPath, Path=Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             TextChanged="TextBox_AddonMergeGmadPath_TextChanged"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             TextWrapping="NoWrap" />
+                                    <Button x:Name="Button_AddonMergeAutoDetectGmad"
+                                            Grid.Column="1"
+                                            Margin="8,0,0,0"
+                                            Click="Button_AddonMergeAutoDetectGmad_Click"
+                                            Content="Auto-detect"
+                                            Width="100" />
+                                    <Button x:Name="Button_AddonMergeBrowseGmad"
+                                            Grid.Column="2"
+                                            Margin="8,0,0,0"
+                                            Click="Button_AddonMergeBrowseGmad_Click"
+                                            Content="Browse"
+                                            Width="80" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Conflict policy" />
+                                    <ComboBox x:Name="ComboBox_AddonMergeConflictPolicy" Margin="0,8,0,0">
+                                        <ComboBoxItem Tag="first" Content="First wins (default)" />
+                                        <ComboBoxItem Tag="last" Content="Last wins" />
+                                        <ComboBoxItem Tag="fail" Content="Fail on real conflict" />
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Priority order" />
+                                    <ComboBox x:Name="ComboBox_AddonMergePriorityMode" Margin="0,8,0,0">
+                                        <ComboBoxItem Tag="name-asc" Content="Name A-Z" />
+                                        <ComboBoxItem Tag="name-desc" Content="Name Z-A" />
+                                        <ComboBoxItem Tag="discovery" Content="Scan order" />
+                                    </ComboBox>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Package mode" />
+                                <ComboBox x:Name="ComboBox_AddonMergePackageMode"
+                                          Margin="0,10,0,0"
+                                          SelectionChanged="ComboBox_AddonMergePackageMode_SelectionChanged">
+                                    <ComboBoxItem Tag="strict" Content="Strict (recommended)" />
+                                    <ComboBoxItem Tag="compatibility" Content="Compatibility (explicit discards)" />
+                                </ComboBox>
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,8,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="Compatibility mode currently discards known package-incompatible files such as models/*.sw.vtx and reports them in the final diagnostics." />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 
-                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,0">
+                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,0">
                     <StackPanel>
-                        <TextBlock Style="{StaticResource SectionTitleText}" Text="Technical Summary" />
-                        <TextBox x:Name="TextBox_MapScanSummary"
-                                 Margin="0,12,0,0"
-                                 IsReadOnly="True"
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 VerticalScrollBarVisibility="Auto"
-                                 MinHeight="160" />
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="SUMMARY" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Scan and Merge Summary" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Review the scan first. Real conflicts, discarded files, and packaging state are surfaced clearly before you trust the final addon." />
 
-                        <Grid Margin="0,12,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
+                        <TextBox x:Name="TextBox_AddonMergeSummary"
+                                 Margin="0,16,0,0"
+                                 Style="{StaticResource ReportTextBox}"
+                                 MinHeight="150" />
 
-                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="BSP found" />
-                            <TextBlock Grid.Row="0" Grid.Column="1" x:Name="TextBlock_MapScanBspCount" Text="0" />
-                            <TextBlock Grid.Row="0" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="Valid pak ZIP" />
-                            <TextBlock Grid.Row="0" Grid.Column="3" x:Name="TextBlock_MapScanPakZipCount" Text="0" />
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
 
-                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelText}" Text="Staged BSP" />
-                            <TextBlock Grid.Row="1" Grid.Column="1" x:Name="TextBlock_MapScanStagedBspCount" Text="0" />
-                            <TextBlock Grid.Row="1" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="Staged files" />
-                            <TextBlock Grid.Row="1" Grid.Column="3" x:Name="TextBlock_MapScanStagedFileCount" Text="0" />
+                                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Addons" />
+                                <TextBlock Grid.Row="0" Grid.Column="1" x:Name="TextBlock_AddonMergeAddonCount" Style="{StaticResource ValueText}" Text="0" />
+                                <TextBlock Grid.Row="0" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="Files" />
+                                <TextBlock Grid.Row="0" Grid.Column="3" x:Name="TextBlock_AddonMergeFileCount" Style="{StaticResource ValueText}" Text="0" />
 
-                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource LabelText}" Text="Future candidate" />
-                            <TextBlock Grid.Row="2" Grid.Column="1" x:Name="TextBlock_MapScanCandidateCount" Text="0" />
-                            <TextBlock Grid.Row="2" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="Blocked" />
-                            <TextBlock Grid.Row="2" Grid.Column="3" x:Name="TextBlock_MapScanBlockedCount" Text="0" />
+                                <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Unique paths" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,10,0,0" x:Name="TextBlock_AddonMergeUniquePathCount" Style="{StaticResource ValueText}" Text="0" />
+                                <TextBlock Grid.Row="1" Grid.Column="2" Margin="16,10,0,0" Style="{StaticResource LabelText}" Text="Real conflicts" />
+                                <TextBlock Grid.Row="1" Grid.Column="3" Margin="0,10,0,0" x:Name="TextBlock_AddonMergeConflictCount" Style="{StaticResource ValueText}" Text="0" />
 
-                            <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource LabelText}" Text="Addon total" />
-                            <TextBlock Grid.Row="3" Grid.Column="1" x:Name="TextBlock_MapScanAddonSize" Text="0 B" />
-                            <TextBlock Grid.Row="3" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="PAK total" />
-                            <TextBlock Grid.Row="3" Grid.Column="3" x:Name="TextBlock_MapScanPakTotalSize" Text="0 B" />
-                        </Grid>
+                                <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Discarded" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,10,0,0" x:Name="TextBlock_AddonMergeDiscardedCount" Style="{StaticResource ValueText}" Text="0" />
+                                <TextBlock Grid.Row="2" Grid.Column="2" Margin="16,10,0,0" Style="{StaticResource LabelText}" Text="Merged files" />
+                                <TextBlock Grid.Row="2" Grid.Column="3" Margin="0,10,0,0" x:Name="TextBlock_AddonMergeMergedFileCount" Style="{StaticResource ValueText}" Text="0" />
+
+                                <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Merge status" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,10,0,0" x:Name="TextBlock_AddonMergeMergeStatus" Style="{StaticResource ValueText}" Text="Idle" />
+                                <TextBlock Grid.Row="3" Grid.Column="2" Margin="16,10,0,0" Style="{StaticResource LabelText}" Text="Validation" />
+                                <TextBlock Grid.Row="3" Grid.Column="3" Margin="0,10,0,0" x:Name="TextBlock_AddonMergeValidationStatus" Style="{StaticResource ValueText}" Text="Idle" />
+                            </Grid>
+                        </Border>
                     </StackPanel>
                 </Border>
 
@@ -1038,108 +1696,610 @@
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0">
-                            <TextBlock Style="{StaticResource SectionTitleText}" Text="Run" />
-                            <WrapPanel Margin="0,12,0,0">
-                                <Button x:Name="Button_MapScanRun"
-                                        Style="{StaticResource ButtonAccent}"
-                                        Click="Button_MapScanRun_Click"
-                                        Content="Scan + Stage"
-                                        Width="110"
-                                        Margin="0,0,8,8" />
-                                <Button x:Name="Button_MapStageOptimize"
-                                        Style="{StaticResource ButtonAccent}"
-                                        Click="Button_MapStageOptimize_Click"
-                                        Content="Optimize Staging"
-                                        Width="130"
-                                        Margin="0,0,8,8"
-                                        IsEnabled="False" />
-                                <Button x:Name="Button_MapBuildRun"
-                                        Style="{StaticResource ButtonAccent}"
-                                        Click="Button_MapBuildRun_Click"
-                                        Content="Build + Inject"
-                                        Width="120"
-                                        Margin="0,0,8,8"
-                                        IsEnabled="False" />
-                                <Button x:Name="Button_MapScanCancel"
-                                        Style="{StaticResource ButtonDanger}"
-                                        Click="Button_MapScanCancel_Click"
-                                        Content="Cancel"
-                                        Width="100"
-                                        Margin="0,0,8,8"
-                                        IsEnabled="False" />
-                                <Button x:Name="Button_MapScanOpenRoot"
-                                        Click="Button_MapScanOpenRoot_Click"
-                                        Content="Open Root"
-                                        Width="100"
-                                        Margin="0,0,8,8"
-                                        IsEnabled="False" />
-                                <Button x:Name="Button_MapScanOpenWork"
-                                        Click="Button_MapScanOpenWork_Click"
-                                        Content="Open Work"
-                                        Width="100"
-                                        Margin="0,0,8,8"
-                                        IsEnabled="False" />
-                                <Button x:Name="Button_MapBuildOpenOutput"
-                                        Click="Button_MapBuildOpenOutput_Click"
-                                        Content="Open Output"
-                                        Width="110"
-                                        Margin="0,0,0,8"
-                                        IsEnabled="False" />
-                            </WrapPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="EXECUTION" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Run" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Margin="0,0,0,12"
+                                       Text="Run a safe scan first, then generate the consolidated addon only after reviewing the inventory and conflict policy." />
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="New addon name" />
+                                    <TextBox x:Name="TextBox_AddonMergeBundleName"
+                                             Margin="0,10,0,0"
+                                             TextChanged="TextBox_AddonMergeBundleName_TextChanged"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             TextWrapping="NoWrap" />
+
+                                    <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Save inside" />
+                                    <Grid Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="TextBox_AddonMergeOutputRoot"
+                                                 TextChanged="TextBox_AddonMergeOutputRoot_TextChanged"
+                                                 HorizontalScrollBarVisibility="Auto"
+                                                 TextWrapping="NoWrap" />
+                                        <Button Grid.Column="1"
+                                                Margin="8,0,0,0"
+                                                Click="Button_SelectAddonMergeOutputRoot_Click"
+                                                Content="Browse"
+                                                Width="80" />
+                                        <Button Grid.Column="2"
+                                                Margin="8,0,0,0"
+                                                Click="Button_AddonMergeUseRootOutput_Click"
+                                                Content="Use root"
+                                                Width="90" />
+                                    </Grid>
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               TextWrapping="Wrap"
+                                               Text="By default, the merged addon folder and .gma are created inside the selected source root. You can change the destination if needed." />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,16,0,0">
+                                <StackPanel>
+                                    <WrapPanel>
+                                        <Button x:Name="Button_AddonMergeScan"
+                                                Style="{StaticResource ButtonAccent}"
+                                                Click="Button_AddonMergeScan_Click"
+                                                Content="Scan"
+                                                Width="100"
+                                                Margin="0,0,8,8" />
+                                        <Button x:Name="Button_AddonMergeRun"
+                                                Style="{StaticResource ButtonAccent}"
+                                                Click="Button_AddonMergeRun_Click"
+                                                Content="Generate"
+                                                Width="110"
+                                                Margin="0,0,8,8"
+                                                IsEnabled="False" />
+                                        <Button x:Name="Button_AddonMergeCancel"
+                                                Style="{StaticResource ButtonDanger}"
+                                                Click="Button_AddonMergeCancel_Click"
+                                                Content="Cancel"
+                                                Width="100"
+                                                Margin="0,0,0,8"
+                                                IsEnabled="False" />
+                                    </WrapPanel>
+                                    <WrapPanel Margin="0,2,0,0">
+                                        <Button x:Name="Button_AddonMergeOpenRoot"
+                                                Click="Button_AddonMergeOpenRoot_Click"
+                                                Content="Open Root"
+                                                Width="100"
+                                                Margin="0,0,8,8"
+                                                IsEnabled="False" />
+                                        <Button x:Name="Button_AddonMergeOpenMerged"
+                                                Click="Button_AddonMergeOpenMerged_Click"
+                                                Content="Open Merged"
+                                                Width="110"
+                                                Margin="0,0,8,8"
+                                                IsEnabled="False" />
+                                        <Button x:Name="Button_AddonMergeOpenWork"
+                                                Click="Button_AddonMergeOpenWork_Click"
+                                                Content="Open Work"
+                                                Width="100"
+                                                Margin="0,0,8,8"
+                                                IsEnabled="False" />
+                                        <Button x:Name="Button_AddonMergeOpenReports"
+                                                Click="Button_AddonMergeOpenReports_Click"
+                                                Content="Open Reports"
+                                                Width="110"
+                                                Margin="0,0,0,8"
+                                                IsEnabled="False" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
 
-                        <ProgressBar x:Name="ProgressBar_MapScan"
-                                     Grid.Row="1"
-                                     Margin="0,12,0,0"
-                                     Minimum="0"
-                                     Maximum="100"
-                                     Value="0" />
+                        <Border Grid.Row="1" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Style="{StaticResource LabelText}" Text="Progress" />
+                                    <TextBlock Grid.Column="1"
+                                               x:Name="TextBlock_AddonMergeProgressPercent"
+                                               Style="{StaticResource ValueText}"
+                                               Text="0%" />
+                                </Grid>
+                                <TextBlock x:Name="TextBlock_AddonMergeProgressDetail"
+                                           Style="{StaticResource MutedText}"
+                                           Margin="0,8,0,0"
+                                           Text="Idle" />
+                                <ProgressBar x:Name="ProgressBar_AddonMerge"
+                                             Margin="0,10,0,0"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Value="0" />
+                            </StackPanel>
+                        </Border>
 
-                        <StackPanel Grid.Row="2" Margin="0,12,0,0">
-                            <TextBlock Style="{StaticResource LabelText}" Text="Phase" />
-                            <TextBlock x:Name="TextBlock_MapScanPhase"
-                                       Style="{StaticResource StatusTextBlockStyle}"
-                                       Text="Idle" />
-                        </StackPanel>
+                        <Border Grid.Row="2" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
 
-                        <StackPanel Grid.Row="3" Margin="0,12,0,0">
-                            <TextBlock Style="{StaticResource LabelText}" Text="Current item" />
-                            <TextBlock x:Name="TextBlock_MapScanCurrent" Text="Idle" />
-                            <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Status" />
-                            <TextBlock x:Name="TextBlock_MapScanStatus" Text="Idle" />
-                        </StackPanel>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Phase" />
+                                <TextBlock Grid.Row="0" Grid.Column="1"
+                                           Margin="16,0,0,0"
+                                           x:Name="TextBlock_AddonMergePhase"
+                                           Style="{StaticResource StatusTextBlockStyle}"
+                                           Text="Idle" />
 
-                        <StackPanel Grid.Row="4" Margin="0,12,0,0">
-                            <TextBlock Style="{StaticResource LabelText}" Text="Log" />
-                            <TextBox x:Name="TextBox_MapScanLog"
-                                     Margin="0,6,0,0"
-                                     IsReadOnly="True"
-                                     AcceptsReturn="True"
-                                     TextWrapping="NoWrap"
-                                     VerticalScrollBarVisibility="Auto"
-                                     HorizontalScrollBarVisibility="Auto"
-                                     FontFamily="Consolas" />
-                        </StackPanel>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Current item" />
+                                <TextBlock Grid.Row="1" Grid.Column="1"
+                                           Margin="16,10,0,0"
+                                           x:Name="TextBlock_AddonMergeCurrent"
+                                           Style="{StaticResource ValueText}"
+                                           Text="Idle" />
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Status" />
+                                <TextBlock Grid.Row="2" Grid.Column="1"
+                                           Margin="16,10,0,0"
+                                           x:Name="TextBlock_AddonMergeStatus"
+                                           Style="{StaticResource ValueText}"
+                                           Text="Idle" />
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="3" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Diagnostics" />
+                                <TextBox x:Name="TextBox_AddonMergeDiagnostics"
+                                         Style="{StaticResource ReportTextBox}"
+                                         Margin="0,10,0,0"
+                                         MinHeight="150" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="4" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Log" />
+                                <TextBox x:Name="TextBox_AddonMergeLog"
+                                         Style="{StaticResource LogTextBox}"
+                                         Margin="0,10,0,0" />
+                            </StackPanel>
+                        </Border>
                     </Grid>
                 </Border>
             </Grid>
         </TabItem>
 
-        <TabItem Header="Pipeline">
-            <Grid Background="{DynamicResource AppBackground}" Margin="4">
+        <TabItem Header="Optimize Maps">
+            <Grid Background="{DynamicResource AppBackground}" Margin="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1*" />
-                    <ColumnDefinition Width="1*" />
+                    <ColumnDefinition Width="1.25*" />
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
-                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,12">
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,14">
                     <StackPanel>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="MAP INPUT" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Addon and Staging" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Use an extracted addon with maps/*.bsp or point to a root that still contains .gma/.bin archives for automatic staging." />
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Addon root" />
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="TextBox_MapScanRootPath"
+                                             TextChanged="TextBox_MapScanRootPath_TextChanged"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             TextWrapping="NoWrap" />
+                                    <Button x:Name="Button_SelectMapScanRoot"
+                                            Click="Button_SelectMapScanRoot_Click"
+                                            Grid.Column="1"
+                                            Margin="8,0,0,0"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Content="Select Root"
+                                            Width="110" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="gmad.exe" />
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="TextBox_MapGmadPath"
+                                             Text="{Binding ElementName=TextBox_UnpackGmadPath, Path=Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             TextWrapping="NoWrap" />
+                                    <Button Grid.Column="1"
+                                            Margin="8,0,0,0"
+                                            Click="Button_AutoDetectGmad_Click"
+                                            Content="Auto-detect"
+                                            Width="100" />
+                                    <Button Grid.Column="2"
+                                            Margin="8,0,0,0"
+                                            Click="Button_BrowseGmad_Click"
+                                            Content="Browse"
+                                            Width="80" />
+                                </Grid>
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,8,0,0"
+                                           Text="Used only when the selected root still contains raw .gma/.bin archives and no maps/*.bsp yet." />
+                            </StackPanel>
+                        </Border>
+
+                        <Expander Margin="0,12,0,0" Header="Map Asset Compression Settings">
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,10,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource HintText}"
+                                               Text="These staged-asset settings mirror the Compress tab and affect the files optimized inside the map work folder." />
+
+                                    <TextBlock Style="{StaticResource LabelText}" Margin="0,14,0,0" Text="Asset types" />
+                                    <WrapPanel Margin="0,10,0,0">
+                                        <CheckBox Margin="0,0,12,8" Content="VTF" IsChecked="{Binding CompressVTF}" />
+                                        <CheckBox Margin="0,0,12,8" Content="WAV" IsChecked="{Binding CompressWAV}" />
+                                        <CheckBox Margin="0,0,12,8" Content="MP3" IsChecked="{Binding CompressMP3}" />
+                                        <CheckBox Margin="0,0,12,8" Content="OGG" IsChecked="{Binding CompressOGG}" />
+                                        <CheckBox Margin="0,0,12,8" Content="JPG" IsChecked="{Binding CompressJPG}" />
+                                        <CheckBox Margin="0,0,12,8" Content="PNG" IsChecked="{Binding CompressPNG}" />
+                                        <CheckBox Margin="0,0,0,8" Content="LUA" IsChecked="{Binding CompressLUA}" />
+                                    </WrapPanel>
+
+                                    <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Image settings" />
+                                    <Grid Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Reducing resolution" />
+                                        <ComboBox Grid.Row="0" Grid.Column="1"
+                                                  ItemsSource="{Binding ImageReducingResolutionList}"
+                                                  SelectedIndex="{Binding ImageReducingResolutionListIndex, Mode=TwoWay}" />
+
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Width limit" />
+                                        <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,10,0,0"
+                                                  ItemsSource="{Binding ImageSizeLimitList}"
+                                                  SelectedIndex="{Binding ImageWidthLimitIndex, Mode=TwoWay}" />
+
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Height limit" />
+                                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,10,0,0"
+                                                  ItemsSource="{Binding ImageSizeLimitList}"
+                                                  SelectedIndex="{Binding ImageHeightLimitIndex, Mode=TwoWay}" />
+                                    </Grid>
+
+                                    <Grid Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Style="{StaticResource LabelText}" Text="Skip width" />
+                                        <TextBox Grid.Column="1" Text="{Binding ImageSkipWidth}" />
+                                    </Grid>
+                                    <Grid Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Style="{StaticResource LabelText}" Text="Skip height" />
+                                        <TextBox Grid.Column="1" Text="{Binding ImageSkipHeight}" />
+                                    </Grid>
+
+                                    <CheckBox Margin="0,10,0,0" Content="Reduce exactly to Width/Height limits" IsChecked="{Binding ReduceExactlyToLimits}" />
+                                    <CheckBox Margin="0,8,0,0" Content="Maintain image aspect ratio" IsChecked="{Binding KeepImageAspectRatio}" />
+                                    <CheckBox Margin="0,8,0,0" Content="ImageMagick VTF compress (Demo)" IsChecked="{Binding ImageMagickVTFCompress}" />
+
+                                    <TextBlock Style="{StaticResource LabelText}" Margin="0,14,0,0" Text="Audio and script settings" />
+                                    <Grid Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="WAV sample rate" />
+                                        <ComboBox Grid.Row="0" Grid.Column="1"
+                                                  ItemsSource="{Binding WavRateList}"
+                                                  SelectedIndex="{Binding WavRateListIndex, Mode=TwoWay}" />
+
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="MP3 bitrate" />
+                                        <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,10,0,0"
+                                                  ItemsSource="{Binding AudioBitrateList}"
+                                                  SelectedIndex="{Binding Mp3BitrateIndex, Mode=TwoWay}" />
+
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="OGG quality" />
+                                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,10,0,0"
+                                                  ItemsSource="{Binding OggQualityList}"
+                                                  SelectedIndex="{Binding OggQualityIndex, Mode=TwoWay}" />
+                                    </Grid>
+                                    <CheckBox Margin="0,10,0,0" Content="Protect WAV loop behavior when possible" IsChecked="{Binding AudioLoopSafe}" />
+                                    <CheckBox Margin="0,8,0,0" Content="Minimalize staged LUA when enabled" IsChecked="{Binding ChangeOriginalCodeToMinimalistic}" />
+
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,12,0,0"
+                                               TextWrapping="Wrap"
+                                               Text="Embedded model files are still inventoried only. This pipeline does not run the Models optimizer on staged pak content yet." />
+                                </StackPanel>
+                            </Border>
+                        </Expander>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,0,14">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="SCOPE" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Current Scope" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="This tab stays conservative: scan maps, stage pak content, optimize staged assets, then rebuild and reinject only when it is safe." />
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Conservative v1 target" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,8,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="Only optimize content embedded in the BSP pak, prioritizing VTF. No geometry, lightmaps, visibility, or structural lump changes." />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Rebuild guardrails" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,8,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="Reinjection runs only when the BSP stays readable as VBSP, the PAKFILE remains a valid ZIP, offsets stay in range, and the layout is safe to rewrite." />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,0">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="SUMMARY" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Current Step Summary" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Review the current scan or build summary and inspect the main staging metrics before running the next step." />
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Summary" />
+                                <TextBox x:Name="TextBox_MapScanSummary"
+                                         Style="{StaticResource ReportTextBox}"
+                                         Margin="0,10,0,0"
+                                         MinHeight="160" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Inventory metrics" />
+                                <Grid Margin="0,12,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="BSP found" />
+                                    <TextBlock Grid.Row="0" Grid.Column="1" x:Name="TextBlock_MapScanBspCount" Style="{StaticResource ValueText}" Text="0" />
+                                    <TextBlock Grid.Row="0" Grid.Column="2" Margin="16,0,0,0" Style="{StaticResource LabelText}" Text="Valid pak ZIP" />
+                                    <TextBlock Grid.Row="0" Grid.Column="3" x:Name="TextBlock_MapScanPakZipCount" Style="{StaticResource ValueText}" Text="0" />
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Staged BSP" />
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,10,0,0" x:Name="TextBlock_MapScanStagedBspCount" Style="{StaticResource ValueText}" Text="0" />
+                                    <TextBlock Grid.Row="1" Grid.Column="2" Margin="16,10,0,0" Style="{StaticResource LabelText}" Text="Staged files" />
+                                    <TextBlock Grid.Row="1" Grid.Column="3" Margin="0,10,0,0" x:Name="TextBlock_MapScanStagedFileCount" Style="{StaticResource ValueText}" Text="0" />
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Future candidate" />
+                                    <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,10,0,0" x:Name="TextBlock_MapScanCandidateCount" Style="{StaticResource ValueText}" Text="0" />
+                                    <TextBlock Grid.Row="2" Grid.Column="2" Margin="16,10,0,0" Style="{StaticResource LabelText}" Text="Blocked" />
+                                    <TextBlock Grid.Row="2" Grid.Column="3" Margin="0,10,0,0" x:Name="TextBlock_MapScanBlockedCount" Style="{StaticResource ValueText}" Text="0" />
+
+                                    <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Addon total" />
+                                    <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,10,0,0" x:Name="TextBlock_MapScanAddonSize" Style="{StaticResource ValueText}" Text="0 B" />
+                                    <TextBlock Grid.Row="3" Grid.Column="2" Margin="16,10,0,0" Style="{StaticResource LabelText}" Text="PAK total" />
+                                    <TextBlock Grid.Row="3" Grid.Column="3" Margin="0,10,0,0" x:Name="TextBlock_MapScanPakTotalSize" Style="{StaticResource ValueText}" Text="0 B" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource Card}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0">
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="EXECUTION" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Run" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Margin="0,0,0,12"
+                                       Text="Scan and stage first, optimize staged assets next, then rebuild and reinject only when the current work session is ready." />
+
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,16,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Actions" />
+                                    <WrapPanel Margin="0,10,0,0">
+                                        <Button x:Name="Button_MapScanRun"
+                                                Style="{StaticResource ButtonAccent}"
+                                                Click="Button_MapScanRun_Click"
+                                                Content="Scan + Stage"
+                                                Width="118"
+                                                Margin="0,0,8,8" />
+                                        <Button x:Name="Button_MapStageOptimize"
+                                                Style="{StaticResource ButtonAccent}"
+                                                Click="Button_MapStageOptimize_Click"
+                                                Content="Optimize Staging"
+                                                Width="130"
+                                                Margin="0,0,8,8"
+                                                IsEnabled="False" />
+                                        <Button x:Name="Button_MapBuildRun"
+                                                Style="{StaticResource ButtonAccent}"
+                                                Click="Button_MapBuildRun_Click"
+                                                Content="Build + Inject"
+                                                Width="120"
+                                                Margin="0,0,8,8"
+                                                IsEnabled="False" />
+                                        <Button x:Name="Button_MapScanCancel"
+                                                Style="{StaticResource ButtonDanger}"
+                                                Click="Button_MapScanCancel_Click"
+                                                Content="Cancel"
+                                                Width="100"
+                                                Margin="0,0,0,8"
+                                                IsEnabled="False" />
+                                    </WrapPanel>
+                                    <WrapPanel Margin="0,2,0,0">
+                                        <Button x:Name="Button_MapScanOpenRoot"
+                                                Click="Button_MapScanOpenRoot_Click"
+                                                Content="Open Root"
+                                                Width="100"
+                                                Margin="0,0,8,0"
+                                                IsEnabled="False" />
+                                        <Button x:Name="Button_MapScanOpenWork"
+                                                Click="Button_MapScanOpenWork_Click"
+                                                Content="Open Work"
+                                                Width="100"
+                                                Margin="0,0,8,0"
+                                                IsEnabled="False" />
+                                        <Button x:Name="Button_MapBuildOpenOutput"
+                                                Click="Button_MapBuildOpenOutput_Click"
+                                                Content="Open Output"
+                                                Width="118"
+                                                IsEnabled="False" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <Border Grid.Row="1" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Progress" />
+                                <ProgressBar x:Name="ProgressBar_MapScan"
+                                             Margin="0,10,0,0"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Value="0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="2" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Phase" />
+                                <TextBlock Grid.Row="0" Grid.Column="1"
+                                           Margin="16,0,0,0"
+                                           x:Name="TextBlock_MapScanPhase"
+                                           Style="{StaticResource StatusTextBlockStyle}"
+                                           Text="Idle" />
+
+                                <TextBlock Grid.Row="1" Grid.Column="0"
+                                           Margin="0,10,0,0"
+                                           Style="{StaticResource LabelText}"
+                                           Text="Current item" />
+                                <TextBlock Grid.Row="1" Grid.Column="1"
+                                           Margin="16,10,0,0"
+                                           x:Name="TextBlock_MapScanCurrent"
+                                           Style="{StaticResource ValueText}"
+                                           Text="Idle" />
+
+                                <TextBlock Grid.Row="2" Grid.Column="0"
+                                           Margin="0,10,0,0"
+                                           Style="{StaticResource LabelText}"
+                                           Text="Status" />
+                                <TextBlock Grid.Row="2" Grid.Column="1"
+                                           Margin="16,10,0,0"
+                                           x:Name="TextBlock_MapScanStatus"
+                                           Style="{StaticResource ValueText}"
+                                           Text="Idle" />
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="3" Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Log" />
+                                <TextBox x:Name="TextBox_MapScanLog"
+                                         Style="{StaticResource LogTextBox}"
+                                         Margin="0,10,0,0"
+                                         MinHeight="240" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Border>
+            </Grid>
+        </TabItem>
+
+        <TabItem Header="Pipeline">
+            <Grid Background="{DynamicResource AppBackground}" Margin="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.05*" />
+                    <ColumnDefinition Width="0.95*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,14">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="PIPELINE INPUT" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Addon" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Pick the addon root used for the chained Models then Compress workflow." />
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Style="{StaticResource SectionTitleText}" Text="Addon" />
+                            <TextBlock Style="{StaticResource LabelText}" Text="Source addon" />
                             <Button Style="{StaticResource HelpIconButton}"
                                     Content="?"
                                     Margin="8,0,0,0"
@@ -1163,7 +2323,7 @@
                             <Button x:Name="Button_SelectDirectoryPipeline"
                                     Style="{StaticResource ButtonAccent}"
                                     Content="Select Addon"
-                                    Width="110"
+                                    Width="118"
                                     IsEnabled="{Binding UnlockedUI}" />
                             <TextBox Grid.Column="1"
                                      Margin="12,0,0,0"
@@ -1172,13 +2332,35 @@
                                      TextWrapping="NoWrap"
                                      HorizontalScrollBarVisibility="Auto" />
                         </Grid>
+
+                        <Border Style="{StaticResource CardInnerPanel}"
+                                Margin="0,12,0,0"
+                                Visibility="{Binding AddonWorkshopWarningVisibility}"
+                                BorderBrush="{DynamicResource Danger}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}"
+                                           Foreground="{DynamicResource Danger}"
+                                           Text="Workshop warning" />
+                                <TextBox Margin="0,10,0,0"
+                                         Text="{Binding AddonWorkshopWarningText}"
+                                         Style="{StaticResource ReportTextBox}"
+                                         Foreground="{DynamicResource Danger}"
+                                         BorderBrush="{DynamicResource Danger}"
+                                         MinHeight="96" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 
-                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,0">
+                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,0">
                     <StackPanel>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="PIPELINE FLOW" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Pipeline Steps" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Run the fixed Models then Compress sequence. This tab orchestrates the flow without changing either step's logic." />
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Style="{StaticResource SectionTitleText}" Text="Pipeline Steps" />
+                            <TextBlock Style="{StaticResource LabelText}" Text="Execution order" />
                             <Button Style="{StaticResource HelpIconButton}"
                                     Content="?"
                                     Margin="8,0,0,0"
@@ -1198,32 +2380,41 @@
                                 </Button.ToolTip>
                             </Button>
                         </StackPanel>
-                        <StackPanel Margin="0,12,0,0">
-                            <CheckBox Content="Run Models" IsChecked="True" IsEnabled="False" />
-                            <CheckBox Margin="0,8,0,0" Content="Run Compress" IsChecked="True" IsEnabled="False" />
-                            <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Compress runs on: optimized output" />
-                        </StackPanel>
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                            <StackPanel>
+                                <CheckBox Content="Run Models" IsChecked="True" IsEnabled="False" />
+                                <CheckBox Margin="0,8,0,0" Content="Run Compress" IsChecked="True" IsEnabled="False" />
+                                <TextBlock Style="{StaticResource MutedText}" Margin="0,8,0,0" Text="Compress runs on the optimized output from the Models step." />
+                            </StackPanel>
+                        </Border>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                            <Button x:Name="Button_StartPipeline"
-                                    Style="{StaticResource ButtonAccent}"
-                                    Content="Run Pipeline"
-                                    Width="140"
-                                    IsEnabled="{Binding PipelineCanStart}" />
-                            <Button x:Name="Button_CancelPipeline"
-                                    Style="{StaticResource ButtonDanger}"
-                                    Margin="8,0,0,0"
-                                    Content="Cancel"
-                                    Width="90"
-                                    IsEnabled="False" />
-                        </StackPanel>
+                        <Border Style="{StaticResource ActionBarCard}" Margin="0,12,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="Button_StartPipeline"
+                                        Style="{StaticResource ButtonAccent}"
+                                        Content="Run Pipeline"
+                                        Width="140"
+                                        IsEnabled="{Binding PipelineCanStart}" />
+                                <Button x:Name="Button_CancelPipeline"
+                                        Style="{StaticResource ButtonDanger}"
+                                        Margin="8,0,0,0"
+                                        Content="Cancel"
+                                        Width="90"
+                                        IsEnabled="False" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 
                 <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="1" Style="{StaticResource Card}">
                     <StackPanel>
+                        <TextBlock Style="{StaticResource CardEyebrowText}" Text="EXECUTION" />
+                        <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Progress and Report" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Margin="0,0,0,12"
+                                   Text="Track the current phase, inspect the final summary, and open the generated folders from one consistent execution panel." />
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Style="{StaticResource SectionTitleText}" Text="Progress and Report" />
+                            <TextBlock Style="{StaticResource LabelText}" Text="Session status" />
                             <Button Style="{StaticResource HelpIconButton}"
                                     Content="?"
                                     Margin="8,0,0,0"
@@ -1242,50 +2433,101 @@
                             </Button>
                         </StackPanel>
 
-                        <ProgressBar x:Name="ProgressBar_Pipeline"
-                                     Margin="0,12,0,0"
-                                     Minimum="{Binding PipelineProgressMinValue}"
-                                     Maximum="{Binding PipelineProgressMaxValue}"
-                                     Value="{Binding PipelineProgressValue}" />
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Progress" />
+                                <ProgressBar x:Name="ProgressBar_Pipeline"
+                                             Margin="0,10,0,0"
+                                             Minimum="{Binding PipelineProgressMinValue}"
+                                             Maximum="{Binding PipelineProgressMaxValue}"
+                                             Value="{Binding PipelineProgressValue}" />
+                            </StackPanel>
+                        </Border>
 
-                        <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Phase" />
-                        <TextBlock Style="{StaticResource StatusTextBlockStyle}" Text="{Binding PipelineStatusText}" />
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
 
-                        <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Current item" />
-                        <TextBlock Text="{Binding PipelineProgressText}" />
+                                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Phase" />
+                                <TextBlock Grid.Row="0" Grid.Column="1"
+                                           Margin="16,0,0,0"
+                                           Style="{StaticResource StatusTextBlockStyle}"
+                                           Text="{Binding PipelineStatusText}" />
 
-                        <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Summary" />
-                        <TextBox Text="{Binding PipelineSummaryText}"
-                                 IsReadOnly="True"
-                                 TextWrapping="Wrap"
-                                 MinHeight="60" />
+                                <TextBlock Grid.Row="1" Grid.Column="0"
+                                           Margin="0,10,0,0"
+                                           Style="{StaticResource LabelText}"
+                                           Text="Current item" />
+                                <TextBlock Grid.Row="1" Grid.Column="1"
+                                           Margin="16,10,0,0"
+                                           Style="{StaticResource ValueText}"
+                                           Text="{Binding PipelineProgressText}" />
+                            </Grid>
+                        </Border>
 
-                        <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Size report" />
-                        <TextBox Text="{Binding PipelineSizeReportText}"
-                                 IsReadOnly="True"
-                                 TextWrapping="Wrap"
-                                 MinHeight="90" />
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Summary" />
+                                <TextBox Text="{Binding PipelineSummaryText}"
+                                         Style="{StaticResource ReportTextBox}"
+                                         Margin="0,10,0,0"
+                                         MinHeight="92" />
+                            </StackPanel>
+                        </Border>
 
-                        <UniformGrid Columns="2" Margin="0,12,0,0">
-                            <Button x:Name="Button_OpenPipelineOutput"
-                                    Content="Open Output"
-                                    IsEnabled="False"
-                                    Margin="0,0,8,8" />
-                            <Button x:Name="Button_OpenPipelineWork"
-                                    Content="Open Work"
-                                    IsEnabled="False"
-                                    Margin="0,0,0,8" />
-                            <Button x:Name="Button_OpenPipelineLogs"
-                                    Content="Open Logs"
-                                    IsEnabled="False"
-                                    Margin="0,0,8,0" />
-                            <Button x:Name="Button_CopyPipelineSummary"
-                                    Content="Copy Summary"
-                                    IsEnabled="False" />
-                        </UniformGrid>
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Size report" />
+                                <TextBox Text="{Binding PipelineSizeReportText}"
+                                         Style="{StaticResource ReportTextBox}"
+                                         Margin="0,10,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource ActionBarCard}" Margin="0,12,0,0">
+                            <UniformGrid Columns="2">
+                                <Button x:Name="Button_OpenPipelineOutput"
+                                        Content="Open Output"
+                                        IsEnabled="False"
+                                        Margin="0,0,8,8" />
+                                <Button x:Name="Button_OpenPipelineWork"
+                                        Content="Open Work"
+                                        IsEnabled="False"
+                                        Margin="0,0,0,8" />
+                                <Button x:Name="Button_OpenPipelineLogs"
+                                        Content="Open Logs"
+                                        IsEnabled="False"
+                                        Margin="0,0,8,0" />
+                                <Button x:Name="Button_CopyPipelineSummary"
+                                        Content="Copy Summary"
+                                        IsEnabled="False" />
+                            </UniformGrid>
+                        </Border>
                     </StackPanel>
                 </Border>
             </Grid>
         </TabItem>
     </TabControl>
+
+        <StackPanel Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    Margin="0,24,24,0"
+                    Panel.ZIndex="1"
+                    IsHitTestVisible="False">
+            <TextBlock x:Name="VersionId"
+                       Style="{StaticResource MutedText}"
+                       Text="VERSION" />
+            <TextBlock Style="{StaticResource MutedText}"
+                       Margin="12,0,0,0"
+                       Text="Author: Hanic" />
+        </StackPanel>
+    </Grid>
 </Window>
