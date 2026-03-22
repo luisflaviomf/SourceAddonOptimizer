@@ -1209,7 +1209,10 @@
         </TabItem>
 
         <TabItem Header="Descompactar addons">
-            <Grid Background="{DynamicResource AppBackground}" Margin="8">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          CanContentScroll="False">
+                <Grid Background="{DynamicResource AppBackground}" Margin="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1*" />
                     <ColumnDefinition Width="1.25*" />
@@ -1485,11 +1488,15 @@
                         </Border>
                     </Grid>
                 </Border>
-            </Grid>
+                </Grid>
+            </ScrollViewer>
         </TabItem>
 
         <TabItem Header="Juntar addons">
-            <Grid Background="{DynamicResource AppBackground}" Margin="8">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          CanContentScroll="False">
+                <Grid Background="{DynamicResource AppBackground}" Margin="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1*" />
                     <ColumnDefinition Width="1.25*" />
@@ -1872,11 +1879,15 @@
                         </Border>
                     </Grid>
                 </Border>
-            </Grid>
+                </Grid>
+            </ScrollViewer>
         </TabItem>
 
         <TabItem Header="Optimize Maps">
-            <Grid Background="{DynamicResource AppBackground}" Margin="8">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          CanContentScroll="False">
+                <Grid Background="{DynamicResource AppBackground}" Margin="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1*" />
                     <ColumnDefinition Width="1.25*" />
@@ -2277,11 +2288,15 @@
                         </Border>
                     </Grid>
                 </Border>
-            </Grid>
+                </Grid>
+            </ScrollViewer>
         </TabItem>
 
         <TabItem Header="Pipeline">
-            <Grid Background="{DynamicResource AppBackground}" Margin="8">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          CanContentScroll="False">
+                <Grid Background="{DynamicResource AppBackground}" Margin="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1.05*" />
                     <ColumnDefinition Width="0.95*" />
@@ -2512,7 +2527,8 @@
                         </Border>
                     </StackPanel>
                 </Border>
-            </Grid>
+                </Grid>
+            </ScrollViewer>
         </TabItem>
     </TabControl>
 
