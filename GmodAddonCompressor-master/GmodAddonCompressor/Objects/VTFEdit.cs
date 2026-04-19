@@ -1,4 +1,4 @@
-﻿using GmodAddonCompressor.Bases;
+using GmodAddonCompressor.Bases;
 using GmodAddonCompressor.CustomExtensions;
 using GmodAddonCompressor.DataContexts;
 using GmodAddonCompressor.Interfaces;
@@ -6,136 +6,322 @@ using GmodAddonCompressor.Models;
 using GmodAddonCompressor.Properties;
 using GmodAddonCompressor.Systems;
 using GmodAddonCompressor.Systems.Tools;
+using GmodAddonCompressor.Systems.Vtf;
 using ImageMagick;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace GmodAddonCompressor.Objects
 {
-    internal class VTFEdit : ImageEditBase, ICompress
+    internal class VTFEdit : ImageEditBase, ICompress, ICompressPreparation
     {
-        private const string _toolName = "VTFEdit";
-        private const string _toolVersion = "1";
+        private const string ToolName = "VTFEdit";
+        private const string ToolVersion = "1";
+
         private readonly string _vtfCmdFilePath;
-        private string _toolRoot;
         private readonly ILogger _logger = LogSystem.CreateLogger<VTFEdit>();
+        private readonly Lazy<AddonVtfCompressionAnalysis> _analysisSnapshot;
+        private readonly string _addonRoot;
 
         public VTFEdit()
+            : this(CompressDirectoryContext.DirectoryPath)
         {
-            _toolRoot = ToolExtractionSystem.EnsureExtracted(
-                _toolName,
-                _toolVersion,
-                Resources.VTFEdit,
-                new[] { Path.Combine("VTFEdit", "VTFCmd.exe") }
-            );
+        }
 
-            _vtfCmdFilePath = Path.Combine(_toolRoot, "VTFEdit", "VTFCmd.exe");
+        public VTFEdit(string addonRoot)
+        {
+            _addonRoot = addonRoot;
+            string toolRoot = ToolExtractionSystem.EnsureExtracted(
+                ToolName,
+                ToolVersion,
+                Resources.VTFEdit,
+                new[] { Path.Combine("VTFEdit", "VTFCmd.exe") });
+
+            _vtfCmdFilePath = Path.Combine(toolRoot, "VTFEdit", "VTFCmd.exe");
+            _analysisSnapshot = new Lazy<AddonVtfCompressionAnalysis>(
+                () => AddonVtfCompressionPlanner.Analyze(addonRoot),
+                LazyThreadSafetyMode.ExecutionAndPublication);
 
             SetImageFileExtension(".png");
         }
 
+        public void Prepare()
+        {
+            VmtSyntaxRepairService.RepairUnder(_addonRoot);
+            _ = _analysisSnapshot.Value;
+        }
+
         public async Task Compress(string vtfFilePath)
         {
-            object? vtfInfoObject = GetVtfFileInfo(vtfFilePath);
-            if (vtfInfoObject == null) return;
-
-            VtfFileModel vtfInfo = (VtfFileModel)vtfInfoObject;
-            if (vtfInfo.Frames > 1) return;
-
-            string pngFilePath = vtfFilePath.Substring(0, vtfFilePath.Length - 3);
-            pngFilePath += "png";
-
-            long oldFileSize = new FileInfo(vtfFilePath).Length;
-            long newFileSize = 0;
-
-            if (File.Exists(pngFilePath))
-                File.Delete(pngFilePath);
-
-            await VtfToPng(vtfInfo, vtfFilePath);
-
-            if (!File.Exists(pngFilePath))
+            VtfFileModel? vtfInfoObject = GetVtfFileInfo(vtfFilePath);
+            if (vtfInfoObject == null)
                 return;
 
-            string tempVtfFilePath = vtfFilePath + "____TEMP.vtf";
+            VtfPipelineResult pipelineResult = await TryCompressWithSplitRebuildAsync(
+                vtfFilePath,
+                vtfInfoObject.Value,
+                logPrefix: "[VTF]");
 
-            File.Copy(vtfFilePath, tempVtfFilePath);
-            File.Delete(vtfFilePath);
+            if (pipelineResult.Applied)
+                return;
+
+            if (pipelineResult.IsOperationalFailure)
+            {
+                _logger.LogWarning(
+                    $"[VTF] Preserving {vtfFilePath.GAC_ToLocalPath()} unchanged after unified pipeline issue: {pipelineResult.Reason}{BuildTelemetryFields(pipelineResult)}");
+                return;
+            }
+
+            _logger.LogInformation(
+                $"[VTF] Preserving {vtfFilePath.GAC_ToLocalPath()} unchanged: {pipelineResult.Reason}{BuildTelemetryFields(pipelineResult)}");
+        }
+
+        internal async Task<VtfPipelineResult> TryCompressWithSplitRebuildAsync(
+            string vtfFilePath,
+            VtfFileModel vtfInfo,
+            string logPrefix)
+        {
+            if (vtfInfo.Frames > 1 || vtfInfo.Depth > 1)
+                return new VtfPipelineResult(false, "animated_or_volume");
+
+            string? relativePath = TryGetMaterialRelativePath(vtfFilePath, out string? parsedRelativePath)
+                ? parsedRelativePath
+                : null;
+            string? textureKey = GetTextureKey(vtfFilePath, relativePath);
+            AddonVtfFxProfile preliminaryFxProfile = _analysisSnapshot.Value.GetFxProfile(textureKey, relativePath);
+            bool preferExportSplit =
+                vtfInfo.HighResImageFormat == 15 &&
+                preliminaryFxProfile.PreferredSourceRoute == AddonVtfSourceRoutePreference.ExportSplitFirst;
+
+            long oldFileSize = new FileInfo(vtfFilePath).Length;
+            string tempRoot = Path.Combine(
+                Path.GetDirectoryName(vtfFilePath) ?? Path.GetTempPath(),
+                "__split_vtf_tmp",
+                $"{Path.GetFileNameWithoutExtension(vtfFilePath)}_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempRoot);
 
             try
             {
-                if (!ImageContext.ImageMagickVTFCompress)
-                {
-                    await OptImageToVtf(vtfInfo, pngFilePath);
-                }
-                else
-                {
-                    await OptImageAndExportToVtf(vtfInfo, pngFilePath);
+                (MagickImage? sourceImage, string sourceKind) = await TryCreateSourceImageAsync(
+                    vtfFilePath,
+                    vtfInfo,
+                    tempRoot,
+                    preferExportSplit);
+                if (sourceImage == null)
+                    return new VtfPipelineResult(false, sourceKind, SourceKind: sourceKind, IsOperationalFailure: true);
 
-                    if (File.Exists(vtfFilePath))
+                using (sourceImage)
+                {
+                    if (ImageIsFullTransparent(sourceImage))
+                        return new VtfPipelineResult(false, "fully_transparent_source", SourceKind: sourceKind);
+
+                    bool fullyOpaqueAlpha = IsAlphaFullyOpaque(sourceImage);
+                    if (!AddonVtfCompressionPlanner.TryCreatePlan(
+                            vtfFilePath,
+                            vtfInfo,
+                            _analysisSnapshot.Value,
+                            fullyOpaqueAlpha,
+                            out AddonVtfCompressionPlan plan))
                     {
-                        newFileSize = new FileInfo(vtfFilePath).Length;
-                        if (newFileSize >= oldFileSize)
-                        {
-                            File.Delete(vtfFilePath);
-                            newFileSize = 0;
-                            await Task.Yield();
-                        }
+                        return new VtfPipelineResult(
+                            false,
+                            plan.Reason,
+                            SourceKind: sourceKind,
+                            TargetFormat: plan.TargetFormat,
+                            IsFxSensitive: plan.FxProfile.IsSensitive,
+                            FxGroup: plan.FxProfile.Group,
+                            FxScore: plan.FxProfile.Score,
+                            FxSignals: plan.FxProfile.SignalSummary);
                     }
 
-                    if (!File.Exists(vtfFilePath))
-                        await OptImageToVtf(vtfInfo, pngFilePath);
+                    bool isSingleColor = ImageIsSingleColor(sourceImage);
+                    if (!TryGetResizeBounds(
+                            (int)sourceImage.Width,
+                            (int)sourceImage.Height,
+                            isSingleColor,
+                            out int resizeWidth,
+                            out int resizeHeight))
+                    {
+                        return new VtfPipelineResult(
+                            false,
+                            "resize_guardrail",
+                            SourceKind: sourceKind,
+                            TargetFormat: plan.TargetFormat,
+                            IsFxSensitive: plan.FxProfile.IsSensitive,
+                            FxGroup: plan.FxProfile.Group,
+                            FxScore: plan.FxProfile.Score,
+                            FxSignals: plan.FxProfile.SignalSummary);
+                    }
+
+                    string splitPngPath = Path.Combine(tempRoot, "split_source.png");
+                    bool preserveAlpha = !string.Equals(plan.TargetFormat, "DXT1", StringComparison.OrdinalIgnoreCase);
+                    bool ignoreAspectRatio = isSingleColor || !ImageContext.KeepImageAspectRatio;
+                    ApplyFxResizeFloor(
+                        (int)sourceImage.Width,
+                        (int)sourceImage.Height,
+                        ignoreAspectRatio,
+                        plan,
+                        ref resizeWidth,
+                        ref resizeHeight);
+
+                    if (!VtfSplitChannelImageWriter.TryWriteResizedPng(
+                            sourceImage,
+                            splitPngPath,
+                            resizeWidth,
+                            resizeHeight,
+                            ignoreAspectRatio,
+                            preserveAlpha,
+                            useAlphaAwareResize: preserveAlpha && plan.FxProfile.IsSensitive))
+                    {
+                        return new VtfPipelineResult(
+                            false,
+                            "split_write_failed",
+                            SourceKind: sourceKind,
+                            TargetFormat: plan.TargetFormat,
+                            IsOperationalFailure: true,
+                            IsFxSensitive: plan.FxProfile.IsSensitive,
+                            FxGroup: plan.FxProfile.Group,
+                            FxScore: plan.FxProfile.Score,
+                            FxSignals: plan.FxProfile.SignalSummary,
+                            ResizeWidth: resizeWidth,
+                            ResizeHeight: resizeHeight);
+                    }
+
+                    await ImageToVtf(vtfInfo, splitPngPath, plan.TargetFormat, tempRoot);
+
+                    string rebuiltVtfPath = Path.Combine(tempRoot, Path.GetFileNameWithoutExtension(splitPngPath) + ".vtf");
+                    if (!File.Exists(rebuiltVtfPath))
+                    {
+                        return new VtfPipelineResult(
+                            false,
+                            "rebuilt_vtf_missing",
+                            SourceKind: sourceKind,
+                            TargetFormat: plan.TargetFormat,
+                            IsOperationalFailure: true,
+                            IsFxSensitive: plan.FxProfile.IsSensitive,
+                            FxGroup: plan.FxProfile.Group,
+                            FxScore: plan.FxProfile.Score,
+                            FxSignals: plan.FxProfile.SignalSummary,
+                            ResizeWidth: resizeWidth,
+                            ResizeHeight: resizeHeight);
+                    }
+
+                    AddonVtfCompressionPlanner.PatchFlags(rebuiltVtfPath, vtfInfo.Flags);
+
+                    long newFileSize = new FileInfo(rebuiltVtfPath).Length;
+                    if (newFileSize >= oldFileSize)
+                    {
+                        return new VtfPipelineResult(
+                            false,
+                            "no_split_gain",
+                            SourceKind: sourceKind,
+                            TargetFormat: plan.TargetFormat,
+                            IsFxSensitive: plan.FxProfile.IsSensitive,
+                            FxGroup: plan.FxProfile.Group,
+                            FxScore: plan.FxProfile.Score,
+                            FxSignals: plan.FxProfile.SignalSummary,
+                            ResizeWidth: resizeWidth,
+                            ResizeHeight: resizeHeight);
+                    }
+
+                    File.Copy(rebuiltVtfPath, vtfFilePath, true);
+                    _logger.LogInformation(
+                        $"{logPrefix} Optimized {vtfFilePath.GAC_ToLocalPath()}: {FormatBytes(oldFileSize)} -> {FormatBytes(newFileSize)}" +
+                        BuildTelemetryFields(plan, sourceKind, resizeWidth, resizeHeight));
+
+                    return new VtfPipelineResult(true, "optimized");
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex.ToString());
+                return new VtfPipelineResult(false, $"split_exception_{ex.GetType().Name}", IsOperationalFailure: true);
             }
-
-            if (File.Exists(vtfFilePath))
+            finally
             {
-                newFileSize = newFileSize != 0 ? newFileSize : new FileInfo(vtfFilePath).Length;
-                if (newFileSize < oldFileSize)
-                {
-                    if (File.Exists(tempVtfFilePath)) File.Delete(tempVtfFilePath);
-                    _logger.LogInformation($"Successful file compression: {vtfFilePath.GAC_ToLocalPath()}");
-                }
+                TryDelete(tempRoot);
             }
-
-            if (File.Exists(tempVtfFilePath))
-            {
-                if (File.Exists(vtfFilePath))
-                    File.Delete(vtfFilePath);
-
-                File.Copy(tempVtfFilePath, vtfFilePath);
-                File.Delete(tempVtfFilePath);
-
-                _logger.LogError($"VTF compression failed: {vtfFilePath.GAC_ToLocalPath()}");
-            }
-
-            File.Delete(pngFilePath);
         }
 
-        private async Task OptImageAndExportToVtf(VtfFileModel vtfInfo, string pngFilePath)
+        private async Task<(MagickImage? Image, string SourceKind)> TryCreateSourceImageAsync(
+            string vtfFilePath,
+            VtfFileModel vtfInfo,
+            string tempRoot,
+            bool preferExportSplit)
         {
-            try
+            if (!preferExportSplit &&
+                VtfHighResImageDecoder.TryDecodeHighResRgba(vtfFilePath, vtfInfo, out byte[] rgba))
             {
-                bool isTransparent = ImageIsFullTransparent(pngFilePath);
-                if (!isTransparent)
+                try
                 {
-                    await ImageCompress(pngFilePath);
-                    await ImageToVtf(vtfInfo, pngFilePath);
+                    var settings = new MagickReadSettings
+                    {
+                        Width = (uint)vtfInfo.Width,
+                        Height = (uint)vtfInfo.Height,
+                        Format = MagickFormat.Rgba,
+                        Depth = 8
+                    };
+                    return (new MagickImage(rgba, settings), "raw_split");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        $"[VTF] Raw split source image creation failed for {vtfFilePath.GAC_ToLocalPath()}, falling back to export split: {ex.GetType().Name}");
                 }
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex.ToString());
-            }
+
+            string exportSourceVtf = Path.Combine(tempRoot, Path.GetFileName(vtfFilePath));
+            string exportedPng = Path.Combine(tempRoot, Path.GetFileNameWithoutExtension(vtfFilePath) + ".png");
+            File.Copy(vtfFilePath, exportSourceVtf, true);
+            await NormalizeVtfVersionForVtfCmdAsync(exportSourceVtf, vtfInfo);
+
+            if (!await RunVtfCmdAsync($" -file \"{exportSourceVtf}\" -output \"{tempRoot}\" -exportformat \"png\""))
+                return (null, "export_fallback_failed");
+
+            if (!File.Exists(exportedPng))
+                return (null, "export_fallback_missing_png");
+
+            return (new MagickImage(exportedPng), "export_split");
         }
 
-        private async Task StartVtfCmdProcess(string arguments)
+        private static bool TryGetMaterialRelativePath(string fullPath, out string? relativePath)
+        {
+            relativePath = null;
+
+            string normalized = Path.GetFullPath(fullPath).Replace('\\', '/');
+            int index = normalized.LastIndexOf("/materials/", StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+                return false;
+
+            relativePath = normalized.Substring(index + 1);
+            return true;
+        }
+
+        private static string? GetTextureKey(string fullPath, string? relativePath)
+        {
+            if (string.IsNullOrWhiteSpace(relativePath) &&
+                !TryGetMaterialRelativePath(fullPath, out relativePath))
+            {
+                return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(relativePath) ||
+                !relativePath.EndsWith(".vtf", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            string key = relativePath.Substring("materials/".Length, relativePath.Length - "materials/".Length - 4);
+            return key.Trim('/').ToLowerInvariant();
+        }
+
+        private async Task<bool> RunVtfCmdAsync(string arguments)
         {
             Process? vtfCmdProcess = null;
 
@@ -157,179 +343,45 @@ namespace GmodAddonCompressor.Objects
             catch (Exception ex)
             {
                 _logger.LogError(ex.ToString());
+                return false;
             }
 
-            if (vtfCmdProcess != null)
-                await Task.WhenAny(vtfCmdProcess.WaitForExitAsync(), Task.Delay(TimeSpan.FromMinutes(2)));
+            if (vtfCmdProcess == null)
+                return false;
+
+            await Task.WhenAny(vtfCmdProcess.WaitForExitAsync(), Task.Delay(TimeSpan.FromMinutes(2)));
+            return vtfCmdProcess.HasExited && vtfCmdProcess.ExitCode == 0;
         }
 
-        private VtfFileModel? GetVtfFileInfo(string vtfFilePath)
+        private static VtfFileModel? GetVtfFileInfo(string vtfFilePath)
         {
-            using (FileStream FS = File.OpenRead(vtfFilePath))
-            {
-                using (BinaryReader BR = new BinaryReader(FS))
-                {
-                    try
-                    {
-                        int id = BR.ReadInt32();
-                        if (id == 0x465456)
-                        {
-
-                            int majorVersion = BR.ReadInt32();
-                            int minorVersion = BR.ReadInt32();
-                            int headerSize = BR.ReadInt32();
-                            int width = BR.ReadInt16();
-                            int height = BR.ReadInt16();
-                            int flags = BR.ReadInt32();
-                            int frames = BR.ReadInt16();
-                            int firstFrame = BR.ReadInt16();
-
-                            return new VtfFileModel
-                            {
-                                MajorVersion = majorVersion,
-                                MinorVersion = minorVersion,
-                                HeaderSize = headerSize,
-                                Width = width,
-                                Height = height,
-                                Flags = flags,
-                                Frames = frames,
-                                FirstFrame = firstFrame
-                            };
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex.ToString());
-                    }
-                }
-            }
-
-            return null;
+            return AddonVtfCompressionPlanner.TryReadMetadata(vtfFilePath, out VtfFileModel metadata)
+                ? metadata
+                : null;
         }
 
-        /**
-         * Documentation for header format:
-         * https://developer.valvesoftware.com/wiki/Valve_Texture_Format#VTF_header
-         */
-        private async Task ChangeVTFVersionTo_7_4(string vtfFilePath, VtfFileModel vtfInfo)
+        private static string GetCompatibleVtfCmdVersion(VtfFileModel vtfInfo)
         {
-            if (vtfInfo.MinorVersion != 5) return;
+            if (vtfInfo.MajorVersion == 7 && vtfInfo.MinorVersion > 4)
+                return "7.4";
+
+            return $"{vtfInfo.MajorVersion}.{vtfInfo.MinorVersion}";
+        }
+
+        private async Task NormalizeVtfVersionForVtfCmdAsync(string vtfFilePath, VtfFileModel vtfInfo)
+        {
+            if (GetCompatibleVtfCmdVersion(vtfInfo) == $"{vtfInfo.MajorVersion}.{vtfInfo.MinorVersion}")
+                return;
 
             await Task.Yield();
 
-            using (FileStream FS = File.OpenWrite(vtfFilePath))
-            {
-                using (BinaryWriter BW = new BinaryWriter(FS))
-                {
-                    try
-                    {
-                        BW.Seek(8, SeekOrigin.Begin);
-                        BW.Write((int)4);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex.ToString());
-                    }
-                }
-            }
+            using FileStream stream = File.OpenWrite(vtfFilePath);
+            using BinaryWriter writer = new BinaryWriter(stream);
+            writer.Seek(8, SeekOrigin.Begin);
+            writer.Write(4);
         }
 
-        private async Task VtfToPng(VtfFileModel vtfInfo, string vtfFilePath, string vtfDirectory = "")
-        {
-            await VtfToImage(vtfInfo, "png", vtfFilePath, vtfDirectory);
-        }
-
-        private async Task OptImageToVtf(VtfFileModel vtfInfo, string imageFilePath, string? pngDirectory = null)
-        {
-            if (string.IsNullOrEmpty(pngDirectory))
-                pngDirectory = Path.GetDirectoryName(imageFilePath);
-
-            int[] imageSize;
-            try
-            {
-                imageSize = GetImageSize(imageFilePath);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex.ToString());
-                return;
-            }
-
-            int imageWidth = imageSize[0];
-            int imageHeight = imageSize[1];
-
-            if (imageWidth == 0 || imageWidth == 0) return;
-
-            int[] newImageSize;
-            try
-            {
-                newImageSize = GetReduceResolutionSize(imageWidth, imageHeight);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex.ToString());
-                return;
-            }
-
-            int newWidth = newImageSize[0];
-            int newHeight = newImageSize[1];
-
-            if (newWidth == 0 || newHeight == 0) return;
-
-            bool isSingleColor;
-            try
-            {
-                isSingleColor = ImageIsSingleColor(imageFilePath);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex.ToString());
-                return;
-            }
-
-            newWidth = isSingleColor ? 1 : (newWidth < ImageContext.TaargetWidth ? ImageContext.TaargetWidth : newWidth);
-            newHeight = isSingleColor ? 1 : (newHeight < ImageContext.TargetHeight ? ImageContext.TargetHeight : newHeight);
-
-            if (newWidth > imageWidth || newHeight > imageHeight) return;
-
-            if (!isSingleColor && ImageContext.KeepImageAspectRatio)
-            {
-                try
-                {
-                    using (var image = new MagickImage(imageFilePath))
-                    {
-                        try
-                        {
-                            var size = new MagickGeometry((uint)newWidth, (uint)newHeight);
-                            size.IgnoreAspectRatio = false;
-
-                            image.Resize(size);
-
-                            imageWidth = (int)image.Width;
-                            imageHeight = (int)image.Height;
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex.ToString());
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex.ToString());
-                }
-            }
-
-            string arguments = string.Empty;
-            arguments += $" -file \"{imageFilePath}\"";
-            arguments += $" -output \"{pngDirectory}\"";
-            arguments += $" -resize -rwidth {imageWidth} -rheight {imageHeight}";
-            arguments += $" -format \"DXT1\" -alphaformat \"DXT5\"";
-
-            await StartVtfCmdProcess(arguments);
-        }
-
-        private async Task ImageToVtf(VtfFileModel vtfInfo, string imageFilePath, string? pngDirectory = null)
+        private async Task ImageToVtf(VtfFileModel vtfInfo, string imageFilePath, string targetFormat, string? pngDirectory = null)
         {
             if (string.IsNullOrEmpty(pngDirectory))
                 pngDirectory = Path.GetDirectoryName(imageFilePath);
@@ -337,37 +389,192 @@ namespace GmodAddonCompressor.Objects
             string arguments = string.Empty;
             arguments += $" -file \"{imageFilePath}\"";
             arguments += $" -output \"{pngDirectory}\"";
-            arguments += $" -format \"DXT1\" -alphaformat \"DXT5\"";
+            arguments += $" -format \"{targetFormat}\" -alphaformat \"{targetFormat}\"";
+            arguments += $" -version \"{GetCompatibleVtfCmdVersion(vtfInfo)}\"";
 
-            await StartVtfCmdProcess(arguments);
+            await RunVtfCmdAsync(arguments);
         }
 
-        private async Task VtfToImage(VtfFileModel vtfInfo, string fileExtension, string vtfFilePath, string? vtfDirectory = null)
+        private static void ApplyFxResizeFloor(
+            int originalWidth,
+            int originalHeight,
+            bool ignoreAspectRatio,
+            AddonVtfCompressionPlan plan,
+            ref int resizeWidth,
+            ref int resizeHeight)
         {
-            if (string.IsNullOrEmpty(vtfDirectory))
-                vtfDirectory = Path.GetDirectoryName(vtfFilePath);
-
-            string arguments = string.Empty;
-            arguments += $" -file \"{vtfFilePath}\"";
-            arguments += $" -output \"{vtfDirectory}\"";
-            arguments += $" -exportformat \"{fileExtension}\"";
-
-            int vtfWidth = vtfInfo.Width;
-            int vtfHeight = vtfInfo.Height;
-
-            if ((ImageContext.SkipWidth != 0 && vtfWidth <= ImageContext.SkipWidth)
-            || (ImageContext.SkipHeight != 0 && vtfHeight <= ImageContext.SkipHeight))
+            int minimumShortSide = plan.FxProfile.MinimumShortSide;
+            if (!plan.FxProfile.IsSensitive ||
+                minimumShortSide <= 0 ||
+                originalWidth <= 0 ||
+                originalHeight <= 0)
             {
                 return;
             }
 
-            if (ImageContext.ReduceExactlyToLimits && (vtfWidth <= ImageContext.TaargetWidth || vtfHeight <= ImageContext.TargetHeight))
+            if (ignoreAspectRatio)
             {
+                resizeWidth = Math.Min(originalWidth, Math.Max(resizeWidth, minimumShortSide));
+                resizeHeight = Math.Min(originalHeight, Math.Max(resizeHeight, minimumShortSide));
                 return;
             }
 
-            await ChangeVTFVersionTo_7_4(vtfFilePath, vtfInfo);
-            await StartVtfCmdProcess(arguments);
+            int originalShortSide = Math.Min(originalWidth, originalHeight);
+            int resizedShortSide = Math.Min(resizeWidth, resizeHeight);
+            if (resizedShortSide >= minimumShortSide || originalShortSide <= minimumShortSide)
+                return;
+
+            double scale = (double)minimumShortSide / originalShortSide;
+            int desiredWidth = RoundDimensionUp((int)Math.Ceiling(originalWidth * scale), originalWidth);
+            int desiredHeight = RoundDimensionUp((int)Math.Ceiling(originalHeight * scale), originalHeight);
+
+            resizeWidth = Math.Max(resizeWidth, desiredWidth);
+            resizeHeight = Math.Max(resizeHeight, desiredHeight);
         }
+
+        private static int RoundDimensionUp(int desired, int original)
+        {
+            if (desired <= 0)
+                return 1;
+
+            if (desired >= original)
+                return original;
+
+            int candidate = 1;
+            while (candidate < desired && candidate < original)
+                candidate <<= 1;
+
+            if (candidate > original)
+                return original;
+
+            return candidate;
+        }
+
+        private static string BuildTelemetryFields(
+            AddonVtfCompressionPlan plan,
+            string sourceKind,
+            int resizeWidth,
+            int resizeHeight)
+        {
+            return BuildTelemetryFields(
+                reason: plan.Reason,
+                targetFormat: plan.TargetFormat,
+                sourceKind: sourceKind,
+                isFxSensitive: plan.FxProfile.IsSensitive,
+                fxGroup: plan.FxProfile.Group,
+                fxScore: plan.FxProfile.Score,
+                fxSignals: plan.FxProfile.SignalSummary,
+                resizeWidth: resizeWidth,
+                resizeHeight: resizeHeight);
+        }
+
+        private static string BuildTelemetryFields(VtfPipelineResult result)
+        {
+            return BuildTelemetryFields(
+                reason: result.Reason,
+                targetFormat: result.TargetFormat,
+                sourceKind: result.SourceKind,
+                isFxSensitive: result.IsFxSensitive,
+                fxGroup: result.FxGroup,
+                fxScore: result.FxScore,
+                fxSignals: result.FxSignals,
+                resizeWidth: result.ResizeWidth,
+                resizeHeight: result.ResizeHeight);
+        }
+
+        private static string BuildTelemetryFields(
+            string reason,
+            string targetFormat,
+            string sourceKind,
+            bool isFxSensitive,
+            string fxGroup,
+            int fxScore,
+            string fxSignals,
+            int resizeWidth,
+            int resizeHeight)
+        {
+            var sb = new StringBuilder();
+            sb.Append(" | reason=").Append(NormalizeTelemetryValue(reason));
+            sb.Append(" target=").Append(NormalizeTelemetryValue(targetFormat));
+            sb.Append(" source=").Append(NormalizeTelemetryValue(sourceKind));
+            sb.Append(" fx_sensitive=").Append(isFxSensitive ? "true" : "false");
+            sb.Append(" fx_group=").Append(NormalizeTelemetryValue(fxGroup));
+            sb.Append(" fx_score=").Append(fxScore);
+            sb.Append(" resize=").Append(resizeWidth).Append('x').Append(resizeHeight);
+            sb.Append(" fx_signals=").Append(NormalizeTelemetryValue(fxSignals));
+            return sb.ToString();
+        }
+
+        private static string NormalizeTelemetryValue(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "none";
+
+            return value.Trim().Replace(' ', '_');
+        }
+
+        private static void TryDelete(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path))
+                {
+                    Directory.Delete(path, true);
+                    TryDeleteEmptySplitRoot(Path.GetDirectoryName(path));
+                }
+                else if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void TryDeleteEmptySplitRoot(string? path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+                    return;
+
+                if (!string.Equals(Path.GetFileName(path), "__split_vtf_tmp", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                if (Directory.EnumerateFileSystemEntries(path).Any())
+                    return;
+
+                Directory.Delete(path, false);
+            }
+            catch
+            {
+            }
+        }
+
+        private static string FormatBytes(long value)
+        {
+            string[] units = { "B", "KB", "MB", "GB" };
+            double scaled = value;
+            int unitIndex = 0;
+            while (scaled >= 1024 && unitIndex < units.Length - 1)
+            {
+                scaled /= 1024;
+                unitIndex++;
+            }
+
+            return $"{scaled:0.##} {units[unitIndex]}";
+        }
+
+        internal readonly record struct VtfPipelineResult(
+            bool Applied,
+            string Reason,
+            string SourceKind = "",
+            string TargetFormat = "",
+            bool IsOperationalFailure = false,
+            bool IsFxSensitive = false,
+            string FxGroup = "",
+            int FxScore = 0,
+            string FxSignals = "",
+            int ResizeWidth = 0,
+            int ResizeHeight = 0);
     }
 }

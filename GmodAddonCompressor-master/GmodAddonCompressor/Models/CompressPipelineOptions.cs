@@ -20,16 +20,11 @@ namespace GmodAddonCompressor.Models
 
         public string BuildRoutingSummary()
         {
-            if (!IsMagickMode)
-            {
-                return UseLegacyStandardVtfDemo
-                    ? "Routing: Standard for all selected types. Legacy Standard VTF demo is enabled."
-                    : "Routing: Standard for all selected types.";
-            }
+            const string vtfText = "VTF => unified pipeline: raw split first, export split fallback when needed, selective FX-safe DXT/alpha-aware resize/resolution guardrails for sensitive particle-style materials, then preserve unchanged on no gain or out-of-scope cases.";
 
-            string vtfText = ShouldUseMagickForCommonVtf
-                ? "Common VTF => Magick first, then Standard fallback for special/problematic VTF or no-gain cases."
-                : "VTF => Standard.";
+            if (!IsMagickMode)
+                return $"Routing: Standard for all selected types. {vtfText}";
+
             string pngText = ShouldUseMagickForAggressivePng
                 ? "PNG => Magick q256 first, then Standard fallback on failure or no gain."
                 : "PNG => Standard.";

@@ -70,10 +70,7 @@ namespace GmodAddonCompressor.Systems
         {
             string extension = ".vtf";
             AddValidFileExtensions(extension);
-            if (_pipelineOptions.ShouldUseMagickForCommonVtf)
-                _compressServices.Add(extension, new MagickVtfEdit(_directoryPath));
-            else
-                _compressServices.Add(extension, new VTFEdit());
+            _compressServices.Add(extension, new VTFEdit(_directoryPath));
         }
 
         internal void IncludeJPG()
