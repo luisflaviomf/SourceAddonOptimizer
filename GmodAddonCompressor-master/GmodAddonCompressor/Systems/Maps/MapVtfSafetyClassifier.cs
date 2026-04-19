@@ -87,9 +87,7 @@ namespace GmodAddonCompressor.Systems.Maps
 
         private static readonly HashSet<string> EnvmapMaskKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "$envmapmask",
-            "$basealphaenvmapmask",
-            "$normalmapalphaenvmapmask"
+            "$envmapmask"
         };
 
         private static readonly HashSet<string> SelfIllumMaskKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -99,7 +97,19 @@ namespace GmodAddonCompressor.Systems.Maps
 
         private static readonly HashSet<string> BaseTextureKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "$basetexture"
+            "$basetexture",
+            "$basetexture2"
+        };
+
+        private static readonly HashSet<string> BaseTextureAlphaSemanticKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "$blendtintbybasealpha",
+            "$basealphaenvmapmask"
+        };
+
+        private static readonly HashSet<string> BumpmapAlphaSemanticKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "$normalmapalphaenvmapmask"
         };
 
         internal static MapVtfSafetyReport Analyze(IEnumerable<string> stageRoots)
@@ -113,6 +123,8 @@ namespace GmodAddonCompressor.Systems.Maps
             var bumpmapRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var envmapRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var envmapMaskRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var baseTextureAlphaRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var bumpmapAlphaRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var translucentBaseTextureRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var selfIllumBaseTextureRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var selfIllumMaskRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -123,6 +135,8 @@ namespace GmodAddonCompressor.Systems.Maps
                     bumpmapRefs,
                     envmapRefs,
                     envmapMaskRefs,
+                    baseTextureAlphaRefs,
+                    bumpmapAlphaRefs,
                     translucentBaseTextureRefs,
                     selfIllumBaseTextureRefs,
                     selfIllumMaskRefs);
@@ -168,8 +182,14 @@ namespace GmodAddonCompressor.Systems.Maps
                         if (selfIllumBaseTextureRefs.Contains(textureKey))
                             reasons.Add("selfillum_basetexture_reference");
 
+                        if (baseTextureAlphaRefs.Contains(textureKey))
+                            reasons.Add("basealpha_semantic_reference");
+
                         if (bumpmapRefs.Contains(textureKey))
                             reasons.Add("bumpmap_reference");
+
+                        if (bumpmapAlphaRefs.Contains(textureKey))
+                            reasons.Add("normalmap_alpha_semantic_reference");
 
                         if (envmapRefs.Contains(textureKey))
                             reasons.Add("envmap_reference");
@@ -249,6 +269,8 @@ namespace GmodAddonCompressor.Systems.Maps
             HashSet<string> bumpmapRefs,
             HashSet<string> envmapRefs,
             HashSet<string> envmapMaskRefs,
+            HashSet<string> baseTextureAlphaRefs,
+            HashSet<string> bumpmapAlphaRefs,
             HashSet<string> translucentBaseTextureRefs,
             HashSet<string> selfIllumBaseTextureRefs,
             HashSet<string> selfIllumMaskRefs)
@@ -266,35 +288,62 @@ namespace GmodAddonCompressor.Systems.Maps
                 }
 
                 string? baseTexture = null;
+                string? bumpmapTexture = null;
                 bool hasTranslucent = false;
                 bool hasSelfIllum = false;
+                bool usesBaseTextureAlpha = false;
+                bool usesBumpmapAlpha = false;
 
                 foreach (Match match in VmtTextureAssignmentRegex.Matches(content))
                 {
                     string key = match.Groups["key"].Value.Trim();
-                    string value = NormalizeTextureReference(match.Groups["value"].Value);
-                    if (string.IsNullOrWhiteSpace(value))
-                        continue;
+                    string rawValue = match.Groups["value"].Value;
+                    string value = NormalizeTextureReference(rawValue);
 
                     if (BumpmapKeys.Contains(key))
-                        bumpmapRefs.Add(value);
+                    {
+                        if (!string.IsNullOrWhiteSpace(value))
+                        {
+                            bumpmapRefs.Add(value);
+                            bumpmapTexture = value;
+                        }
+                    }
                     else if (EnvmapKeys.Contains(key))
-                        envmapRefs.Add(value);
+                    {
+                        if (!string.IsNullOrWhiteSpace(value))
+                            envmapRefs.Add(value);
+                    }
                     else if (EnvmapMaskKeys.Contains(key))
-                        envmapMaskRefs.Add(value);
+                    {
+                        if (!string.IsNullOrWhiteSpace(value))
+                            envmapMaskRefs.Add(value);
+                    }
                     else if (SelfIllumMaskKeys.Contains(key))
-                        selfIllumMaskRefs.Add(value);
+                    {
+                        if (!string.IsNullOrWhiteSpace(value))
+                            selfIllumMaskRefs.Add(value);
+                    }
                     else if (BaseTextureKeys.Contains(key))
-                        baseTexture = value;
+                    {
+                        if (!string.IsNullOrWhiteSpace(value))
+                            baseTexture = value;
+                    }
 
-                    if (key.Equals("$translucent", StringComparison.OrdinalIgnoreCase) &&
-                        IsTruthyMaterialValue(match.Groups["value"].Value))
+                    if (BaseTextureAlphaSemanticKeys.Contains(key) && IsTruthyMaterialValue(rawValue))
+                        usesBaseTextureAlpha = true;
+
+                    if (BumpmapAlphaSemanticKeys.Contains(key) && IsTruthyMaterialValue(rawValue))
+                        usesBumpmapAlpha = true;
+
+                    if ((key.Equals("$translucent", StringComparison.OrdinalIgnoreCase) ||
+                         key.Equals("$alphatest", StringComparison.OrdinalIgnoreCase)) &&
+                        IsTruthyMaterialValue(rawValue))
                     {
                         hasTranslucent = true;
                     }
 
                     if (key.Equals("$selfillum", StringComparison.OrdinalIgnoreCase) &&
-                        IsTruthyMaterialValue(match.Groups["value"].Value))
+                        IsTruthyMaterialValue(rawValue))
                     {
                         hasSelfIllum = true;
                     }
@@ -305,6 +354,12 @@ namespace GmodAddonCompressor.Systems.Maps
 
                 if (hasSelfIllum && !string.IsNullOrWhiteSpace(baseTexture))
                     selfIllumBaseTextureRefs.Add(baseTexture);
+
+                if (usesBaseTextureAlpha && !string.IsNullOrWhiteSpace(baseTexture))
+                    baseTextureAlphaRefs.Add(baseTexture);
+
+                if (usesBumpmapAlpha && !string.IsNullOrWhiteSpace(bumpmapTexture))
+                    bumpmapAlphaRefs.Add(bumpmapTexture);
             }
         }
 

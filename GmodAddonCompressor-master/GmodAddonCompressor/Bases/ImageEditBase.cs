@@ -79,6 +79,31 @@ namespace GmodAddonCompressor.Bases
             };
         }
 
+        protected bool TryGetResizeBounds(int originalWidth, int originalHeight, bool isSingleColor, out int resizeWidth, out int resizeHeight)
+        {
+            resizeWidth = 0;
+            resizeHeight = 0;
+
+            int[] newImageSize = GetReduceResolutionSize(originalWidth, originalHeight);
+            int newWidth = newImageSize[0];
+            int newHeight = newImageSize[1];
+
+            if (newWidth <= 0 || newHeight <= 0)
+                return false;
+
+            resizeWidth = isSingleColor ? 1 : Math.Max(ImageContext.TaargetWidth, newWidth);
+            resizeHeight = isSingleColor ? 1 : Math.Max(ImageContext.TargetHeight, newHeight);
+
+            if (resizeWidth > originalWidth || resizeHeight > originalHeight)
+            {
+                resizeWidth = 0;
+                resizeHeight = 0;
+                return false;
+            }
+
+            return true;
+        }
+
         protected bool ImageIsSingleColor(string imageFilePath)
         {
             IMagickColor<ushort>? firstColorPixel = null;
@@ -163,6 +188,48 @@ namespace GmodAddonCompressor.Bases
             return isSingleColor;
         }
 
+        protected bool ImageIsSingleColor(MagickImage image)
+        {
+            IMagickColor<ushort>? firstColorPixel = null;
+            bool isFindedColor = false;
+            bool isSingleColor = true;
+
+            using (IPixelCollection<ushort> pixels = image.GetPixels())
+            {
+                try
+                {
+                    for (int xPixel = 0; xPixel < image.Width; xPixel++)
+                    {
+                        for (int yPixel = 0; yPixel < image.Height; yPixel++)
+                        {
+                            IPixel<ushort> getPixel = pixels.GetPixel(xPixel, yPixel);
+                            IMagickColor<ushort>? getColor = getPixel.ToColor();
+
+                            if (!isFindedColor)
+                            {
+                                firstColorPixel = getColor;
+                                isFindedColor = true;
+                            }
+                            else if (firstColorPixel == null || getColor == null || !firstColorPixel.Equals(getColor))
+                            {
+                                isSingleColor = false;
+                                break;
+                            }
+                        }
+
+                        if (!isSingleColor)
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex.ToString());
+                }
+            }
+
+            return isSingleColor;
+        }
+
         protected bool ImageIsFullTransparent(string imageFilePath)
         {
             bool isTransparent = true;
@@ -197,6 +264,74 @@ namespace GmodAddonCompressor.Bases
             }
 
             return isTransparent;
+        }
+
+        protected bool ImageIsFullTransparent(MagickImage image)
+        {
+            if (!image.HasAlpha)
+                return false;
+
+            using IPixelCollection<ushort> pixels = image.GetPixels();
+            try
+            {
+                for (int xPixel = 0; xPixel < image.Width; xPixel++)
+                {
+                    for (int yPixel = 0; yPixel < image.Height; yPixel++)
+                    {
+                        IMagickColor<ushort>? color = pixels.GetPixel(xPixel, yPixel).ToColor();
+                        if (color != null && color.A > 0)
+                            return false;
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex.ToString());
+                return false;
+            }
+        }
+
+        protected bool IsAlphaFullyOpaque(string imageFilePath)
+        {
+            try
+            {
+                using var image = new MagickImage(imageFilePath);
+                return IsAlphaFullyOpaque(image);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex.ToString());
+                return false;
+            }
+        }
+
+        protected bool IsAlphaFullyOpaque(MagickImage image)
+        {
+            if (!image.HasAlpha)
+                return true;
+
+            using IPixelCollection<ushort> pixels = image.GetPixels();
+            try
+            {
+                for (int xPixel = 0; xPixel < image.Width; xPixel++)
+                {
+                    for (int yPixel = 0; yPixel < image.Height; yPixel++)
+                    {
+                        IMagickColor<ushort>? color = pixels.GetPixel(xPixel, yPixel).ToColor();
+                        if (color != null && color.A < ushort.MaxValue)
+                            return false;
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex.ToString());
+                return false;
+            }
         }
 
         protected async Task ImageCompress(string imageFilePath)

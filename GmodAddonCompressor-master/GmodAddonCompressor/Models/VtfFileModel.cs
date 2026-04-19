@@ -10,5 +10,11 @@
         public int Flags;
         public int Frames;
         public int FirstFrame;
+        public int Depth;
+        public int HighResImageFormat;
+        public int LowMipCount;
+        public int LowResImageFormat;
+        public int LowResWidth;
+        public int LowResHeight;
     }
 }
