@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
-from maximum_optimizer.cache import CacheKey, CandidateCache, atomic_replace_tree
+from maximum_optimizer.cache import (
+    AtomicReplaceError,
+    CacheKey,
+    CandidateCache,
+    atomic_replace_tree,
+)
 
 
 VALID_DIGEST = "a" * 64
@@ -19,6 +26,19 @@ def write_tree(root: Path, files: dict[str, bytes]) -> None:
         target = root / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
+
+
+def symlink_or_skip(
+    test_case: unittest.TestCase,
+    link: Path,
+    target: Path,
+    *,
+    target_is_directory: bool,
+) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as exc:
+        test_case.skipTest(f"symlink creation is unavailable: {exc}")
 
 
 class CacheKeyTests(unittest.TestCase):
@@ -134,8 +154,6 @@ class CandidateCacheTests(unittest.TestCase):
         for marker in cases:
             with self.subTest(marker=marker):
                 if self.root.exists():
-                    import shutil
-
                     shutil.rmtree(self.root)
                 final = self.create_final_entry(marker)
 
@@ -144,8 +162,6 @@ class CandidateCacheTests(unittest.TestCase):
 
     def test_lookup_rejects_missing_payload_and_non_directory_final(self):
         final = self.create_final_entry({"digest": self.key.digest})
-        import shutil
-
         shutil.rmtree(final / "payload")
         self.assertIsNone(self.cache.lookup(self.key))
 
@@ -153,6 +169,110 @@ class CandidateCacheTests(unittest.TestCase):
         final.write_text("not a directory", encoding="utf-8")
         self.assertIsNone(self.cache.lookup(self.key))
         self.assertTrue(final.is_file())
+
+    def test_lookup_does_not_follow_final_payload_or_marker_symlinks(self):
+        outside = self.base / "outside"
+        write_tree(outside / "payload", {"outside.bin": b"outside"})
+        (outside / "complete.json").write_text(
+            json.dumps({"digest": self.key.digest}), encoding="utf-8"
+        )
+
+        final_link = self.root / self.key.digest
+        self.root.mkdir()
+        symlink_or_skip(
+            self,
+            final_link,
+            outside,
+            target_is_directory=True,
+        )
+        self.assertIsNone(self.cache.lookup(self.key))
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.cache.store(self.key, self.source, {})
+
+        final_link.unlink()
+        final = self.root / self.key.digest
+        final.mkdir()
+        symlink_or_skip(
+            self,
+            final / "payload",
+            outside / "payload",
+            target_is_directory=True,
+        )
+        (final / "complete.json").write_text(
+            json.dumps({"digest": self.key.digest}), encoding="utf-8"
+        )
+        self.assertIsNone(self.cache.lookup(self.key))
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.cache.store(self.key, self.source, {})
+
+        (final / "payload").unlink()
+        (final / "payload").mkdir()
+        (final / "complete.json").unlink()
+        symlink_or_skip(
+            self,
+            final / "complete.json",
+            outside / "complete.json",
+            target_is_directory=False,
+        )
+        self.assertIsNone(self.cache.lookup(self.key))
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.cache.store(self.key, self.source, {})
+
+    def test_store_rejects_source_directory_symlink(self):
+        source_link = self.base / "source-link"
+        symlink_or_skip(
+            self,
+            source_link,
+            self.source,
+            target_is_directory=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.cache.store(self.key, source_link, {})
+
+    def test_lookup_and_store_reject_broken_cache_symlinks(self):
+        self.root.mkdir()
+        missing = self.base / "missing-target"
+        final = self.root / self.key.digest
+        symlink_or_skip(self, final, missing, target_is_directory=True)
+
+        self.assertIsNone(self.cache.lookup(self.key))
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.cache.store(self.key, self.source, {})
+
+        final.unlink()
+        final.mkdir()
+        symlink_or_skip(
+            self,
+            final / "payload",
+            missing,
+            target_is_directory=True,
+        )
+        self.assertIsNone(self.cache.lookup(self.key))
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.cache.store(self.key, self.source, {})
+
+        (final / "payload").unlink()
+        (final / "payload").mkdir()
+        symlink_or_skip(
+            self,
+            final / "complete.json",
+            missing,
+            target_is_directory=False,
+        )
+        self.assertIsNone(self.cache.lookup(self.key))
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.cache.store(self.key, self.source, {})
+
+        broken_source = self.base / "broken-source"
+        symlink_or_skip(
+            self,
+            broken_source,
+            missing,
+            target_is_directory=True,
+        )
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.cache.store(self.key, broken_source, {})
 
     def test_store_requires_source_directory(self):
         missing = self.base / "missing"
@@ -253,6 +373,71 @@ class CandidateCacheTests(unittest.TestCase):
         self.assertEqual((final / "payload/model.mdl").read_bytes(), original)
         self.assertFalse((final / "complete.json").exists())
 
+    def test_store_exposes_quarantine_if_promotion_and_restore_both_fail(self):
+        final = self.create_final_entry(None)
+        original = (final / "payload/model.mdl").read_bytes()
+
+        from maximum_optimizer import cache as cache_module
+
+        real_replace = cache_module.os.replace
+        calls = 0
+
+        def fail_promotion_and_restore(
+            source: os.PathLike[str], destination: os.PathLike[str]
+        ) -> None:
+            nonlocal calls
+            calls += 1
+            if calls in (2, 3):
+                raise OSError(f"injected replace failure {calls}")
+            real_replace(source, destination)
+
+        with mock.patch.object(
+            cache_module.os,
+            "replace",
+            side_effect=fail_promotion_and_restore,
+        ):
+            with self.assertRaisesRegex(AtomicReplaceError, "recovery") as raised:
+                self.cache.store(self.key, self.source, {})
+
+        error = raised.exception
+        self.assertEqual(error.destination, final)
+        self.assertIsInstance(error.promotion_error, OSError)
+        self.assertIsInstance(error.restore_error, OSError)
+        self.assertTrue(error.recovery_path.is_dir())
+        self.assertEqual(
+            (error.recovery_path / "payload/model.mdl").read_bytes(), original
+        )
+
+    def test_store_succeeds_when_quarantine_cleanup_fails_and_retry_cleans_it(self):
+        final = self.create_final_entry(None)
+
+        from maximum_optimizer import cache as cache_module
+
+        real_remove = cache_module._remove_direct_child
+        with mock.patch.object(
+            cache_module,
+            "_remove_direct_child",
+            side_effect=OSError("locked quarantine"),
+        ):
+            returned = self.cache.store(self.key, self.source, {"fresh": True})
+
+        quarantine = next(
+            path for path in self.root.iterdir() if ".quarantine-" in path.name
+        )
+        self.assertEqual(returned, final)
+        self.assertEqual((final / "payload/model.mdl").read_bytes(), b"compiled")
+        self.assertTrue(quarantine.is_dir())
+
+        with mock.patch.object(
+            cache_module,
+            "_remove_direct_child",
+            wraps=real_remove,
+        ) as remove_spy:
+            self.assertEqual(self.cache.lookup(self.key), final)
+
+        self.assertFalse(quarantine.exists())
+        self.assertTrue(remove_spy.called)
+
     def test_cleanup_incomplete_removes_only_direct_staging_directories(self):
         self.root.mkdir()
         staging_a = self.root / f"{self.key.digest}.tmp-100"
@@ -275,6 +460,102 @@ class CandidateCacheTests(unittest.TestCase):
 
     def test_cleanup_incomplete_returns_zero_when_root_is_absent(self):
         self.assertEqual(self.cache.cleanup_incomplete(), 0)
+
+    def test_cleanup_incomplete_does_not_follow_or_remove_symlinks(self):
+        self.root.mkdir()
+        outside = self.base / "outside"
+        write_tree(outside, {"data": b"outside"})
+        staging_link = self.root / f"{self.key.digest}.tmp-100"
+        broken_link = self.root / f"{self.key.digest}.tmp-200"
+        symlink_or_skip(
+            self,
+            staging_link,
+            outside,
+            target_is_directory=True,
+        )
+        symlink_or_skip(
+            self,
+            broken_link,
+            self.base / "missing-target",
+            target_is_directory=True,
+        )
+
+        self.assertEqual(self.cache.cleanup_incomplete(), 0)
+        self.assertTrue(staging_link.is_symlink())
+        self.assertTrue(broken_link.is_symlink())
+        self.assertEqual((outside / "data").read_bytes(), b"outside")
+
+    def test_cleanup_checks_symlink_before_directory_type(self):
+        self.root.mkdir()
+        apparent_link = self.root / f"{self.key.digest}.tmp-100"
+        apparent_link.mkdir()
+        real_is_dir = Path.is_dir
+        real_is_symlink = Path.is_symlink
+
+        def is_symlink(path: Path) -> bool:
+            if path == apparent_link:
+                return True
+            return real_is_symlink(path)
+
+        def is_dir(path: Path) -> bool:
+            if path == apparent_link:
+                raise AssertionError("cleanup followed a symlink before rejecting it")
+            return real_is_dir(path)
+
+        with mock.patch.object(
+            Path,
+            "is_symlink",
+            autospec=True,
+            side_effect=is_symlink,
+        ), mock.patch.object(
+            Path,
+            "is_dir",
+            autospec=True,
+            side_effect=is_dir,
+        ):
+            self.assertEqual(self.cache.cleanup_incomplete(), 0)
+
+    def test_store_does_not_collide_with_broken_symlink_staging_name(self):
+        self.root.mkdir()
+        collision = self.root / f"{self.key.digest}.tmp-{os.getpid()}-collision"
+        symlink_or_skip(
+            self,
+            collision,
+            self.base / "missing-target",
+            target_is_directory=True,
+        )
+
+        with mock.patch(
+            "maximum_optimizer.cache.uuid.uuid4",
+            side_effect=(
+                SimpleNamespace(hex="collision"),
+                SimpleNamespace(hex="available"),
+            ),
+        ):
+            returned = self.cache.store(self.key, self.source, {})
+
+        self.assertEqual(returned, self.root / self.key.digest)
+        self.assertTrue(collision.is_symlink())
+
+    def test_unique_sibling_uses_lexists_for_collision_detection(self):
+        from maximum_optimizer import cache as cache_module
+
+        with mock.patch.object(
+            cache_module.uuid,
+            "uuid4",
+            side_effect=(
+                SimpleNamespace(hex="collision"),
+                SimpleNamespace(hex="available"),
+            ),
+        ), mock.patch.object(
+            cache_module.os.path,
+            "lexists",
+            side_effect=(True, False),
+        ) as lexists:
+            sibling = cache_module._unique_sibling(self.root, "entry-")
+
+        self.assertEqual(sibling, self.root / "entry-available")
+        self.assertEqual(lexists.call_count, 2)
 
 
 class AtomicReplaceTreeTests(unittest.TestCase):
@@ -327,6 +608,54 @@ class AtomicReplaceTreeTests(unittest.TestCase):
         self.assertFalse((destination / "new.bin").exists())
         self.assertEqual((staging / "new.bin").read_bytes(), b"new")
 
+    def test_exposes_backup_if_promotion_and_restore_both_fail(self):
+        staging = self.root / "staging"
+        destination = self.root / "destination"
+        write_tree(staging, {"new.bin": b"new"})
+        write_tree(destination, {"old.bin": b"original"})
+        calls = 0
+
+        def fail_promotion_and_restore(
+            source: os.PathLike[str], target: os.PathLike[str]
+        ) -> None:
+            nonlocal calls
+            calls += 1
+            if calls in (2, 3):
+                raise OSError(f"injected replace failure {calls}")
+            os.replace(source, target)
+
+        with self.assertRaisesRegex(AtomicReplaceError, "recovery") as raised:
+            atomic_replace_tree(
+                staging,
+                destination,
+                replace=fail_promotion_and_restore,
+            )
+
+        error = raised.exception
+        self.assertEqual(error.destination, destination)
+        self.assertIsInstance(error.promotion_error, OSError)
+        self.assertIsInstance(error.restore_error, OSError)
+        self.assertTrue(error.recovery_path.is_dir())
+        self.assertEqual((error.recovery_path / "old.bin").read_bytes(), b"original")
+        self.assertEqual((staging / "new.bin").read_bytes(), b"new")
+
+    def test_success_is_preserved_when_backup_cleanup_fails(self):
+        staging = self.root / "staging"
+        destination = self.root / "destination"
+        write_tree(staging, {"new.bin": b"new"})
+        write_tree(destination, {"old.bin": b"old"})
+
+        with mock.patch(
+            "maximum_optimizer.cache._remove_direct_child",
+            side_effect=OSError("locked backup"),
+        ):
+            returned = atomic_replace_tree(staging, destination)
+
+        self.assertEqual(returned, destination)
+        self.assertEqual((destination / "new.bin").read_bytes(), b"new")
+        backup = next(path for path in self.root.iterdir() if ".backup-" in path.name)
+        self.assertEqual((backup / "old.bin").read_bytes(), b"old")
+
     def test_rejects_cross_volume_promotion_before_moving_anything(self):
         staging = self.root / "staging"
         destination = self.root / "destination"
@@ -363,6 +692,53 @@ class AtomicReplaceTreeTests(unittest.TestCase):
             with self.subTest(staging=staging, destination=destination):
                 with self.assertRaises(ValueError):
                     atomic_replace_tree(staging, destination)
+
+    def test_rejects_staging_and_destination_symlinks_including_broken(self):
+        real_staging = self.root / "real-staging"
+        write_tree(real_staging, {"new.bin": b"new"})
+        staging_link = self.root / "staging-link"
+        symlink_or_skip(
+            self,
+            staging_link,
+            real_staging,
+            target_is_directory=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            atomic_replace_tree(staging_link, self.root / "destination")
+
+        staging_link.unlink()
+        symlink_or_skip(
+            self,
+            staging_link,
+            self.root / "missing-staging",
+            target_is_directory=True,
+        )
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            atomic_replace_tree(staging_link, self.root / "destination")
+        staging_link.unlink()
+
+        destination_target = self.root / "destination-target"
+        write_tree(destination_target, {"old.bin": b"old"})
+        destination_link = self.root / "destination-link"
+        symlink_or_skip(
+            self,
+            destination_link,
+            destination_target,
+            target_is_directory=True,
+        )
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            atomic_replace_tree(real_staging, destination_link)
+
+        destination_link.unlink()
+        symlink_or_skip(
+            self,
+            destination_link,
+            self.root / "missing-target",
+            target_is_directory=True,
+        )
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            atomic_replace_tree(real_staging, destination_link)
 
 
 if __name__ == "__main__":
