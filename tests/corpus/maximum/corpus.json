@@ -1,0 +1,235 @@
+{
+  "schema": 1,
+  "hard_floors": {
+    "silhouette_iou": 0,
+    "rgb_mae": 0,
+    "edge_error": 0,
+    "surface_bidirectional_p95": 0,
+    "surface_max": 0,
+    "normal_angle_p95": 0,
+    "uv_error_p95": 0,
+    "skinning_error_p95": 0
+  },
+  "families": [
+    {
+      "partition": "calibration",
+      "id": "glide-dz-chapman-73",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/dz/chapman_73.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-dz-chapman-73/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-dz-chapman-73/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-dz-chapman-73/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-dz-chapman-73-police",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/dz/chapman_73_police.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-dz-chapman-73-police/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-dz-chapman-73-police/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-dz-chapman-73-police/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-dz-chapman-73-wheel",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/dz/chapman_73_wheel.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-dz-chapman-73-wheel/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-dz-chapman-73-wheel/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-dz-chapman-73-wheel/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1967-shelby-gt500",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1967_shelby_gt500.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1967-shelby-gt500/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1967-shelby-gt500/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1967-shelby-gt500/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1967-shelby-gt500-wheel",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1967_shelby_gt500_wheel.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1967-shelby-gt500-wheel/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1967-shelby-gt500-wheel/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1967-shelby-gt500-wheel/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1970-gmc-jimmy",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1970_gmc_jimmy.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1970-gmc-jimmy/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1970-gmc-jimmy/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1970-gmc-jimmy/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1970-gmc-jimmy-wheel",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1970_gmc_jimmy_wheel.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1970-gmc-jimmy-wheel/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1970-gmc-jimmy-wheel/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1970-gmc-jimmy-wheel/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1979-chevrolet-camaro-z28",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1979_chevrolet_camaro_z28.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1979-chevrolet-camaro-z28/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1979-chevrolet-camaro-z28/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1979-chevrolet-camaro-z28/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1979-chevrolet-camaro-z28-wheel",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1979_chevrolet_camaro_z28_wheel.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1979-chevrolet-camaro-z28-wheel/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1979-chevrolet-camaro-z28-wheel/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1979-chevrolet-camaro-z28-wheel/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1982-ford-bronco-xlt",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1982_ford_bronco_xlt.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1982-ford-bronco-xlt/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1982-ford-bronco-xlt/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1982-ford-bronco-xlt/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1982-ford-bronco-xlt-wheel",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1982_ford_bronco_xlt_wheel.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1982-ford-bronco-xlt-wheel/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1982-ford-bronco-xlt-wheel/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1982-ford-bronco-xlt-wheel/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1985-chevrolet-el-camino",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1985_chevrolet_el_camino.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1985-chevrolet-el-camino/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1985-chevrolet-el-camino/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1985-chevrolet-el-camino/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1985-chevrolet-el-camino-wheel",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1985_chevrolet_el_camino_wheel.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1985-chevrolet-el-camino-wheel/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1985-chevrolet-el-camino-wheel/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1985-chevrolet-el-camino-wheel/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1986-buick-century-limited",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1986_buick_century_limited.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1986-buick-century-limited/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1986-buick-century-limited/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1986-buick-century-limited/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1986-buick-century-limited-wheel",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1986_buick_century_limited_wheel.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1986-buick-century-limited-wheel/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1986-buick-century-limited-wheel/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1986-buick-century-limited-wheel/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1989-mazda-mx5",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1989_mazda_mx5.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1989-mazda-mx5/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1989-mazda-mx5/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1989-mazda-mx5/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1989-mazda-mx5-wheel",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1989_mazda_mx5_wheel.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1989-mazda-mx5-wheel/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1989-mazda-mx5-wheel/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1989-mazda-mx5-wheel/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1990-chevrolet-s-10",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1990_chevrolet_s_10.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1990-chevrolet-s-10/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1990-chevrolet-s-10/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1990-chevrolet-s-10/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1990-chevrolet-s-10-wheel",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1990_chevrolet_s_10_wheel.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1990-chevrolet-s-10-wheel/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1990-chevrolet-s-10-wheel/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1990-chevrolet-s-10-wheel/known_bad.json"
+      }
+    },
+    {
+      "partition": "calibration",
+      "id": "glide-exid-1993-bmw-m3-coupe",
+      "addon_root": "${MAXIMUM_CALIBRATION_ROOT}",
+      "model_rel": "glide/exid/1993_bmw_m3_coupe.mdl",
+      "metrics": {
+        "roundtrip": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1993-bmw-m3-coupe/roundtrip.json",
+        "known_good": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1993-bmw-m3-coupe/known_good.json",
+        "known_bad": "${MAXIMUM_CALIBRATION_ROOT}/.maximum-calibration/glide-exid-1993-bmw-m3-coupe/known_bad.json"
+      }
+    }
+  ]
+}

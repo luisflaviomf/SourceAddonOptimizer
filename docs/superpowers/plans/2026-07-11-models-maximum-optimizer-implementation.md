@@ -738,7 +738,7 @@ git commit -m "feat: generate isolated Maximum candidates"
 
 ---
 
-### Task 8: Validação visual multiângulo e perfil calibrável
+### Task 8: Validação visual multiângulo e calibrador (sem calibração real nesta etapa)
 
 **Files:**
 - Modify: `render_previews.py`
@@ -787,11 +787,13 @@ def _gate(metric: str, scope: str, value: float, limit: float, failures: list[Ga
         failures.append(GateFailure(metric, scope, value, limit, f"{metric} exceeded at {scope}"))
 ```
 
-- [ ] **Step 5: Montar a partição de calibração com ao menos 20 famílias reais, implementar calibração determinística `max(hard_floor, roundtrip_p99 + 3 * MAD)` e gravar o perfil versionado com hash do corpus**
+- [ ] **Step 5: Registrar 20 famílias reais e paths de métricas a gerar, testar o calibrador com corpus temporário e gravar somente o sentinel não calibrado**
 
-Run: `python calibrate_maximum_profiles.py --corpus tests/corpus/maximum/corpus.json --partition calibration --out maximum_optimizer/profiles/maximum-experimental-v1.json`
+O `tests/corpus/maximum/corpus.json` registra IDs/`model_rel` reais sob `${MAXIMUM_CALIBRATION_ROOT}` e paths de `roundtrip`, `known_good` e `known_bad`, mas a geração dessas métricas reais pertence à Task 14, depois de engines/orchestrator. Nesta etapa, os testes do calibrador usam um corpus temporário de 20 famílias.
 
-Cada entrada de calibração aponta para renders/metrics de `original`, `roundtrip`, `known_good` e `known_bad`; caminhos locais usam variáveis de ambiente e nenhum addon de terceiros é commitado. O comando recusa menos de 20 famílias, qualquer métrica ausente ou um limite que aceite um `known_bad` rotulado.
+O calibrador implementa `max(hard_floor, roundtrip_p99 + 3 * MAD)`, hash determinístico do conteúdo lógico/bytes das métricas, expansão estrita de ambiente e escrita atômica. Ele recusa menos de 20 famílias, qualquer métrica ausente/não finita, `known_good` acima do limite ou qualquer `known_bad` que não exceda ao menos um limite. Nenhum addon de terceiros é commitado.
+
+`maximum_optimizer/profiles/maximum-experimental-v1.json` permanece um sentinel honesto com `calibrated: false` e `limits: {}`. `load_profile` deve recusá-lo; nenhum threshold real é inventado na Task 8.
 
 Run: `python -m unittest tests.maximum_optimizer.test_visual_validation -v`
 
@@ -1152,22 +1154,24 @@ git commit -m "build: package Maximum optimizer dependencies"
 **Files:**
 - Modify: `tests/corpus/maximum/corpus.json`
 - Create: `docs/maximum-optimizer-validation.md`
-- Modify: `maximum_optimizer/profiles/maximum-experimental-v1.json` only if deterministic recalibration changes because the calibration corpus itself changed.
+- Modify: `maximum_optimizer/profiles/maximum-experimental-v1.json` to replace the Task 8 sentinel with the deterministic `calibrated: true` profile generated from real metrics.
 - Modify: `docs/superpowers/specs/2026-07-11-models-maximum-optimizer-design.md` only to record implemented profile/version and measured results.
 
 **Interfaces:**
 - Consumes: executável worker empacotado, addons reais separados em `calibration` e `validation`.
 - Produces: perfil numérico versionado, relatório consolidado e evidência de validação in-game.
 
-- [ ] **Step 1: Acrescentar ao `corpus.json` ao menos 20 famílias de validação diferentes das 20 de calibração, cobrindo carros/rodas, veículos, aeronaves, armas, attachments, props, multi-material/bodygroup/skin e skinned/animated**
+- [ ] **Step 1: Gerar roundtrip/known-good/known-bad reais para as 20 famílias de calibração registradas na Task 8 e acrescentar ao menos 20 famílias de validação diferentes**
 
-O JSON usa caminhos relativos ou variáveis de ambiente; nenhum addon de terceiros é commitado. Cada item inclui `category`, `addon_root`, `model_rel`, `poses` e `manual_views`.
+As engines e o orchestrator completos geram os manifests/métricas apontados pelo corpus. A cobertura inclui carros/rodas, veículos, aeronaves, armas, attachments, props, multi-material/bodygroup/skin e skinned/animated. O JSON usa caminhos relativos ou variáveis de ambiente; nenhum addon de terceiros é commitado. Cada item de validação inclui `category`, `addon_root`, `model_rel`, `poses` e `manual_views`.
 
-- [ ] **Step 2: Reexecutar a calibração da Task 8 e exigir saída byte a byte idêntica quando a partição calibration não mudou**
+- [ ] **Step 2: Gerar/substituir o sentinel por perfil `calibrated: true` e exigir saída byte a byte idêntica quando a partição calibration não mudou**
 
 Run: `python calibrate_maximum_profiles.py --corpus tests/corpus/maximum/corpus.json --partition calibration --out maximum_optimizer/profiles/maximum-experimental-v1.json`
 
 Expected: exit 0, `family_count >= 20`, hash da partição e limite numérico para cada gate; nenhum campo nulo e nenhuma diferença inesperada no perfil commitado.
+
+Este é o primeiro ponto do plano em que limites reais são produzidos e aceitos pelo runtime.
 
 - [ ] **Step 3: Rodar validação cega e gerar relatório agregado**
 
@@ -1189,7 +1193,7 @@ Registrar por família: bytes original/control/fidelity/maximum, redução geom�
 
 Expected: zero skin/bodygroup/animation/attachment/hitbox ausente, zero crack visível novo e nenhuma falha local acima do perfil. Casos reprovados permanecem preservados.
 
-- [ ] **Step 6: Gerar release oficial e validar as abas**
+- [ ] **Step 6: Reempacotar worker/tools com o perfil calibrado, gerar release oficial e validar as abas**
 
 Run: `powershell -ExecutionPolicy Bypass -File .\build_release_wpf.ps1`
 
