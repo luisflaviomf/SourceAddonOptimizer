@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -16,6 +17,25 @@ namespace GmodAddonCompressor.Systems
     {
         internal delegate void ProgressChangedEvent(string filePath, int fileIndex, int filesCount);
         internal delegate void CompletedCompressEvent();
+
+        private sealed class CompressionBucket
+        {
+            public CompressionBucket(string name, int maxDegreeOfParallelism, List<FileInfo> files)
+            {
+                Name = name;
+                MaxDegreeOfParallelism = maxDegreeOfParallelism;
+                Files = files;
+            }
+
+            public string Name { get; }
+            public int MaxDegreeOfParallelism { get; }
+            public List<FileInfo> Files { get; }
+        }
+
+        private sealed class ProgressCounter
+        {
+            public int Value;
+        }
 
         internal ProgressChangedEvent? e_ProgressChanged;
         internal CompletedCompressEvent? e_CompletedCompress;
@@ -148,19 +168,51 @@ namespace GmodAddonCompressor.Systems
 
         private void CompressThread()
         {
-            Task mainTask = Task.Run(CompressThreadAsync);
-            while (mainTask.Status == TaskStatus.Running) { }
+            try
+            {
+                CompressThreadAsync().GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex.ToString());
+                _hasStarted = false;
+                e_CompletedCompress?.Invoke();
+            }
         }
 
         private async Task CompressThreadAsync()
         {
             int filesCount = _registredFiles.Count;
-            int fileIndex = 0;
+            if (filesCount == 0)
+            {
+                _hasStarted = false;
+                e_CompletedCompress?.Invoke();
+                return;
+            }
 
-            await Parallel.ForEachAsync(_registredFiles, async (FileInfo file, CancellationToken cancellationToken) =>
+            var progressCounter = new ProgressCounter();
+            IReadOnlyList<CompressionBucket> buckets = BuildCompressionBuckets();
+            _logger.LogInformation(
+                "Compress scheduling: " +
+                string.Join(", ", buckets.Select(bucket => $"{bucket.Name}={bucket.Files.Count}@{bucket.MaxDegreeOfParallelism}")));
+
+            await Task.WhenAll(buckets.Select(bucket => ProcessBucketAsync(bucket, filesCount, progressCounter)));
+
+            _hasStarted = false;
+
+            e_CompletedCompress?.Invoke();
+        }
+
+        private async Task ProcessBucketAsync(CompressionBucket bucket, int filesCount, ProgressCounter progressCounter)
+        {
+            var options = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = bucket.MaxDegreeOfParallelism
+            };
+
+            await Parallel.ForEachAsync(bucket.Files, options, async (FileInfo file, CancellationToken cancellationToken) =>
             {
                 ICompress? service = GetService(file.Extension);
-
                 if (service != null)
                 {
                     try
@@ -173,14 +225,70 @@ namespace GmodAddonCompressor.Systems
                     }
                 }
 
-                fileIndex++;
-
+                int fileIndex = Interlocked.Increment(ref progressCounter.Value);
                 e_ProgressChanged?.Invoke(file.FullName, fileIndex, filesCount);
             });
+        }
 
-            _hasStarted = false;
+        private IReadOnlyList<CompressionBucket> BuildCompressionBuckets()
+        {
+            var buckets = new Dictionary<string, List<FileInfo>>(StringComparer.OrdinalIgnoreCase);
+            foreach (FileInfo file in _registredFiles)
+            {
+                string bucketName = GetBucketName(file.Extension);
+                if (!buckets.TryGetValue(bucketName, out List<FileInfo>? files))
+                {
+                    files = new List<FileInfo>();
+                    buckets[bucketName] = files;
+                }
 
-            e_CompletedCompress?.Invoke();
+                files.Add(file);
+            }
+
+            return buckets
+                .OrderBy(pair => GetBucketOrder(pair.Key))
+                .Select(pair => new CompressionBucket(
+                    pair.Key,
+                    GetMaxDegreeOfParallelism(pair.Key),
+                    pair.Value))
+                .ToArray();
+        }
+
+        private static string GetBucketName(string extension)
+        {
+            return extension.ToLowerInvariant() switch
+            {
+                ".vtf" => "vtf",
+                ".wav" or ".mp3" or ".ogg" => "audio",
+                ".png" or ".jpg" or ".jpeg" => "image",
+                ".lua" => "script",
+                _ => "other"
+            };
+        }
+
+        private static int GetBucketOrder(string bucketName)
+        {
+            return bucketName switch
+            {
+                "vtf" => 0,
+                "audio" => 1,
+                "image" => 2,
+                "script" => 3,
+                _ => 4
+            };
+        }
+
+        private static int GetMaxDegreeOfParallelism(string bucketName)
+        {
+            int cpuCount = Math.Max(1, Environment.ProcessorCount);
+            return bucketName switch
+            {
+                "vtf" => Math.Max(1, Math.Min(4, cpuCount / 2)),
+                "audio" => Math.Max(1, Math.Min(2, cpuCount / 4)),
+                "image" => Math.Max(2, Math.Min(8, cpuCount)),
+                "script" => 1,
+                _ => Math.Max(1, Math.Min(2, cpuCount / 4))
+            };
         }
 
         private void ParseDirectory(string directoryPath)

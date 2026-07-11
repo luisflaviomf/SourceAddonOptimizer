@@ -15,7 +15,7 @@ namespace GmodAddonCompressor.Systems.Vtf
 
     internal readonly struct AddonVtfFxProfile
     {
-        public static AddonVtfFxProfile None { get; } = new(false, "none", 0, 0, "none", AddonVtfSourceRoutePreference.RawSplitFirst);
+        public static AddonVtfFxProfile None { get; } = new(false, "none", 0, 0, "none", AddonVtfSourceRoutePreference.RawSplitFirst, false);
 
         public AddonVtfFxProfile(
             bool isSensitive,
@@ -23,7 +23,8 @@ namespace GmodAddonCompressor.Systems.Vtf
             int score,
             int minimumShortSide,
             string signalSummary,
-            AddonVtfSourceRoutePreference preferredSourceRoute)
+            AddonVtfSourceRoutePreference preferredSourceRoute,
+            bool useAlphaAwareResize)
         {
             IsSensitive = isSensitive;
             Group = string.IsNullOrWhiteSpace(group) ? "none" : group;
@@ -31,6 +32,7 @@ namespace GmodAddonCompressor.Systems.Vtf
             MinimumShortSide = minimumShortSide;
             SignalSummary = string.IsNullOrWhiteSpace(signalSummary) ? "none" : signalSummary;
             PreferredSourceRoute = preferredSourceRoute;
+            UseAlphaAwareResize = useAlphaAwareResize;
         }
 
         public bool IsSensitive { get; }
@@ -39,6 +41,7 @@ namespace GmodAddonCompressor.Systems.Vtf
         public int MinimumShortSide { get; }
         public string SignalSummary { get; }
         public AddonVtfSourceRoutePreference PreferredSourceRoute { get; }
+        public bool UseAlphaAwareResize { get; }
     }
 
     internal sealed class AddonVtfTextureSignals
@@ -66,9 +69,12 @@ namespace GmodAddonCompressor.Systems.Vtf
         public bool IsExcludedNamespace { get; set; }
         public bool HasTranslucent { get; set; }
         public bool HasVertexAlpha { get; set; }
+        public bool HasAlphaTest { get; set; }
+        public bool HasAlphaToCoverage { get; set; }
         public bool HasAdditive { get; set; }
         public bool HasIgnoreZ { get; set; }
         public bool HasDepthBlend { get; set; }
+        public bool HasOpacityAlpha => HasAlphaTest || HasTranslucent || HasVertexAlpha || HasAlphaToCoverage;
 
         public int FxFlagCount
         {
@@ -108,6 +114,8 @@ namespace GmodAddonCompressor.Systems.Vtf
                 IsExcludedNamespace = IsExcludedNamespace,
                 HasTranslucent = HasTranslucent,
                 HasVertexAlpha = HasVertexAlpha,
+                HasAlphaTest = HasAlphaTest,
+                HasAlphaToCoverage = HasAlphaToCoverage,
                 HasAdditive = HasAdditive,
                 HasIgnoreZ = HasIgnoreZ,
                 HasDepthBlend = HasDepthBlend
@@ -264,8 +272,31 @@ namespace GmodAddonCompressor.Systems.Vtf
                 tags.Add("semantic_name");
             }
 
+            if (signals.HasAlphaTest)
+            {
+                score += 1;
+                tags.Add("alphatest");
+            }
+
+            if (signals.HasAlphaToCoverage)
+            {
+                score += 1;
+                tags.Add("alpha_to_coverage");
+            }
+
             bool hasUsageSignal = signals.HasPcfReference || signals.HasEffectLuaReference;
             bool hasVisualSignal = signals.HasSpriteShader || signals.FxFlagCount >= 2;
+            bool hasOpacityAlpha = signals.HasOpacityAlpha;
+            bool isVehicleGlass = hasOpacityAlpha && AddonVtfCompressionPlanner.HasVehicleGlassHint(signals);
+
+            if (hasOpacityAlpha)
+                tags.Add("opacity_alpha");
+
+            if (isVehicleGlass)
+            {
+                score += 2;
+                tags.Add("vehicle_glass");
+            }
 
             bool isSensitive;
             if (signals.InParticleNamespace || signals.InEffectsNamespace)
@@ -283,6 +314,18 @@ namespace GmodAddonCompressor.Systems.Vtf
                 isSensitive = score >= 6 && hasUsageSignal && hasVisualSignal;
             }
 
+            if (!isSensitive && hasOpacityAlpha)
+            {
+                return new AddonVtfFxProfile(
+                    true,
+                    isVehicleGlass ? "vehicle_glass" : "opacity_alpha",
+                    score,
+                    isVehicleGlass && signals.HasAlphaToCoverage ? 128 : 0,
+                    tags.Count == 0 ? "none" : string.Join("+", tags),
+                    DeterminePreferredSourceRoute(signals),
+                    true);
+            }
+
             if (!isSensitive)
             {
                 return new AddonVtfFxProfile(
@@ -291,10 +334,13 @@ namespace GmodAddonCompressor.Systems.Vtf
                     score,
                     0,
                     tags.Count == 0 ? "none" : string.Join("+", tags),
-                    AddonVtfSourceRoutePreference.RawSplitFirst);
+                    AddonVtfSourceRoutePreference.RawSplitFirst,
+                    false);
             }
 
-            string group = signals.InParticleNamespace
+            string group = isVehicleGlass
+                ? "vehicle_glass"
+                : signals.InParticleNamespace
                 ? "particle"
                 : signals.InEffectsNamespace
                     ? "effects"
@@ -308,9 +354,10 @@ namespace GmodAddonCompressor.Systems.Vtf
                 true,
                 group,
                 score,
-                32,
+                Math.Max(32, isVehicleGlass && signals.HasAlphaToCoverage ? 128 : 0),
                 tags.Count == 0 ? "none" : string.Join("+", tags),
-                DeterminePreferredSourceRoute(signals));
+                DeterminePreferredSourceRoute(signals),
+                true);
         }
 
         private static AddonVtfSourceRoutePreference DeterminePreferredSourceRoute(AddonVtfTextureSignals signals)
@@ -397,7 +444,8 @@ namespace GmodAddonCompressor.Systems.Vtf
             "$basealphaenvmapmask",
             "$translucent",
             "$alphatest",
-            "$additive"
+            "$additive",
+            "$allowalphatocoverage"
         };
 
         private static readonly HashSet<string> SpriteShaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -427,6 +475,43 @@ namespace GmodAddonCompressor.Systems.Vtf
             "heatwave",
             "flash",
             "glow"
+        };
+
+        private static readonly string[] VehicleGlassPositiveHints =
+        {
+            "window",
+            "windows",
+            "windshield",
+            "windscreen",
+            "glass",
+            "glasst",
+            "sglass"
+        };
+
+        private static readonly string[] VehicleGlassNegativeHints =
+        {
+            "headlight",
+            "taillight",
+            "turnlight",
+            "foglight",
+            "fog",
+            "rearlight",
+            "brake",
+            "reverse",
+            "badge",
+            "rim",
+            "wheel",
+            "tyre",
+            "tire",
+            "rotor",
+            "gauge",
+            "gauges",
+            "symbol",
+            "digital",
+            "logo",
+            "flare",
+            "beam",
+            "spark"
         };
 
         private static readonly HashSet<int> AlphaCapableFormats = new HashSet<int>
@@ -470,6 +555,8 @@ namespace GmodAddonCompressor.Systems.Vtf
                 bool usesBumpAlpha = false;
                 bool hasTranslucent = false;
                 bool hasVertexAlpha = false;
+                bool hasAlphaTest = false;
+                bool hasAlphaToCoverage = false;
                 bool hasAdditive = false;
                 bool hasIgnoreZ = false;
                 bool hasDepthBlend = false;
@@ -498,6 +585,12 @@ namespace GmodAddonCompressor.Systems.Vtf
                     if (key.Equals("$vertexalpha", StringComparison.OrdinalIgnoreCase) && IsTruthyMaterialValue(rawValue))
                         hasVertexAlpha = true;
 
+                    if (key.Equals("$alphatest", StringComparison.OrdinalIgnoreCase) && IsTruthyMaterialValue(rawValue))
+                        hasAlphaTest = true;
+
+                    if (key.Equals("$allowalphatocoverage", StringComparison.OrdinalIgnoreCase) && IsTruthyMaterialValue(rawValue))
+                        hasAlphaToCoverage = true;
+
                     if (key.Equals("$additive", StringComparison.OrdinalIgnoreCase) && IsTruthyMaterialValue(rawValue))
                         hasAdditive = true;
 
@@ -516,6 +609,8 @@ namespace GmodAddonCompressor.Systems.Vtf
                     signals.HasSpriteShader |= SpriteShaders.Contains(shaderName);
                     signals.HasTranslucent |= hasTranslucent;
                     signals.HasVertexAlpha |= hasVertexAlpha;
+                    signals.HasAlphaTest |= hasAlphaTest;
+                    signals.HasAlphaToCoverage |= hasAlphaToCoverage;
                     signals.HasAdditive |= hasAdditive;
                     signals.HasIgnoreZ |= hasIgnoreZ;
                     signals.HasDepthBlend |= hasDepthBlend;
@@ -952,6 +1047,28 @@ namespace GmodAddonCompressor.Systems.Vtf
                     continue;
 
                 if (FxSemanticTokens.Contains(token))
+                    return true;
+            }
+
+            return false;
+        }
+
+        internal static bool HasVehicleGlassHint(AddonVtfTextureSignals signals)
+        {
+            IEnumerable<string> candidates = new[] { signals.TextureKey }
+                .Concat(signals.VmtKeys);
+
+            foreach (string candidate in candidates)
+            {
+                if (string.IsNullOrWhiteSpace(candidate))
+                    continue;
+
+                bool hasPositiveHint = VehicleGlassPositiveHints.Any(hint => candidate.Contains(hint, StringComparison.OrdinalIgnoreCase));
+                if (!hasPositiveHint)
+                    continue;
+
+                bool hasNegativeHint = VehicleGlassNegativeHints.Any(hint => candidate.Contains(hint, StringComparison.OrdinalIgnoreCase));
+                if (!hasNegativeHint)
                     return true;
             }
 

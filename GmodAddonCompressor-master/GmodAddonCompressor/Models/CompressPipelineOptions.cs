@@ -20,7 +20,7 @@ namespace GmodAddonCompressor.Models
 
         public string BuildRoutingSummary()
         {
-            const string vtfText = "VTF => unified pipeline: raw split first, export split fallback when needed, selective FX-safe DXT/alpha-aware resize/resolution guardrails for sensitive particle-style materials, then preserve unchanged on no gain or out-of-scope cases.";
+            const string vtfText = "VTF => unified pipeline: raw split first, export split fallback when needed, selective DXT routing plus premultiplied alpha-aware resize for FX-sensitive and opacity-alpha surfaces such as vehicle glass/cutouts, then preserve unchanged on no gain or out-of-scope cases.";
 
             if (!IsMagickMode)
                 return $"Routing: Standard for all selected types. {vtfText}";

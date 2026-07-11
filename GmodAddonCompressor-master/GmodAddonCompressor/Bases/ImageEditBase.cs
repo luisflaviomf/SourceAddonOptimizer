@@ -334,40 +334,42 @@ namespace GmodAddonCompressor.Bases
             }
         }
 
-        protected async Task ImageCompress(string imageFilePath)
+        protected Task ImageCompress(string imageFilePath)
         {
             if (string.IsNullOrEmpty(_fileExtension))
                 throw new Exception("Not set image file extension");
 
+            if (!File.Exists(imageFilePath))
+                return Task.CompletedTask;
+
             string tempImageFilePath = imageFilePath + "____TEMP" + _fileExtension;
 
-            if (File.Exists(tempImageFilePath))
-                File.Delete(tempImageFilePath);
-
-            await SaveMagickImage(tempImageFilePath, imageFilePath);
-
-            if (File.Exists(tempImageFilePath))
+            try
             {
-                if (File.Exists(imageFilePath))
+                if (File.Exists(tempImageFilePath))
+                    File.Delete(tempImageFilePath);
+
+                long originalFileSize = new FileInfo(imageFilePath).Length;
+                if (!SaveMagickImage(imageFilePath, tempImageFilePath) || !File.Exists(tempImageFilePath))
+                    return Task.CompletedTask;
+
+                long newFileSize = new FileInfo(tempImageFilePath).Length;
+                if (newFileSize > originalFileSize)
                 {
-                    long oldFileSize = new FileInfo(tempImageFilePath).Length;
-                    long newFileSize = new FileInfo(imageFilePath).Length;
-
-                    if (newFileSize > oldFileSize)
-                    {
-                        File.Delete(imageFilePath);
-                        File.Copy(tempImageFilePath, imageFilePath);
-
-                        _logger.LogError($"Image compression failed: {imageFilePath.GAC_ToLocalPath()}");
-                    }
-                    else
-                        _logger.LogInformation($"Successful file compression: {imageFilePath.GAC_ToLocalPath()}");
+                    _logger.LogInformation($"Image compression preserved original (no gain): {imageFilePath.GAC_ToLocalPath()}");
+                    return Task.CompletedTask;
                 }
-                else
-                    File.Copy(tempImageFilePath, imageFilePath);
 
-                File.Delete(tempImageFilePath);
+                File.Copy(tempImageFilePath, imageFilePath, true);
+                _logger.LogInformation($"Successful file compression: {imageFilePath.GAC_ToLocalPath()}");
             }
+            finally
+            {
+                if (File.Exists(tempImageFilePath))
+                    File.Delete(tempImageFilePath);
+            }
+
+            return Task.CompletedTask;
         }
 
         protected void SetImageFileExtension(string fileExtension)
@@ -381,33 +383,32 @@ namespace GmodAddonCompressor.Bases
             return (int)System.Math.Pow(2, (int)System.Math.Log(x, 2));
         }
 
-        private async Task SaveMagickImage(string imageSourcePath, string imageSavePath)
+        private bool SaveMagickImage(string imageSourcePath, string imageSavePath)
         {
-            int[] imageSize = GetImageSize(imageSavePath);
-            if (imageSize[0] == 0 || imageSize[1] == 0) return;
+            int[] imageSize = GetImageSize(imageSourcePath);
+            if (imageSize[0] == 0 || imageSize[1] == 0)
+                return false;
 
             int[] newImageSize = GetReduceResolutionSize(imageSize[0], imageSize[1]);
 
             int newWidth = newImageSize[0];
             int newHeight = newImageSize[1];
 
-            bool isSingleColor = ImageIsSingleColor(imageSavePath);
+            bool isSingleColor = ImageIsSingleColor(imageSourcePath);
             
             int resizeWidth = isSingleColor ? 1 : (newWidth < ImageContext.TaargetWidth ? ImageContext.TaargetWidth : newWidth);
             int resizeHeight = isSingleColor ? 1 :(newHeight < ImageContext.TargetHeight ? ImageContext.TargetHeight : newHeight);
 
-            if (newWidth > imageSize[0] || newHeight > imageSize[1]) return;
+            if (newWidth > imageSize[0] || newHeight > imageSize[1])
+                return false;
 
-            if (!File.Exists(imageSourcePath))
-                File.Copy(imageSavePath, imageSourcePath);
-
-            if (File.Exists(imageSavePath))
-                File.Delete(imageSavePath);
-
-            using (var image = new MagickImage(imageSourcePath))
+            try
             {
-                try
+                using (var image = new MagickImage(imageSourcePath))
                 {
+                    if (File.Exists(imageSavePath))
+                        File.Delete(imageSavePath);
+
                     var size = new MagickGeometry((uint)resizeWidth, (uint)resizeHeight);
                     size.IgnoreAspectRatio = isSingleColor ? true : !ImageContext.KeepImageAspectRatio;
 
@@ -417,55 +418,13 @@ namespace GmodAddonCompressor.Bases
                         image.SetCompression(CompressionMethod.LZMA);
 
                     image.Write(imageSavePath);
+                    return File.Exists(imageSavePath);
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex.ToString());
-                }
-            }
-
-            if (isSingleColor)
-                return;
-
-            long oldFileSize = -1;
-            DateTime timeOut = DateTime.UtcNow.AddSeconds(5);
-
-            while (oldFileSize == -1 && DateTime.UtcNow > timeOut)
-            {
-                try
-                {
-                    oldFileSize = new FileInfo(imageSavePath).Length;
-                }
-                catch
-                {
-                    await Task.Yield();
-                }
-            }
-
-            string additionalCompressionFilePath = imageSavePath + "____TEMPCOMPRESS" + _fileExtension;
-            File.Copy(imageSavePath, additionalCompressionFilePath);
-
-            try
-            {
-                FileInfo file = new FileInfo(additionalCompressionFilePath);
-
-                var optimizer = new ImageOptimizer();
-                optimizer.LosslessCompress(file);
-
-                file.Refresh();
-
-                if (file.Length > oldFileSize)
-                    File.Delete(additionalCompressionFilePath);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex.ToString());
-            }
-
-            if (File.Exists(additionalCompressionFilePath))
-            {
-                File.Delete(imageSavePath);
-                File.Copy(additionalCompressionFilePath, imageSavePath);
+                return false;
             }
         }
     }

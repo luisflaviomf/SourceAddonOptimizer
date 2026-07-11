@@ -20,6 +20,7 @@ namespace GmodAddonCompressor.Models
         public int SchemaVersion { get; set; } = 1;
         public string? LastAddonPath { get; set; }
         public string? UnpackRootPath { get; set; }
+        public string? UnpackOutputRootPath { get; set; }
         public string? AddonMergeRootPath { get; set; }
         public string? AddonMergeOutputRootPath { get; set; }
         public string? AddonMergeBundleName { get; set; }
@@ -37,6 +38,7 @@ namespace GmodAddonCompressor.Models
         public string? AddonMergePackageMode { get; set; }
         public string? OptimizerSuffix { get; set; }
         public string? OptimizerPreset { get; set; }
+        public int? OptimizerModeIndex { get; set; }
         public OptimizerCustomParams OptimizerCustom { get; set; } = new OptimizerCustomParams();
         public bool? OptimizerUsePlanar { get; set; }
         public double? OptimizerPlanarAngle { get; set; }
@@ -57,7 +59,6 @@ namespace GmodAddonCompressor.Models
         public int? AudioOggQualityIndex { get; set; }
         public int? AudioOggBitrateIndex { get; set; }
         public int? CompressModeIndex { get; set; }
-        public bool? CompressMagickUseCommonVtf { get; set; }
         public bool? CompressMagickUseAggressivePng { get; set; }
     }
 }

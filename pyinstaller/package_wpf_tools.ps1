@@ -18,6 +18,8 @@ function Get-WorkerSourceFiles {
         (Join-Path $PWD "batch_optimize_qc.py"),
         (Join-Path $PWD "batch_optimize_selective_policy.py"),
         (Join-Path $PWD "batch_optimize_round_parts_policy.py"),
+        (Join-Path $PWD "optimize_edge_transfer_policy_v1.py"),
+        (Join-Path $PWD "optimize_fidelity_partition_policy_v1.py"),
         (Join-Path $PWD "batch_unpack_addons.py"),
         (Join-Path $PWD "render_previews.py"),
         (Join-Path $PWD "selective_policy_models.py"),

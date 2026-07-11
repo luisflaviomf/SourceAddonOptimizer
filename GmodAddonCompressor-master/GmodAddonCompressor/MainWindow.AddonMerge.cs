@@ -472,6 +472,8 @@ namespace GmodAddonCompressor
                 PriorityMode = GetSelectedAddonMergePriorityMode(),
                 PackageMode = GetSelectedAddonMergePackageMode(),
                 ScanOnly = scanOnly,
+                Recursive = true,
+                AllowContentOnly = true,
                 BundleName = GetAddonMergeBundleName(),
                 OutputRoot = GetAddonMergeOutputRootPath(),
                 ReuseScanReportPath = reuseScanReportPath,

@@ -15,6 +15,7 @@ namespace GmodAddonCompressor.Objects
     internal class WAVEdit : ICompress, ICompressPreparation
     {
         private readonly ILogger _logger = LogSystem.CreateLogger<WAVEdit>();
+        private readonly FFMpegSystem _ffmpegSystem = new FFMpegSystem();
         private readonly Lazy<AudioWebSafetyReport> _webAudioSafetyReport;
 
         public WAVEdit()
@@ -111,7 +112,7 @@ namespace GmodAddonCompressor.Objects
                         _logger.LogWarning($"Loop metadata may be lost: {wavFilePath.GAC_ToLocalPath()}");
                 }
 
-                bool converted = await new FFMpegSystem().ReencodeWavAsync(
+                bool converted = await _ffmpegSystem.ReencodeWavAsync(
                     wavFilePath,
                     newWavFilePath,
                     targetSampleRate,

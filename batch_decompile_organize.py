@@ -120,6 +120,19 @@ def find_mdls(models_dir: Path):
     return sorted(mdls, key=lambda p: str(p).lower())
 
 
+def expand_path_preserve_alias(raw: str) -> Path:
+    """
+    Keep an explicit short path such as a SUBST drive or junction spelling.
+
+    Using Path.resolve() here can expand `P:\\...` back into a very long real path,
+    which is enough to push Crowbar output past MAX_PATH for corrective animation files.
+    """
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    return Path(os.path.abspath(str(path)))
+
+
 def _match_any(patterns, text: str) -> bool:
     return any(re.search(p, text, flags=re.IGNORECASE) for p in patterns)
 
@@ -445,7 +458,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=1, help="Parallel Crowbar jobs (default: 1)")
     args = ap.parse_args()
 
-    input_path = Path(args.input).expanduser().resolve()
+    input_path = expand_path_preserve_alias(args.input)
     crowbar_exe = Path(args.crowbar).expanduser().resolve()
     if not crowbar_exe.exists():
         print(f"[ERROR] Crowbar CLI not found: {crowbar_exe}")
@@ -457,7 +470,7 @@ def main():
         print(f"[ERROR] {e}")
         return 2
 
-    out_dir = Path(args.out).expanduser().resolve() if args.out else (Path.cwd() / "work" / addon_name)
+    out_dir = expand_path_preserve_alias(args.out) if args.out else (Path.cwd() / "work" / addon_name)
     src_root = out_dir / "src"
     backup_models_dir = out_dir / "original" / "models"
     logs_dir = out_dir / "logs"

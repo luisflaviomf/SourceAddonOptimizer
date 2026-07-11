@@ -37,7 +37,6 @@ namespace GmodAddonCompressor.Systems.Maps
         internal int SkipHeight { get; init; }
         internal bool ReduceExactlyToLimits { get; init; }
         internal bool KeepImageAspectRatio { get; init; }
-        internal bool ImageMagickVtfCompress { get; init; }
         internal bool LuaMinimalistic { get; init; }
         internal Action<string>? Log { get; init; }
         internal Action<string, int, int>? Progress { get; init; }
@@ -287,7 +286,6 @@ namespace GmodAddonCompressor.Systems.Maps
             ImageContext.SkipHeight = options.SkipHeight;
             ImageContext.ReduceExactlyToLimits = options.ReduceExactlyToLimits;
             ImageContext.KeepImageAspectRatio = options.KeepImageAspectRatio;
-            ImageContext.ImageMagickVTFCompress = options.ImageMagickVtfCompress;
 
             LuaContext.ChangeOriginalCodeToMinimalistic = options.LuaMinimalistic;
         }
