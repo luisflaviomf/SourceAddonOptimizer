@@ -206,6 +206,19 @@ class SearchTests(unittest.TestCase):
 
         self.assertIsNone(choose_next(evaluations, SearchBudget.experimental_default()))
 
+    def test_choose_next_rejects_a_rounded_midpoint_that_collapses_an_endpoint(self):
+        evaluations = [
+            evaluation_at(0.3333334, True, candidate_id="noncanonical-pass"),
+            evaluation_at(0.3333331, False, candidate_id="noncanonical-fail"),
+        ]
+        budget = SearchBudget(
+            max_candidates=18,
+            min_ratio_step=0.00000001,
+            min_marginal_saving=0.0,
+        )
+
+        self.assertIsNone(choose_next(evaluations, budget))
+
     def test_marginal_stop_uses_previous_winner_and_only_after_a_pass(self):
         budget = SearchBudget(max_candidates=18, min_ratio_step=0.025, min_marginal_saving=0.05)
         low_saving = [
@@ -229,6 +242,22 @@ class SearchTests(unittest.TestCase):
 
         self.assertIsNone(choose_next(evaluations, budget))
 
+    def test_marginal_saving_equal_to_threshold_does_not_stop(self):
+        budget = SearchBudget(
+            max_candidates=18,
+            min_ratio_step=0.025,
+            min_marginal_saving=0.005,
+        )
+        evaluations = [
+            evaluation_at(0.50, True, total_bytes=1000, candidate_id="previous"),
+            evaluation_at(0.40, True, total_bytes=995, candidate_id="current"),
+        ]
+
+        nxt = choose_next(evaluations, budget)
+
+        self.assertIsNotNone(nxt)
+        self.assertEqual(nxt.candidate_id, "fidelity-baseline")
+
     def test_recent_visual_failure_recovers_only_worst_scope_at_nearest_passing_ratio(self):
         scope = "body/head/eyelid-left"
         evaluations = [
@@ -243,6 +272,26 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(nxt.target_ratio, 0.25)
         self.assertEqual(nxt.region_overrides, ((scope, 0.50),))
         self.assertIn(scope_hash, nxt.candidate_id)
+
+    def test_pending_regional_recovery_precedes_marginal_stop(self):
+        scope = "body/hand/finger"
+        evaluations = [
+            evaluation_at(0.75, True, total_bytes=1000, candidate_id="previous"),
+            evaluation_at(
+                0.25,
+                False,
+                total_bytes=900,
+                candidate_id="regional-failure",
+                worst_scope=scope,
+            ),
+            evaluation_at(0.50, True, total_bytes=999, candidate_id="newest-pass"),
+        ]
+
+        nxt = choose_next(evaluations, SearchBudget.experimental_default())
+
+        self.assertIsNotNone(nxt)
+        self.assertEqual(nxt.target_ratio, 0.25)
+        self.assertEqual(nxt.region_overrides, ((scope, 0.50),))
 
     def test_regional_recovery_requires_no_existing_overrides_and_never_duplicates(self):
         scope = "body/head"

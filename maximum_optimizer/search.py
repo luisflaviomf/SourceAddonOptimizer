@@ -109,7 +109,7 @@ def _should_stop_for_marginal_saving(
     if current_winner is None:
         return False
     saving = (previous_bytes - current_winner.size.total_bytes) / previous_bytes
-    return saving <= budget.min_marginal_saving
+    return saving < budget.min_marginal_saving
 
 
 def _regional_recovery(
@@ -189,12 +189,12 @@ def choose_next(
         return None
     used_ids = {evaluation.spec.candidate_id for evaluation in evaluations}
 
-    if _should_stop_for_marginal_saving(evaluations, budget):
-        return None
-
     recovery = _regional_recovery(evaluations, used_ids)
     if recovery is not None:
         return recovery
+
+    if _should_stop_for_marginal_saving(evaluations, budget):
+        return None
 
     bracket = _narrowest_bracket(evaluations)
     if bracket is not None:
@@ -206,6 +206,8 @@ def choose_next(
             (passing.spec.target_ratio + failed.spec.target_ratio) / 2,
             6,
         )
+        if not failed.spec.target_ratio < midpoint < passing.spec.target_ratio:
+            return None
         candidate_id = _candidate_id(passing.spec.engine, midpoint)
         if midpoint < _MIN_RATIO or candidate_id in used_ids:
             return None
