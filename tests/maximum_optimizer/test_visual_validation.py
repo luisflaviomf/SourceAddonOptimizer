@@ -9,11 +9,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
 from maximum_optimizer.visual_validation import (
     FidelityProfile,
+    _rgb_mae,
+    _silhouette_error,
     compare_render_sets,
     load_profile,
 )
@@ -30,6 +33,9 @@ METRICS = (
     "uv_error_p95",
     "skinning_error_p95",
 )
+PASSES = ("textured", "clay")
+ANGLES = ("front", "back", "left", "right", "top", "bottom", "iso1", "iso2")
+GEOMETRY_METRICS = METRICS[3:]
 
 
 def _sha256(path: Path) -> str:
@@ -51,11 +57,31 @@ def _write_manifest(
     entries: list[dict],
     *,
     geometry: list[dict] | None = None,
+    passes: tuple[str, ...] = PASSES,
+    angles: tuple[str, ...] = ANGLES,
+    poses: tuple[str, ...] = ("bind",),
+    regions: tuple[str, ...] = ("body",),
 ) -> None:
+    if geometry is None:
+        geometry = [
+            {
+                "scope": region,
+                "pose": pose,
+                **{metric: 0.0 for metric in GEOMETRY_METRICS},
+            }
+            for region in regions
+            for pose in poses
+        ]
     payload = {
         "schema": 1,
+        "expected": {
+            "passes": list(passes),
+            "angles": list(angles),
+            "poses": list(poses),
+            "regions": list(regions),
+        },
         "entries": entries,
-        "geometry": geometry or [],
+        "geometry": geometry,
         "bbox": {"min": [0, 0, 0], "max": [1, 1, 1], "diagonal": math.sqrt(3)},
         "sampling": {"stride": 1, "seed": 0},
     }
@@ -76,6 +102,25 @@ def _entry(root: Path, render_pass: str, pose: str, angle: str, **image_kwargs) 
         "sha256": _sha256(path),
         "texture_missing": False,
     }
+
+
+def _entry_key(entry: dict) -> tuple[str, str, str]:
+    return entry["pass"], entry["pose"], entry["angle"]
+
+
+def _matrix_entries(
+    root: Path,
+    *,
+    passes: tuple[str, ...] = PASSES,
+    poses: tuple[str, ...] = ("bind",),
+    angles: tuple[str, ...] = ANGLES,
+) -> list[dict]:
+    return [
+        _entry(root, render_pass, pose, angle)
+        for render_pass in passes
+        for pose in poses
+        for angle in angles
+    ]
 
 
 def _profile(**limits: float) -> FidelityProfile:
@@ -102,11 +147,15 @@ class VisualValidationTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def write_matching(self, keys=(("clay", "bind", "front"),)):
-        reference_entries = [_entry(self.reference, *key) for key in keys]
-        candidate_entries = [_entry(self.candidate, *key) for key in keys]
-        _write_manifest(self.reference, reference_entries)
-        _write_manifest(self.candidate, candidate_entries)
+    def write_matching(self, *, poses=("bind",), regions=("body",)):
+        reference_entries = _matrix_entries(self.reference, poses=poses)
+        candidate_entries = _matrix_entries(self.candidate, poses=poses)
+        _write_manifest(
+            self.reference, reference_entries, poses=poses, regions=regions
+        )
+        _write_manifest(
+            self.candidate, candidate_entries, poses=poses, regions=regions
+        )
 
     def test_profile_is_deeply_read_only_and_requires_calibrated_finite_limits(self):
         profile = _profile()
@@ -133,13 +182,61 @@ class VisualValidationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     load_profile(path)
 
+        for schema in (True, 1.0):
+            with self.subTest(schema=schema):
+                with self.assertRaises(ValueError):
+                    FidelityProfile(
+                        schema=schema,
+                        version="x",
+                        calibrated=True,
+                        corpus_hash="a" * 64,
+                        limits={metric: 0.0 for metric in METRICS},
+                    )
+        for corpus_hash in ("A" * 64, "a" * 63, "g" * 64):
+            with self.subTest(corpus_hash=corpus_hash):
+                with self.assertRaises(ValueError):
+                    FidelityProfile(
+                        schema=1,
+                        version="x",
+                        calibrated=True,
+                        corpus_hash=corpus_hash,
+                        limits={metric: 0.0 for metric in METRICS},
+                    )
+        with self.assertRaises(ValueError):
+            FidelityProfile(
+                schema=1,
+                version="x",
+                calibrated=True,
+                corpus_hash="a" * 64,
+                limits={
+                    metric: (10**1000 if metric == "rgb_mae" else 0.0)
+                    for metric in METRICS
+                },
+            )
+
+    def test_partial_alpha_uses_soft_iou_and_union_weighted_rgb(self):
+        reference = Image.new("RGBA", (1, 1), (0, 0, 0, 128))
+        candidate = Image.new("RGBA", (1, 1), (0, 0, 0, 64))
+        self.assertAlmostEqual(_silhouette_error(reference, candidate), 0.5)
+
+        reference = Image.new("RGBA", (2, 1))
+        candidate = Image.new("RGBA", (2, 1))
+        reference.putdata(((0, 0, 0, 128), (0, 0, 0, 255)))
+        candidate.putdata(((255, 255, 255, 128), (0, 0, 0, 255)))
+        self.assertAlmostEqual(_rgb_mae(reference, candidate), 128 / 383, places=6)
+
     def test_worst_angle_fails_even_when_average_is_small(self):
-        keys = (("clay", "bind", "front"), ("clay", "bind", "right"))
-        reference_entries = [_entry(self.reference, *key) for key in keys]
-        candidate_entries = [
-            _entry(self.candidate, *keys[0]),
-            _entry(self.candidate, *keys[1], box=(0, 0, 2, 2)),
-        ]
+        reference_entries = _matrix_entries(self.reference)
+        candidate_entries = _matrix_entries(self.candidate)
+        index = next(
+            i
+            for i, entry in enumerate(candidate_entries)
+            if (entry["pass"], entry["pose"], entry["angle"])
+            == ("clay", "bind", "right")
+        )
+        candidate_entries[index] = _entry(
+            self.candidate, "clay", "bind", "right", box=(0, 0, 2, 2)
+        )
         _write_manifest(self.reference, reference_entries)
         _write_manifest(self.candidate, candidate_entries)
 
@@ -155,32 +252,42 @@ class VisualValidationTests(unittest.TestCase):
 
     def test_empty_masks_and_linear_rgb_are_well_defined(self):
         key = ("clay", "bind", "front")
+        reference_entries = _matrix_entries(self.reference)
+        candidate_entries = _matrix_entries(self.candidate)
+        ref_index = next(i for i, item in enumerate(reference_entries) if _entry_key(item) == key)
+        candidate_index = next(i for i, item in enumerate(candidate_entries) if _entry_key(item) == key)
         ref_entry = _entry(self.reference, *key, box=None)
         candidate_entry = _entry(self.candidate, *key, box=None)
-        _write_manifest(self.reference, [ref_entry])
-        _write_manifest(self.candidate, [candidate_entry])
+        reference_entries[ref_index] = ref_entry
+        candidate_entries[candidate_index] = candidate_entry
+        _write_manifest(self.reference, reference_entries)
+        _write_manifest(self.candidate, candidate_entries)
         result = compare_render_sets(self.reference, self.candidate, _profile())
         self.assertEqual(result.metrics["silhouette_iou"], 0.0)
         self.assertEqual(result.metrics["edge_error"], 0.0)
 
         candidate_entry = _entry(self.candidate, *key, box=(2, 2, 6, 6))
-        _write_manifest(self.candidate, [candidate_entry])
+        candidate_entries[candidate_index] = candidate_entry
+        _write_manifest(self.candidate, candidate_entries)
         result = compare_render_sets(self.reference, self.candidate, _profile())
         self.assertEqual(result.metrics["silhouette_iou"], 1.0)
         self.assertEqual(result.metrics["edge_error"], 1.0)
 
         ref_entry = _entry(self.reference, *key, color=(128, 128, 128, 255))
         candidate_entry = _entry(self.candidate, *key, color=(255, 255, 255, 255))
-        _write_manifest(self.reference, [ref_entry])
-        _write_manifest(self.candidate, [candidate_entry])
+        reference_entries[ref_index] = ref_entry
+        candidate_entries[candidate_index] = candidate_entry
+        _write_manifest(self.reference, reference_entries)
+        _write_manifest(self.candidate, candidate_entries)
         result = compare_render_sets(self.reference, self.candidate, _profile())
         expected = 1.0 - ((128 / 255 + 0.055) / 1.055) ** 2.4
         self.assertAlmostEqual(result.metrics["rgb_mae"], expected, places=6)
 
     def test_pose_scope_and_geometry_use_worst_region(self):
-        keys = (("clay", "bind", "front"), ("clay", "run", "front"))
-        reference_entries = [_entry(self.reference, *key) for key in keys]
-        candidate_entries = [_entry(self.candidate, *key) for key in keys]
+        poses = ("bind", "run")
+        regions = ("body", "wheel")
+        reference_entries = _matrix_entries(self.reference, poses=poses)
+        candidate_entries = _matrix_entries(self.candidate, poses=poses)
         geometry = [
             {
                 "scope": "body",
@@ -192,6 +299,16 @@ class VisualValidationTests(unittest.TestCase):
                 "skinning_error_p95": 0.05,
             },
             {
+                "scope": "body",
+                "pose": "run",
+                **{metric: 0.0 for metric in GEOMETRY_METRICS},
+            },
+            {
+                "scope": "wheel",
+                "pose": "bind",
+                **{metric: 0.0 for metric in GEOMETRY_METRICS},
+            },
+            {
                 "scope": "wheel",
                 "pose": "run",
                 "surface_bidirectional_p95": 0.9,
@@ -201,8 +318,16 @@ class VisualValidationTests(unittest.TestCase):
                 "skinning_error_p95": 0.5,
             },
         ]
-        _write_manifest(self.reference, reference_entries)
-        _write_manifest(self.candidate, candidate_entries, geometry=geometry)
+        _write_manifest(
+            self.reference, reference_entries, poses=poses, regions=regions
+        )
+        _write_manifest(
+            self.candidate,
+            candidate_entries,
+            geometry=geometry,
+            poses=poses,
+            regions=regions,
+        )
 
         result = compare_render_sets(
             self.reference,
@@ -216,7 +341,7 @@ class VisualValidationTests(unittest.TestCase):
         self.assertEqual(result.worst_scope, "wheel/run")
 
     def test_missing_corrupt_mismatched_or_textured_inputs_are_stable_failures(self):
-        self.write_matching((("textured", "bind", "front"),))
+        self.write_matching()
         manifest = json.loads((self.candidate / "render_manifest.json").read_text())
         manifest["entries"][0]["texture_missing"] = True
         (self.candidate / "render_manifest.json").write_text(json.dumps(manifest))
@@ -255,7 +380,12 @@ class VisualValidationTests(unittest.TestCase):
         image_path = self.candidate / "clay/bind/front.png"
         image_path.write_bytes(b"not an image")
         manifest = json.loads(manifest_path.read_text())
-        manifest["entries"][0]["sha256"] = _sha256(image_path)
+        target = next(
+            entry
+            for entry in manifest["entries"]
+            if _entry_key(entry) == ("clay", "bind", "front")
+        )
+        target["sha256"] = _sha256(image_path)
         manifest_path.write_text(json.dumps(manifest))
         result = compare_render_sets(self.reference, self.candidate, _profile())
         self.assertIn("corrupt_image", {failure.gate for failure in result.failures})
@@ -273,7 +403,14 @@ class VisualValidationTests(unittest.TestCase):
         candidate_entry = _entry(
             self.candidate, "clay", "bind", "front", box=(0, 0, 2, 2)
         )
-        _write_manifest(self.candidate, [candidate_entry])
+        manifest = json.loads((self.candidate / "render_manifest.json").read_text())
+        index = next(
+            i
+            for i, entry in enumerate(manifest["entries"])
+            if _entry_key(entry) == ("clay", "bind", "front")
+        )
+        manifest["entries"][index] = candidate_entry
+        (self.candidate / "render_manifest.json").write_text(json.dumps(manifest))
         failed = compare_render_sets(
             self.reference,
             self.candidate,
@@ -281,6 +418,80 @@ class VisualValidationTests(unittest.TestCase):
         )
         self.assertFalse(failed.passed)
         self.assertEqual(failed.metrics["fidelity_score"], 0.0)
+
+    def test_expected_matrix_rejects_empty_subset_duplicates_and_missing_entries(self):
+        cases = []
+        self.write_matching()
+        baseline = json.loads((self.candidate / "render_manifest.json").read_text())
+
+        empty = json.loads(json.dumps(baseline))
+        empty["expected"]["passes"] = []
+        empty["entries"] = []
+        cases.append(("empty", empty, "invalid_expected"))
+
+        subset = json.loads(json.dumps(baseline))
+        subset["expected"]["passes"] = ["clay"]
+        subset["entries"] = [e for e in subset["entries"] if e["pass"] == "clay"]
+        cases.append(("subset", subset, "invalid_expected"))
+
+        duplicate_expected = json.loads(json.dumps(baseline))
+        duplicate_expected["expected"]["angles"].append("front")
+        cases.append(("duplicate-expected", duplicate_expected, "invalid_expected"))
+
+        missing = json.loads(json.dumps(baseline))
+        missing["entries"].pop()
+        cases.append(("missing-entry", missing, "entry_matrix"))
+
+        duplicate = json.loads(json.dumps(baseline))
+        duplicate["entries"].append(dict(duplicate["entries"][0]))
+        cases.append(("duplicate-entry", duplicate, "duplicate_entry"))
+
+        manifest_path = self.candidate / "render_manifest.json"
+        for name, payload, expected_gate in cases:
+            with self.subTest(name=name):
+                manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+                result = compare_render_sets(self.reference, self.candidate, _profile())
+                self.assertFalse(result.passed)
+                self.assertIn(expected_gate, {failure.gate for failure in result.failures})
+
+    def test_expected_must_match_and_geometry_matrix_is_complete(self):
+        self.write_matching()
+        manifest_path = self.candidate / "render_manifest.json"
+        baseline = json.loads(manifest_path.read_text())
+
+        mismatch = json.loads(json.dumps(baseline))
+        mismatch["expected"]["regions"] = ["body", "extra"]
+        manifest_path.write_text(json.dumps(mismatch))
+        result = compare_render_sets(self.reference, self.candidate, _profile())
+        self.assertIn("expected_mismatch", {failure.gate for failure in result.failures})
+
+        missing_geometry = json.loads(json.dumps(baseline))
+        missing_geometry["geometry"] = []
+        manifest_path.write_text(json.dumps(missing_geometry))
+        result = compare_render_sets(self.reference, self.candidate, _profile())
+        self.assertIn("geometry_matrix", {failure.gate for failure in result.failures})
+
+        missing_metric = json.loads(json.dumps(baseline))
+        del missing_metric["geometry"][0]["uv_error_p95"]
+        manifest_path.write_text(json.dumps(missing_metric))
+        result = compare_render_sets(self.reference, self.candidate, _profile())
+        self.assertIn("invalid_geometry", {failure.gate for failure in result.failures})
+
+    def test_region_missing_is_a_hard_failure_even_with_permissive_limits(self):
+        self.write_matching()
+        manifest_path = self.candidate / "render_manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["geometry"][0]["region_missing"] = True
+        manifest_path.write_text(json.dumps(manifest))
+
+        result = compare_render_sets(
+            self.reference,
+            self.candidate,
+            _profile(**{metric: 1_000_000.0 for metric in METRICS}),
+        )
+
+        self.assertFalse(result.passed)
+        self.assertIn("region_missing", {failure.gate for failure in result.failures})
 
 
 class RenderPreviewArgumentTests(unittest.TestCase):
@@ -337,10 +548,16 @@ class RenderPreviewArgumentTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "pass"):
             render_previews._validated_passes("textured,fake")
+        with self.assertRaisesRegex(ValueError, "pass"):
+            render_previews._validated_passes("clay")
+        with self.assertRaisesRegex(ValueError, "angle"):
+            render_previews._validated_angles("front")
         for raw in ("run", "run:nope", "run:1,run:2", "bad/name:1"):
             with self.subTest(raw=raw):
                 with self.assertRaisesRegex(ValueError, "pose"):
                     render_previews._parse_poses(raw)
+        with self.assertRaisesRegex(ValueError, "bind"):
+            render_previews._parse_poses("run:1")
 
     def test_vmt_base_texture_parser_and_manifest_writer_are_deterministic(self):
         import render_previews
@@ -365,15 +582,197 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                 [entry],
                 [],
                 {"min": [0, 0, 0], "max": [1, 1, 1], "diagonal": math.sqrt(3)},
+                expected={
+                    "passes": list(PASSES),
+                    "angles": list(ANGLES),
+                    "poses": ["bind"],
+                    "regions": ["body"],
+                },
                 stride=3,
                 seed=17,
             )
             payload = json.loads((root / "render_manifest.json").read_text())
             self.assertEqual(payload["schema"], 1)
             self.assertEqual(payload["entries"], [entry])
+            self.assertEqual(payload["expected"]["regions"], ["body"])
             self.assertEqual(payload["sampling"], {"stride": 3, "seed": 17})
             self.assertEqual(entry["sha256"], _sha256(image_path))
             self.assertEqual(entry["image"], "clay/bind/front.png")
+
+    def test_region_keys_normalize_optimizer_and_blender_suffixes(self):
+        import render_previews
+
+        keys = render_previews._region_keys(
+            [
+                ("Body_OPT.001", ("paint",)),
+                ("body", ("glass",)),
+                ("Body.002", ("paint",)),
+            ]
+        )
+
+        self.assertEqual(
+            keys,
+            {
+                ("Body_OPT.001", ("paint",)): "body|paint|0",
+                ("Body.002", ("paint",)): "body|paint|1",
+                ("body", ("glass",)): "body|glass|0",
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            render_previews._region_keys([("Body", ("paint",)), ("Body", ("paint",))])
+
+    def test_barycentric_loop_attributes_preserve_seams_and_smooth_normals(self):
+        import render_previews
+
+        weights = render_previews._barycentric_weights(
+            (0.25, 0.25, 0.0),
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+        )
+        self.assertEqual(weights, (0.5, 0.25, 0.25))
+        first_seam = render_previews._interpolate_attribute(
+            ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)), weights
+        )
+        second_seam = render_previews._interpolate_attribute(
+            ((10.0, 10.0), (11.0, 10.0), (10.0, 11.0)), weights
+        )
+        self.assertEqual(first_seam, (0.25, 0.25))
+        self.assertEqual(second_seam, (10.25, 10.25))
+        normal = render_previews._interpolate_attribute(
+            ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+            weights,
+            normalize=True,
+        )
+        self.assertAlmostEqual(math.sqrt(sum(value * value for value in normal)), 1.0)
+
+    def test_bidirectional_p95_uses_worst_direction_without_dilution(self):
+        import render_previews
+
+        self.assertEqual(
+            render_previews._directional_p95_max([0.0] * 100, [1.0]),
+            1.0,
+        )
+
+    def test_direct_topology_metrics_avoid_bvh_ambiguity_but_detect_uv_changes(self):
+        import copy
+        import render_previews
+
+        diagonal_normal = (-0.1930412492974003, -0.5795026643954697, -0.3126656929623708)
+        region = {
+            "triangles": [
+                {
+                    "positions": ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+                    "normals": (diagonal_normal,) * 3,
+                    "uvs": ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+                }
+            ]
+        }
+        metrics = render_previews._direct_topology_metrics(region, copy.deepcopy(region), 1.0, 1)
+        self.assertEqual(
+            metrics,
+            {
+                "surface_bidirectional_p95": 0.0,
+                "surface_max": 0.0,
+                "normal_angle_p95": 0.0,
+                "uv_error_p95": 0.0,
+                "skinning_error_p95": 0.0,
+                "region_missing": False,
+            },
+        )
+        changed = copy.deepcopy(region)
+        changed["triangles"][0]["uvs"] = ((0.5, 0.0), (1.0, 0.0), (0.0, 1.0))
+        self.assertGreater(
+            render_previews._direct_topology_metrics(region, changed, 1.0, 1)[
+                "uv_error_p95"
+            ],
+            0.0,
+        )
+
+    def test_material_paths_cannot_escape_root(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            valid = root / "vehicles" / "body.vmt"
+            valid.parent.mkdir()
+            valid.write_text("VertexLitGeneric {}", encoding="utf-8")
+            self.assertEqual(
+                render_previews._contained_material_path(root, "vehicles/body", ".vmt"),
+                valid.resolve(),
+            )
+            for value in (
+                "/absolute",
+                "C:/absolute",
+                "\\\\server\\share\\material",
+                "../escape",
+                "vehicles/../../escape",
+            ):
+                with self.subTest(value=value):
+                    self.assertIsNone(
+                        render_previews._contained_material_path(root, value, ".vmt")
+                    )
+            escaping_vmt = root / "escape.vmt"
+            escaping_vmt.write_text(
+                'VertexLitGeneric\n{\n"$basetexture" "/outside"\n}', encoding="utf-8"
+            )
+            (root / "outside.vtf").write_bytes(b"vtf")
+            with mock.patch.object(render_previews, "_convert_vtf") as convert:
+                self.assertIsNone(
+                    render_previews._source_texture_png(
+                        "escape", root, root / "VTFCmd.exe", root / "cache"
+                    )
+                )
+                convert.assert_not_called()
+
+    def test_material_path_rejects_symlink_when_platform_allows_it(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "materials"
+            root.mkdir()
+            outside = Path(raw) / "outside.vmt"
+            outside.write_text("VertexLitGeneric {}", encoding="utf-8")
+            link = root / "linked.vmt"
+            try:
+                link.symlink_to(outside)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            self.assertIsNone(
+                render_previews._contained_material_path(root, "linked", ".vmt")
+            )
+
+    def test_blender_42_and_newer_select_eevee_next(self):
+        import render_previews
+
+        self.assertEqual(render_previews._eevee_engine((5, 0, 0)), "BLENDER_EEVEE_NEXT")
+        self.assertEqual(render_previews._eevee_engine((4, 2, 0)), "BLENDER_EEVEE_NEXT")
+        self.assertEqual(render_previews._eevee_engine((4, 1, 9)), "BLENDER_EEVEE")
+        self.assertEqual(
+            render_previews._eevee_engine(
+                (5, 0, 1),
+                available=("BLENDER_EEVEE", "BLENDER_WORKBENCH", "CYCLES"),
+            ),
+            "BLENDER_EEVEE",
+        )
+
+        class Item:
+            def __init__(self, identifier):
+                self.identifier = identifier
+
+        class Property:
+            enum_items = (Item("BLENDER_EEVEE"), Item("CYCLES"))
+
+        class Rna:
+            properties = {"engine": Property()}
+
+        class Render:
+            bl_rna = Rna()
+
+        self.assertEqual(
+            render_previews._available_enum_identifiers(Render(), "engine"),
+            ("BLENDER_EEVEE", "CYCLES"),
+        )
 
 
 class CalibrationTests(unittest.TestCase):
@@ -519,6 +918,58 @@ class CalibrationTests(unittest.TestCase):
 
         self.assertEqual(output.read_bytes(), b"existing-profile")
         self.assertEqual(list(self.root.glob(".profile.json.*.tmp")), [])
+
+    def test_schema_and_huge_integers_fail_stably_in_function_and_cli(self):
+        corpus = self._corpus()
+        corpus["schema"] = True
+        path = self._write_corpus(corpus)
+        with self.assertRaisesRegex(ValueError, "schema"):
+            calibrate_profile(path, "calibration", self.root / "profile.json")
+
+        corpus = self._corpus()
+        metric_path = self.root / "metrics/family-00-roundtrip.json"
+        payload = self._metric_payload(0.1)
+        payload["metrics"]["rgb_mae"] = 10**1000
+        metric_path.write_text(json.dumps(payload), encoding="utf-8")
+        path = self._write_corpus(corpus)
+        with self.assertRaisesRegex(ValueError, "rgb_mae"):
+            calibrate_profile(path, "calibration", self.root / "profile.json")
+        from calibrate_maximum_profiles import main
+
+        self.assertEqual(
+            main(
+                [
+                    "--corpus",
+                    str(path),
+                    "--partition",
+                    "calibration",
+                    "--out",
+                    str(self.root / "profile.json"),
+                ]
+            ),
+            2,
+        )
+
+    def test_atomic_output_uses_exclusive_random_temp_and_cleans_replace_error(self):
+        from calibrate_maximum_profiles import calibrate_profile
+
+        corpus_path = self._write_corpus(self._corpus())
+        output = self.root / "profile.json"
+        predictable = self.root / f".profile.json.{os.getpid()}.tmp"
+        predictable.write_bytes(b"collision-sentinel")
+
+        calibrate_profile(corpus_path, "calibration", output)
+
+        self.assertEqual(predictable.read_bytes(), b"collision-sentinel")
+        output.write_bytes(b"old")
+        with mock.patch("calibrate_maximum_profiles.os.replace", side_effect=OSError("replace")):
+            with self.assertRaisesRegex(OSError, "replace"):
+                calibrate_profile(corpus_path, "calibration", output)
+        self.assertEqual(output.read_bytes(), b"old")
+        self.assertEqual(
+            [path for path in self.root.glob(".profile.json.*.tmp") if path != predictable],
+            [],
+        )
 
 
 if __name__ == "__main__":

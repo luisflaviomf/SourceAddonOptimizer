@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,8 @@ GEOMETRY_METRICS = (
     "skinning_error_p95",
 )
 REQUIRED_METRICS = IMAGE_METRICS + GEOMETRY_METRICS
+EXPECTED_PASSES = ("textured", "clay")
+EXPECTED_ANGLES = ("front", "back", "left", "right", "top", "bottom", "iso1", "iso2")
 
 
 @dataclass(frozen=True)
@@ -33,13 +36,16 @@ class FidelityProfile:
     limits: Mapping[str, float]
 
     def __post_init__(self) -> None:
-        if self.schema != 1:
+        if type(self.schema) is not int or self.schema != 1:
             raise ValueError("unsupported fidelity profile schema")
         if not isinstance(self.version, str) or not self.version.strip():
             raise ValueError("fidelity profile version is required")
         if self.calibrated is not True:
             raise ValueError("fidelity profile must be calibrated")
-        if not isinstance(self.corpus_hash, str) or not self.corpus_hash:
+        if (
+            not isinstance(self.corpus_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.corpus_hash) is None
+        ):
             raise ValueError("fidelity profile corpus_hash is required")
         if not isinstance(self.limits, Mapping):
             raise ValueError("fidelity profile limits must be an object")
@@ -48,10 +54,8 @@ class FidelityProfile:
             raise ValueError("fidelity profile must contain every required metric")
         for metric in REQUIRED_METRICS:
             value = self.limits[metric]
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError(f"invalid limit for {metric}")
-            number = float(value)
-            if not math.isfinite(number) or number < 0:
+            number = _finite_nonnegative(value)
+            if number is None:
                 raise ValueError(f"invalid limit for {metric}")
             copied[metric] = number
         object.__setattr__(self, "limits", MappingProxyType(copied))
@@ -90,13 +94,53 @@ def _load_manifest(root: Path, label: str, failures: list[GateFailure]) -> dict 
     except (OSError, UnicodeError, json.JSONDecodeError):
         failures.append(_failure("corrupt_manifest", label, f"{label} render manifest is corrupt"))
         return None
-    if not isinstance(payload, dict) or payload.get("schema") != 1:
+    if (
+        not isinstance(payload, dict)
+        or type(payload.get("schema")) is not int
+        or payload.get("schema") != 1
+    ):
         failures.append(_failure("invalid_manifest", label, f"{label} render manifest schema is invalid"))
         return None
     if not isinstance(payload.get("entries"), list):
         failures.append(_failure("invalid_manifest", label, f"{label} render entries are invalid"))
         return None
     return payload
+
+
+def _validate_expected(
+    manifest: dict, label: str, failures: list[GateFailure]
+) -> dict[str, tuple[str, ...]] | None:
+    raw = manifest.get("expected")
+    if not isinstance(raw, dict):
+        failures.append(_failure("invalid_expected", label, "expected render matrix is missing"))
+        return None
+    result: dict[str, tuple[str, ...]] = {}
+    for field in ("passes", "angles", "poses", "regions"):
+        values = raw.get(field)
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(not isinstance(value, str) or not value for value in values)
+            or len(set(values)) != len(values)
+        ):
+            failures.append(
+                _failure("invalid_expected", f"{label}/{field}", f"expected {field} is invalid")
+            )
+            return None
+        result[field] = tuple(values)
+    if result["passes"] != EXPECTED_PASSES or result["angles"] != EXPECTED_ANGLES:
+        failures.append(
+            _failure(
+                "invalid_expected",
+                label,
+                "expected passes/angles do not match the mandatory Maximum matrix",
+            )
+        )
+        return None
+    if "bind" not in result["poses"]:
+        failures.append(_failure("invalid_expected", label, "expected poses must include bind"))
+        return None
+    return result
 
 
 def _entry_key(entry: object) -> tuple[str, str, str] | None:
@@ -127,6 +171,98 @@ def _index_entries(
             )
             continue
         indexed[key] = entry
+    return indexed
+
+
+def _validate_entry_matrix(
+    indexed: dict[tuple[str, str, str], dict],
+    expected: dict[str, tuple[str, ...]],
+    label: str,
+    failures: list[GateFailure],
+) -> None:
+    required = {
+        (render_pass, pose, angle)
+        for render_pass in expected["passes"]
+        for pose in expected["poses"]
+        for angle in expected["angles"]
+    }
+    actual = set(indexed)
+    if actual != required:
+        failures.append(
+            _failure(
+                "entry_matrix",
+                label,
+                f"render matrix differs: missing={sorted(required - actual)!r}, extra={sorted(actual - required)!r}",
+            )
+        )
+
+
+def _finite_nonnegative(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _validate_geometry(
+    manifest: dict,
+    expected: dict[str, tuple[str, ...]],
+    label: str,
+    failures: list[GateFailure],
+) -> dict[tuple[str, str], dict]:
+    raw = manifest.get("geometry")
+    if not isinstance(raw, list):
+        failures.append(_failure("invalid_geometry", label, "geometry entries are invalid"))
+        return {}
+    indexed: dict[tuple[str, str], dict] = {}
+    for position, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            failures.append(
+                _failure("invalid_geometry", f"{label}/{position}", "geometry entry is invalid")
+            )
+            continue
+        region, pose = entry.get("scope"), entry.get("pose")
+        if not isinstance(region, str) or not region or not isinstance(pose, str) or not pose:
+            failures.append(
+                _failure("invalid_geometry", f"{label}/{position}", "geometry scope/pose is invalid")
+            )
+            continue
+        key = (region, pose)
+        if key in indexed:
+            failures.append(
+                _failure("duplicate_geometry", f"{region}/{pose}", "geometry entry is duplicated")
+            )
+            continue
+        indexed[key] = entry
+        if entry.get("region_missing") is True:
+            failures.append(
+                _failure("region_missing", f"{region}/{pose}", f"{label} geometry region is missing")
+            )
+        for metric in GEOMETRY_METRICS:
+            if _finite_nonnegative(entry.get(metric)) is None:
+                failures.append(
+                    _failure(
+                        "invalid_geometry",
+                        f"{region}/{pose}",
+                        f"geometry metric {metric} is invalid",
+                    )
+                )
+    required = {
+        (region, pose)
+        for region in expected["regions"]
+        for pose in expected["poses"]
+    }
+    if set(indexed) != required:
+        failures.append(
+            _failure(
+                "geometry_matrix",
+                label,
+                f"geometry matrix differs: missing={sorted(required - set(indexed))!r}, extra={sorted(set(indexed) - required)!r}",
+            )
+        )
     return indexed
 
 
@@ -182,7 +318,8 @@ def _load_verified_image(
 
 
 def _alpha_mask(image: Image.Image) -> Image.Image:
-    return image.getchannel("A").point(lambda value: 255 if value else 0, mode="1")
+    # Edge extraction intentionally thresholds coverage at 0.5 (128/255).
+    return image.getchannel("A").point(lambda value: 255 if value >= 128 else 0, mode="1")
 
 
 def _mask_counts(first: Image.Image, second: Image.Image) -> tuple[int, int]:
@@ -192,7 +329,10 @@ def _mask_counts(first: Image.Image, second: Image.Image) -> tuple[int, int]:
 
 
 def _silhouette_error(reference: Image.Image, candidate: Image.Image) -> float:
-    intersection, union = _mask_counts(_alpha_mask(reference), _alpha_mask(candidate))
+    reference_alpha = reference.getchannel("A").get_flattened_data()
+    candidate_alpha = candidate.getchannel("A").get_flattened_data()
+    intersection = sum(min(first, second) for first, second in zip(reference_alpha, candidate_alpha))
+    union = sum(max(first, second) for first, second in zip(reference_alpha, candidate_alpha))
     return 0.0 if union == 0 else 1.0 - intersection / union
 
 
@@ -204,25 +344,27 @@ def _linear_channel(value: int) -> float:
 
 
 def _rgb_mae(reference: Image.Image, candidate: Image.Image) -> float:
-    ref_mask = _alpha_mask(reference)
-    candidate_mask = _alpha_mask(candidate)
-    union = ImageChops.logical_or(ref_mask, candidate_mask)
-    active = [bool(value) for value in union.get_flattened_data()]
-    active_count = sum(active)
-    if active_count == 0:
+    reference_pixels = reference.get_flattened_data()
+    candidate_pixels = candidate.get_flattened_data()
+    union_weights = [
+        max(ref_pixel[3], candidate_pixel[3]) / 255.0
+        for ref_pixel, candidate_pixel in zip(reference_pixels, candidate_pixels)
+    ]
+    total_weight = sum(union_weights)
+    if total_weight == 0:
         return 0.0
     total = 0.0
-    for enabled, ref_pixel, candidate_pixel in zip(
-        active,
-        reference.get_flattened_data(),
-        candidate.get_flattened_data(),
+    for weight, ref_pixel, candidate_pixel in zip(
+        union_weights,
+        reference_pixels,
+        candidate_pixels,
     ):
-        if enabled:
-            total += sum(
+        if weight:
+            total += weight * sum(
                 abs(_linear_channel(ref_pixel[index]) - _linear_channel(candidate_pixel[index]))
                 for index in range(3)
             )
-    return total / (active_count * 3)
+    return total / (total_weight * 3)
 
 
 def _dilated_boundary(mask: Image.Image) -> Image.Image:
@@ -290,8 +432,31 @@ def compare_render_sets(
     reference_manifest = _load_manifest(reference_dir, "reference", failures)
     candidate_manifest = _load_manifest(candidate_dir, "candidate", failures)
     if reference_manifest is not None and candidate_manifest is not None:
+        reference_expected = _validate_expected(reference_manifest, "reference", failures)
+        candidate_expected = _validate_expected(candidate_manifest, "candidate", failures)
+        if (
+            reference_expected is not None
+            and candidate_expected is not None
+            and reference_expected != candidate_expected
+        ):
+            failures.append(
+                _failure(
+                    "expected_mismatch",
+                    "manifest",
+                    "reference and candidate expected matrices differ",
+                )
+            )
         reference_entries = _index_entries(reference_manifest, "reference", failures)
         candidate_entries = _index_entries(candidate_manifest, "candidate", failures)
+        if reference_expected is not None:
+            _validate_entry_matrix(reference_entries, reference_expected, "reference", failures)
+            _validate_geometry(reference_manifest, reference_expected, "reference", failures)
+        candidate_geometry = {}
+        if candidate_expected is not None:
+            _validate_entry_matrix(candidate_entries, candidate_expected, "candidate", failures)
+            candidate_geometry = _validate_geometry(
+                candidate_manifest, candidate_expected, "candidate", failures
+            )
         reference_keys = set(reference_entries)
         candidate_keys = set(candidate_entries)
         if reference_keys != candidate_keys:
@@ -368,43 +533,11 @@ def compare_render_sets(
                 _gate(metric, scope, value, limit, failures)
                 observations.append((_ratio(value, limit), scope))
 
-        geometry = candidate_manifest.get("geometry")
-        if not isinstance(geometry, list):
-            failures.append(
-                _failure("invalid_geometry", "candidate", "candidate geometry entries are invalid")
-            )
-        else:
-            for position, entry in enumerate(geometry):
-                if not isinstance(entry, dict):
-                    failures.append(
-                        _failure("invalid_geometry", str(position), "geometry entry is invalid")
-                    )
-                    continue
-                region = entry.get("scope")
-                pose = entry.get("pose")
-                if not isinstance(region, str) or not region or not isinstance(pose, str) or not pose:
-                    failures.append(
-                        _failure("invalid_geometry", str(position), "geometry scope/pose is invalid")
-                    )
-                    continue
-                scope = f"{region}/{pose}"
-                for metric in GEOMETRY_METRICS:
-                    value = entry.get(metric)
-                    if (
-                        isinstance(value, bool)
-                        or not isinstance(value, (int, float))
-                        or not math.isfinite(float(value))
-                        or float(value) < 0
-                    ):
-                        failures.append(
-                            _failure(
-                                "invalid_geometry",
-                                scope,
-                                f"geometry metric {metric} is invalid",
-                            )
-                        )
-                        continue
-                    number = float(value)
+        for (region, pose), entry in sorted(candidate_geometry.items()):
+            scope = f"{region}/{pose}"
+            for metric in GEOMETRY_METRICS:
+                number = _finite_nonnegative(entry.get(metric))
+                if number is not None:
                     maxima[metric] = max(maxima[metric], number)
                     limit = profile.limits[metric]
                     _gate(metric, scope, number, limit, failures)

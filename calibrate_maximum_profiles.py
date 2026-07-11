@@ -8,6 +8,7 @@ import os
 import re
 import statistics
 import sys
+import tempfile
 from pathlib import Path
 
 from maximum_optimizer.visual_validation import REQUIRED_METRICS
@@ -15,6 +16,18 @@ from maximum_optimizer.visual_validation import REQUIRED_METRICS
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _ROLES = ("roundtrip", "known_good", "known_bad")
+
+
+def _finite_nonnegative(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"invalid {label}")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid {label}") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"invalid {label}")
+    return number
 
 
 def _expand_path(raw: object, base: Path) -> Path:
@@ -43,14 +56,10 @@ def _finite_metrics(raw_bytes: bytes, label: str) -> dict[str, float]:
     result = {}
     for metric in REQUIRED_METRICS:
         value = values.get(metric)
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            or float(value) < 0
-        ):
-            raise ValueError(f"invalid or missing {metric} for {label}")
-        result[metric] = float(value)
+        try:
+            result[metric] = _finite_nonnegative(value, f"or missing {metric} for {label}")
+        except ValueError as exc:
+            raise ValueError(f"invalid or missing {metric} for {label}") from exc
     return result
 
 
@@ -74,20 +83,16 @@ def _hard_floors(payload: dict) -> dict[str, float]:
     floors = {}
     for metric in REQUIRED_METRICS:
         value = raw[metric]
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            or float(value) < 0
-        ):
-            raise ValueError(f"invalid hard floor for {metric}")
-        floors[metric] = float(value)
+        floors[metric] = _finite_nonnegative(value, f"hard floor for {metric}")
     return floors
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor, temporary_raw = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_raw)
     try:
         content = json.dumps(
             payload,
@@ -95,9 +100,15 @@ def _atomic_json(path: Path, payload: dict) -> None:
             sort_keys=True,
             allow_nan=False,
         ) + "\n"
-        temporary.write_text(content, encoding="utf-8", newline="\n")
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
+        if descriptor >= 0:
+            os.close(descriptor)
         if temporary.exists():
             temporary.unlink()
 
@@ -108,7 +119,11 @@ def calibrate_profile(corpus_path: Path, partition: str, out_path: Path) -> dict
         corpus_payload = json.loads(corpus_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid calibration corpus: {corpus_path}") from exc
-    if not isinstance(corpus_payload, dict) or corpus_payload.get("schema") != 1:
+    if (
+        not isinstance(corpus_payload, dict)
+        or type(corpus_payload.get("schema")) is not int
+        or corpus_payload.get("schema") != 1
+    ):
         raise ValueError("calibration corpus schema must be 1")
     families_raw = corpus_payload.get("families")
     if not isinstance(families_raw, list):
