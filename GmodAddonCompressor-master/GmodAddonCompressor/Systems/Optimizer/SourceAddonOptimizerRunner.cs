@@ -15,6 +15,7 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal string? BlenderPath { get; init; }
         internal string? StudioMdlPath { get; init; }
         internal string? Suffix { get; init; }
+        internal string? OptimizerMode { get; init; }
         internal double? Ratio { get; init; }
         internal double? Merge { get; init; }
         internal double? AutoSmooth { get; init; }
@@ -75,6 +76,12 @@ namespace GmodAddonCompressor.Systems.Optimizer
             {
                 startInfo.ArgumentList.Add("--suffix");
                 startInfo.ArgumentList.Add(options.Suffix);
+            }
+
+            if (!string.IsNullOrWhiteSpace(options.OptimizerMode))
+            {
+                startInfo.ArgumentList.Add("--optimizer-mode");
+                startInfo.ArgumentList.Add(options.OptimizerMode);
             }
 
             if (!string.IsNullOrWhiteSpace(options.BlenderPath))

@@ -13,6 +13,7 @@ namespace GmodAddonCompressor.Objects
     internal class OGGEdit : ICompress
     {
         private readonly ILogger _logger = LogSystem.CreateLogger<OGGEdit>();
+        private readonly FFMpegSystem _ffmpegSystem = new FFMpegSystem();
 
         public async Task Compress(string oggFilePath)
         {
@@ -24,7 +25,7 @@ namespace GmodAddonCompressor.Objects
             bool converted = false;
             try
             {
-                converted = await new FFMpegSystem().ReencodeOggAsync(
+                converted = await _ffmpegSystem.ReencodeOggAsync(
                     oggFilePath,
                     newOggFilePath,
                     AudioContext.OggSampleRate,

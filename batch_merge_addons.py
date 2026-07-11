@@ -109,6 +109,20 @@ def _default_work_dir(root: Path) -> Path:
     return _runtime_root() / "work" / f"{_slugify_name(root.name)}_addonmerge_runs" / _ts()
 
 
+def _configure_stdio_for_console_fallback() -> None:
+    # Redirected stdout/stderr on Windows may still use cp1252. Keep logs flowing
+    # by escaping unsupported characters instead of crashing the worker.
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(errors="backslashreplace")
+        except Exception:
+            continue
+
+
 def _safe_read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8", errors="replace"))
 
@@ -185,6 +199,23 @@ def _resolve_output_paths(root: Path, output_root: str | None, bundle_name: str 
     merged_root = target_root / bundle
     gma_path = target_root / f"{bundle}.gma"
     return target_root, bundle, merged_root, gma_path
+
+
+def _collect_existing_merge_output_roots(root: Path, target_root: Path, bundle_name: str) -> list[Path]:
+    if target_root != root:
+        return []
+
+    folded_bundle = bundle_name.casefold()
+    extra_roots: list[Path] = []
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        if not child.name.casefold().startswith(folded_bundle):
+            continue
+        if not (child / "addon.json").exists():
+            continue
+        extra_roots.append(child.resolve())
+    return sorted(extra_roots, key=lambda item: str(item).casefold())
 
 
 def _default_hash_workers() -> int:
@@ -554,6 +585,31 @@ def choose_record(
     raise ValueError(f"Unsupported conflict policy: {conflict_policy}")
 
 
+def infer_manifest_type_from_paths(merged_rel_paths: list[str]) -> tuple[str, str] | None:
+    normalized_paths = [path.replace("\\", "/").casefold().lstrip("/") for path in merged_rel_paths if path]
+    if not normalized_paths:
+        return None
+
+    def any_prefix(prefix: str) -> bool:
+        return any(path.startswith(prefix) for path in normalized_paths)
+
+    if any_prefix("gamemodes/"):
+        return "gamemode", "content-heuristic:gamemodes"
+    if any(path.startswith("maps/") and path.endswith(".bsp") for path in normalized_paths):
+        return "map", "content-heuristic:maps-bsp"
+    if any_prefix("lua/weapons/gmod_tool/stools/"):
+        return "tool", "content-heuristic:stools"
+    if any_prefix("lua/weapons/"):
+        return "weapon", "content-heuristic:weapons"
+    if any_prefix("lua/entities/"):
+        return "entity", "content-heuristic:entities"
+    if any_prefix("effects/") or any_prefix("particles/") or any_prefix("materials/effects/"):
+        return "effects", "content-heuristic:effects"
+    if any_prefix("scripts/vehicles/") or any_prefix("models/vehicles/"):
+        return "vehicle", "content-heuristic:vehicles"
+    return None
+
+
 def build_merged_manifest(
     ordered_addons: list[dict[str, Any]],
     merged_rel_paths: list[str],
@@ -563,6 +619,7 @@ def build_merged_manifest(
     merged_title = title_override or f"Merged Addon Bundle ({len(ordered_addons)} addons)"
 
     source_types = [addon["manifest"]["type"] for addon in ordered_addons if addon["manifest"]["type"]]
+    inferred_type = infer_manifest_type_from_paths(merged_rel_paths)
     if type_override:
         merged_type = type_override
         type_reason = "user-override"
@@ -572,6 +629,8 @@ def build_merged_manifest(
     elif source_types:
         merged_type = Counter(source_types).most_common(1)[0][0]
         type_reason = "majority"
+    elif inferred_type:
+        merged_type, type_reason = inferred_type
     else:
         merged_type = "vehicle"
         type_reason = "fallback"
@@ -1416,6 +1475,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio_for_console_fallback()
     args = build_parser().parse_args(argv)
 
     root = Path(args.root).expanduser().resolve()
@@ -1429,6 +1489,7 @@ def main(argv: list[str] | None = None) -> int:
     reports_dir.mkdir(parents=True, exist_ok=True)
     output_root, bundle_name, merged_root, final_gma_path = _resolve_output_paths(root, args.output_root, args.bundle_name)
     excluded_roots = [Path(value) for value in args.exclude_dir]
+    excluded_roots.extend(_collect_existing_merge_output_roots(root, output_root, bundle_name))
     if merged_root == root or is_descendant(merged_root, root):
         excluded_roots.append(merged_root)
 

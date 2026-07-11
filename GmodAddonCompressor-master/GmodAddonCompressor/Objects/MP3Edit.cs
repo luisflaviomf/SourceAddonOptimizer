@@ -12,6 +12,7 @@ namespace GmodAddonCompressor.Objects
     internal class MP3Edit : ICompress
     {
         private readonly ILogger _logger = LogSystem.CreateLogger<WAVEdit>();
+        private readonly FFMpegSystem _ffmpegSystem = new FFMpegSystem();
 
         public async Task Compress(string mp3FilePath)
         {
@@ -23,7 +24,7 @@ namespace GmodAddonCompressor.Objects
             bool converted = false;
             try
             {
-                converted = await new FFMpegSystem().ReencodeMp3Async(
+                converted = await _ffmpegSystem.ReencodeMp3Async(
                     mp3FilePath,
                     tempMp3Path,
                     AudioContext.Mp3SampleRate,

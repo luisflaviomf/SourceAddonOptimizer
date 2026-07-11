@@ -39,6 +39,7 @@ namespace GmodAddonCompressor.DataContexts
         private string _blenderPath = string.Empty;
         private string _studioMdlPath = string.Empty;
         private string _optimizerSuffix = "_optimized";
+        private int _optimizerModeIndex = 0;
         private int _optimizerPresetIndex = 0;
         private bool _optimizerPresetIsCustom = false;
         private double _optimizerRatio = 0.50;
@@ -72,9 +73,7 @@ namespace GmodAddonCompressor.DataContexts
         private bool _reduceExactlyToLimits = false;
         private bool _reduceExactlyToResolution = true;
         private bool _keepImageAspectRatio = true;
-        private bool _imageMagickVTFCompress = false;
         private int _compressModeIndex = 0;
-        private bool _compressMagickUseCommonVtf = true;
         private bool _compressMagickUseAggressivePng = false;
         private uint _imageSkipWidth = 0;
         private uint _imageSkipHeight = 0;
@@ -164,6 +163,11 @@ namespace GmodAddonCompressor.DataContexts
             "smd",
             "dmx"
         };
+        private string[] _optimizerModeList = new string[]
+        {
+            "Normal",
+            "Fidelity"
+        };
         private string[] _compressModeList = new string[]
         {
             "Padrao",
@@ -211,21 +215,70 @@ namespace GmodAddonCompressor.DataContexts
             }
         }
 
+        public string[] OptimizerModeList
+        {
+            get { return _optimizerModeList; }
+            set
+            {
+                _optimizerModeList = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public int OptimizerModeIndex
+        {
+            get { return _optimizerModeIndex; }
+            set
+            {
+                _optimizerModeIndex = value;
+                OnPropertyChanged();
+                NotifyOptimizerModePropertiesChanged();
+            }
+        }
+
+        public bool OptimizerModeIsNormal => _optimizerModeIndex == 0;
+        public bool OptimizerModeIsFidelity => _optimizerModeIndex == 1;
+        public bool OptimizerModeNormalChecked
+        {
+            get { return _optimizerModeIndex == 0; }
+            set
+            {
+                if (value)
+                {
+                    OptimizerModeIndex = 0;
+                    return;
+                }
+
+                if (_optimizerModeIndex == 0)
+                    OnPropertyChanged();
+            }
+        }
+
+        public bool OptimizerModeFidelityChecked
+        {
+            get { return _optimizerModeIndex == 1; }
+            set
+            {
+                if (value)
+                {
+                    OptimizerModeIndex = 1;
+                    return;
+                }
+
+                if (_optimizerModeIndex == 1)
+                    OnPropertyChanged();
+            }
+        }
+
+        public string OptimizerModeDescriptionText =>
+            OptimizerModeIsFidelity
+                ? "Fidelity mode keeps the current outer run settings such as ratio/jobs, but routes optimization through the validated sandbox stack: selective ground policy, round-parts wheel handling, and the steer turn-basis fix."
+                : "Normal mode keeps the current Models pipeline exactly as it works today. The existing presets, tuning fields, and opt-in experimental toggles behave the same as before.";
+
         public bool CompressModeIsStandard => _compressModeIndex == 0;
         public bool CompressModeIsMagick => _compressModeIndex == 1;
         public Visibility CompressStandardOptionsVisibility => CompressModeIsStandard ? Visibility.Visible : Visibility.Collapsed;
         public Visibility CompressMagickOptionsVisibility => CompressModeIsMagick ? Visibility.Visible : Visibility.Collapsed;
-
-        public bool CompressMagickUseCommonVtf
-        {
-            get { return _compressMagickUseCommonVtf; }
-            set
-            {
-                _compressMagickUseCommonVtf = value;
-                OnPropertyChanged();
-                NotifyCompressModePropertiesChanged();
-            }
-        }
 
         public bool CompressMagickUseAggressivePng
         {
@@ -240,29 +293,21 @@ namespace GmodAddonCompressor.DataContexts
 
         public string CompressModeDescriptionText =>
             CompressModeIsMagick
-                ? "Magick mode adds a second path without replacing the current compressor. Common VTF goes through Magick first and special/problematic VTF falls back to the current standard pipeline."
-                : "Standard mode keeps the current Compress behavior for every selected type. The existing pipeline stays the default.";
+                ? "Magick mode keeps the same unified VTF pipeline as Standard and only extends PNG when aggressive q256 is enabled."
+                : "Standard mode now uses the unified VTF pipeline by default: raw-split first, export-split fallback when needed, selective FX-safe guardrails for sensitive particles, then preserve unchanged when no gain or unsafe.";
 
         public string CompressModeRoutingText
         {
             get
             {
                 if (CompressModeIsStandard)
-                {
-                    string legacy = ImageMagickVTFCompress
-                        ? " Legacy standard VTF demo is enabled for Standard mode."
-                        : string.Empty;
-                    return "Selected types use the current compressor. VTF, PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on the existing path." + legacy;
-                }
+                    return "Selected types use the Standard compressor. VTF now uses one unified pipeline: raw-split first, export-split fallback when needed, selective FX-safe DXT/alpha-aware resize/resolution guardrails for sensitive particle-style materials, then preserve unchanged on no gain or out-of-scope cases. PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on the Standard path.";
 
-                string vtfText = CompressMagickUseCommonVtf
-                    ? "Common VTF: Magick path first, with automatic fallback to Standard for special/problematic VTF or when Magick cannot improve the file."
-                    : "VTF: Standard path only.";
                 string pngText = CompressMagickUseAggressivePng
                     ? "PNG: Magick q256 aggressive path first, with Standard fallback on failure or no gain."
                     : "PNG: Standard path only.";
 
-                return $"{vtfText} {pngText} JPG/JPEG, WAV, MP3, OGG and LUA always stay on the Standard path. The legacy VTF demo checkbox is ignored while Magick mode is selected.";
+                return $"VTF uses the same unified pipeline in both modes: raw-split first, export-split fallback when needed, selective FX-safe DXT/alpha-aware resize/resolution guardrails for sensitive particle-style materials, then preserve unchanged on no gain or out-of-scope cases. {pngText} JPG/JPEG, WAV, MP3, OGG and LUA always stay on the Standard path.";
             }
         }
 
@@ -383,17 +428,6 @@ namespace GmodAddonCompressor.DataContexts
             {
                 _wavRate = value;
                 OnPropertyChanged();
-            }
-        }
-
-        public bool ImageMagickVTFCompress
-        {
-            get { return _imageMagickVTFCompress; }
-            set
-            {
-                _imageMagickVTFCompress = value;
-                OnPropertyChanged();
-                NotifyCompressModePropertiesChanged();
             }
         }
 
@@ -1134,6 +1168,15 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(CompressMagickOptionsVisibility));
             OnPropertyChanged(nameof(CompressModeDescriptionText));
             OnPropertyChanged(nameof(CompressModeRoutingText));
+        }
+
+        private void NotifyOptimizerModePropertiesChanged()
+        {
+            OnPropertyChanged(nameof(OptimizerModeIsNormal));
+            OnPropertyChanged(nameof(OptimizerModeIsFidelity));
+            OnPropertyChanged(nameof(OptimizerModeNormalChecked));
+            OnPropertyChanged(nameof(OptimizerModeFidelityChecked));
+            OnPropertyChanged(nameof(OptimizerModeDescriptionText));
         }
 
         private void NotifyCompressAudioProfilePropertiesChanged()

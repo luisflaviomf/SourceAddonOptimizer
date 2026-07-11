@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 import time
 import traceback
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 import selective_policy_models
 import vehicle_steer_turn_basis_fix
+
+
+OPTIMIZER_MODE_NORMAL = "normal"
+OPTIMIZER_MODE_FIDELITY = "fidelity"
 
 
 def _ts() -> str:
@@ -38,6 +44,27 @@ def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
     proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None)
     if proc.returncode != 0:
         raise SystemExit(proc.returncode)
+
+
+@contextmanager
+def _temporary_env(overrides: dict[str, str] | None):
+    if not overrides:
+        yield
+        return
+
+    previous: dict[str, str | None] = {}
+    for key, value in overrides.items():
+        previous[key] = os.environ.get(key)
+        os.environ[key] = str(value)
+
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _try_run_inprocess(cmd: list[str]) -> bool:
@@ -376,10 +403,13 @@ def _run_single_addon(
             )
 
         optimize_extra_args: list[str] = []
+        optimize_env_overrides: dict[str, str] = {}
         round_parts_summary_dir: Path | None = None
         round_parts_summary_path: Path | None = None
         active_optimize_script = optimize_script
-        if args.experimental_ground_policy or args.experimental_round_parts_policy:
+        fidelity_mode_active = str(getattr(args, "optimizer_mode", OPTIMIZER_MODE_NORMAL)).lower() == OPTIMIZER_MODE_FIDELITY
+        use_policy_pipeline = fidelity_mode_active or args.experimental_ground_policy or args.experimental_round_parts_policy
+        if use_policy_pipeline:
             logs_dir = work_dir / "logs"
             policy_map_path, policy_summary_path = selective_policy_models.write_final_policy_files(
                 addon_path=addon_path,
@@ -406,7 +436,10 @@ def _run_single_addon(
                 for name in counts_order
                 if int(counts.get(name, 0)) > 0
             )
-            print("[POLICY] Experimental selective ground policy: ENABLED")
+            if fidelity_mode_active:
+                print("[POLICY] Fidelity sandbox pipeline: ENABLED")
+            else:
+                print("[POLICY] Experimental selective ground policy: ENABLED")
             print(
                 "[POLICY] "
                 f"addon_shape={interpretation.get('label', 'unknown')} "
@@ -427,7 +460,41 @@ def _run_single_addon(
                 "--ground-shade-smooth",
             ]
 
-            if args.experimental_round_parts_policy:
+            if fidelity_mode_active:
+                active_optimize_script = round_parts_optimize_script
+                round_parts_summary_dir = logs_dir / "round_parts_policy_parts"
+                round_parts_summary_path = logs_dir / "round_parts_policy_summary.json"
+                if round_parts_summary_dir.exists():
+                    shutil.rmtree(round_parts_summary_dir, ignore_errors=True)
+                if round_parts_summary_path.exists():
+                    round_parts_summary_path.unlink(missing_ok=True)
+                optimize_extra_args.extend(
+                    [
+                        "--wheel-variant",
+                        "silhouette_floor_20",
+                        "--embedded-variant",
+                        "floor_24",
+                        "--summary-dir",
+                        str(round_parts_summary_dir),
+                    ]
+                )
+                print("[MODE] Optimizer mode: FIDELITY")
+                print("[MODE] Fidelity pipeline: validated_selective_ground_plus_round_parts")
+                print(
+                    "[MODE] "
+                    f"ratio_base={float(args.ratio):.4f} "
+                    f"autosmooth_base={float(args.autosmooth):.1f} "
+                    f"merge={float(args.merge):.6f}"
+                )
+                print(
+                    "[MODE] "
+                    "ground_policy=ON "
+                    "round_parts=ON "
+                    "wheel_variant=silhouette_floor_20 "
+                    "embedded_variant=floor_24 "
+                    "steer_turn_basis_fix=ON"
+                )
+            elif args.experimental_round_parts_policy:
                 active_optimize_script = round_parts_optimize_script
                 round_parts_summary_dir = logs_dir / "round_parts_policy_parts"
                 round_parts_summary_path = logs_dir / "round_parts_policy_summary.json"
@@ -462,58 +529,59 @@ def _run_single_addon(
             print("[ERROR] --jobs must be >= 0")
             return 2
 
-        if jobs == 1:
-            cmd = [
-                str(blender_exe),
-                "--background",
-                "--python",
-                str(active_optimize_script),
-                "--",
-                str(src_root),
-                "--ratio",
-                str(args.ratio),
-                "--merge",
-                str(args.merge),
-                "--autosmooth",
-                str(args.autosmooth),
-                *(["--use-planar", "--planar-angle", str(args.planar_angle)] if args.use_planar else []),
-                "--format",
-                str(args.format),
-                *optimize_extra_args,
-            ]
-            if args.resume_opt:
-                cmd.append("--resume")
-            _run(cmd)
-        else:
-            parallel_script = (repo_root / "batch_optimize_parallel.py").resolve()
-            if not parallel_script.exists():
-                print(f"[ERROR] Missing required script: {parallel_script}")
-                return 2
-            cmd = [
-                sys.executable,
-                str(parallel_script),
-                str(src_root),
-                "--blender",
-                str(blender_exe),
-                "--ratio",
-                str(args.ratio),
-                "--merge",
-                str(args.merge),
-                "--autosmooth",
-                str(args.autosmooth),
-                *(["--use-planar", "--planar-angle", str(args.planar_angle)] if args.use_planar else []),
-                "--format",
-                str(args.format),
-                "--jobs",
-                str(jobs),
-                "--optimize-script",
-                str(active_optimize_script),
-            ]
-            for extra_arg in optimize_extra_args:
-                cmd.append(f"--optimize-extra-arg={extra_arg}")
-            if args.resume_opt:
-                cmd.append("--resume")
-            _run(cmd)
+        with _temporary_env(optimize_env_overrides):
+            if jobs == 1:
+                cmd = [
+                    str(blender_exe),
+                    "--background",
+                    "--python",
+                    str(active_optimize_script),
+                    "--",
+                    str(src_root),
+                    "--ratio",
+                    str(args.ratio),
+                    "--merge",
+                    str(args.merge),
+                    "--autosmooth",
+                    str(args.autosmooth),
+                    *(["--use-planar", "--planar-angle", str(args.planar_angle)] if args.use_planar else []),
+                    "--format",
+                    str(args.format),
+                    *optimize_extra_args,
+                ]
+                if args.resume_opt:
+                    cmd.append("--resume")
+                _run(cmd)
+            else:
+                parallel_script = (repo_root / "batch_optimize_parallel.py").resolve()
+                if not parallel_script.exists():
+                    print(f"[ERROR] Missing required script: {parallel_script}")
+                    return 2
+                cmd = [
+                    sys.executable,
+                    str(parallel_script),
+                    str(src_root),
+                    "--blender",
+                    str(blender_exe),
+                    "--ratio",
+                    str(args.ratio),
+                    "--merge",
+                    str(args.merge),
+                    "--autosmooth",
+                    str(args.autosmooth),
+                    *(["--use-planar", "--planar-angle", str(args.planar_angle)] if args.use_planar else []),
+                    "--format",
+                    str(args.format),
+                    "--jobs",
+                    str(jobs),
+                    "--optimize-script",
+                    str(active_optimize_script),
+                ]
+                for extra_arg in optimize_extra_args:
+                    cmd.append(f"--optimize-extra-arg={extra_arg}")
+                if args.resume_opt:
+                    cmd.append("--resume")
+                _run(cmd)
 
         opt_qcs = [p for p in src_root.rglob("*_OPT.qc") if p.is_file()]
         if not opt_qcs:
@@ -521,7 +589,7 @@ def _run_single_addon(
             return 2
         print(f"[OK] Generated {len(opt_qcs)} *_OPT.qc file(s).")
 
-        if args.experimental_round_parts_policy and round_parts_summary_dir and round_parts_summary_path:
+        if (fidelity_mode_active or args.experimental_round_parts_policy) and round_parts_summary_dir and round_parts_summary_path:
             merged_round_parts = _merge_round_parts_summary_parts(round_parts_summary_dir, round_parts_summary_path)
             if merged_round_parts:
                 round_summary = merged_round_parts.get("summary", {})
@@ -537,12 +605,15 @@ def _run_single_addon(
                     f"embedded_adaptive_floor_hits={int(round_summary.get('embedded_adaptive_floor_hits', 0))}"
                 )
 
-        if args.experimental_steer_turn_basis_fix:
+        if args.experimental_steer_turn_basis_fix or fidelity_mode_active:
             print("\n== Experimental post-step: Vehicle steer turn basis fix ==")
             turn_basis_report = work_dir / "logs" / "vehicle_steer_turn_basis_fix_summary.json"
             turn_basis_payload = vehicle_steer_turn_basis_fix.apply_under_root(src_root, report_path=turn_basis_report)
             turn_basis_summary = turn_basis_payload.get("summary", {})
-            print("[STEERBASIS] Experimental vehicle steer turn basis fix: ENABLED")
+            if fidelity_mode_active:
+                print("[STEERBASIS] Fidelity vehicle steer turn basis fix: ENABLED")
+            else:
+                print("[STEERBASIS] Experimental vehicle steer turn basis fix: ENABLED")
             print(
                 "[STEERBASIS] "
                 f"detected_qcs={int(turn_basis_summary.get('detected_qc_count', 0))} "
@@ -777,6 +848,12 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Overwrite work dir if it already exists (otherwise add timestamp).",
     )
+    ap.add_argument(
+        "--optimizer-mode",
+        choices=[OPTIMIZER_MODE_NORMAL, OPTIMIZER_MODE_FIDELITY],
+        default=OPTIMIZER_MODE_NORMAL,
+        help="Official Models pipeline mode. normal keeps the current flow; fidelity uses the validated sandbox stack built from selective ground policy + round-parts wheel handling + steer basis fix.",
+    )
     ap.add_argument("--blender", default=None, help="Path to blender.exe (auto-detect if omitted).")
     ap.add_argument(
         "--decompile-jobs",
@@ -892,12 +969,13 @@ def main(argv: list[str]) -> int:
     compile_script = (repo_root / "batch_compile_opt_qc.py").resolve()
     selective_optimize_script = (repo_root / "batch_optimize_selective_policy.py").resolve()
     round_parts_optimize_script = (repo_root / "batch_optimize_round_parts_policy.py").resolve()
-
     required_scripts = [decompile_script, optimize_script, compile_script]
     if args.experimental_ground_policy:
         required_scripts.append(selective_optimize_script)
     if args.experimental_round_parts_policy:
         required_scripts.append(round_parts_optimize_script)
+    if args.optimizer_mode == OPTIMIZER_MODE_FIDELITY:
+        required_scripts.extend([selective_optimize_script, round_parts_optimize_script])
 
     for p in required_scripts:
         if not p.exists():
@@ -1032,6 +1110,7 @@ def main(argv: list[str]) -> int:
     dt = time.monotonic() - t_all
     batch_summary = {
         "mode": "batch_folder_of_addons",
+        "optimizer_mode": str(args.optimizer_mode),
         "input_root": str(addon_path),
         "output_root": str(addon_path),
         "work_dir": str(work_dir),

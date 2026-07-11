@@ -177,7 +177,7 @@ namespace GmodAddonCompressor.Objects
                             resizeHeight,
                             ignoreAspectRatio,
                             preserveAlpha,
-                            useAlphaAwareResize: preserveAlpha && plan.FxProfile.IsSensitive))
+                            useAlphaAwareResize: preserveAlpha && plan.FxProfile.UseAlphaAwareResize))
                     {
                         return new VtfPipelineResult(
                             false,
@@ -334,8 +334,8 @@ namespace GmodAddonCompressor.Objects
                 vtfCmdProcess.StartInfo.CreateNoWindow = true;
                 vtfCmdProcess.StartInfo.RedirectStandardOutput = true;
                 vtfCmdProcess.StartInfo.RedirectStandardError = true;
-                vtfCmdProcess.OutputDataReceived += (sender, args) => _logger.LogDebug(args.Data);
-                vtfCmdProcess.ErrorDataReceived += (sender, args) => _logger.LogDebug(args.Data);
+                vtfCmdProcess.OutputDataReceived += (sender, args) => { };
+                vtfCmdProcess.ErrorDataReceived += (sender, args) => { };
                 vtfCmdProcess.Start();
                 vtfCmdProcess.BeginOutputReadLine();
                 vtfCmdProcess.BeginErrorReadLine();
@@ -404,8 +404,7 @@ namespace GmodAddonCompressor.Objects
             ref int resizeHeight)
         {
             int minimumShortSide = plan.FxProfile.MinimumShortSide;
-            if (!plan.FxProfile.IsSensitive ||
-                minimumShortSide <= 0 ||
+            if (minimumShortSide <= 0 ||
                 originalWidth <= 0 ||
                 originalHeight <= 0)
             {

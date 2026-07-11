@@ -6,6 +6,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Threading;
 
 namespace GmodAddonCompressor.Systems.Tools
 {
@@ -62,7 +63,22 @@ namespace GmodAddonCompressor.Systems.Tools
         private static FileStream AcquireLock(string lockPath)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(lockPath) ?? ".");
-            return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+            while (true)
+            {
+                try
+                {
+                    return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                }
+                catch (IOException) when (DateTime.UtcNow < deadline)
+                {
+                    Thread.Sleep(100);
+                }
+                catch (UnauthorizedAccessException) when (DateTime.UtcNow < deadline)
+                {
+                    Thread.Sleep(100);
+                }
+            }
         }
 
         private static bool IsExtracted(string toolRoot, string toolName, string toolVersion, string packageHash, IReadOnlyCollection<string> expectedFiles)

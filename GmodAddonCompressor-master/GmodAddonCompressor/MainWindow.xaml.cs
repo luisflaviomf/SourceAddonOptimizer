@@ -119,6 +119,7 @@ namespace GmodAddonCompressor
         private const int PresetSafeIndex = 0;
         private const int PresetAggressiveIndex = 1;
         private const int PresetCustomIndex = 2;
+        private const int OptimizerModeFidelityIndex = 1;
 
         private enum PipelineStage
         {
@@ -257,6 +258,18 @@ namespace GmodAddonCompressor
                 TextBox_UnpackRootPath.Text = dialog.SelectedPath;
         }
 
+        private void Button_SelectUnpackOutputRoot_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Ookii.Dialogs.Wpf.VistaFolderBrowserDialog();
+            if (dialog.ShowDialog(this).GetValueOrDefault())
+                TextBox_UnpackOutputRoot.Text = dialog.SelectedPath;
+        }
+
+        private void Button_UnpackUseRootOutput_Click(object sender, RoutedEventArgs e)
+        {
+            TextBox_UnpackOutputRoot.Text = TextBox_UnpackRootPath.Text.Trim();
+        }
+
         private void Button_BrowseGmad_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new OpenFileDialog
@@ -283,6 +296,13 @@ namespace GmodAddonCompressor
         }
 
         private void TextBox_UnpackRootPath_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!_unpackRunning)
+                ResetUnpackSummary();
+            UpdateUnpackActionStates();
+        }
+
+        private void TextBox_UnpackOutputRoot_TextChanged(object sender, TextChangedEventArgs e)
         {
             if (!_unpackRunning)
                 ResetUnpackSummary();
@@ -324,11 +344,13 @@ namespace GmodAddonCompressor
         {
             bool hasRoot = Directory.Exists(TextBox_UnpackRootPath.Text.Trim());
             bool hasGmad = File.Exists(TextBox_UnpackGmadPath.Text.Trim());
+            bool hasValidOutputRoot = ValidateUnpackOutputRoot(GetUnpackOutputRootPath(), createIfMissing: false, out _);
+            bool hasOpenFolder = Directory.Exists(GetUnpackOpenFolderPath());
 
-            Button_UnpackScan.IsEnabled = !_unpackRunning && hasRoot;
-            Button_UnpackRun.IsEnabled = !_unpackRunning && hasRoot && hasGmad && _unpackSupportedTotal > 0;
+            Button_UnpackScan.IsEnabled = !_unpackRunning && hasRoot && hasValidOutputRoot;
+            Button_UnpackRun.IsEnabled = !_unpackRunning && hasRoot && hasGmad && _unpackSupportedTotal > 0 && hasValidOutputRoot;
             Button_UnpackCancel.IsEnabled = _unpackRunning && !_unpackCancelRequested;
-            Button_UnpackOpenRoot.IsEnabled = !_unpackRunning && hasRoot;
+            Button_UnpackOpenRoot.IsEnabled = !_unpackRunning && hasOpenFolder;
         }
 
         private bool ValidateUnpackInputs(bool scanOnly, out string errorMessage)
@@ -338,6 +360,15 @@ namespace GmodAddonCompressor
 
             if (!Directory.Exists(rootPath))
                 errors.Add("Root folder not found.");
+
+            if (!ValidateUnpackOutputRoot(GetUnpackOutputRootPath(), createIfMissing: !scanOnly, out string outputError))
+            {
+                errors.Add(outputError);
+            }
+            else if (!scanOnly && !string.IsNullOrWhiteSpace(GetUnpackOutputRootPath()) && !CanWriteToDirectory(GetUnpackOutputRootPath()!))
+            {
+                errors.Add("No write permission in output root.");
+            }
 
             if (!CanWriteToDirectory(ToolPaths.WorkRoot))
                 errors.Add("No write permission in work directory root.");
@@ -358,6 +389,44 @@ namespace GmodAddonCompressor
             if (ComboBox_UnpackExistingMode.SelectedItem is ComboBoxItem item && item.Tag is string tag && !string.IsNullOrWhiteSpace(tag))
                 return tag;
             return "skip";
+        }
+
+        private string? GetUnpackOutputRootPath()
+        {
+            string value = TextBox_UnpackOutputRoot.Text.Trim();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+
+        private string GetUnpackOpenFolderPath()
+        {
+            return GetUnpackOutputRootPath() ?? TextBox_UnpackRootPath.Text.Trim();
+        }
+
+        private static bool ValidateUnpackOutputRoot(string? outputRoot, bool createIfMissing, out string errorMessage)
+        {
+            errorMessage = string.Empty;
+            if (string.IsNullOrWhiteSpace(outputRoot))
+                return true;
+
+            try
+            {
+                string fullPath = Path.GetFullPath(outputRoot);
+                if (File.Exists(fullPath))
+                {
+                    errorMessage = "Output root points to a file.";
+                    return false;
+                }
+
+                if (createIfMissing)
+                    Directory.CreateDirectory(fullPath);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                errorMessage = $"Invalid output root: {ex.Message}";
+                return false;
+            }
         }
 
         private void SetSelectedUnpackExistingMode(string? mode)
@@ -505,6 +574,7 @@ namespace GmodAddonCompressor
                 RootPath = TextBox_UnpackRootPath.Text.Trim(),
                 WorkDir = _unpackWorkDir ?? BuildUnpackWorkDir(TextBox_UnpackRootPath.Text.Trim()),
                 GmadExePath = scanOnly ? null : TextBox_UnpackGmadPath.Text.Trim(),
+                OutputRootPath = GetUnpackOutputRootPath(),
                 ExistingMode = GetSelectedUnpackExistingMode(),
                 ScanOnly = scanOnly,
                 ExtractMapPakContent = CheckBox_UnpackExtractMapPak.IsChecked == true,
@@ -673,7 +743,7 @@ namespace GmodAddonCompressor
             UpdateUnpackActionStates();
 
             if (exitCode == 0 && _unpackLastActionWasRun && CheckBox_UnpackOpenOnFinish.IsChecked == true)
-                OpenFolder(TextBox_UnpackRootPath.Text.Trim(), "Descompactar addons");
+                OpenFolder(GetUnpackOpenFolderPath(), "Descompactar addons");
         }
 
         private bool LoadUnpackSummary()
@@ -710,6 +780,7 @@ namespace GmodAddonCompressor
                 bool extractMapPak = GetJsonBool(run, "extract_map_pak");
                 bool deleteMapBsp = GetJsonBool(run, "delete_map_bsp");
                 string rootPath = GetJsonString(run, "root") ?? TextBox_UnpackRootPath.Text.Trim();
+                string outputRoot = GetJsonString(run, "output_root") ?? string.Empty;
                 string gmadError = GetJsonString(run, "gmad_error") ?? string.Empty;
                 _unpackSummaryCancelled = cancelled;
                 _unpackSummaryScanOnly = scanOnly;
@@ -775,7 +846,8 @@ namespace GmodAddonCompressor
                 }
                 if (!scanOnly && !string.IsNullOrWhiteSpace(gmadError))
                     statusText += $"{Environment.NewLine}{gmadError}";
-                statusText += $"{Environment.NewLine}Root: {rootPath}";
+                statusText += $"{Environment.NewLine}{(string.IsNullOrWhiteSpace(outputRoot) ? "Output mode: sibling _extraido folders in the source tree" : $"Output root: {outputRoot}")}";
+                statusText += $"{Environment.NewLine}Source root: {rootPath}";
 
                 TextBox_UnpackSummary.Text = statusText;
                 return true;
@@ -826,7 +898,7 @@ namespace GmodAddonCompressor
 
         private void Button_UnpackOpenRoot_Click(object sender, RoutedEventArgs e)
         {
-            OpenFolder(TextBox_UnpackRootPath.Text.Trim(), "Descompactar addons");
+            OpenFolder(GetUnpackOpenFolderPath(), "Descompactar addons");
         }
 
         private void Button_SelectMapScanRoot_Click(object sender, RoutedEventArgs e)
@@ -1421,7 +1493,6 @@ namespace GmodAddonCompressor
                     SkipHeight = (int)_context.ImageSkipHeight,
                     ReduceExactlyToLimits = _context.ReduceExactlyToLimits,
                     KeepImageAspectRatio = _context.KeepImageAspectRatio,
-                    ImageMagickVtfCompress = _context.ImageMagickVTFCompress,
                     LuaMinimalistic = _context.ChangeOriginalCodeToMinimalistic,
                     Log = message => Dispatcher.Invoke(() => AppendMapScanLog(message)),
                     Progress = (filePath, fileIndex, filesCount) =>
@@ -2241,6 +2312,7 @@ namespace GmodAddonCompressor
                 AddonPath = addonDirectoryPath,
                 WorkDir = _modelsWorkDir,
                 Suffix = _context.OptimizerSuffix,
+                OptimizerMode = GetOptimizerModeArgument(),
                 BlenderPath = string.IsNullOrWhiteSpace(_context.BlenderPath) ? null : _context.BlenderPath.Trim(),
                 StudioMdlPath = string.IsNullOrWhiteSpace(_context.StudioMdlPath) ? null : _context.StudioMdlPath.Trim(),
                 Ratio = _context.OptimizerRatio,
@@ -2431,6 +2503,7 @@ namespace GmodAddonCompressor
                     AddonPath = addonDirectoryPath,
                     WorkDir = _modelsWorkDir ?? ToolPaths.GetWorkDir(addonDirectoryPath, _context.OptimizerSuffix),
                     Suffix = _context.OptimizerSuffix,
+                    OptimizerMode = GetOptimizerModeArgument(),
                     BlenderPath = string.IsNullOrWhiteSpace(_context.BlenderPath) ? null : _context.BlenderPath.Trim(),
                     StudioMdlPath = string.IsNullOrWhiteSpace(_context.StudioMdlPath) ? null : _context.StudioMdlPath.Trim(),
                     Ratio = _context.OptimizerRatio,
@@ -3049,6 +3122,7 @@ namespace GmodAddonCompressor
 
             _context.AddonDirectoryPath = _settings.LastAddonPath ?? string.Empty;
             TextBox_UnpackRootPath.Text = _settings.UnpackRootPath ?? string.Empty;
+            TextBox_UnpackOutputRoot.Text = _settings.UnpackOutputRootPath ?? string.Empty;
             TextBox_MapScanRootPath.Text = _settings.MapOptimizeRootPath ?? string.Empty;
             TextBox_UnpackGmadPath.Text = _settings.GmadPath ?? string.Empty;
             _context.BlenderPath = _settings.BlenderPath ?? string.Empty;
@@ -3059,6 +3133,12 @@ namespace GmodAddonCompressor
             SetSelectedUnpackExistingMode(_settings.UnpackExistingMode);
             _context.OptimizerSuffix = string.IsNullOrWhiteSpace(_settings.OptimizerSuffix) ? "_optimized" : _settings.OptimizerSuffix;
             _context.OptimizerPresetIndex = PresetIndexFromName(_settings.OptimizerPreset);
+            if (_settings.OptimizerModeIndex.HasValue)
+            {
+                int index = _settings.OptimizerModeIndex.Value;
+                if (index >= 0 && index < _context.OptimizerModeList.Length)
+                    _context.OptimizerModeIndex = index;
+            }
             if (_settings.OptimizerUsePlanar.HasValue)
                 _context.OptimizerUsePlanar = _settings.OptimizerUsePlanar.Value;
             if (_settings.OptimizerPlanarAngle.HasValue)
@@ -3137,8 +3217,6 @@ namespace GmodAddonCompressor
                 if (index >= 0 && index < _context.CompressModeList.Length)
                     _context.CompressModeIndex = index;
             }
-            if (_settings.CompressMagickUseCommonVtf.HasValue)
-                _context.CompressMagickUseCommonVtf = _settings.CompressMagickUseCommonVtf.Value;
             if (_settings.CompressMagickUseAggressivePng.HasValue)
                 _context.CompressMagickUseAggressivePng = _settings.CompressMagickUseAggressivePng.Value;
 
@@ -3165,6 +3243,7 @@ namespace GmodAddonCompressor
             {
                 LastAddonPath = _context.AddonDirectoryPath,
                 UnpackRootPath = TextBox_UnpackRootPath.Text.Trim(),
+                UnpackOutputRootPath = GetUnpackOutputRootPath(),
                 MapOptimizeRootPath = TextBox_MapScanRootPath.Text.Trim(),
                 GmadPath = TextBox_UnpackGmadPath.Text.Trim(),
                 BlenderPath = _context.BlenderPath,
@@ -3175,6 +3254,7 @@ namespace GmodAddonCompressor
                 UnpackDeleteMapBsp = CheckBox_UnpackDeleteMapBsp.IsChecked == true,
                 OptimizerSuffix = _context.OptimizerSuffix,
                 OptimizerPreset = PresetNameFromIndex(_context.OptimizerPresetIndex),
+                OptimizerModeIndex = _context.OptimizerModeIndex,
                 OptimizerUsePlanar = _context.OptimizerUsePlanar,
                 OptimizerPlanarAngle = _context.OptimizerPlanarAngle,
                 OptimizerUseExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
@@ -3207,7 +3287,6 @@ namespace GmodAddonCompressor
                 AudioOggChannelsIndex = _context.OggChannelsIndex,
                 AudioOggQualityIndex = _context.OggQualityIndex,
                 CompressModeIndex = _context.CompressModeIndex,
-                CompressMagickUseCommonVtf = _context.CompressMagickUseCommonVtf,
                 CompressMagickUseAggressivePng = _context.CompressMagickUseAggressivePng
             };
             SaveAddonMergeSettings(settings);
@@ -3320,6 +3399,13 @@ namespace GmodAddonCompressor
             _context.OptimizerMerge = 0.0;
             _context.OptimizerAutoSmooth = 45.0;
             _context.OptimizerFormatIndex = 0;
+        }
+
+        private string GetOptimizerModeArgument()
+        {
+            return _context.OptimizerModeIndex == OptimizerModeFidelityIndex
+                ? "fidelity"
+                : "normal";
         }
 
         private void ApplyCustomParams(OptimizerCustomParams custom)
@@ -3663,8 +3749,8 @@ namespace GmodAddonCompressor
             ImageContext.SkipHeight = (int)_context.ImageSkipHeight;
             ImageContext.ReduceExactlyToLimits = _context.ReduceExactlyToLimits;
             ImageContext.KeepImageAspectRatio = _context.KeepImageAspectRatio;
-            ImageContext.ImageMagickVTFCompress = compressOptions.UseLegacyStandardVtfDemo;
             LuaContext.ChangeOriginalCodeToMinimalistic = _context.ChangeOriginalCodeToMinimalistic;
+            VmtSyntaxRepairService.RepairUnder(addonDirectoryPath);
 
             bool isPipelineCompress = _pipelineRunning && _pipelineStage == PipelineStage.Compress;
             var sizeToken = isPipelineCompress ? _pipelineCts?.Token ?? CancellationToken.None : CancellationToken.None;
@@ -3800,8 +3886,6 @@ namespace GmodAddonCompressor
             return new CompressPipelineOptions
             {
                 Mode = isMagickMode ? CompressPipelineMode.Magick : CompressPipelineMode.Standard,
-                UseLegacyStandardVtfDemo = !isMagickMode && _context.ImageMagickVTFCompress,
-                UseMagickForCommonVtf = isMagickMode && _context.CompressMagickUseCommonVtf,
                 UseMagickForAggressivePng = isMagickMode && _context.CompressMagickUseAggressivePng
             };
         }

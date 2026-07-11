@@ -9,6 +9,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace GmodAddonCompressor.Systems
@@ -17,6 +18,9 @@ namespace GmodAddonCompressor.Systems
     {
         private const string _toolName = "ffmpeg";
         private const string _toolVersion = "2022-09-22";
+        private static readonly Lazy<string> _ffmpegFilePathCache =
+            new Lazy<string>(ResolveFfmpegFilePath, LazyThreadSafetyMode.ExecutionAndPublication);
+        private static readonly object _audioLogSync = new object();
         private readonly string _ffmpegFilePath;
         private readonly ILogger _logger = LogSystem.CreateLogger<FFMpegSystem>();
 
@@ -33,6 +37,30 @@ namespace GmodAddonCompressor.Systems
 
         public FFMpegSystem()
         {
+            _ffmpegFilePath = _ffmpegFilePathCache.Value;
+        }
+
+        internal static void AppendAudioLog(string message)
+        {
+            try
+            {
+                lock (_audioLogSync)
+                {
+                    string? dir = Path.GetDirectoryName(AudioLogPath);
+                    if (!string.IsNullOrWhiteSpace(dir))
+                        Directory.CreateDirectory(dir);
+
+                    File.AppendAllText(AudioLogPath, message + Environment.NewLine, Encoding.UTF8);
+                }
+            }
+            catch
+            {
+                // Avoid breaking the pipeline on logging errors.
+            }
+        }
+
+        private static string ResolveFfmpegFilePath()
+        {
             string toolRoot = ToolExtractionSystem.EnsureExtracted(
                 _toolName,
                 _toolVersion,
@@ -40,23 +68,7 @@ namespace GmodAddonCompressor.Systems
                 new[] { "ffmpeg.exe" }
             );
 
-            _ffmpegFilePath = Path.Combine(toolRoot, "ffmpeg.exe");
-        }
-
-        internal static void AppendAudioLog(string message)
-        {
-            try
-            {
-                string? dir = Path.GetDirectoryName(AudioLogPath);
-                if (!string.IsNullOrWhiteSpace(dir))
-                    Directory.CreateDirectory(dir);
-
-                File.AppendAllText(AudioLogPath, message + Environment.NewLine, Encoding.UTF8);
-            }
-            catch
-            {
-                // Avoid breaking the pipeline on logging errors.
-            }
+            return Path.Combine(toolRoot, "ffmpeg.exe");
         }
 
         private static string TrimLog(string text, int maxLines)
@@ -80,15 +92,16 @@ namespace GmodAddonCompressor.Systems
             sb.AppendLine($"Args: {arguments}");
             sb.AppendLine($"ExitCode: {result.ExitCode} | TimedOut: {result.TimedOut}");
 
+            bool logProcessOutput = result.TimedOut || result.ExitCode != 0;
             string err = TrimLog(result.StdErr, 40);
-            if (!string.IsNullOrWhiteSpace(err))
+            if (logProcessOutput && !string.IsNullOrWhiteSpace(err))
             {
                 sb.AppendLine("STDERR:");
                 sb.AppendLine(err);
             }
 
             string output = TrimLog(result.StdOut, 20);
-            if (!string.IsNullOrWhiteSpace(output))
+            if (logProcessOutput && !string.IsNullOrWhiteSpace(output))
             {
                 sb.AppendLine("STDOUT:");
                 sb.AppendLine(output);
@@ -194,18 +207,12 @@ namespace GmodAddonCompressor.Systems
                 ffMpegProcess.OutputDataReceived += (sender, args) =>
                 {
                     if (!string.IsNullOrWhiteSpace(args.Data))
-                    {
                         stdout.AppendLine(args.Data);
-                        _logger.LogDebug(args.Data);
-                    }
                 };
                 ffMpegProcess.ErrorDataReceived += (sender, args) =>
                 {
                     if (!string.IsNullOrWhiteSpace(args.Data))
-                    {
                         stderr.AppendLine(args.Data);
-                        _logger.LogDebug(args.Data);
-                    }
                 };
                 ffMpegProcess.Start();
                 ffMpegProcess.BeginOutputReadLine();

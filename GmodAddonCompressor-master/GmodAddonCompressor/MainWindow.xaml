@@ -558,15 +558,10 @@
 
                         <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0" Visibility="{Binding CompressStandardOptionsVisibility}">
                             <StackPanel>
-                            <TextBlock Style="{StaticResource LabelText}" Text="Standard mode extras" />
-                            <CheckBox Margin="0,8,0,0"
-                                      IsChecked="{Binding ImageMagickVTFCompress}">
-                                <TextBlock Text="Legacy ImageMagick VTF demo inside Standard mode"
-                                           TextWrapping="Wrap" />
-                            </CheckBox>
+                            <TextBlock Style="{StaticResource LabelText}" Text="Unified VTF pipeline" />
                             <TextBlock Style="{StaticResource MutedText}"
-                                       Margin="0,6,0,0"
-                                       Text="This keeps the old demo toggle available without changing the new Magick mode."
+                                       Margin="0,8,0,0"
+                                       Text="VTF now uses one unified pipeline in Standard mode: raw-split first, export-split fallback when needed, then preserve unchanged when there is no real gain or the case is outside the safe scope."
                                        TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
@@ -575,12 +570,6 @@
                             <StackPanel>
                             <TextBlock Style="{StaticResource LabelText}" Text="Magick mode extras" />
                             <CheckBox Margin="0,8,0,0"
-                                      IsChecked="{Binding CompressMagickUseCommonVtf}"
-                                      IsEnabled="{Binding CompressVTF}">
-                                <TextBlock Text="Use Magick for common VTF textures (recommended)"
-                                           TextWrapping="Wrap" />
-                            </CheckBox>
-                            <CheckBox Margin="0,8,0,0"
                                       IsChecked="{Binding CompressMagickUseAggressivePng}"
                                       IsEnabled="{Binding CompressPNG}">
                                 <TextBlock Text="Use aggressive PNG q256 (smaller, more destructive)"
@@ -588,7 +577,7 @@
                             </CheckBox>
                             <TextBlock Style="{StaticResource MutedText}"
                                        Margin="0,6,0,0"
-                                       Text="Guardrails: special/problematic VTF keep the Standard path. JPG/JPEG and audio stay on Standard."
+                                       Text="VTF uses the same unified pipeline in both modes: raw-split first, export-split fallback when needed, then preserve unchanged on no gain or out-of-scope cases. JPG/JPEG and audio stay on Standard."
                                        TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
@@ -739,6 +728,23 @@
                                          TextWrapping="NoWrap"
                                          HorizontalScrollBarVisibility="Auto" />
                             </Grid>
+
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Mode" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                        <CheckBox Content="Normal"
+                                                  Margin="0,0,16,0"
+                                                  IsChecked="{Binding OptimizerModeNormalChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        <CheckBox Content="Fidelity"
+                                                  IsChecked="{Binding OptimizerModeFidelityChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    </StackPanel>
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               TextWrapping="Wrap"
+                                               Text="{Binding OptimizerModeDescriptionText}" />
+                                </StackPanel>
+                            </Border>
 
                             <Border Style="{StaticResource CardInnerPanel}"
                                     Margin="0,12,0,0"
@@ -1013,6 +1019,7 @@
                             <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
                                 <StackPanel>
                                     <CheckBox Content="Experimental: selective ground-vehicle main body repair"
+                                              IsEnabled="{Binding OptimizerModeIsNormal}"
                                               IsChecked="{Binding OptimizerUseExperimentalGroundPolicy}"
                                               ToolTip="Opt-in experimental policy. Helps some ground vehicles by repairing main-body shading after decimate. Aircraft and unknown cases stay on the defensive baseline." />
                                     <TextBlock Style="{StaticResource MutedText}"
@@ -1025,6 +1032,7 @@
                             <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
                                 <StackPanel>
                                     <CheckBox Content="Experimental: embedded round-part preservation"
+                                              IsEnabled="{Binding OptimizerModeIsNormal}"
                                               IsChecked="{Binding OptimizerUseExperimentalRoundPartsPolicy}"
                                               ToolTip="Opt-in experimental optimize policy. Preserves wheel detail and also protects embedded round parts such as steering wheels and gauges using structural detection. It applies at the current ratio and stays fully off when disabled." />
                                     <TextBlock Style="{StaticResource MutedText}"
@@ -1037,6 +1045,7 @@
                             <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
                                 <StackPanel>
                                     <CheckBox Content="Experimental: steering-wheel turn basis fix"
+                                              IsEnabled="{Binding OptimizerModeIsNormal}"
                                               IsChecked="{Binding OptimizerUseExperimentalSteerTurnBasisFix}"
                                               ToolTip="Opt-in experimental compile-time fix. Detects a structural vehicle_steer steering-wheel signature and precompensates turn animations before compile. Disabled keeps the current pipeline unchanged." />
                                     <TextBlock Style="{StaticResource MutedText}"
@@ -1068,6 +1077,7 @@
                             </Border>
                                 </StackPanel>
                             </Expander>
+
                         </StackPanel>
                     </Border>
 
@@ -1228,7 +1238,7 @@
                         <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Root Folder" />
                         <TextBlock Style="{StaticResource HintText}"
                                    Margin="0,0,0,12"
-                                   Text="Scan the selected root for .gma and .bin files and extract each supported archive into a sibling _extraido folder." />
+                                   Text="Scan the selected root for .gma and .bin files. Leave output blank to extract beside each archive, or choose a destination root to redirect all extracted folders there." />
                         <Grid Margin="0,16,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -1259,30 +1269,61 @@
 
                         <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
                             <StackPanel>
-                        <TextBlock Style="{StaticResource LabelText}" Margin="0,0,0,0" Text="gmad.exe" />
-                        <Grid Margin="0,8,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="TextBox_UnpackGmadPath"
-                                     TextChanged="TextBox_UnpackGmadPath_TextChanged"
-                                     HorizontalScrollBarVisibility="Auto"
-                                     TextWrapping="NoWrap" />
-                            <Button x:Name="Button_AutoDetectGmad"
-                                    Click="Button_AutoDetectGmad_Click"
-                                    Grid.Column="1"
-                                    Margin="8,0,0,0"
-                                    Content="Auto-detect"
-                                    Width="100" />
-                            <Button x:Name="Button_BrowseGmad"
-                                    Click="Button_BrowseGmad_Click"
-                                    Grid.Column="2"
-                                    Margin="8,0,0,0"
-                                    Content="Browse"
-                                    Width="80" />
-                        </Grid>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Save extracted folders inside" />
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="TextBox_UnpackOutputRoot"
+                                             TextChanged="TextBox_UnpackOutputRoot_TextChanged"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             TextWrapping="NoWrap" />
+                                    <Button Grid.Column="1"
+                                            Margin="8,0,0,0"
+                                            Click="Button_SelectUnpackOutputRoot_Click"
+                                            Content="Browse"
+                                            Width="80" />
+                                    <Button Grid.Column="2"
+                                            Margin="8,0,0,0"
+                                            Click="Button_UnpackUseRootOutput_Click"
+                                            Content="Use root"
+                                            Width="90" />
+                                </Grid>
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,8,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="Optional. When blank, each archive is extracted beside itself into a _extraido folder. When set, the same relative tree is recreated under the selected destination root." />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Margin="0,0,0,0" Text="gmad.exe" />
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="TextBox_UnpackGmadPath"
+                                             TextChanged="TextBox_UnpackGmadPath_TextChanged"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             TextWrapping="NoWrap" />
+                                    <Button x:Name="Button_AutoDetectGmad"
+                                            Click="Button_AutoDetectGmad_Click"
+                                            Grid.Column="1"
+                                            Margin="8,0,0,0"
+                                            Content="Auto-detect"
+                                            Width="100" />
+                                    <Button x:Name="Button_BrowseGmad"
+                                            Click="Button_BrowseGmad_Click"
+                                            Grid.Column="2"
+                                            Margin="8,0,0,0"
+                                            Content="Browse"
+                                            Width="80" />
+                                </Grid>
                             </StackPanel>
                         </Border>
 
@@ -1304,7 +1345,7 @@
                                 <TextBlock Style="{StaticResource LabelText}" Text="Behavior" />
                                 <CheckBox x:Name="CheckBox_UnpackOpenOnFinish"
                                           Margin="0,6,0,0"
-                                          Content="Open root folder on finish" />
+                                          Content="Open output folder on finish" />
                                 <CheckBox x:Name="CheckBox_UnpackExtractMapPak"
                                           Margin="0,6,0,0"
                                           IsChecked="True"
@@ -1389,7 +1430,7 @@
                             <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Run" />
                             <TextBlock Style="{StaticResource HintText}"
                                        Margin="0,0,0,12"
-                                       Text="Scan, extract, cancel, and open the output root from one consistent execution panel." />
+                                       Text="Scan, extract, cancel, and open the active output location from one consistent execution panel." />
                             <Border Style="{StaticResource ActionBarCard}" Margin="0,16,0,0">
                                 <WrapPanel>
                                     <Button x:Name="Button_UnpackScan"
@@ -1414,7 +1455,7 @@
                                             IsEnabled="False" />
                                     <Button x:Name="Button_UnpackOpenRoot"
                                             Click="Button_UnpackOpenRoot_Click"
-                                            Content="Open Root"
+                                            Content="Open Output"
                                             Width="100"
                                             Margin="0,0,0,8"
                                             IsEnabled="False" />
@@ -1707,7 +1748,7 @@
                             <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Run" />
                             <TextBlock Style="{StaticResource HintText}"
                                        Margin="0,0,0,12"
-                                       Text="Run a safe scan first, then generate the consolidated addon only after reviewing the inventory and conflict policy." />
+                                       Text="Run a safe scan first, then generate the consolidated addon only after reviewing the inventory and conflict policy. Nested workshop-ID folders and extracted _extraido roots are scanned automatically." />
                             <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
                                 <StackPanel>
                                     <TextBlock Style="{StaticResource LabelText}" Text="New addon name" />
@@ -2022,7 +2063,6 @@
 
                                     <CheckBox Margin="0,10,0,0" Content="Reduce exactly to Width/Height limits" IsChecked="{Binding ReduceExactlyToLimits}" />
                                     <CheckBox Margin="0,8,0,0" Content="Maintain image aspect ratio" IsChecked="{Binding KeepImageAspectRatio}" />
-                                    <CheckBox Margin="0,8,0,0" Content="ImageMagick VTF compress (Demo)" IsChecked="{Binding ImageMagickVTFCompress}" />
 
                                     <TextBlock Style="{StaticResource LabelText}" Margin="0,14,0,0" Text="Audio and script settings" />
                                     <Grid Margin="0,10,0,0">
