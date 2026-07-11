@@ -38,7 +38,7 @@ class CompiledSizeSnapshot:
             "total_bytes": self.total_bytes,
             "bytes_by_kind": dict(self.bytes_by_kind),
             "vertices_by_lod": dict(self.vertices_by_lod),
-            "artifacts": [asdict(item) for item in self.artifacts],
+            "artifacts": tuple(asdict(item) for item in self.artifacts),
         }
 
 

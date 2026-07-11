@@ -69,6 +69,27 @@ class DomainTests(unittest.TestCase):
         self.assertIs(type(payload["vertices_by_lod"]), dict)
         self.assertIs(type(payload["artifacts"][0]), dict)
 
+    def test_snapshot_to_dict_preserves_artifact_tuple(self):
+        snapshot = CompiledSizeSnapshot(
+            Path("models"),
+            3,
+            {".mdl": 3},
+            {0: 10},
+            (ArtifactStat("example.mdl", ".mdl", 3),),
+        )
+
+        self.assertEqual(
+            snapshot.to_dict()["artifacts"],
+            (
+                {
+                    "relative_path": "example.mdl",
+                    "kind": ".mdl",
+                    "size_bytes": 3,
+                    "lod_vertices": (),
+                },
+            ),
+        )
+
     def test_validation_metrics_are_read_only(self):
         validation = ValidationResult(True, metrics={"fidelity_score": 0.9})
 
