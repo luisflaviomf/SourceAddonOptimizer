@@ -374,6 +374,7 @@ from pathlib import Path
 from .domain import ArtifactStat, CompiledSizeSnapshot
 
 SOURCE_SUFFIXES = (".mdl", ".vvd", ".vtx", ".ani", ".phy")
+VVD_HEADER = struct.Struct("<4siii8i")
 
 
 def _kind(path: Path) -> str:
@@ -387,8 +388,8 @@ def _kind(path: Path) -> str:
 
 def read_vvd_lod_vertices(path: Path) -> tuple[int, ...]:
     try:
-        data = path.read_bytes()[:52]
-        ident, version, _checksum, lod_count, *lods = struct.unpack("<4siii8i", data)
+        data = path.read_bytes()[:VVD_HEADER.size]
+        ident, version, _checksum, lod_count, *lods = VVD_HEADER.unpack(data)
     except (OSError, struct.error):
         return ()
     if ident != b"IDSV" or version <= 0 or not 1 <= lod_count <= 8:
