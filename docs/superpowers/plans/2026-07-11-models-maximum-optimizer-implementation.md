@@ -284,7 +284,7 @@ class FamilyOutcome:
 
 - [ ] **Step 4: Rodar o teste e todo o discovery Python**
 
-Run: `python -m unittest discover -s tests -v`
+Run: `python -m unittest discover -s tests -t . -v`
 
 Expected: `OK`, com 3 testes novos aprovados.
 
@@ -542,7 +542,7 @@ Run:
 
 ```powershell
 python -m unittest tests.maximum_optimizer.test_structural_validation -v
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
 ```
 
 Expected: todos aprovados.
@@ -1118,7 +1118,7 @@ Invoke-Step -Name "Build meshoptimizer bridge" -Action {
     if ($LASTEXITCODE -ne 0) { throw "meshoptimizer bridge build failed." }
 }
 Invoke-Step -Name "Run Python tests" -Action {
-    & python -m unittest discover -s tests -p "test_*.py" -v
+    & python -m unittest discover -s tests -t . -p "test_*.py" -v
     if ($LASTEXITCODE -ne 0) { throw "Python tests failed." }
 }
 Invoke-Step -Name "Run WPF tests" -Action {
@@ -1201,7 +1201,7 @@ Abrir o executável publicado e confirmar: Models abre; `Maximum (experimental)`
 Run:
 
 ```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
+python -m unittest discover -s tests -t . -p "test_*.py" -v
 dotnet test GmodAddonCompressor-master/GmodAddonCompressor.Tests/GmodAddonCompressor.Tests.csproj -c Release
 git diff --check
 ```
@@ -1227,7 +1227,7 @@ git commit -m "test: calibrate and validate Maximum optimizer"
 ## Ordem e comandos de verificação final
 
 ```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
+python -m unittest discover -s tests -t . -p "test_*.py" -v
 dotnet test GmodAddonCompressor-master/GmodAddonCompressor.Tests/GmodAddonCompressor.Tests.csproj -c Release
 cmake --build build/meshopt --config Release
 pyinstaller --noconfirm --clean pyinstaller/worker.spec
