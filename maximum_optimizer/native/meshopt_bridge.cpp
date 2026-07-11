@@ -1,13 +1,17 @@
 #include "meshoptimizer.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <new>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -28,6 +32,8 @@ struct MaximumMeshInput
     const float* normals;
     const float* uvs;
     const float* weights;
+    const std::uint32_t* bone_indices;
+    std::size_t bone_count;
     std::size_t vertex_count;
     const std::uint32_t* indices;
     std::size_t index_count;
@@ -52,12 +58,14 @@ struct MaximumMeshOutput
     float* normals;
     float* uvs;
     float* weights;
+    std::uint32_t* bone_indices;
     std::size_t vertex_count;
     std::uint32_t* indices;
     std::size_t index_count;
     std::uint32_t* material_ids;
     std::size_t triangle_count;
     float result_error;
+    std::uint64_t ownership_cookie;
 };
 
 enum ErrorCode
@@ -71,6 +79,11 @@ enum ErrorCode
     ErrorSimplifier = -7,
     ErrorException = -8,
 };
+
+std::mutex g_output_mutex;
+std::unordered_map<MaximumMeshOutput*, std::uint64_t> g_owned_outputs;
+std::atomic<std::uint64_t> g_cookie_counter{
+    static_cast<std::uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count()) | 1u};
 
 bool can_multiply(std::size_t a, std::size_t b)
 {
@@ -127,12 +140,14 @@ void reset_output(MaximumMeshOutput* output)
     output->normals = nullptr;
     output->uvs = nullptr;
     output->weights = nullptr;
+    output->bone_indices = nullptr;
     output->vertex_count = 0;
     output->indices = nullptr;
     output->index_count = 0;
     output->material_ids = nullptr;
     output->triangle_count = 0;
     output->result_error = 0.f;
+    output->ownership_cookie = 0;
 }
 } // namespace
 
@@ -141,14 +156,27 @@ extern "C" __declspec(dllexport) int maximum_meshopt_version()
     return 10200;
 }
 
+extern "C" __declspec(dllexport) int maximum_meshopt_abi_version()
+{
+    return 2;
+}
+
 extern "C" __declspec(dllexport) void maximum_meshopt_destroy(MaximumMeshOutput* output)
 {
     if (output == nullptr || output->struct_size != sizeof(MaximumMeshOutput))
         return;
+    {
+        std::lock_guard<std::mutex> lock(g_output_mutex);
+        const auto owned = g_owned_outputs.find(output);
+        if (owned == g_owned_outputs.end() || owned->second != output->ownership_cookie)
+            return;
+        g_owned_outputs.erase(owned);
+    }
     delete[] output->positions;
     delete[] output->normals;
     delete[] output->uvs;
     delete[] output->weights;
+    delete[] output->bone_indices;
     delete[] output->indices;
     delete[] output->material_ids;
     reset_output(output);
@@ -165,17 +193,25 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
         options->struct_size != sizeof(MaximumMeshOptions) ||
         output->struct_size != sizeof(MaximumMeshOutput))
         return ErrorStructSize;
+    {
+        std::lock_guard<std::mutex> lock(g_output_mutex);
+        if (g_owned_outputs.find(output) != g_owned_outputs.end())
+            return ErrorOptions;
+    }
     reset_output(output);
 
     try
     {
-        if (input->vertex_count == 0 || input->index_count < 3 || input->index_count % 3 != 0 ||
+        constexpr std::size_t kMeshoptCountLimit = std::size_t(1) << 28;
+        if (input->vertex_count == 0 || input->vertex_count >= kMeshoptCountLimit ||
+            input->index_count < 3 || input->index_count >= kMeshoptCountLimit || input->index_count % 3 != 0 ||
             input->triangle_count != input->index_count / 3 ||
+            input->bone_count == 0 || input->bone_count > std::numeric_limits<std::uint32_t>::max() ||
             !can_multiply(input->vertex_count, 3) || !can_multiply(input->vertex_count, 4) ||
             !can_multiply(input->vertex_count, kAttributeCount))
             return ErrorCount;
         if (input->positions == nullptr || input->normals == nullptr || input->uvs == nullptr ||
-            input->weights == nullptr || input->indices == nullptr || input->material_ids == nullptr ||
+            input->weights == nullptr || input->bone_indices == nullptr || input->indices == nullptr || input->material_ids == nullptr ||
             input->vertex_flags == nullptr)
             return ErrorNullPointer;
         if (!std::isfinite(options->target_ratio) || options->target_ratio <= 0.f || options->target_ratio > 1.f ||
@@ -194,6 +230,11 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
         for (std::size_t index = 0; index < input->vertex_count; ++index)
             if ((input->vertex_flags[index] & ~kKnownVertexFlags) != 0)
                 return ErrorData;
+        for (std::size_t vertex = 0; vertex < input->vertex_count; ++vertex)
+            for (unsigned int influence = 0; influence < 4; ++influence)
+                if (input->weights[vertex * 4 + influence] > 0.f &&
+                    input->bone_indices[vertex * 4 + influence] >= input->bone_count)
+                    return ErrorData;
 
         std::vector<float> positions(input->positions, input->positions + input->vertex_count * 3);
         std::vector<float> attributes(input->vertex_count * kAttributeCount);
@@ -209,14 +250,42 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
         }
 
         std::vector<unsigned char> vertex_flags(input->vertex_flags, input->vertex_flags + input->vertex_count);
+        auto influence_set = [&](std::uint32_t vertex) {
+            std::vector<std::uint32_t> result;
+            for (unsigned int influence = 0; influence < 4; ++influence)
+                if (input->weights[vertex * 4 + influence] > 0.f)
+                    result.push_back(input->bone_indices[vertex * 4 + influence]);
+            std::sort(result.begin(), result.end());
+            result.erase(std::unique(result.begin(), result.end()), result.end());
+            return result;
+        };
+        std::vector<std::uint32_t> first_material(input->vertex_count, 0);
+        std::vector<unsigned char> material_seen(input->vertex_count, 0);
+        std::vector<unsigned char> shared_material(input->vertex_count, 0);
         std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> edge_material;
         std::map<std::pair<std::uint32_t, std::uint32_t>, bool> material_boundary;
         for (std::size_t triangle = 0; triangle < input->triangle_count; ++triangle)
         {
             const std::uint32_t* tri = input->indices + triangle * 3;
+            for (unsigned int corner = 0; corner < 3; ++corner)
+            {
+                const std::uint32_t vertex = tri[corner];
+                if (!material_seen[vertex])
+                {
+                    material_seen[vertex] = 1;
+                    first_material[vertex] = input->material_ids[triangle];
+                }
+                else if (first_material[vertex] != input->material_ids[triangle])
+                    shared_material[vertex] = 1;
+            }
             const auto edges = {edge_key(tri[0], tri[1]), edge_key(tri[1], tri[2]), edge_key(tri[2], tri[0])};
             for (const auto& edge : edges)
             {
+                if (influence_set(edge.first) != influence_set(edge.second))
+                {
+                    vertex_flags[edge.first] |= meshopt_SimplifyVertex_Protect;
+                    vertex_flags[edge.second] |= meshopt_SimplifyVertex_Protect;
+                }
                 const auto found = edge_material.find(edge);
                 if (found == edge_material.end())
                     edge_material.emplace(edge, input->material_ids[triangle]);
@@ -224,6 +293,9 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
                     material_boundary[edge] = true;
             }
         }
+        for (std::size_t vertex = 0; vertex < input->vertex_count; ++vertex)
+            if (shared_material[vertex])
+                vertex_flags[vertex] |= meshopt_SimplifyVertex_Lock;
         for (const auto& entry : material_boundary)
         {
             vertex_flags[entry.first.first] |= meshopt_SimplifyVertex_Protect;
@@ -290,9 +362,10 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
         std::unique_ptr<float[]> out_normals(new (std::nothrow) float[input->vertex_count * 3]);
         std::unique_ptr<float[]> out_uvs(new (std::nothrow) float[input->vertex_count * 2]);
         std::unique_ptr<float[]> out_weights(new (std::nothrow) float[input->vertex_count * 4]);
+        std::unique_ptr<std::uint32_t[]> out_bones(new (std::nothrow) std::uint32_t[input->vertex_count * 4]);
         std::unique_ptr<std::uint32_t[]> out_indices(new (std::nothrow) std::uint32_t[result_indices.size()]);
         std::unique_ptr<std::uint32_t[]> out_materials(new (std::nothrow) std::uint32_t[result_materials.size()]);
-        if (!out_positions || !out_normals || !out_uvs || !out_weights || !out_indices || !out_materials)
+        if (!out_positions || !out_normals || !out_uvs || !out_weights || !out_bones || !out_indices || !out_materials)
             return ErrorAllocation;
 
         std::copy(positions.begin(), positions.end(), out_positions.get());
@@ -305,11 +378,21 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
         }
         std::copy(result_indices.begin(), result_indices.end(), out_indices.get());
         std::copy(result_materials.begin(), result_materials.end(), out_materials.get());
+        std::copy(input->bone_indices, input->bone_indices + input->vertex_count * 4, out_bones.get());
+
+        {
+            std::lock_guard<std::mutex> lock(g_output_mutex);
+            const std::uint64_t cookie = g_cookie_counter.fetch_add(2, std::memory_order_relaxed);
+            if (!g_owned_outputs.emplace(output, cookie).second)
+                return ErrorOptions;
+            output->ownership_cookie = cookie;
+        }
 
         output->positions = out_positions.release();
         output->normals = out_normals.release();
         output->uvs = out_uvs.release();
         output->weights = out_weights.release();
+        output->bone_indices = out_bones.release();
         output->vertex_count = input->vertex_count;
         output->indices = out_indices.release();
         output->index_count = result_indices.size();

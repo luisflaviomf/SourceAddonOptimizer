@@ -20,6 +20,11 @@ SIMPLIFY_REGULARIZE = 1 << 4
 SIMPLIFY_PERMISSIVE = 1 << 5
 SIMPLIFY_REGULARIZE_LIGHT = 1 << 6
 
+# The mandatory five-family checkpoint found larger compiled Source artifacts in
+# every family and the production visual profile is still intentionally uncalibrated.
+# Task 10 may offer this engine as a candidate, but must not prefer it by default.
+MESHOPT_ENGINE_PREFERRED = False
+
 _UINT32_MAX = (1 << 32) - 1
 _DLL_CACHE: dict[Path, ctypes.WinDLL] = {}
 
@@ -33,6 +38,16 @@ class MeshInput:
     indices: tuple[int, ...]
     material_ids: tuple[int, ...]
     vertex_flags: tuple[int, ...]
+    bone_indices: tuple[tuple[int, int, int, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("positions", "normals", "uvs", "weights", "bone_indices"):
+            value = getattr(self, name)
+            object.__setattr__(self, name, tuple(tuple(row) for row in value))
+        for name in ("indices", "material_ids", "vertex_flags"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        if not self.bone_indices:
+            object.__setattr__(self, "bone_indices", tuple((0, 0, 0, 0) for _ in self.positions))
 
 
 @dataclass(frozen=True)
@@ -51,6 +66,7 @@ class SimplifiedMesh:
     weights: tuple[tuple[float, float, float, float], ...]
     indices: tuple[int, ...]
     material_ids: tuple[int, ...]
+    bone_indices: tuple[tuple[int, int, int, int], ...]
     result_error: float
     engine_version: int
 
@@ -62,6 +78,8 @@ class _MaximumMeshInput(ctypes.Structure):
         ("normals", ctypes.POINTER(ctypes.c_float)),
         ("uvs", ctypes.POINTER(ctypes.c_float)),
         ("weights", ctypes.POINTER(ctypes.c_float)),
+        ("bone_indices", ctypes.POINTER(ctypes.c_uint32)),
+        ("bone_count", ctypes.c_size_t),
         ("vertex_count", ctypes.c_size_t),
         ("indices", ctypes.POINTER(ctypes.c_uint32)),
         ("index_count", ctypes.c_size_t),
@@ -88,12 +106,14 @@ class _MaximumMeshOutput(ctypes.Structure):
         ("normals", ctypes.POINTER(ctypes.c_float)),
         ("uvs", ctypes.POINTER(ctypes.c_float)),
         ("weights", ctypes.POINTER(ctypes.c_float)),
+        ("bone_indices", ctypes.POINTER(ctypes.c_uint32)),
         ("vertex_count", ctypes.c_size_t),
         ("indices", ctypes.POINTER(ctypes.c_uint32)),
         ("index_count", ctypes.c_size_t),
         ("material_ids", ctypes.POINTER(ctypes.c_uint32)),
         ("triangle_count", ctypes.c_size_t),
         ("result_error", ctypes.c_float),
+        ("ownership_cookie", ctypes.c_uint64),
     ]
 
 
@@ -116,6 +136,8 @@ def load_library(*, cache: bool = True) -> ctypes.WinDLL:
         raise RuntimeError(f"cannot load meshopt_bridge.dll at {path}: {exc}") from exc
     dll.maximum_meshopt_version.argtypes = []
     dll.maximum_meshopt_version.restype = ctypes.c_int
+    dll.maximum_meshopt_abi_version.argtypes = []
+    dll.maximum_meshopt_abi_version.restype = ctypes.c_int
     dll.maximum_meshopt_simplify.argtypes = [
         ctypes.POINTER(_MaximumMeshInput),
         ctypes.POINTER(_MaximumMeshOptions),
@@ -126,6 +148,8 @@ def load_library(*, cache: bool = True) -> ctypes.WinDLL:
     dll.maximum_meshopt_destroy.restype = None
     if dll.maximum_meshopt_version() != 10200:
         raise RuntimeError(f"unsupported meshopt bridge version in {path}")
+    if dll.maximum_meshopt_abi_version() != 2:
+        raise RuntimeError(f"unsupported meshopt bridge ABI in {path}")
     if cache:
         _DLL_CACHE[path] = dll
     return dll
@@ -147,8 +171,16 @@ def _validate(mesh: MeshInput, options: SimplifyOptions) -> None:
     _finite_rows("weights", mesh.weights, 4)
     if any(sum(min(1.0, max(0.0, float(value))) for value in row) <= 1e-12 for row in mesh.weights):
         raise ValueError("weights contain a zero-sum vertex")
-    if not (len(mesh.normals) == len(mesh.uvs) == len(mesh.weights) == len(mesh.vertex_flags) == count):
+    if not (
+        len(mesh.normals) == len(mesh.uvs) == len(mesh.weights)
+        == len(mesh.vertex_flags) == len(mesh.bone_indices) == count
+    ):
         raise ValueError("all vertex attributes must match vertex_count")
+    if any(
+        len(row) != 4 or any(type(value) is not int or value < 0 or value >= _UINT32_MAX for value in row)
+        for row in mesh.bone_indices
+    ):
+        raise ValueError("bone_indices must contain uint32x4 rows")
     if len(mesh.indices) < 3 or len(mesh.indices) % 3:
         raise ValueError("indices must contain complete triangles")
     if len(mesh.indices) > _UINT32_MAX:
@@ -167,7 +199,11 @@ def _validate(mesh: MeshInput, options: SimplifyOptions) -> None:
         raise ValueError("target_ratio must be in (0, 1]")
     if not math.isfinite(float(options.target_error)) or options.target_error < 0.0:
         raise ValueError("target_error must be finite and non-negative")
-    if type(options.meshopt_options) is not int or options.meshopt_options < 0 or options.meshopt_options > _UINT32_MAX:
+    if (
+        type(options.meshopt_options) is not int
+        or options.meshopt_options < 0
+        or options.meshopt_options & ~((1 << 7) - 1)
+    ):
         raise ValueError("meshopt_options is out of range")
 
 
@@ -183,6 +219,9 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
     normal_buffer = (ctypes.c_float * (len(mesh.normals) * 3))(*_flat(mesh.normals))
     uv_buffer = (ctypes.c_float * (len(mesh.uvs) * 2))(*_flat(mesh.uvs))
     weight_buffer = (ctypes.c_float * (len(mesh.weights) * 4))(*_flat(mesh.weights))
+    bone_buffer = (ctypes.c_uint32 * (len(mesh.bone_indices) * 4))(
+        *(value for row in mesh.bone_indices for value in row)
+    )
     index_buffer = (ctypes.c_uint32 * len(mesh.indices))(*mesh.indices)
     material_buffer = (ctypes.c_uint32 * len(mesh.material_ids))(*mesh.material_ids)
     flag_buffer = (ctypes.c_ubyte * len(mesh.vertex_flags))(*mesh.vertex_flags)
@@ -193,6 +232,8 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
         normal_buffer,
         uv_buffer,
         weight_buffer,
+        bone_buffer,
+        max((value for row in mesh.bone_indices for value in row), default=0) + 1,
         len(mesh.positions),
         index_buffer,
         len(mesh.indices),
@@ -214,12 +255,58 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
     if code != 0:
         raise RuntimeError(f"meshopt simplification failed with native error {code}")
     try:
+        if (
+            output.vertex_count == 0
+            or output.vertex_count > len(mesh.positions)
+            or output.index_count == 0
+            or output.index_count > len(mesh.indices)
+            or output.index_count % 3
+            or output.triangle_count != output.index_count // 3
+            or not output.positions
+            or not output.normals
+            or not output.uvs
+            or not output.weights
+            or not output.bone_indices
+            or not output.indices
+            or not output.material_ids
+            or not math.isfinite(float(output.result_error))
+            or output.ownership_cookie == 0
+        ):
+            raise RuntimeError("invalid native output contract")
+        returned_indices = tuple(output.indices[i] for i in range(output.index_count))
+        if any(index >= output.vertex_count for index in returned_indices):
+            raise RuntimeError("invalid native output indices")
         positions = tuple(tuple(output.positions[i * 3 + j] for j in range(3)) for i in range(output.vertex_count))
         normals = tuple(tuple(output.normals[i * 3 + j] for j in range(3)) for i in range(output.vertex_count))
         uvs = tuple(tuple(output.uvs[i * 2 + j] for j in range(2)) for i in range(output.vertex_count))
         weights = tuple(tuple(output.weights[i * 4 + j] for j in range(4)) for i in range(output.vertex_count))
-        indices = tuple(output.indices[i] for i in range(output.index_count))
+        bone_indices = tuple(
+            tuple(output.bone_indices[i * 4 + j] for j in range(4))
+            for i in range(output.vertex_count)
+        )
+        indices = returned_indices
         materials = tuple(output.material_ids[i] for i in range(output.triangle_count))
+        if not all(
+            math.isfinite(float(value))
+            for rows in (positions, normals, uvs, weights)
+            for row in rows
+            for value in row
+        ):
+            raise RuntimeError("non-finite native output attribute")
+        if any(
+            any(value < 0.0 or value > 1.0 for value in row)
+            or abs(sum(row) - 1.0) > 1e-4
+            for row in weights
+        ):
+            raise RuntimeError("invalid native output weights")
+        bone_count = max((value for row in mesh.bone_indices for value in row), default=0) + 1
+        if any(
+            bone >= bone_count
+            for row_weights, row_bones in zip(weights, bone_indices)
+            for weight, bone in zip(row_weights, row_bones)
+            if weight > 0.0
+        ):
+            raise RuntimeError("invalid native output bone index")
         return SimplifiedMesh(
             positions=positions,
             normals=normals,
@@ -227,6 +314,7 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
             weights=weights,
             indices=indices,
             material_ids=materials,
+            bone_indices=bone_indices,
             result_error=float(output.result_error),
             engine_version=dll.maximum_meshopt_version(),
         )

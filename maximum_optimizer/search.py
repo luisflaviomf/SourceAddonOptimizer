@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 
 from maximum_optimizer.domain import CandidateEvaluation, CandidateSpec, SearchBudget
+from maximum_optimizer.regions import parse_region_scope
 
 
 _INITIAL_RATIOS = (0.75, 0.50, 0.35, 0.25, 0.15, 0.10, 0.05)
@@ -137,8 +138,11 @@ def _regional_recovery(
     if not passing_ratios:
         return None
 
-    scope = failed.visual.worst_scope
-    scope_hash = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:8]
+    parsed_scope = parse_region_scope(failed.visual.worst_scope)
+    if parsed_scope is None:
+        return None
+    region_key, _pose = parsed_scope
+    scope_hash = hashlib.sha256(region_key.encode("utf-8")).hexdigest()[:8]
     candidate_id = (
         f"{_candidate_id(failed.spec.engine, failed.spec.target_ratio)}"
         f"-region-{scope_hash}"
@@ -151,7 +155,7 @@ def _regional_recovery(
         failed.spec.target_ratio,
         failed.spec.target_error,
         failed.spec.repair_profile,
-        ((scope, min(passing_ratios)),),
+        ((region_key, min(passing_ratios)),),
     )
 
 

@@ -11,6 +11,16 @@ import sys
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 
+_SCRIPT_ROOT = Path(__file__).resolve().parent
+if str(_SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_ROOT))
+
+from maximum_optimizer.regions import (
+    blender_suffix_number as _blender_suffix_number,
+    normalized_region_name as _normalized_region_name,
+    region_keys as _region_keys,
+)
+
 try:
     import bpy
     from mathutils import Vector
@@ -50,46 +60,6 @@ def _available_enum_identifiers(owner, property_name: str) -> tuple[str, ...]:
         item.identifier
         for item in owner.bl_rna.properties[property_name].enum_items
     )
-
-
-def _normalized_region_name(name: str) -> str:
-    normalized = re.sub(r"\.\d{3}$", "", name.strip(), flags=re.IGNORECASE)
-    normalized = re.sub(r"_OPT$", "", normalized, flags=re.IGNORECASE)
-    return normalized.casefold()
-
-
-def _blender_suffix_number(name: str) -> int:
-    match = re.search(r"\.(\d{3})$", name.strip())
-    return int(match.group(1)) if match else 0
-
-
-def _region_keys(
-    descriptions: list[tuple[str, tuple[str, ...]]],
-) -> dict[tuple[str, tuple[str, ...]], str]:
-    if len(set(descriptions)) != len(descriptions):
-        raise ValueError("ambiguous duplicate region description")
-    grouped: dict[tuple[str, str], list[tuple[str, tuple[str, ...]]]] = {}
-    for description in descriptions:
-        name, materials = description
-        signature = "+".join(material.casefold() for material in materials) or "none"
-        grouped.setdefault((_normalized_region_name(name), signature), []).append(description)
-    result = {}
-    for (base, signature), members in sorted(grouped.items()):
-        for ordinal, description in enumerate(
-            sorted(
-                members,
-                key=lambda item: (
-                    _blender_suffix_number(item[0]),
-                    item[0].casefold(),
-                    item[0],
-                    item[1],
-                ),
-            )
-        ):
-            result[description] = f"{base}|{signature}|{ordinal}"
-    if len(result) != len(descriptions):
-        raise ValueError("ambiguous region key collision")
-    return result
 
 
 def _barycentric_weights(point, first, second, third) -> tuple[float, float, float]:

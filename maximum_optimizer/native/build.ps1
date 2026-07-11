@@ -65,7 +65,14 @@ try {
     if ($machine -ne 0x8664) { throw ("Built DLL is not x64 (PE machine 0x{0:x4})." -f $machine) }
 
     if (Test-Path -LiteralPath $targetDll) {
-        [System.IO.File]::Replace($temporaryDll, $targetDll, $backupDll, $true)
+        try {
+            [System.IO.File]::Replace($temporaryDll, $targetDll, $backupDll, $true)
+        } catch {
+            if (Test-Path -LiteralPath $backupDll) {
+                Write-Warning "Atomic replace failed ambiguously; recovery backup preserved at '$backupDll'."
+            }
+            throw
+        }
         Remove-Item -LiteralPath $backupDll -Force -ErrorAction SilentlyContinue
     } else {
         [System.IO.File]::Move($temporaryDll, $targetDll)
@@ -73,6 +80,5 @@ try {
     Write-Host "Built x64 meshopt bridge: $targetDll"
 } finally {
     Remove-Item -LiteralPath $temporaryDll -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $backupDll -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $buildRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

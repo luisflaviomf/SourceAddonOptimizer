@@ -79,7 +79,12 @@ class CandidateSpec:
     region_overrides: tuple[tuple[str, float], ...] = ()
 
     def cache_payload(self) -> dict:
-        return asdict(self)
+        payload = asdict(self)
+        payload["region_overrides"] = [
+            {"region_key": region_key, "ratio": ratio}
+            for region_key, ratio in self.region_overrides
+        ]
+        return payload
 
 
 @dataclass(frozen=True)

@@ -18,6 +18,16 @@ class DomainTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             candidate.target_ratio = 0.5
 
+    def test_candidate_cache_payload_uses_structured_region_overrides(self):
+        candidate = CandidateSpec(
+            "regional", "meshoptimizer", 0.25, 0.01, "transfer-v1",
+            (("body|paint|0", 0.5),),
+        )
+        self.assertEqual(
+            candidate.cache_payload()["region_overrides"],
+            [{"region_key": "body|paint|0", "ratio": 0.5}],
+        )
+
     def test_snapshot_rejects_inconsistent_total(self):
         with self.assertRaisesRegex(ValueError, "total_bytes"):
             CompiledSizeSnapshot(Path("models"), 7, {".mdl": 3}, {}, ())
