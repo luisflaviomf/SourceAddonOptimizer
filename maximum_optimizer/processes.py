@@ -24,6 +24,10 @@ class ProcessCancelledError(RuntimeError):
     """Raised after a cancelled child process and its descendants are reaped."""
 
 
+class ProcessExecutionError(RuntimeError):
+    """Raised when a child cannot be safely launched or fully terminated."""
+
+
 def _normalize_command(command: Sequence[str | os.PathLike[str]]) -> tuple[str, ...]:
     if isinstance(command, (str, bytes)):
         raise TypeError("command must be a sequence, not a shell string")
@@ -57,6 +61,12 @@ if os.name == "nt":
 
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
+    _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS = 1
+    _CREATE_SUSPENDED = 0x00000004
+    _TH32CS_SNAPTHREAD = 0x00000004
+    _THREAD_SUSPEND_RESUME = 0x0002
+    _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+    _RESUME_FAILED = 0xFFFFFFFF
 
     class _IoCounters(ctypes.Structure):
         _fields_ = [
@@ -91,6 +101,29 @@ if os.name == "nt":
             ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
+    class _BasicAccountingInformation(ctypes.Structure):
+        _fields_ = [
+            ("TotalUserTime", ctypes.c_longlong),
+            ("TotalKernelTime", ctypes.c_longlong),
+            ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+            ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+            ("TotalPageFaultCount", wintypes.DWORD),
+            ("TotalProcesses", wintypes.DWORD),
+            ("ActiveProcesses", wintypes.DWORD),
+            ("TotalTerminatedProcesses", wintypes.DWORD),
+        ]
+
+    class _ThreadEntry32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ThreadID", wintypes.DWORD),
+            ("th32OwnerProcessID", wintypes.DWORD),
+            ("tpBasePri", wintypes.LONG),
+            ("tpDeltaPri", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
     class _WindowsJob:
         def __init__(self) -> None:
             self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -105,8 +138,32 @@ if os.name == "nt":
             self._kernel32.SetInformationJobObject.restype = wintypes.BOOL
             self._kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
             self._kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+            self._kernel32.QueryInformationJobObject.argtypes = (
+                wintypes.HANDLE,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+            )
+            self._kernel32.QueryInformationJobObject.restype = wintypes.BOOL
             self._kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
             self._kernel32.TerminateJobObject.restype = wintypes.BOOL
+            self._kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+            self._kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+            self._kernel32.Thread32First.argtypes = (
+                wintypes.HANDLE,
+                ctypes.POINTER(_ThreadEntry32),
+            )
+            self._kernel32.Thread32First.restype = wintypes.BOOL
+            self._kernel32.Thread32Next.argtypes = (
+                wintypes.HANDLE,
+                ctypes.POINTER(_ThreadEntry32),
+            )
+            self._kernel32.Thread32Next.restype = wintypes.BOOL
+            self._kernel32.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            self._kernel32.OpenThread.restype = wintypes.HANDLE
+            self._kernel32.ResumeThread.argtypes = (wintypes.HANDLE,)
+            self._kernel32.ResumeThread.restype = wintypes.DWORD
             self._kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
             self._kernel32.CloseHandle.restype = wintypes.BOOL
 
@@ -131,9 +188,66 @@ if os.name == "nt":
             ):
                 raise ctypes.WinError(ctypes.get_last_error())
 
+        def resume_main_thread(self, process: subprocess.Popen[bytes]) -> None:
+            snapshot = self._kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+            if snapshot == _INVALID_HANDLE_VALUE:
+                raise ctypes.WinError(ctypes.get_last_error())
+            thread_ids: list[int] = []
+            try:
+                entry = _ThreadEntry32()
+                entry.dwSize = ctypes.sizeof(entry)
+                has_entry = bool(self._kernel32.Thread32First(snapshot, ctypes.byref(entry)))
+                while has_entry:
+                    if int(entry.th32OwnerProcessID) == process.pid:
+                        thread_ids.append(int(entry.th32ThreadID))
+                    entry.dwSize = ctypes.sizeof(entry)
+                    has_entry = bool(self._kernel32.Thread32Next(snapshot, ctypes.byref(entry)))
+            finally:
+                self._kernel32.CloseHandle(snapshot)
+            if len(thread_ids) != 1:
+                raise ProcessExecutionError(
+                    f"suspended process {process.pid} has {len(thread_ids)} main-thread candidates"
+                )
+            thread_handle = self._kernel32.OpenThread(
+                _THREAD_SUSPEND_RESUME, False, thread_ids[0]
+            )
+            if not thread_handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                previous_count = int(self._kernel32.ResumeThread(thread_handle))
+                if previous_count == _RESUME_FAILED:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if previous_count < 1:
+                    raise ProcessExecutionError(
+                        f"main thread for process {process.pid} was not suspended"
+                    )
+            finally:
+                self._kernel32.CloseHandle(thread_handle)
+
+        def active_processes(self) -> int:
+            information = _BasicAccountingInformation()
+            returned_length = wintypes.DWORD()
+            if not self._kernel32.QueryInformationJobObject(
+                self._handle,
+                _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS,
+                ctypes.byref(information),
+                ctypes.sizeof(information),
+                ctypes.byref(returned_length),
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return int(information.ActiveProcesses)
+
         def terminate(self) -> None:
-            if self._handle:
-                self._kernel32.TerminateJobObject(self._handle, 1)
+            if self._handle and not self._kernel32.TerminateJobObject(self._handle, 1):
+                if self.active_processes() > 0:
+                    raise ctypes.WinError(ctypes.get_last_error())
+
+        def wait_empty(self, timeout: float = 2) -> None:
+            deadline = time.monotonic() + timeout
+            while self.active_processes() != 0:
+                if time.monotonic() >= deadline:
+                    raise ProcessExecutionError("Windows Job did not become empty before timeout")
+                time.sleep(0.02)
 
         def close(self) -> None:
             if self._handle:
@@ -146,7 +260,9 @@ else:
 
 def _terminate_process_tree(
     process: subprocess.Popen[bytes], windows_job: object | None
-) -> None:
+) -> bool:
+    if process.poll() is not None:
+        return False
     if os.name == "nt":
         try:
             subprocess.run(
@@ -159,7 +275,10 @@ def _terminate_process_tree(
         except OSError:
             pass
         if windows_job is not None:
-            windows_job.terminate()
+            try:
+                windows_job.terminate()
+            except OSError:
+                pass
     else:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -170,6 +289,7 @@ def _terminate_process_tree(
             process.kill()
         except OSError:
             pass
+    return True
 
 
 def _reap_parent(process: subprocess.Popen[bytes], windows_job: object | None) -> None:
@@ -188,15 +308,15 @@ def _read_capture(path: Path) -> str:
     return path.read_bytes().decode("utf-8", errors="replace")
 
 
-def _unlink_capture(path: Path) -> None:
-    deadline = time.monotonic() + 2
+def _unlink_capture(path: Path) -> bool:
+    deadline = time.monotonic() + 0.25
     while True:
         try:
             path.unlink(missing_ok=True)
-            return
-        except PermissionError:
+            return True
+        except OSError:
             if time.monotonic() >= deadline:
-                raise
+                return False
             time.sleep(0.02)
 
 
@@ -228,7 +348,7 @@ def run_process(
     try:
         popen_options: dict[str, object] = {}
         if os.name == "nt":
-            popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED
         else:
             popen_options["start_new_session"] = True
         process = subprocess.Popen(
@@ -240,35 +360,49 @@ def run_process(
             **popen_options,
         )
         if windows_job is not None:
-            try:
-                windows_job.assign(process)
-            except Exception:
-                _terminate_process_tree(process, windows_job)
-                _reap_parent(process, windows_job)
-                raise
+            windows_job.assign(process)
+            windows_job.resume_main_thread(process)
 
         while True:
             if process.poll() is not None:
                 break
             if cancel_event.is_set():
-                cancelled = True
-                _terminate_process_tree(process, windows_job)
+                if process.poll() is not None:
+                    break
+                cancelled = _terminate_process_tree(process, windows_job)
                 break
             time.sleep(0.05)
     finally:
-        if process is not None:
-            if process.poll() is None:
-                _terminate_process_tree(process, windows_job)
-            _reap_parent(process, windows_job)
-        if windows_job is not None:
-            windows_job.close()
-        stdout_file.close()
-        stderr_file.close()
-        stdout = _read_capture(stdout_path)
-        stderr = _read_capture(stderr_path)
-        _write_log(destination, normalized, stdout, stderr)
-        _unlink_capture(stdout_path)
-        _unlink_capture(stderr_path)
+        cleanup_error: BaseException | None = None
+        try:
+            try:
+                if process is not None:
+                    if process.poll() is None:
+                        _terminate_process_tree(process, windows_job)
+                    _reap_parent(process, windows_job)
+            except BaseException as exc:
+                cleanup_error = exc
+            if windows_job is not None:
+                try:
+                    try:
+                        windows_job.terminate()
+                    finally:
+                        windows_job.wait_empty()
+                except BaseException as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+        finally:
+            if windows_job is not None:
+                windows_job.close()
+            stdout_file.close()
+            stderr_file.close()
+            stdout = _read_capture(stdout_path)
+            stderr = _read_capture(stderr_path)
+            _write_log(destination, normalized, stdout, stderr)
+            _unlink_capture(stdout_path)
+            _unlink_capture(stderr_path)
+        if cleanup_error is not None:
+            raise cleanup_error
 
     if process is None:
         raise RuntimeError("process failed to start")

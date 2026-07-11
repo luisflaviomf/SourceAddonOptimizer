@@ -12,6 +12,7 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import patch
 
+import maximum_optimizer.processes as process_module
 from maximum_optimizer.candidates import (
     BlenderAdapter,
     CandidateBuild,
@@ -192,6 +193,136 @@ class ProcessTests(unittest.TestCase):
 
         child_pid = int(child_pid_path.read_text(encoding="utf-8"))
         self.assertFalse(self._windows_pid_alive(child_pid), f"child process {child_pid} survived Job fallback")
+
+    @unittest.skipUnless(os.name == "nt", "Windows suspended-start semantics")
+    def test_fast_child_cannot_escape_job_during_delayed_assignment(self):
+        child_pid_path = self.root / "race-child.pid"
+        child = self._script(
+            "race-child.py",
+            "import os, time\n"
+            f"open({str(child_pid_path)!r}, 'w').write(str(os.getpid()))\n"
+            "time.sleep(60)\n",
+        )
+        parent = self._script(
+            "race-parent.py",
+            "import pathlib, subprocess, sys, time\n"
+            f"subprocess.Popen([sys.executable, {str(child)!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            f"marker = pathlib.Path({str(child_pid_path)!r})\n"
+            "while not marker.exists(): time.sleep(0.001)\n",
+        )
+        original_assign = process_module._WindowsJob.assign
+
+        def delayed_assign(job, process) -> None:
+            time.sleep(0.2)
+            original_assign(job, process)
+
+        child_pid = None
+        try:
+            with patch.object(process_module._WindowsJob, "assign", delayed_assign):
+                result = run_process(
+                    [sys.executable, parent], self.root, self.root / "race.log", threading.Event()
+                )
+            self.assertEqual(result.returncode, 0)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not child_pid_path.exists():
+                time.sleep(0.01)
+            self.assertTrue(child_pid_path.exists(), "fast child never started")
+            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+            self.assertFalse(self._windows_pid_alive(child_pid), f"child process {child_pid} escaped Job")
+        finally:
+            if child_pid is not None and self._windows_pid_alive(child_pid):
+                subprocess.run(
+                    ["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                    capture_output=True,
+                    shell=False,
+                    check=False,
+                )
+
+    @unittest.skipUnless(os.name == "nt", "Windows close-to-exit coordination")
+    def test_exit_during_cancel_check_is_reported_as_normal_completion(self):
+        exit_marker = self.root / "exit-now.txt"
+        exiting_marker = self.root / "exiting.txt"
+        script = self._script(
+            "coordinated-exit.py",
+            "import pathlib, time\n"
+            f"exit_marker = pathlib.Path({str(exit_marker)!r})\n"
+            "while not exit_marker.exists(): time.sleep(0.001)\n"
+            f"pathlib.Path({str(exiting_marker)!r}).write_text('yes')\n",
+        )
+
+        class ExitDuringCheck:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def is_set(self) -> bool:
+                self.calls += 1
+                if self.calls == 1:
+                    return False
+                exit_marker.write_text("go", encoding="utf-8")
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not exiting_marker.exists():
+                    time.sleep(0.001)
+                time.sleep(0.05)
+                return True
+
+        result = run_process(
+            [sys.executable, script], self.root, self.root / "coordinated.log", ExitDuringCheck()
+        )
+
+        self.assertEqual(result.returncode, 0)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job accounting semantics")
+    def test_run_returns_only_after_redirected_descendant_is_dead(self):
+        child_pid_path = self.root / "redirected-child.pid"
+        child = self._script(
+            "redirected-child.py",
+            "import os, time\n"
+            f"open({str(child_pid_path)!r}, 'w').write(str(os.getpid()))\n"
+            "time.sleep(60)\n",
+        )
+        parent = self._script(
+            "redirected-parent.py",
+            "import pathlib, subprocess, sys, time\n"
+            f"subprocess.Popen([sys.executable, {str(child)!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            f"marker = pathlib.Path({str(child_pid_path)!r})\n"
+            "while not marker.exists(): time.sleep(0.001)\n",
+        )
+
+        result = run_process(
+            [sys.executable, parent], self.root, self.root / "redirected.log", threading.Event()
+        )
+
+        self.assertEqual(result.returncode, 0)
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        self.assertFalse(self._windows_pid_alive(child_pid), f"child process {child_pid} remained active")
+
+    def test_persistent_capture_cleanup_error_does_not_mask_success(self):
+        script = self._script("cleanup-success.py", "print('done')\n")
+
+        with patch("maximum_optimizer.processes.Path.unlink", side_effect=PermissionError("locked")):
+            result = run_process(
+                [sys.executable, script], self.root, self.root / "cleanup-success.log", threading.Event()
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("done", (self.root / "cleanup-success.log").read_text(encoding="utf-8"))
+
+    def test_persistent_capture_cleanup_error_preserves_cancel_error(self):
+        script = self._script("cleanup-cancel.py", "import time\ntime.sleep(60)\n")
+        cancelled = threading.Event()
+        timer = threading.Timer(0.2, cancelled.set)
+        timer.start()
+        try:
+            with patch("maximum_optimizer.processes.Path.unlink", side_effect=PermissionError("locked")):
+                with self.assertRaises(ProcessCancelledError):
+                    run_process(
+                        [sys.executable, script],
+                        self.root,
+                        self.root / "cleanup-cancel.log",
+                        cancelled,
+                    )
+        finally:
+            timer.cancel()
 
     @staticmethod
     def _windows_pid_alive(pid: int) -> bool:
@@ -475,7 +606,9 @@ class CandidateAdapterTests(unittest.TestCase):
         self.assertEqual(caught.exception.stage, "compile")
 
     def test_compile_summary_requires_zero_record_returncode(self):
-        cases = ({"returncode": 3}, {"returncode": None}, {"returncode": "invalid"})
+        cases = tuple(
+            {"returncode": value} for value in (3, False, 0.0, 0.5, "0", "00", None)
+        )
         for index, overrides in enumerate(cases):
             with self.subTest(overrides=overrides):
                 with self.assertRaisesRegex(CandidateBuildError, "returncode"):
@@ -517,6 +650,51 @@ class CandidateAdapterTests(unittest.TestCase):
                         process_runner=MaterializingRunner(self.manifest.model_rel, **options)
                     ).generate(self.manifest, self.spec, self.root / f"sidecar-{index}", self.tools)
                 self.assertEqual(caught.exception.stage, "compile")
+
+    def test_rejects_any_compiled_source_artifact_symlink(self):
+        workspace = self.root / "compiled-symlink"
+        symlink_artifact = workspace / "compiled" / "models" / "vehicles" / "test.ani"
+        original_is_symlink = Path.is_symlink
+
+        def deterministic_symlink(path: Path) -> bool:
+            return path == symlink_artifact or original_is_symlink(path)
+
+        class ExtraArtifactRunner(MaterializingRunner):
+            def __call__(self, command, cwd, log_path, cancel_event) -> ProcessResult:
+                result = super().__call__(command, cwd, log_path, cancel_event)
+                if any(Path(str(item)).name.casefold() == "batch_compile_opt_qc.py" for item in command):
+                    symlink_artifact.write_bytes(b"ani")
+                return result
+
+        with patch("pathlib.Path.is_symlink", deterministic_symlink):
+            with self.assertRaisesRegex(CandidateBuildError, "symlink"):
+                BlenderAdapter(process_runner=ExtraArtifactRunner(self.manifest.model_rel)).generate(
+                    self.manifest, self.spec, workspace, self.tools
+                )
+
+    def test_rejects_real_compiled_source_artifact_symlink_when_platform_allows_it(self):
+        workspace = self.root / "compiled-real-symlink"
+        symlink_artifact = workspace / "compiled" / "models" / "vehicles" / "test.ani"
+        target = self.root / "compiled-target.ani"
+        target.write_bytes(b"ani")
+        probe = self.root / "compiled-probe.ani"
+        try:
+            probe.symlink_to(target)
+            probe.unlink()
+        except OSError as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
+
+        class SymlinkArtifactRunner(MaterializingRunner):
+            def __call__(self, command, cwd, log_path, cancel_event) -> ProcessResult:
+                result = super().__call__(command, cwd, log_path, cancel_event)
+                if any(Path(str(item)).name.casefold() == "batch_compile_opt_qc.py" for item in command):
+                    symlink_artifact.symlink_to(target)
+                return result
+
+        with self.assertRaisesRegex(CandidateBuildError, "symlink"):
+            BlenderAdapter(process_runner=SymlinkArtifactRunner(self.manifest.model_rel)).generate(
+                self.manifest, self.spec, workspace, self.tools
+            )
 
     def test_rejects_nonempty_or_nested_workspace_before_copying(self):
         self.workspace.mkdir()

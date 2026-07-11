@@ -353,14 +353,13 @@ class _BaseAdapter:
                 stage="compile",
                 log_path=compile_log,
             )
-        try:
-            record_returncode = int(record["returncode"])
-        except (KeyError, TypeError, ValueError) as exc:
+        record_returncode = record.get("returncode")
+        if type(record_returncode) is not int:
             raise CandidateBuildError(
                 f"compile record has invalid returncode for {manifest.model_rel}",
                 stage="compile",
                 log_path=compile_log,
-            ) from exc
+            )
         if record_returncode != 0:
             raise CandidateBuildError(
                 f"compile record returncode is {record_returncode} for {manifest.model_rel}",
@@ -412,6 +411,15 @@ class _BaseAdapter:
                     log_path=compile_log,
                 )
 
+        source_suffixes = {".mdl", ".vvd", ".vtx", ".ani", ".phy"}
+        for path in compiled_models.rglob("*"):
+            if path.suffix.casefold() in source_suffixes and path.is_symlink():
+                raise CandidateBuildError(
+                    f"compiled Source artifact cannot be a symlink: {path}",
+                    stage="compile",
+                    log_path=compile_log,
+                )
+
         provenance: dict[str, str] = {}
         artifacts = sorted(
             (
@@ -420,7 +428,7 @@ class _BaseAdapter:
                 if path.is_file()
                 and not path.is_symlink()
                 and _is_within(path.resolve(), compiled_models_root)
-                and path.suffix.casefold() in {".mdl", ".vvd", ".vtx", ".ani", ".phy"}
+                and path.suffix.casefold() in source_suffixes
             ),
             key=lambda path: path.relative_to(compiled_models).as_posix().casefold(),
         )
