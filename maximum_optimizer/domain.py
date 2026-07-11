@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 EngineName = Literal["fidelity", "blender", "meshoptimizer"]
@@ -20,16 +22,24 @@ class ArtifactStat:
 class CompiledSizeSnapshot:
     root: Path
     total_bytes: int
-    bytes_by_kind: dict[str, int]
-    vertices_by_lod: dict[int, int]
+    bytes_by_kind: Mapping[str, int]
+    vertices_by_lod: Mapping[int, int]
     artifacts: tuple[ArtifactStat, ...]
 
     def __post_init__(self) -> None:
         if self.total_bytes != sum(item.size_bytes for item in self.artifacts):
             raise ValueError("total_bytes must equal artifact bytes")
+        object.__setattr__(self, "bytes_by_kind", MappingProxyType(dict(self.bytes_by_kind)))
+        object.__setattr__(self, "vertices_by_lod", MappingProxyType(dict(self.vertices_by_lod)))
 
     def to_dict(self) -> dict:
-        return {**asdict(self), "root": str(self.root)}
+        return {
+            "root": str(self.root),
+            "total_bytes": self.total_bytes,
+            "bytes_by_kind": dict(self.bytes_by_kind),
+            "vertices_by_lod": dict(self.vertices_by_lod),
+            "artifacts": [asdict(item) for item in self.artifacts],
+        }
 
 
 @dataclass(frozen=True)
@@ -85,8 +95,11 @@ class GateFailure:
 class ValidationResult:
     passed: bool
     failures: tuple[GateFailure, ...] = ()
-    metrics: dict[str, float] = field(default_factory=dict)
+    metrics: Mapping[str, float] = field(default_factory=dict)
     worst_scope: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metrics", MappingProxyType(dict(self.metrics)))
 
 
 @dataclass(frozen=True)
