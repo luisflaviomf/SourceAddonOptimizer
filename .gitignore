@@ -42,6 +42,7 @@ teste*.zip
 
 # Local scratch files
 /tmp_testfile*.txt
+/.worktrees/
 
 # PyInstaller
 *.spec
