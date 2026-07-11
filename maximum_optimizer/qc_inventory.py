@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .domain import FamilyManifest, StructuralFingerprint
 
@@ -36,6 +36,15 @@ def _is_within(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _relative_declaration(value: str, label: str) -> tuple[str, PurePosixPath]:
+    normalized = _normalize(value)
+    posix_path = PurePosixPath(normalized)
+    windows_path = PureWindowsPath(normalized)
+    if posix_path.is_absolute() or windows_path.is_absolute() or windows_path.drive:
+        raise ValueError(f"absolute {label} is not allowed: {value}")
+    return normalized, posix_path
 
 
 def _tokenize(text: str) -> list[str]:
@@ -119,7 +128,15 @@ def _block_commands(tokens: list[str], command: str) -> list[list[str]]:
     wanted = command.casefold()
     while index < len(tokens):
         if tokens[index].casefold() == wanted:
-            args, index = _line_args(tokens, index + 1)
+            args = []
+            index += 1
+            while (
+                index < len(tokens)
+                and tokens[index] not in ("\n", "{", "}")
+                and tokens[index].casefold() != wanted
+            ):
+                args.append(tokens[index])
+                index += 1
             result.append(args)
         else:
             index += 1
@@ -167,10 +184,10 @@ def _add_reference(
     *,
     mesh: bool,
 ) -> None:
-    logical = _normalize(raw_path)
-    if not logical or Path(logical).suffix.casefold() not in _SOURCE_SUFFIXES:
+    logical, relative_path = _relative_declaration(raw_path, "source path")
+    if not logical or relative_path.suffix.casefold() not in _SOURCE_SUFFIXES:
         return
-    resolved = (current_dir / Path(*logical.split("/"))).resolve()
+    resolved = (current_dir / Path(*relative_path.parts)).resolve()
     if not _is_within(resolved, family_root):
         raise ValueError(f"referenced source escapes family root: {logical}")
     inventory.references.append((logical, resolved, mesh))
@@ -239,8 +256,8 @@ def _parse_qc_file(
                 inventory.physics_mesh = _normalize(args[0])
             _add_reference(inventory, args[0], resolved.parent, family_root, mesh=True)
         elif directive == "$include" and args:
-            include_name = _normalize(args[0])
-            include_path = (resolved.parent / Path(*include_name.split("/"))).resolve()
+            include_name, relative_include = _relative_declaration(args[0], "include path")
+            include_path = (resolved.parent / Path(*relative_include.parts)).resolve()
             if not _is_within(include_path, family_root):
                 raise ValueError(f"include escapes family root: {include_name}")
             _parse_qc_file(include_path, family_root, inventory, visited)
@@ -290,11 +307,10 @@ def _make_fingerprint(inventory: _Inventory) -> StructuralFingerprint:
     bones: list[str] = []
     bone_parents: list[tuple[str, str]] = []
     smd_materials: list[str] = []
-    seen_paths: set[Path] = set()
+    references_by_path: dict[Path, bool] = {}
     for _logical, path, mesh in inventory.references:
-        if path in seen_paths:
-            continue
-        seen_paths.add(path)
+        references_by_path[path] = references_by_path.get(path, False) or mesh
+    for path, mesh in references_by_path.items():
         file_bones, file_parents, file_materials = _read_smd(path)
         bones.extend(file_bones)
         bone_parents.extend(file_parents)
@@ -320,10 +336,13 @@ def _make_fingerprint(inventory: _Inventory) -> StructuralFingerprint:
     )
 
 
-def _inventory_qc(qc_path: Path) -> tuple[StructuralFingerprint, _Inventory]:
+def _inventory_qc(
+    qc_path: Path, *, family_root: Path | None = None
+) -> tuple[StructuralFingerprint, _Inventory]:
     resolved = qc_path.resolve()
+    root = family_root.resolve() if family_root is not None else resolved.parent
     inventory = _Inventory()
-    _parse_qc_file(resolved, resolved.parent, inventory, set())
+    _parse_qc_file(resolved, root, inventory, set())
     return _make_fingerprint(inventory), inventory
 
 
@@ -333,11 +352,10 @@ def parse_qc_fingerprint(qc_path: Path) -> StructuralFingerprint:
 
 
 def _safe_model_rel(value: str) -> str:
-    normalized = _normalize(value)
-    path = Path(*normalized.split("/"))
-    if not normalized or path.is_absolute() or ".." in path.parts:
+    normalized, relative_path = _relative_declaration(value, "model_rel")
+    if not normalized or ".." in relative_path.parts:
         raise ValueError(f"invalid model_rel: {value}")
-    return path.as_posix()
+    return relative_path.as_posix()
 
 
 def _resolve_source_dir(value: object, src_root: Path, model_rel: str) -> Path:
@@ -423,14 +441,18 @@ def build_family_manifests(
     source_root = src_root.resolve()
     payload = json.loads(decompile_manifest_path.read_text(encoding="utf-8"))
     records = [record for record in payload.get("results", ()) if record.get("status") == "ok"]
-    records.sort(key=lambda record: _normalize(str(record.get("model_rel") or "")).casefold())
+    records.sort(
+        key=lambda record: _normalize(
+            str(record.get("model_rel") or record.get("model_rel_fallback") or "")
+        ).casefold()
+    )
 
     manifests: list[FamilyManifest] = []
     for record in records:
         model_rel = _safe_model_rel(str(record.get("model_rel") or record.get("model_rel_fallback") or ""))
         source_dir = _resolve_source_dir(record.get("src_dir"), source_root, model_rel)
         qc_path = _choose_qc(source_dir, record.get("qc_chosen"), source_root)
-        fingerprint, inventory = _inventory_qc(qc_path)
+        fingerprint, inventory = _inventory_qc(qc_path, family_root=source_dir)
         artifacts = _original_artifacts(models_root, model_rel)
         family_id = hashlib.sha256(model_rel.casefold().encode("utf-8")).hexdigest()
         manifests.append(

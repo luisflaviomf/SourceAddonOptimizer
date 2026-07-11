@@ -105,6 +105,71 @@ class QcFingerprintTests(unittest.TestCase):
             self.assertEqual(fp.sequences, ("walk",))
             self.assertEqual(fp.bones, ("model_bone", "physics_bone", "animation_bone"))
 
+    def test_sequence_reference_does_not_hide_later_mesh_material_role(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            qc = root / "roles.qc"
+            qc.write_text(
+                '$sequence "idle" "shared.smd"\n$body "body" "shared.smd"\n',
+                encoding="utf-8",
+            )
+            (root / "shared.smd").write_text(
+                'version 1\nnodes\n0 "root" -1\nend\ntriangles\nmesh/material\n'
+                + "0 0 0 0 0 0 1 0 0\n" * 3
+                + "end\n",
+                encoding="utf-8",
+            )
+
+            fp = parse_qc_fingerprint(qc)
+
+            self.assertEqual(fp.materials, ("mesh/material",))
+
+    def test_absolute_include_and_source_declarations_are_rejected_before_resolution(self):
+        declarations = ("/escape", "C:/escape", "//server/share/escape")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index, declaration in enumerate(declarations):
+                with self.subTest(kind="include", declaration=declaration):
+                    qc = root / f"include-{index}.qc"
+                    qc.write_text(f'$include "{declaration}.qci"\n', encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "absolute"):
+                        parse_qc_fingerprint(qc)
+                with self.subTest(kind="source", declaration=declaration):
+                    qc = root / f"source-{index}.qc"
+                    qc.write_text(f'$body "body" "{declaration}.smd"\n', encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "absolute"):
+                        parse_qc_fingerprint(qc)
+
+    def test_compact_blocks_split_each_studio_and_replacemodel_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            qc = root / "compact.qc"
+            qc.write_text(
+                '$bodygroup "parts" { studio "a.smd" studio "b.smd" }\n'
+                '$lod 10 { replacemodel "a.smd" "a_lod.smd" replacemodel "b.smd" "b_lod.smd" }\n',
+                encoding="utf-8",
+            )
+            for name in ("a.smd", "b.smd", "a_lod.smd", "b_lod.smd"):
+                (root / name).write_text("version 1\n", encoding="utf-8")
+
+            fp = parse_qc_fingerprint(qc)
+
+            self.assertEqual(fp.mesh_files, ("a.smd", "b.smd"))
+            self.assertEqual(fp.lod_mesh_files, ("a_lod.smd", "b_lod.smd"))
+
+    def test_duplicate_skin_rows_are_preserved_as_structural_families(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qc = Path(tmp) / "skins.qc"
+            qc.write_text(
+                '$texturegroup "skins" { { "mat/a" } { "MAT/A" } { "mat/a" } }\n',
+                encoding="utf-8",
+            )
+
+            fp = parse_qc_fingerprint(qc)
+
+            self.assertEqual(fp.skin_families, (("mat/a",), ("MAT/A",), ("mat/a",)))
+            self.assertEqual(fp.materials, ("mat/a",))
+
 
 class FamilyManifestTests(unittest.TestCase):
     def _write_family(self, root, model_rel, source_name="main.qc", material="one"):
@@ -244,6 +309,82 @@ class FamilyManifestTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "src_root"):
                 build_family_manifests(models, manifest_path, src_root)
+
+    def test_manifest_uses_source_dir_as_family_root_for_nested_qc_and_shared_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models = root / "models"
+            (models / "family").mkdir(parents=True)
+            (models / "family" / "test.mdl").write_bytes(b"mdl")
+            src_root = root / "src"
+            source_dir = src_root / "family" / "test"
+            nested = source_dir / "qc"
+            shared = source_dir / "shared"
+            nested.mkdir(parents=True)
+            shared.mkdir()
+            qc = nested / "main.qc"
+            qc.write_text('$modelname "family/test.mdl"\n$include "../shared/body.qci"\n', encoding="utf-8")
+            (shared / "body.qci").write_text('$body "shared" "shared.smd"\n', encoding="utf-8")
+            (shared / "shared.smd").write_text(
+                'version 1\nnodes\n0 "shared_root" -1\nend\n', encoding="utf-8"
+            )
+            manifest_path = root / "decompile_manifest.json"
+            self._write_manifest(
+                manifest_path,
+                [{"status": "ok", "model_rel": "family/test.mdl", "src_dir": str(source_dir), "qc_chosen": str(qc)}],
+            )
+
+            manifest = build_family_manifests(models, manifest_path, src_root)[0]
+
+            self.assertEqual(manifest.fingerprint.bodygroups, ("shared",))
+            self.assertEqual(manifest.fingerprint.bones, ("shared_root",))
+
+    def test_manifest_rejects_posix_drive_and_unc_model_paths(self):
+        invalid_paths = ("/escape.mdl", "C:/escape.mdl", "//server/share/escape.mdl")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models = root / "models"
+            models.mkdir()
+            src_root, src_dir, qc = self._write_family(root, "safe/test.mdl")
+            manifest_path = root / "decompile_manifest.json"
+            for model_rel in invalid_paths:
+                with self.subTest(model_rel=model_rel):
+                    self._write_manifest(
+                        manifest_path,
+                        [{"status": "ok", "model_rel": model_rel, "src_dir": str(src_dir), "qc_chosen": str(qc)}],
+                    )
+                    with self.assertRaisesRegex(ValueError, "model_rel"):
+                        build_family_manifests(models, manifest_path, src_root)
+
+    def test_records_without_model_rel_sort_by_model_rel_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models = root / "models"
+            models.mkdir()
+            src_root, zulu_src, zulu_qc = self._write_family(root, "zulu/test.mdl")
+            _, alpha_src, alpha_qc = self._write_family(root, "alpha/test.mdl")
+            manifest_path = root / "decompile_manifest.json"
+            self._write_manifest(
+                manifest_path,
+                [
+                    {
+                        "status": "ok",
+                        "model_rel_fallback": "zulu/test.mdl",
+                        "src_dir": str(zulu_src),
+                        "qc_chosen": str(zulu_qc),
+                    },
+                    {
+                        "status": "ok",
+                        "model_rel_fallback": "alpha/test.mdl",
+                        "src_dir": str(alpha_src),
+                        "qc_chosen": str(alpha_qc),
+                    },
+                ],
+            )
+
+            manifests = build_family_manifests(models, manifest_path, src_root)
+
+            self.assertEqual(tuple(item.model_rel for item in manifests), ("alpha/test.mdl", "zulu/test.mdl"))
 
 
 if __name__ == "__main__":
