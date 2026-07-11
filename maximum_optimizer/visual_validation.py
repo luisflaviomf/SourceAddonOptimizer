@@ -109,12 +109,12 @@ def _load_manifest(root: Path, label: str, failures: list[GateFailure]) -> dict 
 
 def _validate_expected(
     manifest: dict, label: str, failures: list[GateFailure]
-) -> dict[str, tuple[str, ...]] | None:
+) -> dict[str, object] | None:
     raw = manifest.get("expected")
     if not isinstance(raw, dict):
         failures.append(_failure("invalid_expected", label, "expected render matrix is missing"))
         return None
-    result: dict[str, tuple[str, ...]] = {}
+    result: dict[str, object] = {}
     for field in ("passes", "angles", "poses", "regions"):
         values = raw.get(field)
         if (
@@ -140,6 +140,26 @@ def _validate_expected(
     if "bind" not in result["poses"]:
         failures.append(_failure("invalid_expected", label, "expected poses must include bind"))
         return None
+    pose_frames = raw.get("pose_frames")
+    if (
+        not isinstance(pose_frames, dict)
+        or set(pose_frames) != set(result["poses"])
+        or any(
+            type(frame) is not int or frame < 0
+            for frame in pose_frames.values()
+        )
+    ):
+        failures.append(
+            _failure(
+                "invalid_expected",
+                f"{label}/pose_frames",
+                "pose_frames must map every declared pose to a non-negative integer frame",
+            )
+        )
+        return None
+    result["pose_frames"] = {
+        pose: pose_frames[pose] for pose in result["poses"]
+    }
     return result
 
 
@@ -176,7 +196,7 @@ def _index_entries(
 
 def _validate_entry_matrix(
     indexed: dict[tuple[str, str, str], dict],
-    expected: dict[str, tuple[str, ...]],
+    expected: dict[str, object],
     label: str,
     failures: list[GateFailure],
 ) -> None:
@@ -209,7 +229,7 @@ def _finite_nonnegative(value: object) -> float | None:
 
 def _validate_geometry(
     manifest: dict,
-    expected: dict[str, tuple[str, ...]],
+    expected: dict[str, object],
     label: str,
     failures: list[GateFailure],
 ) -> dict[tuple[str, str], dict]:
@@ -237,7 +257,16 @@ def _validate_geometry(
             )
             continue
         indexed[key] = entry
-        if entry.get("region_missing") is True:
+        region_missing = entry.get("region_missing")
+        if type(region_missing) is not bool:
+            failures.append(
+                _failure(
+                    "invalid_geometry",
+                    f"{region}/{pose}",
+                    "region_missing must be an explicit boolean",
+                )
+            )
+        elif region_missing:
             failures.append(
                 _failure("region_missing", f"{region}/{pose}", f"{label} geometry region is missing")
             )

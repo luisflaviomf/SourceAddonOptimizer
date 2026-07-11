@@ -770,8 +770,6 @@ def _direct_topology_metrics(
 
 
 def _geometry_metrics_for_region(reference: dict, candidate: dict, diagonal: float, stride: int) -> dict:
-    from mathutils.bvhtree import BVHTree
-
     if not reference["triangles"] or not candidate["triangles"]:
         return {
             "surface_bidirectional_p95": 1.0,
@@ -779,11 +777,12 @@ def _geometry_metrics_for_region(reference: dict, candidate: dict, diagonal: flo
             "normal_angle_p95": 180.0,
             "uv_error_p95": 1.0,
             "skinning_error_p95": 1.0,
-            "region_missing": False,
+            "region_missing": True,
         }
     direct = _direct_topology_metrics(reference, candidate, diagonal, stride)
     if direct is not None:
         return direct
+    from mathutils.bvhtree import BVHTree
     reference_positions, reference_polygons = _flatten_region(reference)
     candidate_positions, candidate_polygons = _flatten_region(candidate)
     ref_bvh = BVHTree.FromPolygons(reference_positions, reference_polygons, all_triangles=True)
@@ -952,7 +951,8 @@ def _reference_geometry_entries(
     entries = []
     for region in regions:
         for pose in poses:
-            missing = region not in snapshots.get(pose, {})
+            snapshot = snapshots.get(pose, {}).get(region)
+            missing = snapshot is None or not snapshot.get("triangles")
             entries.append(
                 {
                     "scope": region,
@@ -976,6 +976,46 @@ def _bbox_payload(objs) -> dict:
         "max": [float(max_v.x), float(max_v.y), float(max_v.z)],
         "diagonal": float(diagonal),
     }
+
+
+def _capture_pose_snapshots(
+    objs,
+    poses: tuple[tuple[str, int], ...],
+    *,
+    scene=None,
+    capture=None,
+) -> dict[str, dict[str, dict]]:
+    scene = scene or bpy.context.scene
+    capture = capture or _capture_regions
+    original_frame = scene.frame_current
+    try:
+        return {pose_name: capture(objs, frame) for pose_name, frame in poses}
+    finally:
+        scene.frame_set(original_frame)
+
+
+def _framing_from_snapshots(snapshots: dict[str, dict[str, dict]]) -> tuple[dict, tuple]:
+    positions = [
+        tuple(float(component) for component in position)
+        for pose_regions in snapshots.values()
+        for region in pose_regions.values()
+        for triangle in region.get("triangles", ())
+        for position in triangle["positions"]
+    ]
+    if not positions:
+        raise ValueError("cannot frame render set without evaluated triangle vertices")
+    minimum = [min(position[axis] for position in positions) for axis in range(3)]
+    maximum = [max(position[axis] for position in positions) for axis in range(3)]
+    extents = [maximum[axis] - minimum[axis] for axis in range(3)]
+    diagonal = math.dist(minimum, maximum)
+    center = Vector(
+        tuple((minimum[axis] + maximum[axis]) * 0.5 for axis in range(3))
+    )
+    max_dimension = max(extents)
+    ortho_scale = max_dimension * 1.4 if max_dimension > 0 else 1.0
+    distance = max_dimension * 2.5 + 1.0
+    bbox = {"min": minimum, "max": maximum, "diagonal": diagonal}
+    return bbox, (center, ortho_scale, distance)
 
 
 def _render_extended_set(
@@ -1006,11 +1046,9 @@ def _render_extended_set(
         if hasattr(obj.data, "materials")
         for index, material in enumerate(obj.data.materials)
     }
-    snapshots = {
-        pose_name: _capture_regions(objs, frame) for pose_name, frame in poses
-    }
-    bbox = _bbox_payload(objs)
-    center, ortho_scale, dist = _fit_camera(objs, cam_obj, fit=fit)
+    snapshots = _capture_pose_snapshots(objs, poses)
+    bbox, evaluated_fit = _framing_from_snapshots(snapshots)
+    center, ortho_scale, dist = fit or evaluated_fit
     cam_obj.data.ortho_scale = ortho_scale
     _setup_lights(center, ortho_scale)
     entries = []
@@ -1092,6 +1130,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         "passes": list(passes),
         "angles": list(validated_angles),
         "poses": list(pose_names),
+        "pose_frames": {name: frame for name, frame in poses},
         "regions": list(regions),
     }
     reference_geometry = _reference_geometry_entries(

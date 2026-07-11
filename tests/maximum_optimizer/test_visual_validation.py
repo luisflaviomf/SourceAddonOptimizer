@@ -61,13 +61,17 @@ def _write_manifest(
     angles: tuple[str, ...] = ANGLES,
     poses: tuple[str, ...] = ("bind",),
     regions: tuple[str, ...] = ("body",),
+    pose_frames: dict[str, int] | None = None,
 ) -> None:
+    if pose_frames is None:
+        pose_frames = {pose: index for index, pose in enumerate(poses)}
     if geometry is None:
         geometry = [
             {
                 "scope": region,
                 "pose": pose,
                 **{metric: 0.0 for metric in GEOMETRY_METRICS},
+                "region_missing": False,
             }
             for region in regions
             for pose in poses
@@ -78,6 +82,7 @@ def _write_manifest(
             "passes": list(passes),
             "angles": list(angles),
             "poses": list(poses),
+            "pose_frames": pose_frames,
             "regions": list(regions),
         },
         "entries": entries,
@@ -297,16 +302,19 @@ class VisualValidationTests(unittest.TestCase):
                 "normal_angle_p95": 0.03,
                 "uv_error_p95": 0.04,
                 "skinning_error_p95": 0.05,
+                "region_missing": False,
             },
             {
                 "scope": "body",
                 "pose": "run",
                 **{metric: 0.0 for metric in GEOMETRY_METRICS},
+                "region_missing": False,
             },
             {
                 "scope": "wheel",
                 "pose": "bind",
                 **{metric: 0.0 for metric in GEOMETRY_METRICS},
+                "region_missing": False,
             },
             {
                 "scope": "wheel",
@@ -316,6 +324,7 @@ class VisualValidationTests(unittest.TestCase):
                 "normal_angle_p95": 0.7,
                 "uv_error_p95": 0.6,
                 "skinning_error_p95": 0.5,
+                "region_missing": False,
             },
         ]
         _write_manifest(
@@ -493,6 +502,57 @@ class VisualValidationTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("region_missing", {failure.gate for failure in result.failures})
 
+    def test_region_missing_field_is_required_and_exactly_boolean(self):
+        self.write_matching()
+        manifest_path = self.candidate / "render_manifest.json"
+        baseline = json.loads(manifest_path.read_text())
+        cases = ("absent", None), ("integer", 0), ("string", "false")
+        for name, value in cases:
+            with self.subTest(name=name):
+                manifest = json.loads(json.dumps(baseline))
+                if value is None:
+                    del manifest["geometry"][0]["region_missing"]
+                else:
+                    manifest["geometry"][0]["region_missing"] = value
+                manifest_path.write_text(json.dumps(manifest))
+                result = compare_render_sets(
+                    self.reference,
+                    self.candidate,
+                    _profile(**{metric: 1_000_000.0 for metric in METRICS}),
+                )
+                self.assertFalse(result.passed)
+                self.assertIn(
+                    "invalid_geometry", {failure.gate for failure in result.failures}
+                )
+
+    def test_pose_frame_mapping_is_required_complete_and_matches(self):
+        self.write_matching(poses=("bind", "run"))
+        manifest_path = self.candidate / "render_manifest.json"
+        baseline = json.loads(manifest_path.read_text())
+
+        for name, pose_frames in (
+            ("missing", None),
+            ("incomplete", {"bind": 0}),
+            ("bool-frame", {"bind": 0, "run": True}),
+        ):
+            with self.subTest(name=name):
+                manifest = json.loads(json.dumps(baseline))
+                if pose_frames is None:
+                    del manifest["expected"]["pose_frames"]
+                else:
+                    manifest["expected"]["pose_frames"] = pose_frames
+                manifest_path.write_text(json.dumps(manifest))
+                result = compare_render_sets(self.reference, self.candidate, _profile())
+                self.assertIn(
+                    "invalid_expected", {failure.gate for failure in result.failures}
+                )
+
+        mismatch = json.loads(json.dumps(baseline))
+        mismatch["expected"]["pose_frames"]["run"] = 99
+        manifest_path.write_text(json.dumps(mismatch))
+        result = compare_render_sets(self.reference, self.candidate, _profile())
+        self.assertIn("expected_mismatch", {failure.gate for failure in result.failures})
+
 
 class RenderPreviewArgumentTests(unittest.TestCase):
     def test_module_imports_without_blender_and_legacy_arguments_are_unchanged(self):
@@ -586,6 +646,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                     "passes": list(PASSES),
                     "angles": list(ANGLES),
                     "poses": ["bind"],
+                    "pose_frames": {"bind": 0},
                     "regions": ["body"],
                 },
                 stride=3,
@@ -688,6 +749,91 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             ],
             0.0,
         )
+
+    def test_zero_triangle_region_is_unconditionally_missing(self):
+        import render_previews
+
+        empty = {"scope": "empty", "triangles": []}
+        metrics = render_previews._geometry_metrics_for_region(empty, empty, 1.0, 1)
+        self.assertTrue(metrics["region_missing"])
+        reference_entries = render_previews._reference_geometry_entries(
+            {"bind": {"empty": empty}}, ("empty",), ("bind",)
+        )
+        self.assertTrue(reference_entries[0]["region_missing"])
+
+    def test_pose_snapshot_union_drives_bbox_and_camera_fit(self):
+        import render_previews
+
+        def region(points):
+            return {
+                "scope": "body",
+                "triangles": [
+                    {
+                        "positions": tuple(points),
+                        "normals": ((0.0, 0.0, 1.0),) * 3,
+                        "uvs": ((0.0, 0.0),) * 3,
+                    }
+                ],
+            }
+
+        snapshots = {
+            "bind": {"body": region(((0.0, 0.0, 0.0), (1.0, 1.0, 1.0), (0.0, 1.0, 0.0)))},
+            "extreme": {
+                "body": region(((100.0, -2.0, 0.0), (99.0, 3.0, 2.0), (100.0, 0.0, 1.0)))
+            },
+        }
+
+        bbox, fit = render_previews._framing_from_snapshots(snapshots)
+
+        self.assertEqual(bbox["min"], [0.0, -2.0, 0.0])
+        self.assertEqual(bbox["max"], [100.0, 3.0, 2.0])
+        self.assertEqual(tuple(fit[0]), (50.0, 0.5, 1.0))
+        self.assertEqual(fit[1], 140.0)
+        self.assertEqual(fit[2], 251.0)
+        with self.assertRaisesRegex(ValueError, "evaluated triangle vertices"):
+            render_previews._framing_from_snapshots(
+                {"bind": {"empty": {"scope": "empty", "triangles": []}}}
+            )
+
+    def test_pose_capture_restores_original_frame(self):
+        import render_previews
+
+        class Scene:
+            frame_current = 7
+
+            def __init__(self):
+                self.calls = []
+
+            def frame_set(self, frame):
+                self.frame_current = frame
+                self.calls.append(frame)
+
+        scene = Scene()
+
+        def capture(_objects, frame):
+            scene.frame_set(frame)
+            return {"frame": frame}
+
+        snapshots = render_previews._capture_pose_snapshots(
+            (), (("bind", 0), ("extreme", 12)), scene=scene, capture=capture
+        )
+
+        self.assertEqual(snapshots, {"bind": {"frame": 0}, "extreme": {"frame": 12}})
+        self.assertEqual(scene.calls, [0, 12, 7])
+        self.assertEqual(scene.frame_current, 7)
+
+        failing_scene = Scene()
+
+        def failing_capture(_objects, frame):
+            failing_scene.frame_set(frame)
+            raise RuntimeError("capture failed")
+
+        with self.assertRaisesRegex(RuntimeError, "capture failed"):
+            render_previews._capture_pose_snapshots(
+                (), (("bind", 0),), scene=failing_scene, capture=failing_capture
+            )
+        self.assertEqual(failing_scene.calls, [0, 7])
+        self.assertEqual(failing_scene.frame_current, 7)
 
     def test_material_paths_cannot_escape_root(self):
         import render_previews
