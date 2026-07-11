@@ -535,7 +535,7 @@ def _require_equal(name: str, expected: tuple[str, ...], actual: tuple[str, ...]
         failures.append(GateFailure(name, "family", repr(actual), repr(expected), f"{name} changed"))
 ```
 
-`validate_structure` deve comparar todos os campos do fingerprint, exigir a família compilada e variantes obrigatórias observadas no baseline, validar `compile_record["status"] == "ok"` e aceitar `provenance == "candidate-compile"` apenas.
+`validate_structure` deve comparar exatamente, case-insensitive e preservando ordem, `model_name`, `bodygroups`, `materials`, rows de `skin_families`, `bones`, `bone_parents`, `attachments`, `hitboxes` e `sequences`. Como `mesh_files` e `lod_mesh_files` são nomes intermediários que podem receber `_OPT`, o gate exige a mesma contagem não vazia por papel, não igualdade de filename; `physics_mesh` exige somente a mesma presença/ausência. A validação também deve exigir a família compilada e variantes obrigatórias observadas no baseline, validar `compile_record["status"] == "ok"` e aceitar `provenance == "candidate-compile"` apenas.
 
 - [ ] **Step 4: Rodar o módulo e o discovery completo**
 
