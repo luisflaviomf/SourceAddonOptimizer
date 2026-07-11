@@ -1,0 +1,20 @@
+version 1
+nodes
+0 "root" -1
+1 "spine" 0
+end
+skeleton
+time 0
+0 0 0 0 0 0 0
+1 0 0 1 0 0 0
+end
+triangles
+paint/red
+0 0 0 0 0 0 1 0 0
+0 1 0 0 0 0 1 1 0
+0 0 1 0 0 0 1 0 1
+Detail/Metal
+0 0 0 0 0 0 1 0 0
+0 1 0 0 0 0 1 1 0
+0 0 1 0 0 0 1 0 1
+end

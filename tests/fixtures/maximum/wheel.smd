@@ -1,0 +1,16 @@
+version 1
+nodes
+0 "ROOT" -1
+2 "wheel" 0
+end
+skeleton
+time 0
+0 0 0 0 0 0 0
+2 0 0 0 0 0 0
+end
+triangles
+TRIM/BLACK
+0 0 0 0 0 0 1 0 0
+0 1 0 0 0 0 1 1 0
+0 0 1 0 0 0 1 0 1
+end
