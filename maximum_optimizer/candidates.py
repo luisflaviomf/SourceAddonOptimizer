@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import threading
 from collections.abc import Callable, Mapping, Sequence
@@ -17,6 +18,16 @@ from .qc_inventory import _inventory_qc
 
 
 ProcessRunner = Callable[[Sequence[str | Path], Path, Path, threading.Event], ProcessResult]
+
+
+def _freeze(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -50,8 +61,8 @@ class CandidateBuild:
     commands: tuple[tuple[str, ...], ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "compile_record", MappingProxyType(dict(self.compile_record)))
-        object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
+        object.__setattr__(self, "compile_record", _freeze(self.compile_record))
+        object.__setattr__(self, "provenance", _freeze(self.provenance))
 
 
 class CandidateBuildError(RuntimeError):
@@ -81,6 +92,27 @@ def _is_within(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _overlaps(first: Path, second: Path) -> bool:
+    return _is_within(first, second) or _is_within(second, first)
+
+
+def _first_internal_symlink(root: Path) -> Path | None:
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        parent = Path(directory)
+        for name in (*directory_names, *file_names):
+            candidate = parent / name
+            if candidate.is_symlink():
+                return candidate
+    return None
+
+
+def _required_artifact_path(expected_mdl: Path, kind: str) -> Path:
+    normalized = str(kind)
+    if not normalized.startswith("."):
+        normalized = "." + normalized
+    return expected_mdl.with_name(expected_mdl.stem + normalized)
 
 
 def _matching_qcs(root: Path, model_rel: str, *, optimized: bool) -> list[Path]:
@@ -144,17 +176,32 @@ class _BaseAdapter:
 
     def _prepare_workspace(self, manifest: FamilyManifest, workspace: Path) -> Path:
         source_path = Path(manifest.source_dir)
+        original_models_path = Path(manifest.original_models_dir)
         workspace_path = Path(workspace)
         if source_path.is_symlink():
             raise CandidateBuildError("source directory cannot be a symlink", stage="workspace")
+        if original_models_path.is_symlink():
+            raise CandidateBuildError("original models directory cannot be a symlink", stage="workspace")
         if workspace_path.is_symlink():
             raise CandidateBuildError("workspace cannot be a symlink", stage="workspace")
         source = source_path.expanduser().resolve()
+        original_models = original_models_path.expanduser().resolve()
         destination = workspace_path.expanduser().resolve()
         if not source.is_dir():
             raise CandidateBuildError(f"source directory not found: {source}", stage="workspace")
-        if _is_within(destination, source):
-            raise CandidateBuildError("workspace cannot be inside source directory", stage="workspace")
+        internal_symlink = _first_internal_symlink(source)
+        if internal_symlink is not None:
+            raise CandidateBuildError(
+                f"source directory contains symlink: {internal_symlink}", stage="workspace"
+            )
+        if _overlaps(destination, source):
+            raise CandidateBuildError(
+                "workspace overlap: inside source directory or above it", stage="workspace"
+            )
+        if _overlaps(destination, original_models):
+            raise CandidateBuildError(
+                "workspace overlap with original models directory", stage="workspace"
+            )
         if destination.exists():
             if not destination.is_dir():
                 raise CandidateBuildError("workspace exists and is not a directory", stage="workspace")
@@ -277,39 +324,109 @@ class _BaseAdapter:
         try:
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             records = summary["results"]
-            record = next(
-                item
-                for item in records
-                if _normalized_model_name(str(item.get("model_rel") or ""))
-                == _normalized_model_name(manifest.model_rel)
-            )
-        except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration) as exc:
+            if not isinstance(records, list):
+                raise TypeError("results must be a list")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             raise CandidateBuildError(
-                f"compile summary has no record for {manifest.model_rel}: {exc}",
+                f"compile summary is invalid for {manifest.model_rel}: {exc}",
                 stage="compile",
                 log_path=compile_log,
             ) from exc
-        if str(record.get("status", "")).casefold() != "ok":
+        matching_records = [
+            item
+            for item in records
+            if isinstance(item, Mapping)
+            and _normalized_model_name(str(item.get("model_rel") or ""))
+            == _normalized_model_name(manifest.model_rel)
+        ]
+        if len(matching_records) != 1:
+            raise CandidateBuildError(
+                f"compile summary must contain exactly one record for {manifest.model_rel}; "
+                f"found {len(matching_records)}",
+                stage="compile",
+                log_path=compile_log,
+            )
+        record = matching_records[0]
+        if record.get("status") != "ok":
             raise CandidateBuildError(
                 f"compile record failed for {manifest.model_rel}: {record.get('status')}",
                 stage="compile",
                 log_path=compile_log,
             )
+        try:
+            record_returncode = int(record["returncode"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CandidateBuildError(
+                f"compile record has invalid returncode for {manifest.model_rel}",
+                stage="compile",
+                log_path=compile_log,
+            ) from exc
+        if record_returncode != 0:
+            raise CandidateBuildError(
+                f"compile record returncode is {record_returncode} for {manifest.model_rel}",
+                stage="compile",
+                log_path=compile_log,
+            )
 
         compiled_models = compiled / "models"
-        provenance: dict[str, str] = {}
-        if compiled_models.is_dir():
-            artifacts = sorted(
-                (
-                    path
-                    for path in compiled_models.rglob("*")
-                    if path.is_file() and path.suffix.casefold() in {".mdl", ".vvd", ".vtx", ".ani", ".phy"}
-                ),
-                key=lambda path: path.relative_to(compiled_models).as_posix().casefold(),
+        if compiled_models.is_symlink() or not compiled_models.is_dir():
+            raise CandidateBuildError(
+                f"compiled models directory is missing or a symlink: {compiled_models}",
+                stage="compile",
+                log_path=compile_log,
             )
-            provenance = {
-                path.relative_to(compiled_models).as_posix(): "candidate-compile" for path in artifacts
-            }
+        compiled_models_root = compiled_models.resolve()
+        model_relative_path = Path(*manifest.model_rel.replace("\\", "/").split("/"))
+        expected_mdl = (compiled_models / model_relative_path).resolve()
+        if not _is_within(expected_mdl, compiled_models_root):
+            raise CandidateBuildError(
+                f"expected_mdl escapes compiled models root: {expected_mdl}",
+                stage="compile",
+                log_path=compile_log,
+            )
+        record_expected_raw = record.get("expected_mdl")
+        try:
+            record_expected = Path(str(record_expected_raw)).expanduser().resolve()
+        except (OSError, ValueError, TypeError) as exc:
+            raise CandidateBuildError(
+                f"compile record has invalid expected_mdl for {manifest.model_rel}",
+                stage="compile",
+                log_path=compile_log,
+            ) from exc
+        if not record_expected_raw or record_expected != expected_mdl or not expected_mdl.is_file():
+            raise CandidateBuildError(
+                f"compile record expected_mdl does not match compiled output: {record_expected_raw}",
+                stage="compile",
+                log_path=compile_log,
+            )
+        for kind in manifest.required_artifact_kinds:
+            artifact = _required_artifact_path(expected_mdl, kind)
+            if (
+                artifact.is_symlink()
+                or not artifact.is_file()
+                or not _is_within(artifact.resolve(), compiled_models_root)
+            ):
+                raise CandidateBuildError(
+                    f"required compiled artifact is missing or invalid: {artifact}",
+                    stage="compile",
+                    log_path=compile_log,
+                )
+
+        provenance: dict[str, str] = {}
+        artifacts = sorted(
+            (
+                path
+                for path in compiled_models.rglob("*")
+                if path.is_file()
+                and not path.is_symlink()
+                and _is_within(path.resolve(), compiled_models_root)
+                and path.suffix.casefold() in {".mdl", ".vvd", ".vtx", ".ani", ".phy"}
+            ),
+            key=lambda path: path.relative_to(compiled_models).as_posix().casefold(),
+        )
+        provenance = {
+            path.relative_to(compiled_models).as_posix(): "candidate-compile" for path in artifacts
+        }
 
         return CandidateBuild(
             spec=spec,

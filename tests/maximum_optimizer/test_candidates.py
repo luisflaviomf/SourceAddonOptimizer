@@ -10,9 +10,11 @@ import time
 import unittest
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from unittest.mock import patch
 
 from maximum_optimizer.candidates import (
     BlenderAdapter,
+    CandidateBuild,
     CandidateBuildError,
     CandidateTools,
     FidelityAdapter,
@@ -129,12 +131,98 @@ class ProcessTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertFalse(alive, f"child process {child_pid} survived cancellation")
 
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object semantics")
+    def test_completed_parent_wins_late_cancel_and_job_close_kills_pipe_inheriting_child(self):
+        child_pid_path = self.root / "late-child.pid"
+        parent_exiting = self.root / "parent-exiting.txt"
+        child = self._script("late-child.py", "import time\nprint('child-started', flush=True)\ntime.sleep(60)\n")
+        parent = self._script(
+            "parent-exits.py",
+            "import subprocess, sys\n"
+            f"p = subprocess.Popen([sys.executable, {str(child)!r}])\n"
+            f"open({str(child_pid_path)!r}, 'w').write(str(p.pid))\n"
+            f"open({str(parent_exiting)!r}, 'w').write('yes')\n",
+        )
+        cancelled = threading.Event()
+
+        def set_cancel_as_parent_exits() -> None:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not parent_exiting.exists():
+                time.sleep(0.005)
+            time.sleep(0.05)
+            cancelled.set()
+
+        trigger = threading.Thread(target=set_cancel_as_parent_exits)
+        trigger.start()
+        started = time.monotonic()
+        result = run_process([sys.executable, parent], self.root, self.root / "late.log", cancelled)
+        trigger.join(timeout=5)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertTrue(cancelled.is_set())
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        self.assertFalse(self._windows_pid_alive(child_pid), f"child process {child_pid} survived Job close")
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object semantics")
+    def test_taskkill_oserror_falls_back_to_job_termination(self):
+        child_pid_path = self.root / "fallback-child.pid"
+        child = self._script("fallback-child.py", "import time\ntime.sleep(60)\n")
+        parent = self._script(
+            "fallback-parent.py",
+            "import subprocess, sys, time\n"
+            f"p = subprocess.Popen([sys.executable, {str(child)!r}])\n"
+            f"open({str(child_pid_path)!r}, 'w').write(str(p.pid))\n"
+            "time.sleep(60)\n",
+        )
+        cancelled = threading.Event()
+
+        def cancel_after_spawn() -> None:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not child_pid_path.exists():
+                time.sleep(0.01)
+            cancelled.set()
+
+        trigger = threading.Thread(target=cancel_after_spawn)
+        trigger.start()
+        with patch("maximum_optimizer.processes.subprocess.run", side_effect=OSError("taskkill unavailable")):
+            with self.assertRaises(ProcessCancelledError):
+                run_process([sys.executable, parent], self.root, self.root / "fallback.log", cancelled)
+        trigger.join(timeout=5)
+
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        self.assertFalse(self._windows_pid_alive(child_pid), f"child process {child_pid} survived Job fallback")
+
+    @staticmethod
+    def _windows_pid_alive(pid: int) -> bool:
+        query = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            shell=False,
+        )
+        return str(pid) in query.stdout
+
 
 class MaterializingRunner:
-    def __init__(self, model_rel: str, *, fail_stage: str | None = None, record_status: str = "ok") -> None:
+    def __init__(
+        self,
+        model_rel: str,
+        *,
+        fail_stage: str | None = None,
+        record_status: str = "ok",
+        record_overrides: dict | None = None,
+        duplicate_record: bool = False,
+        omit_models: bool = False,
+        missing_kinds: tuple[str, ...] = (),
+    ) -> None:
         self.model_rel = model_rel
         self.fail_stage = fail_stage
         self.record_status = record_status
+        self.record_overrides = record_overrides or {}
+        self.duplicate_record = duplicate_record
+        self.omit_models = omit_models
+        self.missing_kinds = missing_kinds
         self.commands: list[tuple[str, ...]] = []
 
     def __call__(self, command, cwd, log_path, cancel_event) -> ProcessResult:
@@ -150,25 +238,39 @@ class MaterializingRunner:
 
         if is_compile:
             out_dir = Path(normalized[normalized.index("--out") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
             model_path = out_dir / "models" / Path(self.model_rel)
-            model_path.parent.mkdir(parents=True, exist_ok=True)
-            model_path.write_bytes(b"mdl")
-            model_path.with_suffix(".vvd").write_bytes(b"vvd")
-            model_path.with_suffix(".dx90.vtx").write_bytes(b"vtx")
-            (model_path.parent / "ignore.txt").write_text("ignore", encoding="utf-8")
+            if not self.omit_models:
+                model_path.parent.mkdir(parents=True, exist_ok=True)
+                artifacts = {
+                    ".mdl": model_path,
+                    ".vvd": model_path.with_suffix(".vvd"),
+                    ".vtx": model_path.with_suffix(".vtx"),
+                    ".dx90.vtx": model_path.with_name(model_path.stem + ".dx90.vtx"),
+                }
+                for kind, artifact in artifacts.items():
+                    if kind not in self.missing_kinds:
+                        artifact.write_bytes(kind.encode("ascii"))
+                (model_path.parent / "ignore.txt").write_text("ignore", encoding="utf-8")
+            record = {
+                "index": 1,
+                "status": self.record_status,
+                "returncode": 0,
+                "qc_path": "src/main_OPT.qc",
+                "model_rel": self.model_rel.swapcase(),
+                "expected_mdl": str(model_path),
+                "details": {"attempts": [{"returncode": 0}]},
+                "message": "",
+            }
+            record.update(self.record_overrides)
+            results = [record]
+            if self.duplicate_record:
+                results.append(dict(record))
             summary = {
                 "total": 1,
                 "ok": 1 if self.record_status == "ok" else 0,
                 "fail": 0 if self.record_status == "ok" else 1,
-                "results": [
-                    {
-                        "index": 1,
-                        "status": self.record_status,
-                        "qc_path": "src/main_OPT.qc",
-                        "model_rel": self.model_rel.swapcase(),
-                        "message": "",
-                    }
-                ],
+                "results": results,
             }
             (out_dir / "compile_summary.json").write_text(json.dumps(summary), encoding="utf-8")
         else:
@@ -279,6 +381,7 @@ class CandidateAdapterTests(unittest.TestCase):
             {
                 "vehicles/test.dx90.vtx": "candidate-compile",
                 "vehicles/test.mdl": "candidate-compile",
+                "vehicles/test.vtx": "candidate-compile",
                 "vehicles/test.vvd": "candidate-compile",
             },
         )
@@ -317,9 +420,23 @@ class CandidateAdapterTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             build.compile_record["status"] = "failed"
         with self.assertRaises(TypeError):
+            build.compile_record["details"]["attempts"][0]["returncode"] = 9
+        with self.assertRaises(TypeError):
             build.provenance["new.mdl"] = "original"
         with self.assertRaises(FrozenInstanceError):
             build.workspace = self.root
+
+        nested_provenance = CandidateBuild(
+            spec=build.spec,
+            workspace=build.workspace,
+            optimized_qc=build.optimized_qc,
+            compiled_models_dir=build.compiled_models_dir,
+            compile_record={"status": "ok"},
+            provenance={"nested": {"items": [{"origin": "candidate-compile"}]}},
+            commands=build.commands,
+        )
+        with self.assertRaises(TypeError):
+            nested_provenance.provenance["nested"]["items"][0]["origin"] = "original"
 
     def test_nonzero_optimize_fails_with_stage_and_log_without_compile_fallback(self):
         runner = MaterializingRunner(self.manifest.model_rel, fail_stage="optimize")
@@ -347,6 +464,60 @@ class CandidateAdapterTests(unittest.TestCase):
                 self.assertEqual(caught.exception.log_path, workspace / "logs" / "compile.log")
                 self.assertFalse((workspace / "compiled" / "models" / "original.mdl").exists())
 
+    def test_compile_summary_requires_exactly_one_matching_record(self):
+        runner = MaterializingRunner(self.manifest.model_rel, duplicate_record=True)
+
+        with self.assertRaisesRegex(CandidateBuildError, "exactly one") as caught:
+            BlenderAdapter(process_runner=runner).generate(
+                self.manifest, self.spec, self.workspace, self.tools
+            )
+
+        self.assertEqual(caught.exception.stage, "compile")
+
+    def test_compile_summary_requires_zero_record_returncode(self):
+        cases = ({"returncode": 3}, {"returncode": None}, {"returncode": "invalid"})
+        for index, overrides in enumerate(cases):
+            with self.subTest(overrides=overrides):
+                with self.assertRaisesRegex(CandidateBuildError, "returncode"):
+                    BlenderAdapter(
+                        process_runner=MaterializingRunner(
+                            self.manifest.model_rel, record_overrides=overrides
+                        )
+                    ).generate(self.manifest, self.spec, self.root / f"rc-{index}", self.tools)
+
+    def test_compile_summary_rejects_wrong_or_outside_expected_mdl(self):
+        outside = self.root / "outside.mdl"
+        outside.write_bytes(b"outside")
+        workspaces = tuple(self.root / f"mdl-{index}" for index in range(3))
+        cases = (
+            str(workspaces[0] / "compiled" / "models" / "vehicles" / "wrong.mdl"),
+            str(outside),
+            None,
+        )
+        for workspace, expected_mdl in zip(workspaces, cases):
+            with self.subTest(expected_mdl=expected_mdl):
+                with self.assertRaisesRegex(CandidateBuildError, "expected_mdl"):
+                    BlenderAdapter(
+                        process_runner=MaterializingRunner(
+                            self.manifest.model_rel,
+                            record_overrides={"expected_mdl": expected_mdl},
+                        )
+                    ).generate(self.manifest, self.spec, workspace, self.tools)
+
+    def test_compile_requires_models_directory_and_all_manifest_sidecars(self):
+        cases = (
+            {"omit_models": True},
+            {"missing_kinds": (".vvd",)},
+            {"missing_kinds": (".vtx",)},
+        )
+        for index, options in enumerate(cases):
+            with self.subTest(options=options):
+                with self.assertRaises(CandidateBuildError) as caught:
+                    BlenderAdapter(
+                        process_runner=MaterializingRunner(self.manifest.model_rel, **options)
+                    ).generate(self.manifest, self.spec, self.root / f"sidecar-{index}", self.tools)
+                self.assertEqual(caught.exception.stage, "compile")
+
     def test_rejects_nonempty_or_nested_workspace_before_copying(self):
         self.workspace.mkdir()
         marker = self.workspace / "keep.txt"
@@ -361,6 +532,47 @@ class CandidateAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(CandidateBuildError, "inside source"):
             BlenderAdapter(process_runner=MaterializingRunner(self.manifest.model_rel)).generate(
                 self.manifest, self.spec, nested, self.tools
+            )
+
+    def test_rejects_workspace_overlap_with_original_models_or_family_ancestor(self):
+        inside_original = self.original_models / "empty-candidate"
+        with self.assertRaisesRegex(CandidateBuildError, "overlap"):
+            BlenderAdapter(process_runner=MaterializingRunner(self.manifest.model_rel)).generate(
+                self.manifest, self.spec, inside_original, self.tools
+            )
+
+        with self.assertRaisesRegex(CandidateBuildError, "overlap"):
+            BlenderAdapter(process_runner=MaterializingRunner(self.manifest.model_rel)).generate(
+                self.manifest, self.spec, self.root, self.tools
+            )
+
+    def test_rejects_internal_source_symlink_before_copy(self):
+        internal_link = self.source / "linked-mesh.smd"
+        original_is_symlink = Path.is_symlink
+
+        def deterministic_symlink(path: Path) -> bool:
+            return path == internal_link or original_is_symlink(path)
+
+        internal_link.write_text("placeholder", encoding="utf-8")
+        with patch("pathlib.Path.is_symlink", deterministic_symlink):
+            with self.assertRaisesRegex(CandidateBuildError, "symlink"):
+                BlenderAdapter(process_runner=MaterializingRunner(self.manifest.model_rel)).generate(
+                    self.manifest, self.spec, self.workspace, self.tools
+                )
+        self.assertFalse(self.workspace.exists())
+
+    def test_rejects_real_internal_source_symlink_when_platform_allows_it(self):
+        target = self.root / "outside-source.smd"
+        target.write_text("outside", encoding="utf-8")
+        link = self.source / "real-link.smd"
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
+
+        with self.assertRaisesRegex(CandidateBuildError, "symlink"):
+            BlenderAdapter(process_runner=MaterializingRunner(self.manifest.model_rel)).generate(
+                self.manifest, self.spec, self.workspace, self.tools
             )
 
     def test_rejects_ambiguous_source_qcs_for_same_model(self):
