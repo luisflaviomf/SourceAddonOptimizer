@@ -76,6 +76,10 @@ def _lexists(path: Path) -> bool:
     return os.path.lexists(path)
 
 
+def _is_symlink(path: Path) -> bool:
+    return path.is_symlink()
+
+
 def _unique_sibling(parent: Path, prefix: str) -> Path:
     while True:
         candidate = parent / f"{prefix}{uuid.uuid4().hex}"
@@ -91,20 +95,41 @@ def _require_direct_child(path: Path, parent: Path) -> None:
 
 def _remove_direct_child(path: Path, parent: Path) -> None:
     _require_direct_child(path, parent)
-    if path.is_symlink() or path.is_file():
+    if _is_symlink(path):
+        raise ValueError(f"refusing to remove symlink: {path}")
+    if path.is_file():
         path.unlink()
     elif path.is_dir():
         shutil.rmtree(path)
 
 
 def _raise_if_cache_symlink(final: Path) -> None:
-    if final.is_symlink():
+    if _is_symlink(final):
         raise ValueError(f"cache final must not be a symlink: {final}")
     if not final.is_dir():
         return
     for child in (final / "payload", final / "complete.json"):
-        if child.is_symlink():
+        if _is_symlink(child):
             raise ValueError(f"cache entry must not contain a symlink: {child}")
+
+
+def _cleanup_after_commit(
+    residue: Path,
+    parent: Path,
+    pending_prefix: str,
+    replace: Callable[[os.PathLike[str] | str, os.PathLike[str] | str], None],
+) -> None:
+    try:
+        _require_direct_child(residue, parent)
+        pending = _unique_sibling(parent, pending_prefix)
+        _require_direct_child(pending, parent)
+        replace(residue, pending)
+    except (OSError, ValueError):
+        return
+    try:
+        _remove_direct_child(pending, parent)
+    except (OSError, ValueError):
+        return
 
 
 class CandidateCache:
@@ -113,11 +138,11 @@ class CandidateCache:
 
     def lookup(self, key: CacheKey) -> Path | None:
         final = self.root / key.digest
-        if final.is_symlink() or not final.is_dir():
+        if _is_symlink(final) or not final.is_dir():
             return None
         marker = final / "complete.json"
         payload = final / "payload"
-        if payload.is_symlink() or not payload.is_dir() or marker.is_symlink():
+        if _is_symlink(payload) or not payload.is_dir() or _is_symlink(marker):
             return None
         try:
             complete = json.loads(marker.read_text(encoding="utf-8"))
@@ -125,17 +150,16 @@ class CandidateCache:
             return None
         if not isinstance(complete, dict) or complete.get("digest") != key.digest:
             return None
-        self._cleanup_quarantines(key)
         return final
 
-    def _cleanup_quarantines(self, key: CacheKey) -> None:
-        prefix = f"{key.digest}.quarantine-"
+    def _cleanup_pending(self, key: CacheKey) -> None:
+        prefix = f"{key.digest}.cleanup-pending-"
         try:
             children = tuple(self.root.iterdir())
         except OSError:
             return
         for child in children:
-            if not child.name.startswith(prefix) or child.is_symlink():
+            if not child.name.startswith(prefix) or _is_symlink(child):
                 continue
             try:
                 _require_direct_child(child, self.root)
@@ -151,12 +175,13 @@ class CandidateCache:
         metadata: object,
     ) -> Path:
         source = Path(source_dir)
-        if source.is_symlink():
+        if _is_symlink(source):
             raise ValueError(f"source_dir must not be a symlink: {source}")
         if not source.is_dir():
             raise ValueError(f"source_dir must be an existing directory: {source}")
 
         self.root.mkdir(parents=True, exist_ok=True)
+        self._cleanup_pending(key)
         final = self.root / key.digest
         existing = self.lookup(key)
         if existing is not None:
@@ -198,10 +223,12 @@ class CandidateCache:
             raise
 
         if quarantine is not None:
-            try:
-                _remove_direct_child(quarantine, self.root)
-            except OSError:
-                pass
+            _cleanup_after_commit(
+                quarantine,
+                self.root,
+                f"{key.digest}.cleanup-pending-",
+                os.replace,
+            )
         return final
 
     def cleanup_incomplete(self) -> int:
@@ -209,7 +236,7 @@ class CandidateCache:
             return 0
         removed = 0
         for child in self.root.iterdir():
-            if ".tmp-" not in child.name or child.is_symlink() or not child.is_dir():
+            if ".tmp-" not in child.name or _is_symlink(child) or not child.is_dir():
                 continue
             _remove_direct_child(child, self.root)
             removed += 1
@@ -222,13 +249,13 @@ def atomic_replace_tree(
     *,
     replace: Callable[[os.PathLike[str] | str, os.PathLike[str] | str], None] = os.replace,
 ) -> Path:
-    """Promote staging, succeeding even if a residual backup cannot be removed."""
+    """Promote staging; post-commit cleanup failures leave a recoverable residue."""
     staging_path = Path(staging)
     destination_path = Path(destination)
 
-    if staging_path.is_symlink():
+    if _is_symlink(staging_path):
         raise ValueError(f"staging must not be a symlink: {staging_path}")
-    if destination_path.is_symlink():
+    if _is_symlink(destination_path):
         raise ValueError(f"destination must not be a symlink: {destination_path}")
     if staging_path.resolve(strict=False) == destination_path.resolve(strict=False):
         raise ValueError("staging and destination must be different paths")
@@ -269,8 +296,10 @@ def atomic_replace_tree(
         raise
 
     if backup is not None:
-        try:
-            _remove_direct_child(backup, destination_path.parent)
-        except OSError:
-            pass
+        _cleanup_after_commit(
+            backup,
+            destination_path.parent,
+            f"{destination_path.name}.cleanup-pending-",
+            replace,
+        )
     return destination_path

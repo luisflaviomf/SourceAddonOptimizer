@@ -144,6 +144,23 @@ class CandidateCacheTests(unittest.TestCase):
 
         self.assertEqual(self.cache.lookup(self.key), final)
 
+    def test_lookup_valid_hit_is_strictly_read_only(self):
+        final = self.create_final_entry({"digest": self.key.digest})
+        quarantine = self.root / f"{self.key.digest}.quarantine-recovery"
+        cleanup_pending = self.root / f"{self.key.digest}.cleanup-pending-old"
+        write_tree(quarantine, {"original.bin": b"original"})
+        write_tree(cleanup_pending, {"old.bin": b"old"})
+
+        with mock.patch(
+            "maximum_optimizer.cache._remove_direct_child"
+        ) as remove, mock.patch("maximum_optimizer.cache.os.replace") as replace:
+            self.assertEqual(self.cache.lookup(self.key), final)
+
+        remove.assert_not_called()
+        replace.assert_not_called()
+        self.assertTrue(quarantine.is_dir())
+        self.assertTrue(cleanup_pending.is_dir())
+
     def test_lookup_rejects_missing_corrupt_and_mismatched_marker_without_deleting(self):
         cases = (
             None,
@@ -273,6 +290,31 @@ class CandidateCacheTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "symlink"):
             self.cache.store(self.key, broken_source, {})
+
+    def test_symlink_guards_are_deterministic_without_platform_privileges(self):
+        final = self.create_final_entry({"digest": self.key.digest})
+        payload = final / "payload"
+        marker = final / "complete.json"
+
+        for guarded, expected_calls in (
+            (final, [mock.call(final)]),
+            (payload, [mock.call(final), mock.call(payload)]),
+            (marker, [mock.call(final), mock.call(payload), mock.call(marker)]),
+        ):
+            with self.subTest(guarded=guarded), mock.patch(
+                "maximum_optimizer.cache._is_symlink",
+                side_effect=lambda path, guarded=guarded: path == guarded,
+            ) as is_symlink:
+                self.assertIsNone(self.cache.lookup(self.key))
+                self.assertEqual(is_symlink.call_args_list, expected_calls)
+
+        with mock.patch(
+            "maximum_optimizer.cache._is_symlink",
+            side_effect=lambda path: path == self.source,
+        ) as is_symlink:
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                self.cache.store(self.key, self.source, {})
+            self.assertEqual(is_symlink.call_args_list, [mock.call(self.source)])
 
     def test_store_requires_source_directory(self):
         missing = self.base / "missing"
@@ -408,7 +450,7 @@ class CandidateCacheTests(unittest.TestCase):
             (error.recovery_path / "payload/model.mdl").read_bytes(), original
         )
 
-    def test_store_succeeds_when_quarantine_cleanup_fails_and_retry_cleans_it(self):
+    def test_store_succeeds_when_pending_cleanup_fails_and_mutating_retry_cleans_it(self):
         final = self.create_final_entry(None)
 
         from maximum_optimizer import cache as cache_module
@@ -421,12 +463,12 @@ class CandidateCacheTests(unittest.TestCase):
         ):
             returned = self.cache.store(self.key, self.source, {"fresh": True})
 
-        quarantine = next(
-            path for path in self.root.iterdir() if ".quarantine-" in path.name
+        cleanup_pending = next(
+            path for path in self.root.iterdir() if ".cleanup-pending-" in path.name
         )
         self.assertEqual(returned, final)
         self.assertEqual((final / "payload/model.mdl").read_bytes(), b"compiled")
-        self.assertTrue(quarantine.is_dir())
+        self.assertTrue(cleanup_pending.is_dir())
 
         with mock.patch.object(
             cache_module,
@@ -435,8 +477,93 @@ class CandidateCacheTests(unittest.TestCase):
         ) as remove_spy:
             self.assertEqual(self.cache.lookup(self.key), final)
 
-        self.assertFalse(quarantine.exists())
-        self.assertTrue(remove_spy.called)
+        self.assertTrue(cleanup_pending.is_dir())
+        remove_spy.assert_not_called()
+
+        self.assertEqual(self.cache.store(self.key, self.source, {}), final)
+        self.assertFalse(cleanup_pending.exists())
+
+    def test_store_preserves_success_and_quarantine_if_post_commit_rename_fails(self):
+        final = self.create_final_entry(None)
+
+        from maximum_optimizer import cache as cache_module
+
+        real_replace = cache_module.os.replace
+        calls = 0
+
+        def fail_cleanup_rename(
+            source: os.PathLike[str], destination: os.PathLike[str]
+        ) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise OSError("locked quarantine rename")
+            real_replace(source, destination)
+
+        with mock.patch.object(
+            cache_module.os,
+            "replace",
+            side_effect=fail_cleanup_rename,
+        ):
+            returned = self.cache.store(self.key, self.source, {"fresh": True})
+
+        quarantine = next(
+            path for path in self.root.iterdir() if ".quarantine-" in path.name
+        )
+        self.assertEqual(returned, final)
+        self.assertEqual((final / "payload/model.mdl").read_bytes(), b"compiled")
+        self.assertEqual(self.cache.store(self.key, self.source, {}), final)
+        self.assertTrue(quarantine.is_dir())
+
+    def test_store_preserves_success_when_pending_removal_raises_value_error(self):
+        final = self.create_final_entry(None)
+
+        with mock.patch(
+            "maximum_optimizer.cache._remove_direct_child",
+            side_effect=ValueError("containment changed"),
+        ):
+            returned = self.cache.store(self.key, self.source, {"fresh": True})
+
+        self.assertEqual(returned, final)
+        pending = next(
+            path for path in self.root.iterdir() if ".cleanup-pending-" in path.name
+        )
+        self.assertTrue(pending.is_dir())
+
+    def test_recovery_quarantine_survives_lookup_and_store_cleanup(self):
+        final = self.create_final_entry(None)
+
+        from maximum_optimizer import cache as cache_module
+
+        real_replace = cache_module.os.replace
+        calls = 0
+
+        def fail_promotion_and_restore(
+            source: os.PathLike[str], destination: os.PathLike[str]
+        ) -> None:
+            nonlocal calls
+            calls += 1
+            if calls in (2, 3):
+                raise OSError(f"injected replace failure {calls}")
+            real_replace(source, destination)
+
+        with mock.patch.object(
+            cache_module.os,
+            "replace",
+            side_effect=fail_promotion_and_restore,
+        ):
+            with self.assertRaises(AtomicReplaceError) as raised:
+                self.cache.store(self.key, self.source, {})
+
+        recovery = raised.exception.recovery_path
+        self.assertTrue(recovery.is_dir())
+        self.assertIsNone(self.cache.lookup(self.key))
+        self.assertTrue(recovery.is_dir())
+
+        self.assertEqual(self.cache.store(self.key, self.source, {}), final)
+        self.assertEqual(self.cache.lookup(self.key), final)
+        self.assertEqual(self.cache.store(self.key, self.source, {}), final)
+        self.assertTrue(recovery.is_dir())
 
     def test_cleanup_incomplete_removes_only_direct_staging_directories(self):
         self.root.mkdir()
@@ -514,6 +641,22 @@ class CandidateCacheTests(unittest.TestCase):
             side_effect=is_dir,
         ):
             self.assertEqual(self.cache.cleanup_incomplete(), 0)
+
+    def test_recursive_remove_refuses_symlink_after_containment_check(self):
+        from maximum_optimizer import cache as cache_module
+
+        target = self.base / "apparent-directory"
+        write_tree(target, {"data": b"preserved"})
+
+        with mock.patch.object(
+            cache_module,
+            "_is_symlink",
+            return_value=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                cache_module._remove_direct_child(target, self.base)
+
+        self.assertEqual((target / "data").read_bytes(), b"preserved")
 
     def test_store_does_not_collide_with_broken_symlink_staging_name(self):
         self.root.mkdir()
@@ -639,7 +782,7 @@ class AtomicReplaceTreeTests(unittest.TestCase):
         self.assertEqual((error.recovery_path / "old.bin").read_bytes(), b"original")
         self.assertEqual((staging / "new.bin").read_bytes(), b"new")
 
-    def test_success_is_preserved_when_backup_cleanup_fails(self):
+    def test_success_is_preserved_when_pending_cleanup_fails(self):
         staging = self.root / "staging"
         destination = self.root / "destination"
         write_tree(staging, {"new.bin": b"new"})
@@ -653,8 +796,58 @@ class AtomicReplaceTreeTests(unittest.TestCase):
 
         self.assertEqual(returned, destination)
         self.assertEqual((destination / "new.bin").read_bytes(), b"new")
+        pending = next(
+            path for path in self.root.iterdir() if ".cleanup-pending-" in path.name
+        )
+        self.assertEqual((pending / "old.bin").read_bytes(), b"old")
+
+    def test_success_preserves_backup_if_post_commit_rename_fails(self):
+        staging = self.root / "staging"
+        destination = self.root / "destination"
+        write_tree(staging, {"new.bin": b"new"})
+        write_tree(destination, {"old.bin": b"old"})
+        calls = 0
+
+        def fail_cleanup_rename(
+            source: os.PathLike[str], target: os.PathLike[str]
+        ) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise ValueError("containment changed")
+            os.replace(source, target)
+
+        returned = atomic_replace_tree(
+            staging,
+            destination,
+            replace=fail_cleanup_rename,
+        )
+
+        self.assertEqual(returned, destination)
+        self.assertEqual((destination / "new.bin").read_bytes(), b"new")
         backup = next(path for path in self.root.iterdir() if ".backup-" in path.name)
         self.assertEqual((backup / "old.bin").read_bytes(), b"old")
+        self.assertFalse(
+            any(".cleanup-pending-" in path.name for path in self.root.iterdir())
+        )
+
+    def test_success_survives_value_error_removing_pending_backup(self):
+        staging = self.root / "staging"
+        destination = self.root / "destination"
+        write_tree(staging, {"new.bin": b"new"})
+        write_tree(destination, {"old.bin": b"old"})
+
+        with mock.patch(
+            "maximum_optimizer.cache._remove_direct_child",
+            side_effect=ValueError("containment changed"),
+        ):
+            returned = atomic_replace_tree(staging, destination)
+
+        self.assertEqual(returned, destination)
+        pending = next(
+            path for path in self.root.iterdir() if ".cleanup-pending-" in path.name
+        )
+        self.assertEqual((pending / "old.bin").read_bytes(), b"old")
 
     def test_rejects_cross_volume_promotion_before_moving_anything(self):
         staging = self.root / "staging"
@@ -739,6 +932,34 @@ class AtomicReplaceTreeTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "symlink"):
             atomic_replace_tree(real_staging, destination_link)
+
+    def test_atomic_symlink_guards_are_deterministic_without_privileges(self):
+        staging = self.root / "staging"
+        destination = self.root / "destination"
+        write_tree(staging, {"new.bin": b"new"})
+        write_tree(destination, {"old.bin": b"old"})
+
+        with mock.patch(
+            "maximum_optimizer.cache._is_symlink",
+            side_effect=lambda path: path == staging,
+        ) as is_symlink:
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                atomic_replace_tree(staging, destination)
+            self.assertEqual(is_symlink.call_args_list, [mock.call(staging)])
+
+        with mock.patch(
+            "maximum_optimizer.cache._is_symlink",
+            side_effect=lambda path: path == destination,
+        ) as is_symlink:
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                atomic_replace_tree(staging, destination)
+            self.assertEqual(
+                is_symlink.call_args_list,
+                [mock.call(staging), mock.call(destination)],
+            )
+
+        self.assertEqual((staging / "new.bin").read_bytes(), b"new")
+        self.assertEqual((destination / "old.bin").read_bytes(), b"old")
 
 
 if __name__ == "__main__":
