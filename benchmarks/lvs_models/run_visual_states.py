@@ -38,7 +38,13 @@ def short_texture_cache_root(run_root: Path) -> Path:
 
 
 def state_region_manifest_path(state_root: Path) -> Path:
-    return Path(state_root) / "region_manifest.json"
+    selected = Path(state_root) / "region_manifest.json"
+    projected = selected.expanduser().absolute()
+    if len(str(projected)) >= 240:
+        raise ValueError(
+            f"visual state output exceeds safe legacy MAX_PATH budget: {projected}"
+        )
+    return selected
 
 
 def main() -> int:

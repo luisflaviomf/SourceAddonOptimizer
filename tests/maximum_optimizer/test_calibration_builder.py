@@ -53,6 +53,11 @@ class CalibrationBuilderTests(unittest.TestCase):
                 hashlib.sha256((canonical_json(payload) + "\n").encode("utf-8")).hexdigest(),
             )
 
+    def test_visual_runner_region_manifest_rejects_worst_case_long_output(self) -> None:
+        too_long = Path("C:/") / ("long-segment/" * 20) / "state"
+        with self.assertRaisesRegex(ValueError, "MAX_PATH"):
+            state_region_manifest_path(too_long)
+
 
 if __name__ == "__main__":
     unittest.main()
