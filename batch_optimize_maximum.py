@@ -313,13 +313,45 @@ def optimize_region_objects(
     ]
 
 
+def _surviving_priority_vertices(obj: object, group: object) -> tuple[int, ...]:
+    group_index = getattr(group, "index", None)
+    if type(group_index) is not int or group_index < 0:
+        raise SmdAuditValidationError("round priority group has invalid Blender index")
+    surviving = tuple(
+        int(vertex.index) if hasattr(vertex, "index") else index
+        for index, vertex in enumerate(obj.data.vertices)
+        if any(
+            int(item.group) == group_index and float(item.weight) > 0.0
+            for item in vertex.groups
+        )
+    )
+    if not surviving:
+        raise SmdAuditValidationError(
+            "round priority assignments did not survive planar dissolve"
+        )
+    return surviving
+
+
+def _round_evidence_payload(
+    decision: object, modifier_evidence: dict[str, object]
+) -> dict[str, object]:
+    return {
+        "round_admission": str(decision.reason),
+        "round_axis": decision.axis,
+        "round_planar_angle_degrees": modifier_evidence["planar_angle_degrees"],
+        "round_planar_triangles_after": modifier_evidence["planar_triangles_after"],
+        "round_priority_vertices_requested": modifier_evidence["priority_vertices_requested"],
+        "round_priority_vertices_survived": modifier_evidence["priority_vertices_survived"],
+    }
+
+
 def _apply_round_planar_modifiers(
     obj: object,
     *,
     ratio: float,
     priority_vertices: Sequence[int],
     planar_angle_degrees: float = 1.0,
-) -> None:
+) -> dict[str, object]:
     if bpy is None:
         raise RuntimeError("round planar strategy requires Blender")
     if not priority_vertices:
@@ -339,15 +371,30 @@ def _apply_round_planar_modifiers(
         planar.delimit = {"UV", "SHARP", "NORMAL", "MATERIAL", "SEAM"}
         bpy.ops.object.modifier_apply(modifier=planar.name)
 
+        surviving_group = obj.vertex_groups.get("__maximum_round_priority_v1__")
+        if surviving_group is None:
+            raise SmdAuditValidationError(
+                "round priority group did not survive planar dissolve"
+            )
+        surviving_vertices = _surviving_priority_vertices(obj, surviving_group)
+        obj.data.calc_loop_triangles()
+        planar_triangles_after = len(obj.data.loop_triangles)
+
         collapse = obj.modifiers.new(name="MaximumRoundPriority", type="DECIMATE")
         move_modifier_first(obj.modifiers, collapse)
         collapse.decimate_type = "COLLAPSE"
         collapse.ratio = float(ratio)
         collapse.use_collapse_triangulate = True
-        collapse.vertex_group = group.name
+        collapse.vertex_group = surviving_group.name
         collapse.invert_vertex_group = True
         collapse.vertex_group_factor = 1.0
         bpy.ops.object.modifier_apply(modifier=collapse.name)
+        return {
+            "planar_angle_degrees": float(planar_angle_degrees),
+            "planar_triangles_after": planar_triangles_after,
+            "priority_vertices_requested": len(tuple(priority_vertices)),
+            "priority_vertices_survived": len(surviving_vertices),
+        }
     finally:
         remaining = obj.vertex_groups.get("__maximum_round_priority_v1__")
         if remaining is not None:
@@ -375,6 +422,7 @@ def _optimize_blender_object(
         raise ValueError("imported mesh has no triangles")
     importance = None
     importance_group = None
+    round_evidence = None
     if candidate.strategy == "round-planar-priority-v1":
         positions = tuple(tuple(float(value) for value in vertex.co) for vertex in mesh.vertices)
         faces = tuple(tuple(int(index) for index in tri.vertices) for tri in mesh.loop_triangles)
@@ -385,9 +433,10 @@ def _optimize_blender_object(
         decision = classify_round_component(positions, faces, influences)
         if not decision.eligible:
             raise SmdAuditValidationError(f"round-planar-priority rejected: {decision.reason}")
-        _apply_round_planar_modifiers(
+        modifier_evidence = _apply_round_planar_modifiers(
             obj, ratio=ratio, priority_vertices=decision.priority_vertices
         )
+        round_evidence = _round_evidence_payload(decision, modifier_evidence)
         modifier = None
     else:
         modifier = obj.modifiers.new(name="MaximumCompilerAware", type="DECIMATE")
@@ -473,6 +522,8 @@ def _optimize_blender_object(
             "importance_group_inverted": True,
             "importance_group_removed": obj.vertex_groups.get("__maximum_importance_v1__") is None,
         })
+    if round_evidence is not None:
+        metrics.update(round_evidence)
     return metrics
 
 

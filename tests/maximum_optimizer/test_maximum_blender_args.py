@@ -86,6 +86,7 @@ class MaximumBlenderPureTests(unittest.TestCase):
 
         class Group:
             name = "__maximum_round_priority_v1__"
+            index = 4
 
             def __init__(self):
                 self.assignments = []
@@ -108,12 +109,26 @@ class MaximumBlenderPureTests(unittest.TestCase):
             def remove(self, group):
                 self.group = None
 
-        obj = SimpleNamespace(modifiers=Modifiers(), vertex_groups=Groups())
+        obj = SimpleNamespace(
+            modifiers=Modifiers(),
+            vertex_groups=Groups(),
+            data=SimpleNamespace(vertices=tuple(
+                SimpleNamespace(
+                    index=index,
+                    groups=(SimpleNamespace(group=4, weight=1.0),)
+                    if index in {0, 2, 4} else (),
+                )
+                for index in range(5)
+            ), loop_triangles=[object()] * 12),
+        )
+        obj.data.calc_loop_triangles = lambda: None
 
         def apply(*, modifier):
             item = next(item for item in obj.modifiers if item.name == modifier)
             applied.append(item)
             obj.modifiers.remove(item)
+            if item.name == "MaximumRoundPlanar":
+                obj.data.loop_triangles = [object()] * 8
 
         fake_bpy = SimpleNamespace(
             context=SimpleNamespace(
@@ -124,7 +139,7 @@ class MaximumBlenderPureTests(unittest.TestCase):
         obj.select_set = lambda selected: None
 
         with mock.patch.object(maximum, "bpy", fake_bpy):
-            maximum._apply_round_planar_modifiers(
+            evidence = maximum._apply_round_planar_modifiers(
                 obj, ratio=0.35, priority_vertices=(0, 2, 4), planar_angle_degrees=1.0
             )
 
@@ -140,6 +155,49 @@ class MaximumBlenderPureTests(unittest.TestCase):
         self.assertEqual(collapse.vertex_group, "__maximum_round_priority_v1__")
         self.assertTrue(collapse.invert_vertex_group)
         self.assertEqual(obj.vertex_groups.group, None)
+        self.assertEqual(evidence, {
+            "planar_angle_degrees": 1.0,
+            "planar_triangles_after": 8,
+            "priority_vertices_requested": 3,
+            "priority_vertices_survived": 3,
+        })
+
+    def test_round_priority_group_must_survive_planar_with_nonempty_assignments(self) -> None:
+        group = SimpleNamespace(index=4)
+        obj = SimpleNamespace(data=SimpleNamespace(vertices=(
+            SimpleNamespace(groups=(SimpleNamespace(group=4, weight=1.0),)),
+            SimpleNamespace(groups=(SimpleNamespace(group=2, weight=1.0),)),
+            SimpleNamespace(groups=(SimpleNamespace(group=4, weight=0.5),)),
+        )))
+
+        self.assertEqual(maximum._surviving_priority_vertices(obj, group), (0, 2))
+        obj.data.vertices = (
+            SimpleNamespace(groups=(SimpleNamespace(group=4, weight=0.0),)),
+        )
+        with self.assertRaisesRegex(maximum.SmdAuditValidationError, "did not survive"):
+            maximum._surviving_priority_vertices(obj, group)
+
+    def test_round_evidence_records_admission_planar_and_priority_counts(self) -> None:
+        from maximum_optimizer.round_planar_priority import RoundComponentDecision
+
+        payload = maximum._round_evidence_payload(
+            RoundComponentDecision(True, "eligible", 2, (1, 3, 5)),
+            {
+                "planar_angle_degrees": 1.0,
+                "planar_triangles_after": 40,
+                "priority_vertices_requested": 3,
+                "priority_vertices_survived": 2,
+            },
+        )
+
+        self.assertEqual(payload, {
+            "round_admission": "eligible",
+            "round_axis": 2,
+            "round_planar_angle_degrees": 1.0,
+            "round_planar_triangles_after": 40,
+            "round_priority_vertices_requested": 3,
+            "round_priority_vertices_survived": 2,
+        })
 
     def test_atomic_output_is_exclusive_cleans_failure_and_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
