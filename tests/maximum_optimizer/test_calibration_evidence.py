@@ -88,7 +88,7 @@ def _payload() -> dict:
             for family in CALIBRATION_FAMILIES
         ],
         "baseline_distribution": {
-            metric: {"count": 5, "min": 0.0, "median": 0.01, "p95": 0.02, "max": 0.03}
+            metric: {"count": 5, "min": 0.01, "median": 0.01, "p95": 0.01, "max": 0.01}
             for metric in CALIBRATION_METRICS
         },
         "decision": {
@@ -194,6 +194,20 @@ class CalibrationEvidenceTests(unittest.TestCase):
         missing["evidence_sha256"] = canonical_calibration_evidence_hash(missing)
         with self.assertRaisesRegex(ValueError, "missing materials"):
             parse_calibration_evidence(missing)
+
+    def test_resealed_ordered_but_false_distribution_is_rejected(self) -> None:
+        changed = copy.deepcopy(_payload())
+        changed["baseline_distribution"]["rgb_mae"] = {
+            "count": 5,
+            "min": 7.0,
+            "median": 7.0,
+            "p95": 7.0,
+            "max": 7.0,
+        }
+        changed["evidence_sha256"] = canonical_calibration_evidence_hash(changed)
+
+        with self.assertRaisesRegex(ValueError, "does not match baseline metrics"):
+            parse_calibration_evidence(changed)
 
 
 if __name__ == "__main__":

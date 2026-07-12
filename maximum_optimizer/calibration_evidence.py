@@ -60,6 +60,27 @@ def _number(value: object, label: str) -> float:
     return number
 
 
+def _percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(float(value) for value in values)
+    position = (len(ordered) - 1) * fraction
+    lower, upper = math.floor(position), math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def _derived_distribution(values: list[float]) -> dict[str, float | int]:
+    ordered = sorted(values)
+    return {
+        "count": len(ordered),
+        "min": ordered[0],
+        "median": _percentile(ordered, 0.5),
+        "p95": _percentile(ordered, 0.95),
+        "max": ordered[-1],
+    }
+
+
 def canonical_calibration_evidence_hash(payload: object) -> str:
     if type(payload) is not dict:
         raise ValueError("calibration evidence must be an object")
@@ -252,6 +273,15 @@ def parse_calibration_evidence(payload: object) -> dict:
         ))
         if ordered != tuple(sorted(ordered)):
             raise ValueError(f"{metric} distribution order is invalid")
+        expected = _derived_distribution([
+            _number(
+                family["baseline"]["configurations"][0]["metrics"][metric],
+                f"{family['family_id']} baseline {metric}",
+            )
+            for family in families
+        ])
+        if distribution != expected:
+            raise ValueError(f"{metric} distribution does not match baseline metrics")
     decision = _exact(root["decision"], {"winner", "status", "reason"}, "decision")
     if (
         decision["winner"] is not False
