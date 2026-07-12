@@ -482,14 +482,71 @@ because its intermediate SMD files are smaller.
 
 ## Cache design
 
-The existing candidate cache continues to cache compiled candidate workspaces, but
-cached diagnostics never authorize structural, whole visual, or focused gates.
-For schema-3 candidates it also records the complete canonical recipe, source-tree
-manifest/snapshot seal, composition seal, and structural/final authorization evidence
-hashes with exact keys. Cache restoration validates current contained source bytes
-before the build enters the retained donor registry. A valid hit still reruns every
-current hard gate; an old schema, mixed ordinary/composite fields, stale recipe,
-same-size source mutation, or missing source manifest is a cache miss.
+The candidate cache uses outer schema 2 and maximum cache-record schema 3. An entry
+root has exactly `payload/`, `payload-manifest.json`, `metadata.json`, and
+marker-last `complete.json`. Publication never copies a whole candidate workspace and
+never seals after promotion. It whitelists typed source, compiled, composition, and
+direct-snapshot artifacts into same-volume staging through bounded no-follow handles;
+writes and fsyncs the exact payload manifest, record, and metadata; writes and fsyncs
+the completion marker last; reparses the complete staging entry against current copied
+bytes; then performs one atomic `os.replace`. A crash before that replacement exposes
+no hit. A valid concurrent same-key winner is retained only after the same full
+schema-2/3 validation.
+
+Outer metadata contains exactly `schema`, `key_digest`, `record_schema`,
+`candidate_kind`, `payload_manifest_sha256`, `payload_file_count`, and
+`payload_total_bytes`. The payload manifest contains exactly schema, a canonical
+sorted sequence of `{path,size,sha256,kind}`, exact totals, and its digest.
+`complete.json` contains exactly `schema`, `key_digest`, metadata/record/payload
+manifest hashes, payload file/byte totals, and `entry_sha256`; the entry seal excludes
+only itself. Each control or manifest JSON is at most 16 MiB and is captured through a
+handle-verified bounded read before parsing.
+
+Payload paths are an exact whitelist: `maximum_cache_record.json`, typed files below
+`manifests/`, complete bounded `src/` and `compiled/` trees, and—only for
+adaptive-direct—typed bounded `direct/` snapshot outputs. Logs, renders, focused
+snapshots, texture caches, temporary/quarantine files, extra images, absolute/UNC/
+drive/backslash/dot/parent aliases, case collisions, symlink/junction/reparse leaves
+or ancestors, special files, and unmanifested content are forbidden before copy.
+Source content retains the 4,096-file/2-GiB bound, compiled content the
+64-artifact/2-GiB bound, and direct content the per-ratio 4,096-file/2-GiB bound. The
+combined entry cannot exceed those three class bounds plus six 16-MiB control files.
+
+Record schema 3 has exact common keys `schema`, `key_digest`, `candidate_kind`,
+`family_id`, `model_rel`, `family_input_sha256`, `candidate_spec`,
+`dependency_proof_sha256`, `compiled_models_dir`, `optimized_qc`, `compile_record`,
+`provenance`, `source_manifest_sha256`, `source_snapshot_sha256`,
+`compile_manifest_sha256`, `kind_proofs`, and `prior_diagnostics`. Its one exact
+candidate kind and corresponding nested matrices are:
+
+| candidate kind | `kind_proofs` exact keys | `prior_diagnostics` exact keys |
+| --- | --- | --- |
+| `legacy-ordinary-v1` | `schema`, `kind` | `schema`, `whole_visual_sha256` |
+| `schema3-ordinary-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256` | `schema`, `whole_index_sha256`, `focused_authorization_sha256` |
+| `focused-recovery-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256`, `recipe_sha256`, `composition_evidence_sha256`, `compile_manifest_sha256` | `schema`, `initial_focused_authorization_sha256`, `recovery_schema2_evidence_sha256`, `final_whole_evidence_sha256` |
+| `adaptive-direct-fallback-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256`, `recipe_sha256`, `composition_evidence_sha256`, `compile_manifest_sha256`, `direct_request_set_sha256`, `direct_snapshot_set_sha256` | `schema`, `initial_focused_authorization_sha256`, `recovery_schema2_evidence_sha256`, `final_whole_evidence_sha256` |
+
+All common keys are present for every kind. Only legacy ordinary sets the two common
+source hashes to JSON null; all kinds require `compile_manifest_sha256`. Wherever a
+schema-3 common source or compile hash is duplicated in `kind_proofs`, the two values
+are exactly equal.
+Composite proof keys are forbidden in ordinary matrices, donor keys are forbidden in
+adaptive-direct matrices, and direct keys are forbidden in focused-recovery matrices.
+Missing, extra, wrong-nullability, cross-copied, ordinary/composite mixed, and donor/
+direct mixed fields make the entry a miss.
+
+Prior whole/focused/schema-2/final evidence hashes live only in the record's bounded
+`prior_diagnostics` block. Cached `ValidationResult`, `passed`, terminal status, or
+old authorization payloads never authorize. Cache restoration validates current
+contained source/direct snapshots, recipe, composition, and complete compiled bytes
+before a build enters any retained registry. Legacy/ordinary hits rerun their current
+structural/whole/focused gates. A focused-recovery or adaptive-direct hit reruns
+structural validation, all selected top-K focuses, rebuilds schema 2 from the sealed
+ordinary-base initial context, and then runs exactly one fresh final whole gate after
+the focused set passes. Fresh and resume have identical authorization semantics;
+only cache-hit diagnostics may differ. Old schema, stale proof, same-size mutation,
+or corrupt content is a read-only miss followed only by safe direct-child no-follow
+invalidation.
 
 An adaptive-direct cache entry additionally binds every canonical
 `DirectSourceBuildRequest`, `DirectSourceSnapshot`, recomputed prefilter proof, and
@@ -697,6 +754,74 @@ target. No earlier record may authorize, no record after `authorized` is accepte
 and exactly one final-whole pass exists. Schema-2 parsing is introduced only in Task
 5; schema 1 remains byte-for-byte no-recovery-only.
 
+## Report and lifecycle protocol
+
+Profile-schema-1/2 runs preserve the existing canonical Maximum report and progress
+schema 1 byte-for-byte. Trusted profile schema 3 uses a conditional exact report
+schema 2; adding recovery fields to the legacy dataclass serializer is forbidden.
+The terminal schema-2 report contains exactly `schema`, `report_kind="terminal"`,
+status, original/control/selected/final sizes, tool versions, family summaries,
+bounded events, declared event count/bound, cancellation flag, and a canonical report
+path/seal. Its exact keys are `schema`, `report_kind`, `status`, `original_size`,
+`control_size`, `selected_size`, `final_size`, `tool_versions`, `families`, `events`,
+`event_count`, `event_bound`, `cancelled`, `report_path`, and `report_sha256`.
+Schema-3 progress has exactly the same non-terminal summary keys but uses
+`report_kind="progress"` and `progress_sha256`, and omits `final_size` and
+`report_sha256`; it cannot parse as a terminal report. Both report paths are canonical
+contained relative paths and each seal excludes only itself. Every
+terminal/progress JSON file is at most 16 MiB and is published through a safe
+contained atomic helper that rejects a reparse `logs` leaf or ancestor.
+
+Schema-3 attempt summaries are exact bounded diagnostics, not copies of evidence.
+They name candidate ID/kind/engine/status, actual compiled bytes, cache-hit status,
+base candidate, nullable reserved round and direct ratio, selected-focus states,
+changed source identities, reused region keys, and nullable composition, compile,
+structural, schema-2, and final-whole hashes. They never embed full material/source/
+render evidence, raw commands, absolute runtime paths, or caller-sized error text.
+Candidate IDs are at most 128 UTF-8 bytes, errors 4,096, and every list reuses its
+existing top-K/source/round/artifact/candidate-budget cardinality.
+
+Each selected target has exactly one report-only state: `passed`, `failed`,
+`cancelled`, or `unattempted`. Only attempted passed/failed states carry a focused
+evidence hash. Cancelled/unattempted summaries cannot be converted into
+`FocusedRenderEvidence` and never enter authoritative schema 2. Donor recovery report
+rounds match reserved contiguous indices `0..n-1`; each independent adaptive-direct
+attempt has only round `[0]`. Changed and reused identities exactly partition the
+selected dependency set. Only an attempt whose current schema-2 terminal status is
+`authorized` may carry a passing final-whole hash, become selected, trigger
+`best_updated`, or reach promotion.
+
+The fixed stage vocabulary is `generate_compile`, `cache_restore`,
+`cache_revalidate`, `compiled_size`, `structural`, `whole_visual`,
+`focused_select`, `focused_render`, `focused_compare`,
+`focused_evidence_publish`, `recovery_select`, `recovery_compose`,
+`recovery_compile`, `direct_source_prepare`, `direct_source_build`,
+`direct_source_validate`, `final_whole_visual`, and `cache_store`. Stage records have
+exact family/candidate identity and candidate kind, ordinal/total, plus stage-valid
+nullable round, region, and source identity. Unknown stages, fields, order, or excess
+cardinality fail closed. Events remain diagnostic.
+
+The event-count ceiling is derived before work as
+`2 + family_count * (2 + (SearchBudget.max_candidates + 1) * candidate_event_bound)`,
+where `candidate_event_bound = 2 + 13 + 2 * focused_top_k + 3 * 8`. This covers
+candidate start/finish, thirteen singleton stages, two render/compare stages for each
+of at most four focuses, and three stages for each of at most eight direct sources.
+The 16-MiB report bound is authoritative even when the derived ceiling is larger.
+Space for candidate/family/run terminal records is reserved; history is never silently
+truncated into a successful report or rewritten without bounds. After inventory and
+before candidate work, the runner rejects a family/event projection whose minimum
+valid terminal summaries cannot fit in 16 MiB.
+
+Cancellation is checked before reservation, snapshot open, every bounded copy/hash/
+process, composition/compile, each focus stage, partial/authoritative publication,
+final whole, cache publication, best update, and output replacement. Before cache
+promotion it removes only owned staging. If cancellation becomes visible only after a
+fully validated marker-last cache entry has atomically replaced its destination, that
+entry remains reusable; the current attempt records cancelled/unattempted remainder
+states and performs no best update or output promotion. Every reserved attempt,
+family, and run receives exactly one terminal record. Cancellation publishes no
+authoritative schema 2 containing report-only unattempted targets.
+
 ## Resource and denial-of-service bounds
 
 The following are hard validation limits, not tunable environment variables:
@@ -720,6 +845,12 @@ The following are hard validation limits, not tunable environment variables:
   per-ratio aggregate discovery/copy/hash bounded by 4,096 files and 2 GiB;
 - Monaco schema-2 records: exactly one independent record at round index 0 per
   global ratio, outside the three-round donor-recovery counter;
+- candidate-cache combined payload: the sum of the existing source, compile, and
+  direct class bounds plus at most six 16-MiB control/manifest files; transient
+  workspace content is never included;
+- every cache control, terminal report, and progress JSON: maximum 16 MiB;
+- event history: the derived family/candidate/stage formula in the report protocol,
+  additionally constrained by the 16-MiB report bound;
 - focus-cache material proof: maximum 4,096 files and 2 GiB of hashed content; over
   the bound disables the cache and renders fresh;
 - all copy, hash, render, compile, cache, and round boundaries observe cancellation.
@@ -751,6 +882,7 @@ Create:
 - `tests/maximum_optimizer/test_focused_regions.py`
 - `tests/maximum_optimizer/test_focused_cache.py`
 - `tests/maximum_optimizer/test_composite.py`
+- `tests/maximum_optimizer/test_reporting.py`
 
 Modify:
 
@@ -761,6 +893,8 @@ Modify:
 - `maximum_optimizer/candidates.py`
 - `maximum_optimizer/search.py`
 - `maximum_optimizer/orchestrator.py`
+- `maximum_optimizer/cache.py`
+- `maximum_optimizer/reporting.py`
 - `batch_optimize_maximum.py`
 - `tests/maximum_optimizer/test_fidelity_selection.py`
 - `tests/maximum_optimizer/test_regions.py`
@@ -792,4 +926,11 @@ mechanism.
 - Winner selection uses compiled bytes only after structural, whole, and focused
   gates pass.
 - Cache hits and misses produce the same authorization result.
+- Candidate cache entries use marker-last outer schema 2 and exact record schema 3,
+  contain only whitelisted bounded typed artifacts, and never require post-promotion
+  sealing.
+- Legacy reports remain byte-identical schema 1; trusted schema-3 reports use exact
+  bounded schema 2 with hashes/summaries rather than embedded evidence.
+- Cancellation observed after a fully valid atomic cache promotion may retain that
+  reusable cache entry, but cannot produce a best update or output promotion.
 - Cancellation and every hard resource bound fail safely without output promotion.

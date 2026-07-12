@@ -1382,58 +1382,200 @@ enable schema 3 receive the current defaults and behavior.
 **Files:**
 - Modify: `maximum_optimizer/orchestrator.py`
 - Modify: `maximum_optimizer/cache.py`
+- Modify: `maximum_optimizer/reporting.py`
 - Modify: `tests/maximum_optimizer/test_orchestrator.py`
 - Modify: `tests/maximum_optimizer/test_cache.py`
 - Modify: `tests/maximum_optimizer/test_focused_cache.py`
+- Create: `tests/maximum_optimizer/test_reporting.py`
 
 **Interfaces:**
-- Candidate cache schema records whole, focused, composition, and final authorization evidence hashes, but all gates rerun on resume.
-- Maximum report attempts expose focused status, recovery round, changed sources, and final whole reauthorization.
+- `CandidateCache` publishes exact outer schema 2. Its root contains only
+  `payload/`, `payload-manifest.json`, `metadata.json`, and marker-last
+  `complete.json`.
+- `payload/maximum_cache_record.json` uses exact schema 3 and one mutually
+  exclusive `candidate_kind`: `legacy-ordinary-v1`, `schema3-ordinary-v1`,
+  `focused-recovery-v1`, or `adaptive-direct-fallback-v1`.
+- Legacy profile-schema-1/2 `MaximumRunReport` serialization remains byte-for-byte
+  schema 1. Trusted profile schema 3 uses an exact conditional report schema 2 and a
+  distinct exact schema-2 progress envelope.
+- Cache records retain prior whole/focused/composition/schema-2/final hashes only as
+  bounded diagnostics. Restore always rebuilds current hard authorization.
+- Control JSON and terminal/progress report files are each limited to 16 MiB.
+
+  The outer schema-2 metadata has only `schema`, `key_digest`, `record_schema`,
+  `candidate_kind`, `payload_manifest_sha256`, `payload_file_count`, and
+  `payload_total_bytes`. The payload manifest has only `schema`, sorted exact
+  `{path,size,sha256,kind}` files, declared file/byte totals, and `digest`.
+  `complete.json` has only `schema`, `key_digest`, `metadata_sha256`,
+  `record_sha256`, `payload_manifest_sha256`, `payload_file_count`,
+  `payload_total_bytes`, and `entry_sha256`; its seal covers every field except
+  itself.
+
+  Cache-record schema 3 has exact common keys `schema`, `key_digest`,
+  `candidate_kind`, `family_id`, `model_rel`, `family_input_sha256`,
+  `candidate_spec`, `dependency_proof_sha256`, `compiled_models_dir`,
+  `optimized_qc`, `compile_record`, `provenance`, `source_manifest_sha256`,
+  `source_snapshot_sha256`, `compile_manifest_sha256`, `kind_proofs`, and
+  `prior_diagnostics`. `kind_proofs` and `prior_diagnostics` use these exact matrices:
+
+  | candidate kind | `kind_proofs` exact keys | `prior_diagnostics` exact keys |
+  | --- | --- | --- |
+  | `legacy-ordinary-v1` | `schema`, `kind` | `schema`, `whole_visual_sha256` |
+  | `schema3-ordinary-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256` | `schema`, `whole_index_sha256`, `focused_authorization_sha256` |
+  | `focused-recovery-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256`, `recipe_sha256`, `composition_evidence_sha256`, `compile_manifest_sha256` | `schema`, `initial_focused_authorization_sha256`, `recovery_schema2_evidence_sha256`, `final_whole_evidence_sha256` |
+  | `adaptive-direct-fallback-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256`, `recipe_sha256`, `composition_evidence_sha256`, `compile_manifest_sha256`, `direct_request_set_sha256`, `direct_snapshot_set_sha256` | `schema`, `initial_focused_authorization_sha256`, `recovery_schema2_evidence_sha256`, `final_whole_evidence_sha256` |
+
+  All common keys are present for every kind. Only legacy ordinary sets
+  `source_manifest_sha256` and `source_snapshot_sha256` to JSON null; every kind
+  requires a non-null `compile_manifest_sha256`. Wherever a schema-3 common source or
+  compile hash is duplicated in `kind_proofs`, the two values must be exactly equal.
+  Composite fields are forbidden in ordinary matrices, donor fields are forbidden in
+  adaptive-direct matrices, and absent fields are rejected rather than ignored.
 
 - [ ] **Step 1: Write cache-schema RED tests**
 
-  Reject old/new mixed fields, forged focused pass, wrong composition hash, stale
-  profile/evidence version, same-size tampering, reparse content, extra images, and
-  source/material proof changes. Confirm a valid hit still invokes structural,
-  whole, focused comparison, and final authorization.
+  Build every valid outer-schema-2/record-schema-3 candidate-kind fixture, then add,
+  remove, null, swap, or cross-copy each common and kind-specific field. Reject old
+  outer/record schemas, ordinary/composite and donor/direct mixtures, wrong seals,
+  arbitrary `passed`/validation fields, stale trusted profile/evidence/selector/
+  renderer/dependency bindings, and candidate/cache/recipe mismatch as read-only
+  misses.
+
+  Prove one atomic publication: payload and typed manifests are copied no-follow into
+  same-volume staging, `payload-manifest.json` and metadata bind current copied bytes,
+  `complete.json` is fsynced last, the complete staging entry is fully reparsed, and
+  only then one `os.replace` promotes it. Crash before marker or promotion exposes no
+  hit. A valid concurrent same-key winner is retained only after full schema-2/3
+  revalidation. There is no post-promotion sealing step.
+
+  Enforce the physical whitelist: exact record and typed source/compile/composition/
+  direct manifest files; contained `src/`, `compiled/`, and, for adaptive-direct only,
+  typed `direct/` snapshot outputs. Reject `logs/`, renders, focused snapshots,
+  texture caches, temporary/quarantine names, extra images, and any unmanifested
+  file before copying it. Exercise same-size tampering, source/material/direct proof
+  changes, case aliases, absolute/UNC/drive/backslash/dot/parent paths, special files,
+  symlink/junction/reparse leaves and ancestors, source identity changes during read,
+  and unsafe invalidation/cleanup.
 
 - [ ] **Step 2: Write report/cardinality RED tests**
 
-  Require one selected focus record per target, contiguous recovery rounds, exact
-  changed/reused focus partition, complete compile artifacts, and terminal states
-  for cancelled unattempted focuses.
+  Preserve golden canonical bytes for every existing profile-schema-1/2 report and
+  progress fixture. For trusted schema 3, require report schema 2 exact top-level
+  keys: `schema`, `report_kind`, `status`, `original_size`, `control_size`,
+  `selected_size`, `final_size`, `tool_versions`, `families`, `events`,
+  `event_count`, `event_bound`, `cancelled`, `report_path`, and `report_sha256`.
+  A progress envelope has exactly `schema`, `report_kind="progress"`, `status`,
+  `original_size`, `control_size`, `selected_size`, `tool_versions`, `families`,
+  `events`, `event_count`, `event_bound`, `cancelled`, `report_path`, and
+  `progress_sha256`; it omits terminal-only `final_size`/`report_sha256` and can never
+  parse as a terminal report. Both paths are canonical contained relative paths and
+  each seal excludes only itself.
+
+  Every schema-3 attempt uses a bounded exact summary with candidate ID/kind/engine,
+  status, compiled bytes, cache diagnostic, base candidate, nullable reserved round
+  and direct ratio, selected-focus states, changed source identities, reused region
+  keys, and nullable composition/compile/structural/schema-2/final-whole hashes.
+  Require one focus state per selected target. Report-only state is exactly
+  `passed`, `failed`, `cancelled`, or `unattempted`; only passed/failed attempted
+  states carry an evidence hash. Recovery rounds are contiguous reserved `0..n-1`;
+  adaptive-direct has exactly `[0]`. Changed/reused sets exactly partition selected
+  dependencies, compile summaries cover every required artifact, and only an
+  authorized attempt may carry a passing final-whole hash or become selected.
+
+  Reports embed hashes and bounded identity/status summaries, never complete focused
+  evidence, material inventories, source manifests, raw commands, or absolute runtime
+  paths. Candidate/error strings are bounded to 128/4,096 UTF-8 bytes and list
+  cardinalities reuse the top-K, changed-source, direct-source, round, artifact, and
+  candidate-budget limits.
 
 - [ ] **Step 3: Write hard-bound RED tests**
 
   Exercise top-K 5, 17 whole states, 3 poses, a fifth changed source, ninth Monaco
   fallback, fifth direct ratio, fourth recovery round, and candidate-budget
-  exhaustion. Each must reject before starting the excess process.
+  exhaustion. Each must reject before opening/hashing an excess snapshot, allocating
+  staging, or starting a process. Add cache source file 4,097, compiled artifact 65,
+  aggregate direct snapshot over its existing 4,096-file/2-GiB bound, sparse content
+  above any 2-GiB class bound, control/report JSON byte 16 MiB + 1, deep/oversized
+  arrays, and event-count exhaustion. Instrument open/hash/copy/process/cache store/
+  best update/promotion and require zero excess calls.
+
+  Event history uses the derived hard bound
+  `2 + family_count * (2 + (budget.max_candidates + 1) * candidate_event_bound)`,
+  where `candidate_event_bound = 2 + 13 + 2 * focused_top_k + 3 * 8`:
+  candidate start/finish, thirteen singleton typed stages, at most two per-focus
+  render/compare stages for four focuses, and three direct-source stages for eight
+  sources. The terminal/progress JSON 16-MiB bound remains authoritative even when
+  the derived count is larger. Events and summaries reserve room for terminal
+  records; history is never silently truncated into a false-success report.
 
 - [ ] **Step 4: Run integration tests and verify RED**
 
   Run:
-  `python -m unittest tests.maximum_optimizer.test_cache tests.maximum_optimizer.test_focused_cache tests.maximum_optimizer.test_orchestrator -v`
+  `python -m unittest tests.maximum_optimizer.test_cache tests.maximum_optimizer.test_focused_cache tests.maximum_optimizer.test_orchestrator tests.maximum_optimizer.test_reporting -v`
 
   Expected: missing schema/report/bound enforcement.
 
 - [ ] **Step 5: Implement exact cache and report schemas**
 
-  Bump the candidate cache record schema once. Keep relative contained paths, exact
-  key sets, canonical hashes, atomic writes, and current corrupt-entry-as-miss
-  behavior.
+  Implement outer CandidateCache schema 2 and maximum cache-record schema 3 exactly
+  once. Replace whole-workspace `copytree` and post-promotion `_seal_cache_entry` with
+  the whitelist, bounded no-follow staged publication above. Control JSON is read
+  through a 16-MiB handle-verified capture before parsing. Enforce existing source
+  4,096/2-GiB, compile 64/2-GiB, and direct per-ratio 4,096/2-GiB bounds independently;
+  the combined cache maximum is their sum plus at most six 16-MiB control/manifests.
+  Lookup is read-only; corrupt/old/mixed entries are misses, and later invalidation
+  removes only a verified direct child without following links.
+
+  On resume, dispatch by exact candidate kind. Legacy/ordinary rerun current
+  structural, whole, and focused gates as applicable. Focused-recovery and
+  adaptive-direct entries first revalidate source/direct snapshots, recipe,
+  composition, and complete compile bytes, then rerun structural, **all selected
+  top-K focuses**, rebuild schema 2 from the sealed base initial context, and run
+  exactly one fresh final whole after focus pass. Stored prior hashes remain
+  diagnostics and cannot enter the new authorization payload. Fresh and resume must
+  return the same pass/fail and authorization semantics; cache-hit diagnostics alone
+  may differ.
+
+  Serialize legacy reports/progress with the existing schema-1 path unchanged.
+  Serialize trusted-schema-3 report/progress through separate exact schema-2 typed
+  builders, canonical seals, bounded summaries, and safe contained atomic writes.
+  Reject a `logs` reparse ancestor and never follow or replace an external target.
+  After inventory but before the first family process, compute the derived event bound
+  and the minimum terminal-summary capacity. If a valid terminal report cannot fit in
+  16 MiB, fail preflight before candidate work; later serializers reserve terminal
+  capacity before accepting another diagnostic event.
 
 - [ ] **Step 6: Add cancellation barriers and event stages**
 
-  Add stages `focused_select`, `focused_render`, `focused_compare`,
-  `recovery_compose`, `recovery_compile`, and `final_whole_visual`. Cancellation
-  between stages writes partial evidence and never promotes output.
+  The fixed stage vocabulary is exactly `generate_compile`, `cache_restore`,
+  `cache_revalidate`, `compiled_size`, `structural`, `whole_visual`,
+  `focused_select`, `focused_render`, `focused_compare`,
+  `focused_evidence_publish`, `recovery_select`, `recovery_compose`,
+  `recovery_compile`, `direct_source_prepare`, `direct_source_build`,
+  `direct_source_validate`, `final_whole_visual`, and `cache_store`. Every stage event
+  has family/candidate identity, candidate kind, ordinal/total, and nullable exact
+  `round_index`/`region_key`/`source_identity` according to its stage. Unknown stages,
+  fields, order regressions, and count excess are rejected; events are diagnostic and
+  never authorize.
+
+  Add cancellation barriers before slot reservation; snapshot open; each bounded
+  copy/hash/process; composition/compile; every focus select/render/compare; partial
+  and authoritative evidence publication; final whole; cache publication; best
+  update; and output replacement. Cancellation before cache promotion removes only
+  owned staging. If cancellation becomes visible only after one fully validated
+  atomic cache entry has been promoted, keep that entry reusable, record the current
+  attempt/focus remainder as cancelled/unattempted, and perform no best update or
+  output promotion. Cancellation never creates authoritative schema 2 from report-only
+  unattempted states and produces exactly one candidate, family, and run terminal.
 
 - [ ] **Step 7: Run integration gate and commit checkpoint 7**
 
   Run:
-  `python -m unittest tests.maximum_optimizer.test_cache tests.maximum_optimizer.test_focused_cache tests.maximum_optimizer.test_orchestrator -v`
+  `python -m unittest tests.maximum_optimizer.test_cache tests.maximum_optimizer.test_focused_cache tests.maximum_optimizer.test_orchestrator tests.maximum_optimizer.test_reporting -v`
 
-  Expected: zero failures; privilege skips remain skips.
+  Expected: zero failures; cache/report control files remain within 16 MiB, event
+  cardinality is bounded, resume rebuilds every current authorization, and privilege
+  skips remain skips.
 
   Commit:
   `git commit -m "feat: audit focused recovery lifecycle"`
