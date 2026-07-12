@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from maximum_optimizer.benchmarking import (
     ArtifactDeclaration,
     BASELINE_LANES,
     BenchmarkRecord,
+    canonical_json_bytes,
     Corpus,
     FamilySpec,
 )
@@ -18,7 +20,9 @@ from maximum_optimizer.dx90_optional import (
     DX90_OPTIONAL_LANE,
     Dx90PolicyError,
     RuntimeEvidence,
+    candidate_manifest_for_corpus,
     build_dx90_optional_experiment,
+    parse_dx90_optional_experiment,
     write_dx90_optional_experiment,
     build_dx90_optional_candidate,
     validate_dx90_optional_candidate,
@@ -163,29 +167,51 @@ class Dx90OptionalCandidateTests(unittest.TestCase):
 
 
 class RuntimeEvidenceTests(unittest.TestCase):
+    binding = {
+        "corpus_id": "lvs-models-v1",
+        "family_ids": ("car",),
+        "candidate_manifest_sha256": "c" * 64,
+    }
+
     def test_pending_is_not_runtime_proof_and_static_tools_cannot_prove(self) -> None:
         pending = RuntimeEvidence.pending(
             reason="hidden runtime automation unavailable",
-            manual_procedure=("launch Garry's Mod", "spawn bodygroup/animated/physics representatives", "inspect logs"),
+            manual_procedure=("launch Garry's Mod", "verify rendering and damage", "inspect logs"),
+            **self.binding,
         )
         self.assertEqual(pending.status, "pending")
         self.assertFalse(pending.runtime_proven)
         with self.assertRaisesRegex(Dx90PolicyError, "Garry's Mod runtime"):
             RuntimeEvidence.proven(
-                tool_name="Crowbar",
-                tool_sha256="1" * 64,
-                build_id="0.74",
+                engine_name="Crowbar",
+                engine_executable_sha256="1" * 64,
+                engine_build_id="0.74",
+                engine_build_sha256="3" * 64,
                 log_sha256="2" * 64,
                 capabilities=("static_decompile",),
+                **self.binding,
+            )
+
+    def test_direct_construction_cannot_bypass_validation(self) -> None:
+        with self.assertRaises(Dx90PolicyError):
+            RuntimeEvidence(
+                schema_version=1, status="proven", target="gmod_dynamic_runtime",
+                corpus_id="lvs-models-v1", family_ids=("car",),
+                candidate_manifest_sha256="c" * 64, engine_name="Crowbar",
+                engine_executable_sha256="1" * 64, engine_build_id="static",
+                engine_build_sha256="2" * 64, log_sha256="3" * 64,
+                capabilities=("static_decompile",), reason=None, manual_procedure=(),
             )
 
     def test_proven_requires_hashed_gmod_runtime_log_and_all_capabilities(self) -> None:
         evidence = RuntimeEvidence.proven(
-            tool_name="Garry's Mod",
-            tool_sha256="1" * 64,
-            build_id="2026.07.12",
-            log_sha256="2" * 64,
-            capabilities=("bodygroups", "animation", "physics", "dynamic_model_load"),
+            engine_name="Garry's Mod",
+            engine_executable_sha256="1" * 64,
+            engine_build_id="2026.07.12",
+            engine_build_sha256="2" * 64,
+            log_sha256="3" * 64,
+            capabilities=("dynamic_model_load", "rendering", "bodygroups_skins", "animation", "physics", "damage"),
+            **self.binding,
         )
         self.assertTrue(evidence.runtime_proven)
         self.assertEqual(RuntimeEvidence.from_dict(evidence.to_dict()), evidence)
@@ -193,15 +219,19 @@ class RuntimeEvidenceTests(unittest.TestCase):
             with self.subTest(capabilities=capabilities):
                 with self.assertRaisesRegex(Dx90PolicyError, "capabilities"):
                     RuntimeEvidence.proven(
-                        tool_name="Garry's Mod",
-                        tool_sha256="1" * 64,
-                        build_id="2026.07.12",
-                        log_sha256="2" * 64,
+                        engine_name="Garry's Mod",
+                        engine_executable_sha256="1" * 64,
+                        engine_build_id="2026.07.12",
+                        engine_build_sha256="2" * 64,
+                        log_sha256="3" * 64,
                         capabilities=capabilities,
+                        **self.binding,
                     )
 
     def test_strict_schema_rejects_unknown_and_tampered_fields(self) -> None:
-        raw = RuntimeEvidence.pending(reason="not run", manual_procedure=("step",)).to_dict()
+        raw = RuntimeEvidence.pending(
+            reason="not run", manual_procedure=("verify rendering and damage",), **self.binding
+        ).to_dict()
         raw["extra"] = True
         with self.assertRaisesRegex(Dx90PolicyError, "keys"):
             RuntimeEvidence.from_dict(raw)
@@ -257,7 +287,14 @@ class Dx90BenchmarkLaneTests(unittest.TestCase):
                 ("car",),
                 (family,),
             )
-            pending = RuntimeEvidence.pending(reason="not run", manual_procedure=("manual runtime load",))
+            manifest = candidate_manifest_for_corpus(corpus)
+            pending = RuntimeEvidence.pending(
+                reason="not run",
+                manual_procedure=("verify rendering and damage in manual runtime load",),
+                corpus_id=corpus.corpus_id,
+                family_ids=corpus.pressure_ids,
+                candidate_manifest_sha256=manifest["sha256"],
+            )
 
             payload = build_dx90_optional_experiment(
                 corpus=corpus,
@@ -268,6 +305,18 @@ class Dx90BenchmarkLaneTests(unittest.TestCase):
 
             self.assertEqual(payload["lane"], "dx90_optional")
             self.assertEqual(payload["runtime_evidence"]["status"], "pending")
+            self.assertEqual(payload["candidate_manifest"], manifest)
+            family_manifest = payload["candidate_manifest"]["families"][0]
+            self.assertEqual(
+                family_manifest["kept"],
+                [
+                    {"path": path, "size_bytes": len(data), "sha256": _digest(data)}
+                    for path, data in payloads.items() if not path.endswith(".dx80.vtx")
+                ],
+            )
+            self.assertEqual(family_manifest["omitted_dx80"], {
+                "path": "models/car.dx80.vtx", "size_bytes": len(b"dx80"), "sha256": _digest(b"dx80")
+            })
             self.assertEqual(payload["accounting"], {
                 "source_bytes": sum(map(len, payloads.values())),
                 "candidate_bytes": sum(map(len, payloads.values())) - len(b"dx80"),
@@ -276,7 +325,23 @@ class Dx90BenchmarkLaneTests(unittest.TestCase):
             record = BenchmarkRecord.from_dict(payload["records"][0])
             self.assertEqual(record.lane, "dx90_optional")
             self.assertEqual(record.gates["runtime"], "not_run")
+            evidence_digest = _digest(canonical_json_bytes(payload["runtime_evidence"]))
+            self.assertEqual(record.provenance["settings"]["runtime_evidence_sha256"], evidence_digest)
+            self.assertEqual(record.provenance["settings"]["candidate_manifest_sha256"], manifest["sha256"])
             self.assertEqual(payload["summary"]["quality_status"], "unverified")
+            parsed = parse_dx90_optional_experiment(payload)
+            self.assertEqual(parsed["candidate_manifest_sha256"], manifest["sha256"])
+            tampered = json.loads(canonical_json_bytes(payload))
+            tampered["candidate_manifest"]["families"][0]["kept"][0]["sha256"] = "0" * 64
+            with self.assertRaisesRegex(Dx90PolicyError, "manifest"):
+                parse_dx90_optional_experiment(tampered)
+            unrelated = json.loads(canonical_json_bytes(payload))
+            unrelated["runtime_evidence"]["candidate_manifest_sha256"] = "0" * 64
+            unrelated["runtime_evidence_sha256"] = _digest(
+                canonical_json_bytes(unrelated["runtime_evidence"])
+            )
+            with self.assertRaisesRegex(Dx90PolicyError, "evidence.*manifest"):
+                parse_dx90_optional_experiment(unrelated)
             output = root / "experiment.json"
             write_dx90_optional_experiment(output, payload)
             self.assertTrue(output.read_bytes().endswith(b"\n"))

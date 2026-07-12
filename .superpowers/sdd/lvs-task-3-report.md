@@ -10,7 +10,8 @@ allowed target because their DX80 dependency has not been disproved.
 Runtime evidence remains **pending**. A DX90-only model decompiled successfully with Crowbar, but that
 is static-tool evidence only. The prior real Garry's Mod e46 baseline load passed with the normal
 sidecar set; the DX90-only textmode attempt created a visible window and did not establish the required
-bodygroup, animation, physics and dynamic-load capabilities. No fake green status was recorded.
+dynamic-load, rendering, bodygroup/skin, animation, physics and damage capabilities. No fake green
+status was recorded.
 
 ## Policy and integrity contract
 
@@ -48,19 +49,23 @@ geometry saving and was not promoted as a universal omission candidate.
 
 ## Runtime evidence schema
 
-`RuntimeEvidence` has strict `pending` and `proven` states. Pending evidence requires a reason and a
-non-empty manual procedure, and rejects proof fields. Proven evidence requires:
+`RuntimeEvidence` has self-validating strict `pending` and `proven` states. Direct dataclass
+construction cannot bypass `__post_init__`; every experiment also forces a canonical dict roundtrip.
+Every state is bound to the exact corpus, ordered family IDs and candidate-manifest SHA-256. Pending
+evidence requires a reason and a non-empty procedure covering rendering and damage, and rejects proof
+fields. Proven evidence requires:
 
-- exact tool name `Garry's Mod`;
-- lowercase SHA-256 for the executable and complete runtime log;
+- exact engine name `Garry's Mod`;
+- lowercase SHA-256 for the engine executable, installed-build manifest and complete runtime log;
 - a non-empty bounded build identifier;
-- exactly `dynamic_model_load`, `bodygroups`, `animation` and `physics` capabilities.
+- exactly `dynamic_model_load`, `rendering`, `bodygroups_skins`, `animation`, `physics` and `damage`.
 
 Crowbar or any other static tool is rejected as proof. The committed evidence is pending and includes
 the exact five-step manual procedure: install the immutable candidates without original fallback,
 launch the identified Garry's Mod build with logging, exercise bodygroups/skins and animations, verify
-physics plus console load diagnostics across the five representatives, then hash both executable and
-complete log before constructing proven evidence. It explicitly excludes static-prop/VRAD use.
+rendering, physics, damage and console load diagnostics across the five representatives, then hash the
+executable, installed-build manifest and complete log before constructing bound proven evidence. It
+explicitly excludes static-prop/VRAD use.
 
 ## TDD evidence
 
@@ -79,14 +84,31 @@ returns WinError 1314.
 The authoritative procedure is serialized verbatim in `benchmarks/lvs_models/dx90_optional.json`.
 It must be performed in a normal, user-visible Garry's Mod session because safe hidden automation was
 not available. A static decompile, process start, window creation, or normal-sidecar baseline load is
-insufficient. Until the resulting executable/build/log hashes and all four runtime capabilities are
+insufficient. Until the resulting executable/build/log hashes and all six runtime capabilities are
 recorded, status must remain `pending` and the policy must remain opt-in only.
+
+## Review hardening
+
+The follow-up review added a strict portable `candidate_manifest` to the experiment JSON. Each family
+now records its compiled stem, every kept artifact path/size/SHA-256, the exact omitted DX80
+path/size/SHA-256, per-family byte accounting and a source-manifest digest. The top-level digest covers
+the ordered corpus/family manifest. The strict parser rejects unknown/missing keys, scalar drift,
+wrong stems, duplicates, non-exact omission, missing required sidecars, byte/hash/digest changes,
+record/summary drift and unrelated evidence.
+
+The runtime-evidence digest and candidate-manifest digest are both embedded in each record's
+provenance settings and therefore in its cache key. Parser re-computation proves that evidence from a
+different corpus, family order or candidate cannot be reused. Static Crowbar evidence remains
+structurally incapable of producing `proven`.
+
+Review-fix RED failed first because the manifest/binding APIs did not exist. Focused GREEN then ran 30
+tests with two Windows symlink-privilege skips.
 
 ## Verification
 
-- Focused policy plus benchmark suite: 29 tests passed, 2 environment symlink skips.
+- Focused policy plus benchmark suite after review hardening: 30 tests passed, 2 environment symlink skips.
 - Strict canonical JSON, record/evidence re-import, script provenance and all five candidate
   manifests/hashes: passed.
 - Python byte-compilation: passed.
-- Full discovery: 339 tests passed, 12 environment skips.
+- Full discovery after review hardening: 340 tests passed, 12 environment skips.
 - `git diff --check`: passed (Git emitted only the repository's existing LF/CRLF conversion notice).
