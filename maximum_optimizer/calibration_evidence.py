@@ -25,23 +25,26 @@ CALIBRATION_METRICS = (
     "skinning_error_p95",
 )
 _CANDIDATES = {
-    "pontiac_transam_wheel": "r040",
+    "pontiac_transam_wheel": "r050",
     "dodge_charger": "r030",
-    "toyota_supra": "r025",
-    "nissan_skyline_gtr32": "r025",
-    "dodge_monaco_police": "r040",
+    "toyota_supra": "r015",
+    "nissan_skyline_gtr32": "r020",
+    "dodge_monaco_police": "hybrid-stable",
 }
 _ALTERNATIVES = {
-    "pontiac_transam_wheel": ("r035",),
+    "pontiac_transam_wheel": (
+        ("r035", "strict-visual-rejection"),
+        ("v4-r035", "strict-visual-rejection"),
+        ("v4-r045", "strict-visual-rejection"),
+        ("v4-r0475", "strict-visual-rejection"),
+        ("importance-r035", "uncalibrated-raw-clay-rejection"),
+    ),
     "dodge_charger": (),
     "toyota_supra": (),
     "nissan_skyline_gtr32": (),
     "dodge_monaco_police": (),
 }
 _ALTERNATIVE_STATUS = "rejected-research-alternative"
-_ALTERNATIVE_REASON = (
-    "smaller than r040 but visually dominated r040 and showed manual wheel faceting"
-)
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -150,13 +153,8 @@ def _configuration(value: object, lane: str, label: str) -> dict:
     return item
 
 
-def _lane(value: object, expected_lane: str, expected_candidate: str, label: str) -> dict:
-    lane = _exact(value, {
-        "lane", "candidate_id", "compiled", "configurations"
-    }, label)
-    if lane["lane"] != expected_lane or lane["candidate_id"] != expected_candidate:
-        raise ValueError(f"{label} identity is invalid")
-    compiled = _exact(lane["compiled"], {"total_bytes", "artifacts"}, f"{label} compiled")
+def _compiled(value: object, label: str) -> dict:
+    compiled = _exact(value, {"total_bytes", "artifacts"}, label)
     artifacts = compiled["artifacts"]
     if type(artifacts) is not list or not artifacts:
         raise ValueError(f"{label} compiled artifacts are invalid")
@@ -175,6 +173,16 @@ def _lane(value: object, expected_lane: str, expected_candidate: str, label: str
         total += artifact["size_bytes"]
     if compiled["total_bytes"] != total:
         raise ValueError(f"{label} compiled total drift")
+    return compiled
+
+
+def _lane(value: object, expected_lane: str, expected_candidate: str, label: str) -> dict:
+    lane = _exact(value, {
+        "lane", "candidate_id", "compiled", "configurations"
+    }, label)
+    if lane["lane"] != expected_lane or lane["candidate_id"] != expected_candidate:
+        raise ValueError(f"{label} identity is invalid")
+    _compiled(lane["compiled"], f"{label} compiled")
     configurations = lane["configurations"]
     if type(configurations) is not list or not configurations or len(configurations) > 5:
         raise ValueError(f"{label} configurations are invalid")
@@ -194,14 +202,116 @@ def _lane(value: object, expected_lane: str, expected_candidate: str, label: str
     return lane
 
 
+def _byte_evidence(family: dict, label: str) -> None:
+    denominators = _exact(
+        family["byte_denominators"], {"shipped_original", "roundtrip_control"},
+        f"{label} byte denominators",
+    )
+    expected_kinds = {
+        "shipped_original": "shipped-original-compiled-family-v1",
+        "roundtrip_control": "strict-roundtrip-control-compiled-family-v1",
+    }
+    parsed = {}
+    for name, kind in expected_kinds.items():
+        item = _exact(
+            denominators[name], {"kind", "compiled"}, f"{label} {name} denominator"
+        )
+        if item["kind"] != kind:
+            raise ValueError(f"{label} {name} denominator kind is invalid")
+        parsed[name] = _compiled(item["compiled"], f"{label} {name} compiled")
+    if parsed["roundtrip_control"] != family["baseline"]["compiled"]:
+        raise ValueError(f"{label} roundtrip denominator does not match baseline")
+
+    comparison = _exact(
+        family["byte_comparison"], {
+            "candidate_bytes", "versus_shipped_original", "versus_roundtrip_control"
+        }, f"{label} byte comparison",
+    )
+    candidate_bytes = family["candidate"]["compiled"]["total_bytes"]
+    if comparison["candidate_bytes"] != candidate_bytes:
+        raise ValueError(f"{label} candidate byte total drift")
+    for name, field in (
+        ("shipped_original", "versus_shipped_original"),
+        ("roundtrip_control", "versus_roundtrip_control"),
+    ):
+        item = _exact(comparison[field], {
+            "denominator_kind", "denominator_bytes", "saved_bytes", "reduction_fraction"
+        }, f"{label} {field}")
+        denominator = parsed[name]["total_bytes"]
+        saved = denominator - candidate_bytes
+        if (
+            item["denominator_kind"] != expected_kinds[name]
+            or item["denominator_bytes"] != denominator
+            or item["saved_bytes"] != saved
+            or saved < 0
+            or not math.isclose(
+                _number(item["reduction_fraction"], f"{label} reduction fraction"),
+                saved / denominator,
+                rel_tol=0.0,
+                abs_tol=1e-15,
+            )
+        ):
+            raise ValueError(f"{label} {field} is not derived from typed denominator")
+
+
+def _alternative(value: object, expected: tuple[str, str], label: str) -> dict:
+    item = _exact(value, {
+        "candidate_id", "evidence_kind", "status", "reason", "evidence"
+    }, label)
+    candidate_id, evidence_kind = expected
+    if (
+        item["candidate_id"] != candidate_id
+        or item["evidence_kind"] != evidence_kind
+        or item["status"] != _ALTERNATIVE_STATUS
+        or type(item["reason"]) is not str
+        or not item["reason"]
+    ):
+        raise ValueError(f"{label} identity is invalid")
+    evidence = _exact(item["evidence"], {
+        "artifact_path", "artifact_sha256", "payload_sha256", "artifact_availability",
+        "quality_scope", "compiled", "winner",
+    }, f"{label} evidence")
+    if (
+        type(evidence["artifact_path"]) is not str or not evidence["artifact_path"]
+        or type(evidence["artifact_sha256"]) is not str
+        or _HASH.fullmatch(evidence["artifact_sha256"]) is None
+        or type(evidence["payload_sha256"]) is not str
+        or _HASH.fullmatch(evidence["payload_sha256"]) is None
+        or evidence["winner"] is not False
+    ):
+        raise ValueError(f"{label} evidence identity is invalid")
+    if evidence_kind == "strict-visual-rejection":
+        if evidence["quality_scope"] != "strict-region-paired":
+            raise ValueError(f"{label} strict scope is invalid")
+        if candidate_id == "r035":
+            if (
+                evidence["artifact_availability"] != "archived-visual-only"
+                or evidence["compiled"] is not None
+            ):
+                raise ValueError(f"{label} archived-only evidence cannot claim bytes")
+        elif evidence["artifact_availability"] != "archived-visual-and-compiled":
+            raise ValueError(f"{label} artifact availability is invalid")
+        else:
+            _compiled(evidence["compiled"], f"{label} compiled")
+    else:
+        if (
+            evidence["quality_scope"] != "rim1-bind-8-views"
+            or evidence["artifact_availability"] != "committed-raw-clay-and-compiled"
+        ):
+            raise ValueError(f"{label} raw clay scope is invalid")
+        _compiled(evidence["compiled"], f"{label} compiled")
+    return item
+
+
 def parse_calibration_evidence(payload: object) -> dict:
     root = _exact(payload, {
         "schema_version", "strategy", "status", "toolchain", "implementation",
-        "families", "baseline_distribution", "decision", "evidence_sha256",
+        "external_artifacts", "families", "baseline_distribution", "decision",
+        "evidence_sha256",
     }, "calibration evidence")
     if (
-        root["schema_version"] != 1
-        or root["strategy"] != "lvs-calibration-corpus-v1"
+        root["schema_version"] != 2
+        or root["strategy"] != "lvs-calibration-corpus-v2"
         or root["status"] != "calibration-pending"
     ):
         raise ValueError("calibration evidence identity is invalid")
@@ -217,6 +327,18 @@ def parse_calibration_evidence(payload: object) -> dict:
             for value in values.values()
         ):
             raise ValueError(f"{section} hashes are invalid")
+    external = _exact(
+        root["external_artifacts"], {"monaco_accepted_composite_v1"},
+        "external artifacts",
+    )
+    composite = _exact(external["monaco_accepted_composite_v1"], {
+        "file_sha256", "canonical_payload_sha256"
+    }, "Monaco composite")
+    if any(
+        type(value) is not str or _HASH.fullmatch(value) is None
+        for value in composite.values()
+    ):
+        raise ValueError("Monaco composite hashes are invalid")
     families = root["families"]
     if type(families) is not list or tuple(
         item.get("family_id") if type(item) is dict else None for item in families
@@ -225,7 +347,10 @@ def parse_calibration_evidence(payload: object) -> dict:
     for family_id, family_value in zip(CALIBRATION_FAMILIES, families):
         family = _exact(
             family_value,
-            {"family_id", "baseline", "candidate", "alternatives"},
+            {
+                "family_id", "byte_denominators", "byte_comparison", "baseline",
+                "candidate", "alternatives",
+            },
             family_id,
         )
         _lane(
@@ -238,26 +363,15 @@ def parse_calibration_evidence(payload: object) -> dict:
             family["candidate"], "strict-region-paired", _CANDIDATES[family_id],
             f"{family_id} candidate",
         )
+        _byte_evidence(family, family_id)
         alternatives = family["alternatives"]
         expected_alternatives = _ALTERNATIVES[family_id]
         if type(alternatives) is not list or len(alternatives) != len(expected_alternatives):
             raise ValueError(f"{family_id} alternatives are invalid")
-        for position, (alternative_value, candidate_id) in enumerate(zip(
+        for position, (alternative_value, expected) in enumerate(zip(
             alternatives, expected_alternatives
         )):
-            alternative = _exact(
-                alternative_value, {"lane", "status", "reason"},
-                f"{family_id} alternative {position}",
-            )
-            if (
-                alternative["status"] != _ALTERNATIVE_STATUS
-                or alternative["reason"] != _ALTERNATIVE_REASON
-            ):
-                raise ValueError(f"{family_id} alternative decision is invalid")
-            _lane(
-                alternative["lane"], "strict-region-paired", candidate_id,
-                f"{family_id} alternative {position} lane",
-            )
+            _alternative(alternative_value, expected, f"{family_id} alternative {position}")
     distributions = _exact(
         root["baseline_distribution"], set(CALIBRATION_METRICS),
         "baseline distribution",

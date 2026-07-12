@@ -37,15 +37,15 @@ def _configuration(name: str, scope: str) -> dict:
 
 def _payload() -> dict:
     candidates = {
-        "pontiac_transam_wheel": "r040",
+        "pontiac_transam_wheel": "r050",
         "dodge_charger": "r030",
-        "toyota_supra": "r025",
-        "nissan_skyline_gtr32": "r025",
-        "dodge_monaco_police": "r040",
+        "toyota_supra": "r015",
+        "nissan_skyline_gtr32": "r020",
+        "dodge_monaco_police": "hybrid-stable",
     }
     payload = {
-        "schema_version": 1,
-        "strategy": "lvs-calibration-corpus-v1",
+        "schema_version": 2,
+        "strategy": "lvs-calibration-corpus-v2",
         "status": "calibration-pending",
         "toolchain": {"blender": "c" * 64, "vtfcmd": "d" * 64},
         "implementation": {
@@ -54,9 +54,52 @@ def _payload() -> dict:
             "benchmarks/lvs_models/run_visual_states.py": "1" * 64,
             "benchmarks/lvs_models/build_calibration_corpus_v1.py": "2" * 64,
         },
+        "external_artifacts": {
+            "monaco_accepted_composite_v1": {
+                "file_sha256": "6" * 64,
+                "canonical_payload_sha256": "7" * 64,
+            },
+        },
         "families": [
             {
                 "family_id": family,
+                "byte_denominators": {
+                    "shipped_original": {
+                        "kind": "shipped-original-compiled-family-v1",
+                        "compiled": {
+                            "total_bytes": 1200,
+                            "artifacts": [
+                                {"path": f"model.{index}", "size_bytes": 240, "sha256": "5" * 64}
+                                for index in range(5)
+                            ],
+                        },
+                    },
+                    "roundtrip_control": {
+                        "kind": "strict-roundtrip-control-compiled-family-v1",
+                        "compiled": {
+                            "total_bytes": 1000,
+                            "artifacts": [
+                                {"path": f"model.{index}", "size_bytes": 200, "sha256": "3" * 64}
+                                for index in range(5)
+                            ],
+                        },
+                    },
+                },
+                "byte_comparison": {
+                    "candidate_bytes": 800,
+                    "versus_shipped_original": {
+                        "denominator_kind": "shipped-original-compiled-family-v1",
+                        "denominator_bytes": 1200,
+                        "saved_bytes": 400,
+                        "reduction_fraction": 1 / 3,
+                    },
+                    "versus_roundtrip_control": {
+                        "denominator_kind": "strict-roundtrip-control-compiled-family-v1",
+                        "denominator_bytes": 1000,
+                        "saved_bytes": 200,
+                        "reduction_fraction": 0.2,
+                    },
+                },
                 "baseline": {
                     "lane": "strict-region-paired",
                     "candidate_id": "roundtrip-control",
@@ -100,13 +143,44 @@ def _payload() -> dict:
     for family in payload["families"]:
         family["alternatives"] = []
     wheel = payload["families"][0]
-    alternative_lane = copy.deepcopy(wheel["candidate"])
-    alternative_lane["candidate_id"] = "r035"
-    wheel["alternatives"] = [{
-        "lane": alternative_lane,
-        "status": "rejected-research-alternative",
-        "reason": "smaller than r040 but visually dominated r040 and showed manual wheel faceting",
-    }]
+    wheel["alternatives"] = [
+        {
+            "candidate_id": candidate_id,
+            "evidence_kind": evidence_kind,
+            "status": "rejected-research-alternative",
+            "reason": "visible detail or boundary regression",
+            "evidence": {
+                "artifact_path": f"research://wheel/{candidate_id}",
+                "artifact_sha256": "89abc"[index] * 64,
+                "payload_sha256": "cdef0"[index] * 64,
+                "artifact_availability": (
+                    "archived-visual-only" if index == 0
+                    else (
+                        "committed-raw-clay-and-compiled"
+                        if candidate_id == "importance-r035"
+                        else "archived-visual-and-compiled"
+                    )
+                ),
+                "quality_scope": quality_scope,
+                "compiled": (
+                    None if index == 0
+                    else copy.deepcopy(wheel["candidate"]["compiled"])
+                ),
+                "winner": False,
+            },
+        }
+        for index, (candidate_id, evidence_kind, quality_scope) in enumerate((
+            ("r035", "strict-visual-rejection", "strict-region-paired"),
+            ("v4-r035", "strict-visual-rejection", "strict-region-paired"),
+            ("v4-r045", "strict-visual-rejection", "strict-region-paired"),
+            ("v4-r0475", "strict-visual-rejection", "strict-region-paired"),
+            (
+                "importance-r035",
+                "uncalibrated-raw-clay-rejection",
+                "rim1-bind-8-views",
+            ),
+        ))
+    ]
     payload["evidence_sha256"] = canonical_calibration_evidence_hash(payload)
     return payload
 
@@ -121,8 +195,12 @@ class CalibrationEvidenceTests(unittest.TestCase):
         self.assertFalse(parsed["decision"]["winner"])
         self.assertEqual(parsed["status"], "calibration-pending")
         self.assertEqual(
-            parsed["families"][0]["alternatives"][0]["lane"]["candidate_id"],
+            parsed["families"][0]["alternatives"][0]["candidate_id"],
             "r035",
+        )
+        self.assertEqual(parsed["families"][0]["candidate"]["candidate_id"], "r050")
+        self.assertEqual(
+            parsed["families"][-1]["candidate"]["candidate_id"], "hybrid-stable"
         )
         self.assertTrue(all(
             not family["alternatives"] for family in parsed["families"][1:]
@@ -132,6 +210,45 @@ class CalibrationEvidenceTests(unittest.TestCase):
             and family["baseline"]["lane"] == "strict-region-paired"
             for family in parsed["families"]
         ))
+
+    def test_dual_byte_denominators_are_typed_and_derived(self) -> None:
+        parsed = parse_calibration_evidence(_payload())
+        for family in parsed["families"]:
+            denominators = family["byte_denominators"]
+            self.assertEqual(
+                denominators["shipped_original"]["kind"],
+                "shipped-original-compiled-family-v1",
+            )
+            self.assertEqual(
+                denominators["roundtrip_control"]["compiled"], family["baseline"]["compiled"]
+            )
+            self.assertEqual(
+                family["byte_comparison"]["candidate_bytes"],
+                family["candidate"]["compiled"]["total_bytes"],
+            )
+
+        for mutate in (
+            lambda item: item["families"][0]["byte_denominators"]["shipped_original"].__setitem__(
+                "kind", "roundtrip"
+            ),
+            lambda item: item["families"][0]["byte_comparison"]["versus_shipped_original"].__setitem__(
+                "reduction_fraction", 0.99
+            ),
+            lambda item: item["families"][0]["byte_denominators"]["roundtrip_control"]["compiled"].__setitem__(
+                "total_bytes", 999
+            ),
+        ):
+            changed = copy.deepcopy(_payload())
+            mutate(changed)
+            changed["evidence_sha256"] = canonical_calibration_evidence_hash(changed)
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                parse_calibration_evidence(changed)
+
+    def test_external_composite_hashes_are_sealed(self) -> None:
+        changed = copy.deepcopy(_payload())
+        changed["external_artifacts"]["monaco_accepted_composite_v1"]["file_sha256"] = "8" * 64
+        with self.assertRaisesRegex(ValueError, "seal"):
+            parse_calibration_evidence(changed)
 
     def test_b050_aggregate_cannot_be_reintroduced_as_calibration_baseline(self) -> None:
         changed = copy.deepcopy(_payload())
@@ -157,6 +274,12 @@ class CalibrationEvidenceTests(unittest.TestCase):
             ),
             lambda item: item["families"][0]["alternatives"][0].__setitem__(
                 "status", "winner"
+            ),
+            lambda item: item["families"][0]["alternatives"][4]["evidence"].__setitem__(
+                "quality_scope", "strict-region-paired"
+            ),
+            lambda item: item["families"][0]["alternatives"][0]["evidence"].__setitem__(
+                "compiled", copy.deepcopy(item["families"][0]["candidate"]["compiled"])
             ),
         ):
             changed = copy.deepcopy(_payload())

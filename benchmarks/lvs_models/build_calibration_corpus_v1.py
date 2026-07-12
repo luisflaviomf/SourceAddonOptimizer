@@ -51,6 +51,35 @@ def distribution(values: list[float]) -> dict:
     }
 
 
+def build_byte_comparison(
+    candidate_bytes: int, shipped_original_bytes: int, roundtrip_control_bytes: int
+) -> dict:
+    values = (candidate_bytes, shipped_original_bytes, roundtrip_control_bytes)
+    if any(type(value) is not int or value <= 0 for value in values):
+        raise ValueError("byte comparison values are invalid")
+    if candidate_bytes > min(shipped_original_bytes, roundtrip_control_bytes):
+        raise ValueError("candidate is larger than a byte denominator")
+
+    def comparison(kind: str, denominator: int) -> dict:
+        saved = denominator - candidate_bytes
+        return {
+            "denominator_kind": kind,
+            "denominator_bytes": denominator,
+            "saved_bytes": saved,
+            "reduction_fraction": saved / denominator,
+        }
+
+    return {
+        "candidate_bytes": candidate_bytes,
+        "versus_shipped_original": comparison(
+            "shipped-original-compiled-family-v1", shipped_original_bytes
+        ),
+        "versus_roundtrip_control": comparison(
+            "strict-roundtrip-control-compiled-family-v1", roundtrip_control_bytes
+        ),
+    }
+
+
 def _compiled(spec: dict) -> dict:
     root = Path(spec["compiled_root"]).resolve(strict=True)
     artifacts = []
@@ -66,6 +95,56 @@ def _compiled(spec: dict) -> dict:
     return {
         "total_bytes": sum(item["size_bytes"] for item in artifacts),
         "artifacts": artifacts,
+    }
+
+
+def _shipped_original(repo_root: Path, family_id: str) -> dict:
+    corpus = json.loads(
+        (repo_root / "benchmarks/lvs_models/corpus.json").read_text(encoding="utf-8")
+    )
+    matches = [item for item in corpus["families"] if item["id"] == family_id]
+    if len(matches) != 1:
+        raise ValueError(f"shipped original family is missing or duplicated: {family_id}")
+    artifacts = [dict(item) for item in matches[0]["baselines"]["original"]]
+    artifacts.sort(key=lambda item: item["path"].casefold())
+    return {
+        "total_bytes": sum(item["size_bytes"] for item in artifacts),
+        "artifacts": artifacts,
+    }
+
+
+def _archived_alternative(spec: dict, repo_root: Path) -> dict:
+    artifact = Path(spec["artifact_path"])
+    if not artifact.is_absolute():
+        artifact = repo_root / artifact
+    artifact = artifact.resolve(strict=True)
+    archived_payload = None
+    if spec["evidence_kind"] == "uncalibrated-raw-clay-rejection":
+        archived_payload = json.loads(artifact.read_text(encoding="utf-8"))
+        if (
+            archived_payload["decision"]["winner"] is not False
+            or archived_payload["quality"]["scope"] != spec["quality_scope"]
+        ):
+            raise ValueError("archived raw-clay decision or scope drift")
+        compiled = archived_payload["candidate"]["compiled"]
+        payload_sha256 = archived_payload["candidate"]["candidate_sha256"]
+    else:
+        compiled = _compiled(spec["compiled"]) if spec.get("compiled") else None
+        payload_sha256 = spec.get("payload_sha256") or _digest(artifact)
+    return {
+        "candidate_id": spec["candidate_id"],
+        "evidence_kind": spec["evidence_kind"],
+        "status": spec["status"],
+        "reason": spec["reason"],
+        "evidence": {
+            "artifact_path": spec["artifact_label"],
+            "artifact_sha256": _digest(artifact),
+            "payload_sha256": payload_sha256,
+            "artifact_availability": spec["artifact_availability"],
+            "quality_scope": spec["quality_scope"],
+            "compiled": compiled,
+            "winner": False,
+        },
     }
 
 
@@ -171,22 +250,33 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
     for expected_id, family_spec in zip(CALIBRATION_FAMILIES, spec["families"]):
         if family_spec["family_id"] != expected_id:
             raise ValueError("calibration spec family order is invalid")
-        alternatives = []
-        for alternative_spec in family_spec["alternatives"]:
-            alternatives.append({
-                "lane": _lane(
-                    alternative_spec["lane"], "strict-region-paired"
-                ),
-                "status": alternative_spec["status"],
-                "reason": alternative_spec["reason"],
-            })
+        alternatives = [
+            _archived_alternative(alternative_spec, repo_root)
+            for alternative_spec in family_spec["alternatives"]
+        ]
+        baseline = _lane(family_spec["baseline"], "strict-region-paired")
+        candidate = _lane(family_spec["candidate"], "strict-region-paired")
+        shipped = _shipped_original(repo_root, expected_id)
+        roundtrip = baseline["compiled"]
         families.append({
             "family_id": expected_id,
-            "baseline": _lane(
-                family_spec["baseline"],
-                "strict-region-paired",
+            "byte_denominators": {
+                "shipped_original": {
+                    "kind": "shipped-original-compiled-family-v1",
+                    "compiled": shipped,
+                },
+                "roundtrip_control": {
+                    "kind": "strict-roundtrip-control-compiled-family-v1",
+                    "compiled": roundtrip,
+                },
+            },
+            "byte_comparison": build_byte_comparison(
+                candidate["compiled"]["total_bytes"],
+                shipped["total_bytes"],
+                roundtrip["total_bytes"],
             ),
-            "candidate": _lane(family_spec["candidate"], "strict-region-paired"),
+            "baseline": baseline,
+            "candidate": candidate,
             "alternatives": alternatives,
         })
     implementation_paths = (
@@ -203,8 +293,8 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
         for metric in CALIBRATION_METRICS
     }
     payload = {
-        "schema_version": 1,
-        "strategy": "lvs-calibration-corpus-v1",
+        "schema_version": 2,
+        "strategy": "lvs-calibration-corpus-v2",
         "status": "calibration-pending",
         "toolchain": {
             name: _digest(Path(path).resolve(strict=True))
@@ -212,6 +302,18 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
         },
         "implementation": {
             relative: _digest(repo_root / relative) for relative in implementation_paths
+        },
+        "external_artifacts": {
+            "monaco_accepted_composite_v1": {
+                "file_sha256": _digest(
+                    Path(spec["external_artifacts"]["monaco_accepted_composite_v1"])
+                    .resolve(strict=True)
+                ),
+                "canonical_payload_sha256": json.loads(
+                    Path(spec["external_artifacts"]["monaco_accepted_composite_v1"])
+                    .read_text(encoding="utf-8")
+                )["seal_sha256"],
+            },
         },
         "families": families,
         "baseline_distribution": baseline_distribution,

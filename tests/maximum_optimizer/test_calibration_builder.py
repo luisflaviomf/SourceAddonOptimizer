@@ -7,7 +7,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from benchmarks.lvs_models.build_calibration_corpus_v1 import distribution
+from benchmarks.lvs_models.build_calibration_corpus_v1 import (
+    build_byte_comparison,
+    distribution,
+)
 from benchmarks.lvs_models.run_visual_states import (
     _write_json,
     short_texture_cache_root,
@@ -17,6 +20,28 @@ from maximum_optimizer.reporting import canonical_json
 
 
 class CalibrationBuilderTests(unittest.TestCase):
+    def test_byte_comparison_preserves_both_typed_denominators(self) -> None:
+        self.assertEqual(build_byte_comparison(600, 1200, 1000), {
+            "candidate_bytes": 600,
+            "versus_shipped_original": {
+                "denominator_kind": "shipped-original-compiled-family-v1",
+                "denominator_bytes": 1200,
+                "saved_bytes": 600,
+                "reduction_fraction": 0.5,
+            },
+            "versus_roundtrip_control": {
+                "denominator_kind": "strict-roundtrip-control-compiled-family-v1",
+                "denominator_bytes": 1000,
+                "saved_bytes": 400,
+                "reduction_fraction": 0.4,
+            },
+        })
+
+    def test_byte_comparison_rejects_nonpositive_or_larger_candidate(self) -> None:
+        for values in ((0, 1200, 1000), (600, 0, 1000), (1201, 1200, 1300)):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                build_byte_comparison(*values)
+
     def test_distribution_is_deterministic_and_uses_interpolated_p95(self) -> None:
         self.assertEqual(distribution([4, 0, 2, 1, 3]), {
             "count": 5,
