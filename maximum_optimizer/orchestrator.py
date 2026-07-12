@@ -59,11 +59,15 @@ from .focused_cache import (
     FocusStateProof,
     FocusedEvidenceContext,
     FocusedRenderCache,
+    UncachedFocusMetadata,
+    _copy_file_no_follow as _focused_copy_file_no_follow,
+    _remove_owned_tree as _focused_remove_owned_tree,
     _file_proof as _focused_file_proof,
     _render_file_manifest as _focused_render_file_manifest,
     _read_regular_no_follow,
     focused_gate_evidence_payload,
     material_resolution_proof,
+    validate_focused_gate_evidence_payload,
     validate_focused_target,
 )
 from .focused_regions import select_focus_targets_with_evidence
@@ -1777,6 +1781,11 @@ def run_maximum_addon(
                 config.budget,
                 initial=schedule,
                 attempted_ids=attempted_ids,
+                recovery_mode=(
+                    "external-byte-exact"
+                    if focused_policy is not None
+                    else "legacy-regional"
+                ),
             )
             if spec is None:
                 break
@@ -2494,6 +2503,68 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REGION_KEY_RE = re.compile(r"^r-[0-9a-f]{64}$")
 
 
+def _safe_workspace_leaf(workspace: Path, path: Path, label: str) -> Path:
+    root = Path(workspace).resolve(strict=True)
+    leaf = Path(path)
+    try:
+        parent = leaf.parent.resolve(strict=True)
+        parent.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{label} parent is not contained") from exc
+    current = root
+    if _is_reparse(current):
+        raise ValueError(f"{label} workspace is a reparse point")
+    for part in parent.relative_to(root).parts:
+        current = current / part
+        if _is_reparse(current) or not current.is_dir():
+            raise ValueError(f"{label} ancestor is unsafe")
+    if os.path.lexists(leaf) and _is_reparse(leaf):
+        raise ValueError(f"{label} leaf is a reparse point")
+    return leaf
+
+
+def _safe_workspace_atomic_json(
+    workspace: Path, path: Path, payload: Mapping[str, object], label: str
+) -> None:
+    leaf = _safe_workspace_leaf(workspace, path, label)
+    atomic_write_json(leaf, payload)
+    _safe_workspace_leaf(workspace, leaf, label)
+
+
+def _remove_workspace_owned_tree(workspace: Path, path: Path, label: str) -> None:
+    _safe_workspace_leaf(workspace, path, label)
+    if not os.path.lexists(path):
+        return
+    try:
+        _focused_remove_owned_tree(path, path.parent)
+    except (OSError, ValueError) as exc:
+        raise CandidateBuildError(f"{label} is unsafe", stage="focused-render") from exc
+
+
+def _safe_workspace_mkdir(workspace: Path, path: Path, label: str) -> Path:
+    root = Path(workspace).resolve(strict=True)
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    try:
+        relative = absolute.relative_to(root)
+    except ValueError as exc:
+        raise CandidateBuildError(f"{label} escapes workspace", stage="focused-render") from exc
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if os.path.lexists(current):
+            if _is_reparse(current) or not current.is_dir():
+                raise CandidateBuildError(
+                    f"{label} ancestor is unsafe", stage="focused-render"
+                )
+        else:
+            current.mkdir()
+            if _is_reparse(current) or not current.is_dir():
+                raise CandidateBuildError(
+                    f"{label} creation is unsafe", stage="focused-render"
+                )
+    return current
+
+
 def _whole_exact(value: object, fields: set[str], label: str) -> dict[str, Any]:
     if type(value) is not dict or set(value) != fields:
         raise ValueError(f"whole visual index {label} fields are invalid")
@@ -2525,9 +2596,16 @@ def _validate_whole_file_proof(
     workspace: Path,
     label: str,
     cancel_event: threading.Event | None,
+    path_registry: dict[str, str] | None = None,
 ) -> dict[str, str]:
     proof = _whole_exact(value, {"path", "sha256"}, label)
     relative = _whole_relative(proof["path"], label)
+    if path_registry is not None:
+        folded = relative.casefold()
+        previous = path_registry.get(folded)
+        if previous is not None and previous != relative:
+            raise ValueError(f"whole visual index {label} path case-collides with {previous}")
+        path_registry[folded] = relative
     expected = _whole_hash(proof["sha256"], label)
     root = Path(workspace).resolve(strict=True)
     path = Path(workspace) / PurePosixPath(relative)
@@ -2556,6 +2634,7 @@ def _validate_whole_visual_payload(
     cancel_event: threading.Event | None,
 ) -> dict[str, Any]:
     payload = _whole_exact(raw, _WHOLE_INDEX_FIELDS, "root")
+    path_registry: dict[str, str] = {}
     if payload["schema"] != 1 or payload["selector_version"] != "surface-risk-top-k-v1":
         raise ValueError("whole visual index schema/selector is invalid")
     family = _whole_exact(
@@ -2592,23 +2671,29 @@ def _validate_whole_visual_payload(
         raise ValueError("whole visual index renderer version is invalid")
     _whole_hash(renderer["digest"], "renderer")
     _validate_whole_file_proof(
-        payload["full_region_manifest"], workspace, "full region manifest", cancel_event
+        payload["full_region_manifest"], workspace, "full region manifest", cancel_event,
+        path_registry,
     )
     animation = _whole_exact(
         payload["animation"], {"classification", "reference", "candidate"}, "animation"
     )
     _validate_whole_file_proof(
-        animation["classification"], workspace, "animation classification", cancel_event
+        animation["classification"], workspace, "animation classification", cancel_event,
+        path_registry,
     )
     if (animation["reference"] is None) != (animation["candidate"] is None):
         raise ValueError("whole visual index animation source pairing is invalid")
     if animation["reference"] is not None:
         _validate_whole_file_proof(
-            animation["reference"], workspace, "reference animation", cancel_event
+            animation["reference"], workspace, "reference animation", cancel_event,
+            path_registry,
         )
         _validate_whole_file_proof(
-            animation["candidate"], workspace, "candidate animation", cancel_event
+            animation["candidate"], workspace, "candidate animation", cancel_event,
+            path_registry,
         )
+        if animation["reference"]["path"].casefold() == animation["candidate"]["path"].casefold():
+            raise ValueError("whole visual index animation source pair self-references")
     states = payload["states"]
     if type(states) is not list or not states or len(states) > 16:
         raise ValueError("whole visual index states are invalid")
@@ -2640,7 +2725,12 @@ def _validate_whole_visual_payload(
         for field in (
             "region_manifest", "configuration_manifest", "reference_manifest", "candidate_manifest"
         ):
-            _validate_whole_file_proof(state[field], workspace, f"state {index} {field}", cancel_event)
+            _validate_whole_file_proof(
+                state[field], workspace, f"state {index} {field}", cancel_event,
+                path_registry,
+            )
+        if state["reference_manifest"]["path"].casefold() == state["candidate_manifest"]["path"].casefold():
+            raise ValueError("whole visual index render manifest pair self-references")
         sources = state["sources"]
         if type(sources) is not list or not sources:
             raise ValueError("whole visual index state sources are invalid")
@@ -2651,8 +2741,16 @@ def _validate_whole_visual_payload(
             )
             identity = _whole_relative(source["source_identity"], "source identity")
             identities.append(identity)
-            _validate_whole_file_proof(source["reference"], workspace, "reference source", cancel_event)
-            _validate_whole_file_proof(source["candidate"], workspace, "candidate source", cancel_event)
+            _validate_whole_file_proof(
+                source["reference"], workspace, "reference source", cancel_event,
+                path_registry,
+            )
+            _validate_whole_file_proof(
+                source["candidate"], workspace, "candidate source", cancel_event,
+                path_registry,
+            )
+            if source["reference"]["path"].casefold() == source["candidate"]["path"].casefold():
+                raise ValueError("whole visual index source pair self-references")
         if identities != sorted(identities, key=lambda item: (item.casefold(), item)) or len({item.casefold() for item in identities}) != len(identities):
             raise ValueError("whole visual index state source identities are not canonical")
         rows = state["geometry_rows"]
@@ -2689,6 +2787,32 @@ def _validate_whole_visual_payload(
         scopes = {scope for scope, _pose in coverage}
         if coverage != {(scope, pose) for scope in scopes for pose in poses}:
             raise ValueError("whole visual index geometry pose coverage is incomplete")
+        candidate_manifest = state["candidate_manifest"]
+        try:
+            manifest_bytes = _read_regular_no_follow(
+                workspace / PurePosixPath(candidate_manifest["path"]),
+                cancel_event, contained_root=workspace,
+            )
+            if hashlib.sha256(manifest_bytes).hexdigest() != candidate_manifest["sha256"]:
+                raise ValueError("whole visual index candidate manifest changed")
+            manifest_payload = json.loads(manifest_bytes.decode("utf-8"))
+            manifest_rows = sorted((
+                {
+                    "scope": item["scope"],
+                    "pose": item["pose"],
+                    "surface_bidirectional_p95": item["surface_bidirectional_p95"],
+                    "surface_max": item["surface_max"],
+                }
+                for item in manifest_payload["geometry"]
+            ), key=lambda item: (item["scope"], item["pose"]))
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ValueError(
+                "whole visual index candidate manifest geometry is invalid"
+            ) from exc
+        if manifest_rows != rows:
+            raise ValueError(
+                "whole visual index geometry rows differ from candidate manifest"
+            )
     return payload
 
 
@@ -2703,7 +2827,7 @@ def _write_whole_visual_index(
     seal = hashlib.sha256(canonical_json(mutable).encode("utf-8")).hexdigest()
     mutable["evidence_sha256"] = seal
     _check_cancelled(cancel_event, "cancelled before whole visual index publication")
-    atomic_write_json(path, mutable)
+    _safe_workspace_atomic_json(workspace, path, mutable, "whole visual index")
     return seal
 
 
@@ -2765,6 +2889,39 @@ def _aggregate_visual_results(results: Sequence[tuple[str, ValidationResult]]) -
     )
 
 
+def _validate_whole_index_current_bindings(
+    index: Mapping[str, object],
+    *,
+    whole_profile: FidelityProfile,
+    focused_profile: FidelityProfile,
+    profile_file_sha256: str,
+    dependency_digest: str,
+    renderer_digest: str,
+    candidate_cache_digest: str,
+) -> None:
+    expected_profiles = {
+        "whole": (whole_profile.version, whole_profile.corpus_hash),
+        "focused": (focused_profile.version, focused_profile.corpus_hash),
+    }
+    for name, (version, corpus_hash) in expected_profiles.items():
+        indexed = index["profiles"][name]
+        if (
+            indexed["version"] != version
+            or indexed["corpus_hash"] != corpus_hash
+            or indexed["file_sha256"] != profile_file_sha256
+        ):
+            raise ValueError(f"whole visual index current {name} profile differs")
+    if index["dependency"]["digest"] != dependency_digest:
+        raise ValueError("whole visual index current dependency differs")
+    if (
+        index["renderer"]["version"] != "focus-render-v1"
+        or index["renderer"]["digest"] != renderer_digest
+    ):
+        raise ValueError("whole visual index current renderer differs")
+    if index["candidate"]["cache_digest"] != candidate_cache_digest:
+        raise ValueError("whole visual index current candidate cache binding differs")
+
+
 def _aggregate_focused_gate(
     whole: ValidationResult,
     gate: FocusedGateResult,
@@ -2790,7 +2947,14 @@ def _aggregate_focused_gate(
         raise ValueError("focused gate evidence/rank/cardinality is invalid")
     failures = list(whole.failures)
     metrics = {name: float(value) for name, value in whole.metrics.items()}
-    worst_scope = whole.worst_scope
+    worst_scope = whole.worst_scope or (
+        whole.failures[0].scope if whole.failures else ""
+    )
+    worst_score = (
+        float(whole.metrics.get("fidelity_score", 0.0))
+        if not whole.passed and worst_scope
+        else math.inf
+    )
     passed = whole.passed
     for target in targets:
         result = regions[target.region_key].validation
@@ -2811,7 +2975,21 @@ def _aggregate_focused_gate(
             else:
                 metrics[name] = max(metrics.get(name, number), number)
         if not result.passed:
-            worst_scope = f"{target.region_key}/{result.worst_scope or target.anchor_pose}"
+            score = float(result.metrics.get("fidelity_score", 0.0))
+            if score < worst_score:
+                worst_score = score
+                worst_scope = f"{target.region_key}/{result.worst_scope or target.anchor_pose}"
+    region_aggregate = _aggregate_visual_results(tuple(
+        (target.region_key, regions[target.region_key].validation)
+        for target in targets
+    ))
+    if (
+        not isinstance(gate.validation, ValidationResult)
+        or gate.validation.passed != region_aggregate.passed
+        or {name: float(value) for name, value in gate.validation.metrics.items()}
+        != {name: float(value) for name, value in region_aggregate.metrics.items()}
+    ):
+        raise ValueError("focused gate validation differs from region records")
     return ValidationResult(passed, tuple(failures), metrics, worst_scope)
 
 
@@ -2828,7 +3006,11 @@ class ProductionAdapters:
         self._candidate_cache_digests[candidate.workspace.resolve()] = digest
 
     @staticmethod
-    def _remove_evidence_file(path: Path) -> None:
+    def _remove_evidence_file(workspace: Path, path: Path) -> None:
+        try:
+            _safe_workspace_leaf(workspace, path, "candidate visual evidence")
+        except ValueError as exc:
+            raise CandidateBuildError(str(exc), stage="render") from exc
         if not os.path.lexists(path):
             return
         if _is_reparse(path) or not path.is_file():
@@ -2947,7 +3129,7 @@ class ProductionAdapters:
                 candidate.workspace / "logs" / "focused-region-gate.json",
                 candidate.workspace / "logs" / "focused-region-gate.partial.json",
             ):
-                self._remove_evidence_file(stale)
+                self._remove_evidence_file(candidate.workspace, stale)
             self._whole_index_seals.pop(candidate.workspace.resolve(), None)
         source_root = candidate.workspace / "render-source"
         if source_root.exists():
@@ -3190,7 +3372,11 @@ class ProductionAdapters:
             if focused_profile is not None:
                 candidate_render_manifest = state_root / "optimized" / "render_manifest.json"
                 try:
-                    render_payload = json.loads(candidate_render_manifest.read_text(encoding="utf-8"))
+                    render_manifest_bytes = _read_regular_no_follow(
+                        candidate_render_manifest, self.cancel_event,
+                        contained_root=candidate.workspace,
+                    )
+                    render_payload = json.loads(render_manifest_bytes.decode("utf-8"))
                     raw_geometry = render_payload["geometry"]
                     geometry_rows = [
                         {
@@ -3222,7 +3408,9 @@ class ProductionAdapters:
                     ),
                     "candidate_manifest": self._workspace_proof(
                         candidate.workspace, candidate_render_manifest, self.cancel_event
-                    ),
+                    ) | {
+                        "sha256": hashlib.sha256(render_manifest_bytes).hexdigest()
+                    },
                     "sources": sorted((
                         {
                             "source_identity": identity,
@@ -3309,7 +3497,7 @@ class ProductionAdapters:
             )
             self._whole_index_seals[candidate.workspace.resolve()] = seal
             if self.cancel_event.is_set():
-                self._remove_evidence_file(whole_index_path)
+                self._remove_evidence_file(candidate.workspace, whole_index_path)
                 self._whole_index_seals.pop(candidate.workspace.resolve(), None)
                 raise ProcessCancelledError("cancelled after whole visual index publication")
         return aggregate
@@ -3340,6 +3528,26 @@ class ProductionAdapters:
             expected_seal,
             self.cancel_event,
         )
+        profile_file_sha = _sha256_file(self.config.profile_path, self.cancel_event)
+        current_dependency = _dependency_proof(self.config, self.cancel_event)["digest"]
+        current_renderer = _sha256_file(
+            self.config.repo_root / "render_previews.py", self.cancel_event
+        )
+        current_candidate_digest = self._candidate_cache_digests.get(workspace)
+        if current_candidate_digest is None:
+            raise CandidateBuildError(
+                "candidate cache digest is not currently bound", stage="focused-render"
+            )
+        try:
+            _validate_whole_index_current_bindings(
+                index, whole_profile=whole_profile, focused_profile=focused_profile,
+                profile_file_sha256=profile_file_sha,
+                dependency_digest=str(current_dependency),
+                renderer_digest=current_renderer,
+                candidate_cache_digest=current_candidate_digest,
+            )
+        except ValueError as exc:
+            raise CandidateBuildError(str(exc), stage="focused-render") from exc
         if (
             index["family"]["family_id"] != manifest.family_id
             or index["family"]["model_rel"] != manifest.model_rel
@@ -3347,8 +3555,6 @@ class ProductionAdapters:
             or index["candidate"]["candidate_id"] != candidate.spec.candidate_id
             or canonical_payload(index["candidate"]["spec"])
             != canonical_payload(candidate.spec.cache_payload())
-            or index["profiles"]["whole"]["version"] != whole_profile.version
-            or index["profiles"]["focused"]["version"] != focused_profile.version
         ):
             raise CandidateBuildError("whole visual index identity differs", stage="focused-render")
         full_manifest_proof = index["full_region_manifest"]
@@ -3385,7 +3591,6 @@ class ProductionAdapters:
             states, full_manifest, focused_profile, policy
         )
         cache = FocusedRenderCache(self.config.work_dir / "focused-render-cache")
-        profile_file_sha = index["profiles"]["focused"]["file_sha256"]
         whole_proof = FocusProfileProof(
             whole_profile.version, whole_profile.corpus_hash,
             index["profiles"]["whole"]["file_sha256"], whole_profile.limits,
@@ -3399,7 +3604,7 @@ class ProductionAdapters:
         results: dict[str, FocusRegionResult] = {}
         partial_path = workspace / "logs/focused-region-gate.partial.json"
         final_path = workspace / "logs/focused-region-gate.json"
-        self._remove_evidence_file(final_path)
+        self._remove_evidence_file(workspace, final_path)
         for target in selection.selected:
             _check_cancelled(self.cancel_event, "cancelled between focused targets")
             state = index["states"][target.state_index]
@@ -3413,11 +3618,6 @@ class ProductionAdapters:
                 "search_paths": (),
             } for material in (descriptor.materials or ("none",)))
             material = material_resolution_proof(roots, requests, self.cancel_event)
-            if not material.cacheable:
-                raise CandidateBuildError(
-                    f"focused material proof is unavailable: {material.reason}",
-                    stage="focused-render",
-                )
             material_payload = canonical_payload(material)
             material_proofs[target.region_key] = material_payload
             poses = tuple(state["poses"])
@@ -3443,46 +3643,129 @@ class ProductionAdapters:
                     if index["animation"]["reference"] is not None else None
                 ),
             )
-            context = FocusCacheContext(
-                1, manifest.input_hash, index["candidate"]["cache_digest"],
-                tuple(
-                    (
-                        source["source_identity"], source["reference"]["sha256"],
-                        source["candidate"]["sha256"],
-                    )
-                    for source in state["sources"]
-                ),
-                descriptor, target, state_proof,
-                state["region_manifest"]["sha256"],
-                state["configuration_manifest"]["sha256"],
-                whole_proof, focused_proof,
-                TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
-                index["selector_version"], index["renderer"]["version"],
-                index["dependency"]["digest"], material_payload, expected,
-            )
-            key = FocusCacheKey.build(context.to_payload())
-            metadata = FocusCacheMetadata(
-                1, context.to_payload(), canonical_payload(target), canonical_payload(expected)
-            )
+            if material.cacheable:
+                context = FocusCacheContext(
+                    1, manifest.input_hash, index["candidate"]["cache_digest"],
+                    tuple(
+                        (
+                            source["source_identity"], source["reference"]["sha256"],
+                            source["candidate"]["sha256"],
+                        )
+                        for source in state["sources"]
+                    ),
+                    descriptor, target, state_proof,
+                    state["region_manifest"]["sha256"],
+                    state["configuration_manifest"]["sha256"],
+                    whole_proof, focused_proof,
+                    TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
+                    index["selector_version"], index["renderer"]["version"],
+                    index["dependency"]["digest"], material_payload, expected,
+                )
+                key = FocusCacheKey.build(context.to_payload())
+                metadata = FocusCacheMetadata(
+                    1, context.to_payload(), canonical_payload(target), canonical_payload(expected)
+                )
+                validation_cache = cache
+            else:
+                key = None
+                metadata = UncachedFocusMetadata(
+                    canonical_payload(target), canonical_payload(expected), material_payload,
+                )
+                validation_cache = None
             expected_files = []
             target_root = workspace / "focused-renders" / f"{target.rank:03d}-{target.region_key}"
+            input_root = workspace / "focused-inputs" / f"{target.rank:03d}-{target.region_key}"
+
+            def materialize_focus_inputs(
+                *, state=state, input_root=input_root,
+            ) -> dict[str, object]:
+                if os.path.lexists(input_root):
+                    _remove_workspace_owned_tree(
+                        workspace, input_root, "focused input snapshot root"
+                    )
+                _safe_workspace_mkdir(
+                    workspace, input_root, "focused input snapshot root"
+                )
+
+                def copy_proof(proof, destination: Path, *, root=workspace) -> Path:
+                    source = root / PurePosixPath(proof["path"])
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    _focused_copy_file_no_follow(
+                        source, destination, self.cancel_event, contained_root=root,
+                    )
+                    _size, digest = _focused_file_proof(
+                        destination, self.cancel_event, contained_root=input_root,
+                    )
+                    if digest != proof["sha256"]:
+                        raise CandidateBuildError(
+                            "focused input changed while snapshotting", stage="focused-render"
+                        )
+                    return destination
+
+                before_paths = []
+                after_paths = []
+                for source in state["sources"]:
+                    relative = PurePosixPath(source["source_identity"])
+                    before_paths.append(copy_proof(
+                        source["reference"], input_root / "reference" / relative
+                    ))
+                    after_paths.append(copy_proof(
+                        source["candidate"], input_root / "candidate" / relative
+                    ))
+                region_path = copy_proof(
+                    state["region_manifest"], input_root / "control/region.json"
+                )
+                configuration_path = copy_proof(
+                    state["configuration_manifest"],
+                    input_root / "control/configuration.json",
+                )
+                renderer_source = self.config.repo_root / "render_previews.py"
+                renderer_proof = {
+                    "path": "render_previews.py",
+                    "sha256": index["renderer"]["digest"],
+                }
+                renderer_path = copy_proof(
+                    renderer_proof, input_root / "control/render_previews.py",
+                    root=self.config.repo_root,
+                )
+                animation_before = animation_after = None
+                if index["animation"]["reference"] is not None:
+                    animation_before = copy_proof(
+                        index["animation"]["reference"],
+                        input_root / "animation/reference.smd",
+                    )
+                    animation_after = copy_proof(
+                        index["animation"]["candidate"],
+                        input_root / "animation/candidate.smd",
+                    )
+                return {
+                    "before": tuple(before_paths), "after": tuple(after_paths),
+                    "region": region_path, "configuration": configuration_path,
+                    "renderer": renderer_path,
+                    "animation_before": animation_before,
+                    "animation_after": animation_after,
+                }
 
             def render_fresh(
                 *, target=target, state=state, target_root=target_root,
                 expected_files=expected_files,
             ) -> FocusRenderDirectories:
+                inputs = materialize_focus_inputs()
                 if os.path.lexists(target_root):
-                    if _is_reparse(target_root) or not target_root.is_dir():
-                        raise CandidateBuildError("focused render root is unsafe", stage="focused-render")
-                    shutil.rmtree(target_root)
+                    _remove_workspace_owned_tree(
+                        workspace, target_root, "focused render root"
+                    )
+                _safe_workspace_mkdir(
+                    workspace, target_root, "focused render root"
+                )
                 command: list[str] = [
                     str(self.config.blender_path), "--background", "--python",
-                    str(self.config.repo_root / "render_previews.py"), "--",
+                    str(inputs["renderer"]), "--",
                 ]
-                for source in state["sources"]:
-                    command.extend(("--before", str(workspace / PurePosixPath(source["reference"]["path"]))))
-                for source in state["sources"]:
-                    command.extend(("--after", str(workspace / PurePosixPath(source["candidate"]["path"]))))
+                for source in inputs["before"]:
+                    command.extend(("--before", str(source)))
+                for source in inputs["after"]:
+                    command.extend(("--after", str(source)))
                 pose_arg = ",".join(
                     "bind:0" if pose == "bind" else f"{pose}:{state_proof.selected_frame}"
                     for pose in poses
@@ -3490,18 +3773,18 @@ class ProductionAdapters:
                 command.extend((
                     "--out", str(target_root), "--size", "512",
                     "--passes", "textured,clay", "--poses", pose_arg,
-                    "--region-manifest", str(workspace / PurePosixPath(state["region_manifest"]["path"])),
-                    "--source-root", str(workspace / "render-source"),
-                    "--configuration-manifest", str(workspace / PurePosixPath(state["configuration_manifest"]["path"])),
+                    "--region-manifest", str(inputs["region"]),
+                    "--source-root", str(input_root / "reference"),
+                    "--configuration-manifest", str(inputs["configuration"]),
                     "--texture-cache", str(self._texture_cache_root(candidate)),
                     "--focus-region", target.region_key,
                 ))
                 for root in self._materials_roots():
                     command.extend(("--materials-root", str(root)))
-                if index["animation"]["reference"] is not None:
+                if inputs["animation_before"] is not None:
                     command.extend((
-                        "--animation-before", str(workspace / PurePosixPath(index["animation"]["reference"]["path"])),
-                        "--animation-after", str(workspace / PurePosixPath(index["animation"]["candidate"]["path"])),
+                        "--animation-before", str(inputs["animation_before"]),
+                        "--animation-after", str(inputs["animation_after"]),
                     ))
                 process = run_process(
                     command, cwd=self.config.repo_root,
@@ -3519,21 +3802,21 @@ class ProductionAdapters:
                 return directories
 
             result, record = validate_focused_target(
-                cache, key, target, focused_profile, render_fresh,
+                validation_cache, key, target, focused_profile, render_fresh,
                 workspace / "focused-snapshots" / f"{target.rank:03d}-{target.region_key}",
                 metadata, expected_files, self.cancel_event,
             )
             results[target.region_key] = result
             records.append(record)
             _check_cancelled(self.cancel_event, "cancelled before focused partial evidence")
-            atomic_write_json(partial_path, {
+            _safe_workspace_atomic_json(workspace, partial_path, {
                 "schema": "focused-progress-v1",
                 "family_id": manifest.family_id,
                 "candidate_id": candidate.spec.candidate_id,
                 "completed": len(records),
                 "selected": len(selection.selected),
                 "records": tuple(canonical_payload(item) for item in records),
-            })
+            }, "focused partial evidence")
         evidence_context = FocusedEvidenceContext(
             1, manifest.family_id, candidate.spec.candidate_id, policy,
             canonical_payload(whole_proof), canonical_payload(focused_proof),
@@ -3544,15 +3827,37 @@ class ProductionAdapters:
         evidence = focused_gate_evidence_payload(
             evidence_context, selection, tuple(records), recoveries=()
         )
-        atomic_write_json(final_path, evidence)
-        self._remove_evidence_file(partial_path)
+        validate_focused_gate_evidence_payload(
+            evidence, family_id=manifest.family_id,
+            candidate_id=candidate.spec.candidate_id,
+            eligible_targets=selection.eligible_ranking,
+            targets=selection.selected, regions=results,
+        )
+        _safe_workspace_atomic_json(
+            workspace, final_path, evidence, "focused authoritative evidence"
+        )
+        try:
+            published_evidence = json.loads(_read_regular_no_follow(
+                final_path, self.cancel_event, contained_root=workspace,
+            ).decode("utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise CandidateBuildError(
+                "focused evidence cannot be read safely", stage="focused-render"
+            ) from exc
+        validate_focused_gate_evidence_payload(
+            published_evidence, family_id=manifest.family_id,
+            candidate_id=candidate.spec.candidate_id,
+            eligible_targets=selection.eligible_ranking,
+            targets=selection.selected, regions=results,
+        )
+        self._remove_evidence_file(workspace, partial_path)
         focused_validation = _aggregate_visual_results(tuple(
             (target.region_key, results[target.region_key].validation)
             for target in selection.selected
         ))
         return FocusedGateResult(
             focused_validation, selection.selected, results,
-            evidence["evidence_sha256"],
+            published_evidence["evidence_sha256"],
         )
 
     def tool_versions(self) -> Mapping[str, str]:

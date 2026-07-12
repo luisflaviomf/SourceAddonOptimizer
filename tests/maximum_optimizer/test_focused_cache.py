@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import math
 from pathlib import Path
 import tempfile
@@ -1199,7 +1201,7 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
 
         result, record = validate_focused_target(
             cache, self.key, self.target, _profile(), render_fresh,
-            self.base / "snapshots/hit", self.metadata, self.files,
+            self.base / "snapshots/hit", self.metadata, (),
             threading.Event(), comparator=comparator,
         )
 
@@ -1210,7 +1212,7 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
         render_fresh.assert_not_called()
 
     def test_fresh_render_recompares_once_and_cache_store_is_not_authorization(self):
-        from maximum_optimizer.domain import ValidationResult
+        from maximum_optimizer.domain import FocusRegionResult, ValidationResult
         from maximum_optimizer.focused_cache import (
             FocusedRenderCache, validate_focused_target,
         )
@@ -1233,6 +1235,90 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
         comparator.assert_called_once_with(self.reference, self.candidate, _profile())
         render_fresh.assert_called_once_with()
         self.assertTrue((self.base / "cache" / self.key.digest / "complete.json").is_file())
+
+    def test_fresh_render_rejects_resolved_material_hashes_outside_bound_proof(self):
+        from maximum_optimizer.domain import ValidationResult
+        from maximum_optimizer.focused_cache import (
+            FocusedRenderCache, validate_focused_target,
+        )
+
+        manifest_path = self.candidate / "render_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["entries"][0]["resolved_materials"] = [{
+            "vmt_sha256": "9" * 64,
+            "vtf_sha256": self.payload["material_proof"]["resolutions"][0]["vtf_sha256"],
+        }]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        current_files = _render_file_proofs(self.reference, self.candidate)
+
+        with self.assertRaisesRegex(ValueError, "material proof|resolved material"):
+            validate_focused_target(
+                FocusedRenderCache(self.base / "cache"), self.key, self.target,
+                _profile(), mock.Mock(return_value=self.directories),
+                self.base / "snapshots/material-mutation", self.metadata,
+                current_files, threading.Event(),
+                comparator=mock.Mock(return_value=ValidationResult(
+                    True, metrics=_validation_metrics(0.0)
+                )),
+            )
+
+    def test_noncacheable_material_proof_renders_fresh_once_without_cache_and_is_auditable(self):
+        import hashlib
+        from maximum_optimizer.domain import FocusedRegionPolicy, ValidationResult
+        from maximum_optimizer.focused_cache import (
+            FocusedEvidenceContext, UncachedFocusMetadata,
+            focused_gate_evidence_payload, validate_focused_target,
+        )
+        from maximum_optimizer.reporting import canonical_json
+
+        for reason in ("file-limit", "unsafe-tree"):
+            with self.subTest(reason=reason):
+                proof = _material_proof(cacheable=False)
+                proof["reason"] = reason
+                unsealed = dict(proof)
+                del unsealed["digest"]
+                proof["digest"] = hashlib.sha256(
+                    canonical_json(unsealed).encode("utf-8")
+                ).hexdigest()
+                metadata = UncachedFocusMetadata(
+                    self.payload["target"], self.payload["expected"], proof,
+                )
+                comparator = mock.Mock(return_value=ValidationResult(
+                    True, metrics=_validation_metrics(0.0)
+                ))
+                render_fresh = mock.Mock(return_value=self.directories)
+
+                result, record = validate_focused_target(
+                    None, None, self.target, _profile(), render_fresh,
+                    self.base / f"snapshots/{reason}", metadata, self.files,
+                    threading.Event(), comparator=comparator,
+                )
+
+                self.assertTrue(result.validation.passed)
+                self.assertFalse(result.cache_hit)
+                self.assertFalse(record.cache_hit)
+                render_fresh.assert_called_once_with()
+                comparator.assert_called_once_with(
+                    self.reference, self.candidate, _profile()
+                )
+                self.assertFalse((self.base / "cache").exists())
+
+                context = FocusedEvidenceContext(
+                    1, "family", "candidate", FocusedRegionPolicy(
+                        1, "surface-risk-top-k-v1", 1
+                    ),
+                    self.payload["whole_profile"], self.payload["focused_profile"],
+                    self.payload["trusted_evidence_v3_sha256"],
+                    self.payload["dependency_proof_sha256"],
+                    {self.target.region_key: proof},
+                )
+                evidence = focused_gate_evidence_payload(
+                    context, self.selection, (record,)
+                )
+                self.assertEqual(
+                    evidence["context"]["material_proofs"][self.target.region_key]["reason"],
+                    reason,
+                )
 
     def test_validation_rejects_target_not_bound_to_cache_context(self):
         from dataclasses import replace
@@ -1265,10 +1351,12 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
             )
 
     def test_schema1_evidence_seals_complete_selection_and_rejects_recovery(self):
-        from maximum_optimizer.domain import ValidationResult
+        from maximum_optimizer.domain import FocusRegionResult, ValidationResult
         from maximum_optimizer.focused_cache import (
             build_focused_render_evidence, focused_gate_evidence_payload,
+            validate_focused_gate_evidence_payload,
         )
+        from maximum_optimizer.reporting import canonical_json
 
         validation = ValidationResult(True, metrics=_validation_metrics(0.0))
         record = build_focused_render_evidence(
@@ -1284,6 +1372,67 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
              "recoveries", "authorization_sha256", "evidence_sha256"},
         )
         self.assertEqual(evidence["recoveries"], ())
+        validated = validate_focused_gate_evidence_payload(
+            evidence, family_id="family", candidate_id="candidate",
+            eligible_targets=self.selection.eligible_ranking,
+            targets=(self.target,), regions={
+                self.target.region_key: FocusRegionResult(
+                    self.target, validation, record.evidence_sha256, False
+                )
+            },
+        )
+        self.assertEqual(validated["evidence_sha256"], evidence["evidence_sha256"])
+
+        forged = json.loads(canonical_json(evidence))
+        forged["records"][0]["validation"]["worst_scope"] = "forged"
+        forged_unsealed = dict(forged)
+        del forged_unsealed["evidence_sha256"]
+        forged["evidence_sha256"] = hashlib.sha256(
+            canonical_json(forged_unsealed).encode("utf-8")
+        ).hexdigest()
+        with self.assertRaisesRegex(ValueError, "record|authorization"):
+            validate_focused_gate_evidence_payload(
+                forged, family_id="family", candidate_id="candidate",
+                eligible_targets=self.selection.eligible_ranking,
+                targets=(self.target,), regions={
+                    self.target.region_key: FocusRegionResult(
+                        self.target, validation, record.evidence_sha256, False
+                    )
+                },
+            )
+
+        semantic_forgery = json.loads(canonical_json(evidence))
+        semantic_forgery["context"]["trusted_evidence_v3_sha256"] = "0" * 64
+        authorization_records = []
+        for item in semantic_forgery["records"]:
+            authorization_record = dict(item)
+            del authorization_record["cache_hit"]
+            del authorization_record["evidence_sha256"]
+            authorization_records.append(authorization_record)
+        authorization = {
+            "schema": 1, "family_id": "family", "candidate_id": "candidate",
+            "context": semantic_forgery["context"],
+            "selection": semantic_forgery["selection"],
+            "records": authorization_records, "recoveries": [],
+        }
+        semantic_forgery["authorization_sha256"] = hashlib.sha256(
+            canonical_json(authorization).encode("utf-8")
+        ).hexdigest()
+        semantic_unsealed = dict(semantic_forgery)
+        del semantic_unsealed["evidence_sha256"]
+        semantic_forgery["evidence_sha256"] = hashlib.sha256(
+            canonical_json(semantic_unsealed).encode("utf-8")
+        ).hexdigest()
+        with self.assertRaisesRegex(ValueError, "trusted|evidence"):
+            validate_focused_gate_evidence_payload(
+                semantic_forgery, family_id="family", candidate_id="candidate",
+                eligible_targets=self.selection.eligible_ranking,
+                targets=(self.target,), regions={
+                    self.target.region_key: FocusRegionResult(
+                        self.target, validation, record.evidence_sha256, False
+                    )
+                },
+            )
 
         cached_record = build_focused_render_evidence(
             self.target, validation, self.metadata.expected, self.files,

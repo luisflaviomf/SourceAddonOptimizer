@@ -490,6 +490,30 @@ class SearchTests(unittest.TestCase):
         ))
         self.assertIsNone(choose_next(evaluations, SearchBudget.experimental_default(), initial=()))
 
+    def test_external_byte_exact_mode_never_calls_legacy_regional_recovery(self):
+        from unittest.mock import patch
+
+        region = "r-" + "9" * 64
+        evaluations = [
+            evaluation_at(0.35, True, candidate_id="donor"),
+            evaluation_at(
+                0.25, False, candidate_id="focused-failure",
+                worst_scope=f"{region}/bind",
+            ),
+        ]
+        with patch(
+            "maximum_optimizer.search._regional_recovery",
+            side_effect=AssertionError("legacy recovery must be disabled"),
+        ):
+            next_candidate = choose_next(
+                evaluations, SearchBudget.experimental_default(), initial=(),
+                recovery_mode="external-byte-exact",
+            )
+
+        self.assertTrue(
+            next_candidate is None or not next_candidate.region_overrides
+        )
+
     def test_regional_recovery_donor_must_match_complete_strategy_contract(self):
         region = "r-" + "5" * 64
         evaluations = [

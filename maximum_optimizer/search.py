@@ -318,7 +318,10 @@ def choose_next(
     *,
     initial: Sequence[CandidateSpec] | None = None,
     attempted_ids: set[str] | None = None,
+    recovery_mode: str = "legacy-regional",
 ) -> CandidateSpec | None:
+    if recovery_mode not in {"legacy-regional", "external-byte-exact"}:
+        raise ValueError("search recovery mode is invalid")
     attempted = set(attempted_ids or ())
     if max(len(evaluations), len(attempted)) >= budget.max_candidates:
         return None
@@ -346,11 +349,12 @@ def choose_next(
         engine_trails[str(key[0])] = engine_trails.get(str(key[0]), 0) + 1
 
     # Recovery and boundary refinement stay inside one comparable strategy trail.
-    for key in recovery_keys:
-        trail = recovery_trails[key]
-        recovery = _regional_recovery(trail, used_ids)
-        if recovery is not None:
-            return recovery
+    if recovery_mode == "legacy-regional":
+        for key in recovery_keys:
+            trail = recovery_trails[key]
+            recovery = _regional_recovery(trail, used_ids)
+            if recovery is not None:
+                return recovery
     for key in ordered_keys:
         trail = trails[key]
         bracket = _narrowest_bracket(trail)

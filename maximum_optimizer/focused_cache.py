@@ -258,6 +258,60 @@ def _validate_material_proof(value: object) -> None:
         raise ValueError("material proof digest mismatch")
 
 
+def _validate_uncacheable_material_proof(value: object) -> None:
+    fields = {
+        "schema", "cacheable", "reason", "roots", "requests", "files",
+        "resolutions", "total_files", "total_bytes", "digest",
+    }
+    proof = _exact(value, fields, "material proof")
+    if (
+        proof["schema"] != 1
+        or proof["cacheable"] is not False
+        or proof["reason"] not in {"file-limit", "byte-limit", "unsafe-tree", "io-error"}
+    ):
+        raise ValueError("material proof is not noncacheable schema 1")
+    _integer(proof["total_files"], "material file count")
+    _integer(proof["total_bytes"], "material bytes")
+    roots = proof["roots"]
+    requests = proof["requests"]
+    if type(roots) is not list or type(requests) is not list or not roots or not requests:
+        raise ValueError("material proof cardinality is invalid")
+    if proof["files"] != [] or proof["resolutions"] != []:
+        raise ValueError("noncacheable material proof cannot contain cache inventory")
+    for index, root in enumerate(roots):
+        root = _exact(root, {"root_index", "root_identity", "inventory_sha256"}, "material root")
+        if root["root_index"] != index or root["inventory_sha256"] is not None:
+            raise ValueError("noncacheable material roots are not canonical")
+        _text(root["root_identity"], "material root identity")
+    if len({root["root_identity"].casefold() for root in roots}) != len(roots):
+        raise ValueError("material root identity is duplicated")
+    for index, request in enumerate(requests):
+        request = _exact(request, {"request_index", "material_identity", "search_paths"}, "material request")
+        if request["request_index"] != index:
+            raise ValueError("material requests are not canonical")
+        _relative(request["material_identity"], "material identity")
+        paths = request["search_paths"]
+        if type(paths) is not list or any(_relative(path, "material search path") != path for path in paths):
+            raise ValueError("material search paths are invalid")
+        if len({path.casefold() for path in paths}) != len(paths):
+            raise ValueError("material search paths are duplicated")
+    if len({request["material_identity"].casefold() for request in requests}) != len(requests):
+        raise ValueError("material request identity is duplicated")
+    supplied = _hash(proof["digest"], "material proof digest")
+    unsealed = dict(proof)
+    del unsealed["digest"]
+    actual = hashlib.sha256(canonical_json(unsealed).encode("utf-8")).hexdigest()
+    if supplied != actual:
+        raise ValueError("material proof digest mismatch")
+
+
+def _validate_material_audit_proof(value: object) -> None:
+    if isinstance(value, Mapping) and value.get("cacheable") is False:
+        _validate_uncacheable_material_proof(value)
+    else:
+        _validate_material_proof(value)
+
+
 def _validate_cache_payload(value: object) -> dict:
     payload = _exact(value, _TOP_FIELDS, "focus cache context")
     if payload["schema"] != 1:
@@ -490,6 +544,33 @@ class FocusCacheMetadata:
 
 
 @dataclass(frozen=True)
+class UncachedFocusMetadata:
+    target: Mapping[str, object]
+    expected: Mapping[str, object]
+    material_proof: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        copied_target = json.loads(canonical_json(self.target))
+        copied_expected = json.loads(canonical_json(self.expected))
+        copied_material = json.loads(canonical_json(self.material_proof))
+        _exact(copied_target, {
+            "rank", "region_key", "source_identity", "state_index", "state_name",
+            "bodygroups", "lod_index", "anchor_pose", "surface_bidirectional_p95",
+            "surface_max", "normalized_p95", "normalized_max", "selector_input_sha256",
+        }, "focus target")
+        expected = _exact(copied_expected, {
+            "region_key", "poses", "passes", "angles", "width", "height",
+            "reference_count", "candidate_count",
+        }, "expected matrix")
+        if expected["region_key"] != copied_target["region_key"]:
+            raise ValueError("expected matrix target differs")
+        _validate_uncacheable_material_proof(copied_material)
+        object.__setattr__(self, "target", deep_freeze(copied_target))
+        object.__setattr__(self, "expected", deep_freeze(copied_expected))
+        object.__setattr__(self, "material_proof", deep_freeze(copied_material))
+
+
+@dataclass(frozen=True)
 class FocusExpectedMatrix:
     region_key: str
     poses: tuple[str, ...]
@@ -633,7 +714,7 @@ class FocusedEvidenceContext:
             if type(key) is not str or _REGION_KEY.fullmatch(key) is None:
                 raise ValueError("focused material proof key is invalid")
             copied = json.loads(canonical_json(proof))
-            _validate_material_proof(copied)
+            _validate_material_audit_proof(copied)
             material[key] = copied
         object.__setattr__(self, "whole_profile", deep_freeze(whole))
         object.__setattr__(self, "focused_profile", deep_freeze(focused))
@@ -1360,6 +1441,49 @@ def _render_file_manifest(
     return tuple(result)
 
 
+def _validate_render_material_bindings(
+    directories: FocusRenderDirectories,
+    material_proof: Mapping[str, object],
+    cancel_event: threading.Event | None,
+) -> None:
+    if material_proof["cacheable"] is not True:
+        return
+    allowed = {
+        (item["vmt_sha256"], item["vtf_sha256"])
+        for item in material_proof["resolutions"]
+        if item["state"] == "resolved"
+    }
+    for side, root in (
+        ("reference", directories.reference), ("candidate", directories.candidate)
+    ):
+        try:
+            payload = json.loads(_read_regular_no_follow(
+                root / "render_manifest.json", cancel_event, contained_root=root,
+            ).decode("utf-8"))
+            entries = payload["entries"]
+            if type(entries) is not list:
+                raise ValueError("render entries are invalid")
+            for entry in entries:
+                if type(entry) is not dict:
+                    raise ValueError("render entry is invalid")
+                resolved = entry.get("resolved_materials", [])
+                if type(resolved) is not list:
+                    raise ValueError("resolved materials are invalid")
+                for material in resolved:
+                    if type(material) is not dict:
+                        raise ValueError("resolved material is invalid")
+                    pair = (
+                        _hash(material.get("vmt_sha256"), "render VMT hash"),
+                        _hash(material.get("vtf_sha256"), "render VTF hash"),
+                    )
+                    if pair not in allowed:
+                        raise ValueError(
+                            "render resolved material differs from material proof"
+                        )
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError) as exc:
+            raise ValueError(f"{side} render material evidence is invalid") from exc
+
+
 def _validate_render_files(
     files: tuple[RenderFileProof, ...],
     expected: Mapping[str, object],
@@ -1980,51 +2104,70 @@ def build_focused_render_evidence(
 
 
 def validate_focused_target(
-    cache: FocusedRenderCache,
-    key: FocusCacheKey,
+    cache: FocusedRenderCache | None,
+    key: FocusCacheKey | None,
     target: FocusTarget,
     profile: FidelityProfile,
     render_fresh,
     snapshot_root: os.PathLike[str] | str,
-    metadata: FocusCacheMetadata,
+    metadata: FocusCacheMetadata | UncachedFocusMetadata,
     expected_files,
     cancel_event: threading.Event | None,
     *,
     comparator=compare_render_sets,
 ) -> tuple[FocusRegionResult, FocusedRenderEvidence]:
-    if not isinstance(cache, FocusedRenderCache) or not isinstance(profile, FidelityProfile):
+    if not isinstance(profile, FidelityProfile):
         raise TypeError("focused validation arguments are invalid")
+    cached_mode = isinstance(cache, FocusedRenderCache) and isinstance(key, FocusCacheKey)
+    uncached_mode = cache is None and key is None and isinstance(metadata, UncachedFocusMetadata)
+    if not cached_mode and not uncached_mode:
+        raise TypeError("focused validation cache mode is invalid")
+    if cached_mode and not isinstance(metadata, FocusCacheMetadata):
+        raise TypeError("focused validation cache metadata is invalid")
+    material_proof = (
+        metadata.context["material_proof"]
+        if isinstance(metadata, FocusCacheMetadata)
+        else metadata.material_proof
+    )
     target_payload = canonical_payload(target)
-    if (
-        target_payload != canonical_payload(metadata.context.get("target"))
-        or target_payload != canonical_payload(metadata.target)
-    ):
+    if target_payload != canonical_payload(metadata.target):
         raise ValueError("focused target does not match cache metadata target")
-    _cancel(cancel_event, "cancelled before focused cache lookup")
-    directories = cache.lookup(key, snapshot_root, cancel_event)
-    cache_hit = directories is not None
+    if cached_mode and target_payload != canonical_payload(metadata.context.get("target")):
+        raise ValueError("focused target does not match cache metadata target")
+    directories = None
+    if cached_mode:
+        _cancel(cancel_event, "cancelled before focused cache lookup")
+        directories = cache.lookup(key, snapshot_root, cancel_event)
+    cache_hit = cached_mode and directories is not None
+    cached_files: tuple[RenderFileProof, ...] | None = None
+    if cache_hit:
+        cached_files = _render_file_manifest(directories, cancel_event)
+        _validate_render_files(cached_files, metadata.expected)
+        _validate_render_material_bindings(directories, material_proof, cancel_event)
     if directories is None:
         _cancel(cancel_event, "cancelled before focused render")
         directories = render_fresh()
         if not isinstance(directories, FocusRenderDirectories):
             raise TypeError("focused renderer returned invalid directories")
         _cancel(cancel_event, "cancelled after focused render")
-        try:
-            cache.store(key, directories, metadata, expected_files, cancel_event)
-        except ProcessCancelledError:
-            raise
-        except (OSError, ValueError):
-            pass
+        _validate_render_material_bindings(directories, material_proof, cancel_event)
+        if cached_mode:
+            try:
+                cache.store(key, directories, metadata, expected_files, cancel_event)
+            except ProcessCancelledError:
+                raise
+            except (OSError, ValueError):
+                pass
     _cancel(cancel_event, "cancelled before focused comparison")
     validation = comparator(directories.reference, directories.candidate, profile)
     if not isinstance(validation, ValidationResult):
         raise TypeError("focused comparator returned an invalid result")
     _cancel(cancel_event, "cancelled after focused comparison")
-    expected_tuple = tuple(expected_files)
+    expected_tuple = cached_files if cached_files is not None else tuple(expected_files)
     files = _render_file_manifest(
         directories, cancel_event, expected_files=expected_tuple
     )
-    material_digest = str(metadata.context["material_proof"]["digest"])
+    material_digest = str(material_proof["digest"])
     record = build_focused_render_evidence(
         target, validation, metadata.expected, files, material_digest, cache_hit,
     )
@@ -2125,3 +2268,156 @@ def focused_gate_evidence_payload(
         canonical_json(outer).encode("utf-8")
     ).hexdigest()
     return deep_freeze(outer)
+
+
+def validate_focused_gate_evidence_payload(
+    value: object,
+    *,
+    family_id: str,
+    candidate_id: str,
+    eligible_targets,
+    targets,
+    regions: Mapping[str, FocusRegionResult],
+) -> Mapping[str, object]:
+    from maximum_optimizer.focused_regions import FocusSelection
+
+    def parse_target(raw: object) -> FocusTarget:
+        item = _exact(raw, {
+            "rank", "region_key", "source_identity", "state_index", "state_name",
+            "bodygroups", "lod_index", "anchor_pose", "surface_bidirectional_p95",
+            "surface_max", "normalized_p95", "normalized_max",
+            "selector_input_sha256",
+        }, "focused evidence target")
+        return FocusTarget(
+            item["rank"], item["region_key"], item["source_identity"],
+            item["state_index"], item["state_name"],
+            tuple(tuple(pair) for pair in item["bodygroups"]), item["lod_index"],
+            item["anchor_pose"], item["surface_bidirectional_p95"],
+            item["surface_max"], item["normalized_p95"], item["normalized_max"],
+            item["selector_input_sha256"],
+        )
+
+    def parse_validation(raw: object) -> ValidationResult:
+        item = _exact(
+            raw, {"passed", "failures", "metrics", "worst_scope"},
+            "focused evidence validation",
+        )
+        if type(item["failures"]) is not list or type(item["metrics"]) is not dict:
+            raise ValueError("focused evidence validation fields are invalid")
+        failures = tuple(GateFailure(**_exact(failure, {
+            "gate", "scope", "measured", "limit", "message",
+        }, "focused evidence failure")) for failure in item["failures"])
+        return ValidationResult(
+            item["passed"], failures, item["metrics"], item["worst_scope"]
+        )
+
+    payload = json.loads(canonical_json(value))
+    payload = _exact(payload, {
+        "schema", "family_id", "candidate_id", "context", "selection", "records",
+        "recoveries", "authorization_sha256", "evidence_sha256",
+    }, "focused gate evidence")
+    if payload["schema"] != 1 or payload["family_id"] != family_id or payload["candidate_id"] != candidate_id:
+        raise ValueError("focused gate evidence identity is invalid")
+    if payload["recoveries"] != []:
+        raise ValueError("focused gate evidence recovery is invalid")
+    supplied_evidence = _hash(payload["evidence_sha256"], "focused gate evidence seal")
+    unsealed = dict(payload)
+    del unsealed["evidence_sha256"]
+    if hashlib.sha256(canonical_json(unsealed).encode("utf-8")).hexdigest() != supplied_evidence:
+        raise ValueError("focused gate evidence seal is invalid")
+
+    target_tuple = tuple(targets)
+    eligible_tuple = tuple(eligible_targets)
+    region_map = dict(regions)
+    selected = _exact(
+        payload["selection"],
+        {"selector_input_sha256", "eligible_ranking", "selected"},
+        "focused gate selection",
+    )
+    if (
+        selected["eligible_ranking"] != canonical_payload(eligible_tuple)
+        or selected["selected"] != canonical_payload(target_tuple)
+    ):
+        raise ValueError("focused gate selected targets differ")
+    records = payload["records"]
+    if type(records) is not list or len(records) != len(target_tuple):
+        raise ValueError("focused gate record cardinality differs")
+    if set(region_map) != {target.region_key for target in target_tuple}:
+        raise ValueError("focused gate region cardinality differs")
+    authorization_records = []
+    for target, record_value in zip(target_tuple, records):
+        record = _exact(record_value, {
+            "target", "terminal_status", "expected", "reference_manifest",
+            "reference_manifest_sha256", "candidate_manifest",
+            "candidate_manifest_sha256", "files", "material_proof_sha256",
+            "validation", "cache_hit", "evidence_sha256",
+        }, "focused gate record")
+        result = region_map.get(target.region_key)
+        if (
+            not isinstance(result, FocusRegionResult)
+            or record["target"] != canonical_payload(target)
+            or record["validation"] != canonical_payload(result.validation)
+            or record["evidence_sha256"] != result.evidence_sha256
+        ):
+            raise ValueError("focused gate record differs from result")
+        supplied_record = _hash(record["evidence_sha256"], "focused gate record seal")
+        record_unsealed = dict(record)
+        del record_unsealed["evidence_sha256"]
+        if hashlib.sha256(canonical_json(record_unsealed).encode("utf-8")).hexdigest() != supplied_record:
+            raise ValueError("focused gate record seal is invalid")
+        authorization_record = dict(record_unsealed)
+        del authorization_record["cache_hit"]
+        authorization_records.append(authorization_record)
+    authorization = {
+        "schema": 1,
+        "family_id": family_id,
+        "candidate_id": candidate_id,
+        "context": payload["context"],
+        "selection": payload["selection"],
+        "records": authorization_records,
+        "recoveries": [],
+    }
+    supplied_authorization = _hash(
+        payload["authorization_sha256"], "focused gate authorization seal"
+    )
+    actual_authorization = hashlib.sha256(
+        canonical_json(authorization).encode("utf-8")
+    ).hexdigest()
+    if supplied_authorization != actual_authorization:
+        raise ValueError("focused gate authorization seal is invalid")
+    context_raw = _exact(payload["context"], {
+        "schema", "policy", "whole_profile", "focused_profile",
+        "trusted_evidence_v3_sha256", "dependency_proof_sha256", "material_proofs",
+    }, "focused gate context")
+    policy_raw = _exact(context_raw["policy"], {
+        "schema", "selector", "top_k", "max_whole_states", "max_recovery_rounds",
+    }, "focused gate policy")
+    context = FocusedEvidenceContext(
+        context_raw["schema"], family_id, candidate_id,
+        FocusedRegionPolicy(**policy_raw), context_raw["whole_profile"],
+        context_raw["focused_profile"], context_raw["trusted_evidence_v3_sha256"],
+        context_raw["dependency_proof_sha256"], context_raw["material_proofs"],
+    )
+    eligible_targets = tuple(parse_target(item) for item in selected["eligible_ranking"])
+    selected_targets = tuple(parse_target(item) for item in selected["selected"])
+    selection = FocusSelection(
+        selected["selector_input_sha256"], eligible_targets, selected_targets
+    )
+    typed_records = []
+    for raw in records:
+        files = tuple(RenderFileProof(**_exact(file, {
+            "side", "kind", "path", "size", "sha256", "width", "height",
+        }, "focused evidence render file")) for file in raw["files"])
+        typed_records.append(FocusedRenderEvidence(
+            parse_target(raw["target"]), raw["terminal_status"], raw["expected"],
+            raw["reference_manifest"], raw["reference_manifest_sha256"],
+            raw["candidate_manifest"], raw["candidate_manifest_sha256"], files,
+            raw["material_proof_sha256"], parse_validation(raw["validation"]),
+            raw["cache_hit"], raw["evidence_sha256"],
+        ))
+    rebuilt = focused_gate_evidence_payload(
+        context, selection, tuple(typed_records), recoveries=()
+    )
+    if canonical_json(rebuilt) != canonical_json(payload):
+        raise ValueError("focused gate evidence differs from typed authorization")
+    return deep_freeze(payload)

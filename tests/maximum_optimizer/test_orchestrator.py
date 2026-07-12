@@ -166,7 +166,13 @@ def _whole_index_payload(workspace: Path) -> dict:
         "render-source/state-region.json": b'{"schema":1}',
         "render-source/state-configuration.json": b'{"schema":1}',
         "renders/engine-default/original/render_manifest.json": b'{"schema":1}',
-        "renders/engine-default/optimized/render_manifest.json": b'{"schema":1}',
+        "renders/engine-default/optimized/render_manifest.json": json.dumps({
+            "schema": 1,
+            "geometry": [{
+                "scope": "r-" + "1" * 64, "pose": "bind",
+                "surface_bidirectional_p95": 0.01, "surface_max": 0.02,
+            }],
+        }, sort_keys=True).encode("utf-8"),
         "render-source/test.smd": b"reference-source",
         "src/test_OPT.smd": b"candidate-source",
         "logs/render-animation-classification.json": b'{"schema":1,"required":false}',
@@ -496,6 +502,89 @@ class OrchestratorTests(unittest.TestCase):
                 path, workspace, seal, threading.Event()
             )
 
+    def test_whole_visual_index_rejects_stale_current_profile_dependency_renderer_and_cache_bindings(self):
+        from maximum_optimizer.visual_validation import FidelityProfile
+
+        index = _whole_index_payload(self.root / "whole-current-bindings")
+        limits = json.loads(_profile(self.root / "bindings-profile.json").read_text())["limits"]
+        whole = FidelityProfile(1, "whole-v1", True, "d" * 64, limits)
+        focused = FidelityProfile(1, "focused-v1", True, "d" * 64, limits)
+        valid = {
+            "whole_profile": whole,
+            "focused_profile": focused,
+            "profile_file_sha256": "e" * 64,
+            "dependency_digest": "f" * 64,
+            "renderer_digest": "1" * 64,
+            "candidate_cache_digest": "c" * 64,
+        }
+        orchestrator_module._validate_whole_index_current_bindings(index, **valid)
+        mutations = {
+            "profile_file_sha256": "2" * 64,
+            "dependency_digest": "3" * 64,
+            "renderer_digest": "4" * 64,
+            "candidate_cache_digest": "5" * 64,
+            "whole_profile": FidelityProfile(1, "whole-v1", True, "6" * 64, limits),
+            "focused_profile": FidelityProfile(1, "focused-v1", True, "7" * 64, limits),
+        }
+        for field, changed in mutations.items():
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValueError, "current|differs|binding"
+            ):
+                orchestrator_module._validate_whole_index_current_bindings(
+                    index, **{**valid, field: changed}
+                )
+
+    def test_candidate_evidence_write_and_remove_reject_reparse_ancestor(self):
+        workspace = self.root / "evidence-workspace"
+        outside = self.root / "evidence-outside"
+        workspace.mkdir()
+        outside.mkdir()
+        protected = outside / "focused-region-gate.json"
+        protected.write_text("protected", encoding="utf-8")
+        try:
+            (workspace / "logs").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"symlink privilege unavailable: {exc}")
+
+        with self.assertRaisesRegex(ValueError, "ancestor|contained|reparse"):
+            orchestrator_module._safe_workspace_atomic_json(
+                workspace, workspace / "logs/focused-region-gate.json",
+                {"schema": 1}, "focused evidence",
+            )
+        with self.assertRaises(CandidateBuildError):
+            ProductionAdapters._remove_evidence_file(
+                workspace, workspace / "logs/focused-region-gate.json"
+            )
+        self.assertEqual(protected.read_text(encoding="utf-8"), "protected")
+
+    def test_focused_workspace_cleanup_rejects_nested_reparse_tree(self):
+        workspace = self.root / "focused-cleanup"
+        nested = workspace / "focused-inputs/target/nested"
+        nested.mkdir(parents=True)
+        (nested / "keep.bin").write_bytes(b"keep")
+
+        with patch(
+            "maximum_optimizer.focused_cache._is_reparse",
+            side_effect=lambda path: Path(path).name == "nested",
+        ), self.assertRaisesRegex(CandidateBuildError, "unsafe"):
+            orchestrator_module._remove_workspace_owned_tree(
+                workspace, workspace / "focused-inputs/target",
+                "focused input snapshot root",
+            )
+
+        self.assertTrue((nested / "keep.bin").is_file())
+
+        mutable_parent = workspace / "focused-renders"
+        mutable_parent.mkdir()
+        with patch.object(
+            orchestrator_module, "_is_reparse",
+            side_effect=lambda path: Path(path) == mutable_parent,
+        ), self.assertRaisesRegex(CandidateBuildError, "ancestor.*unsafe"):
+            orchestrator_module._safe_workspace_mkdir(
+                workspace, mutable_parent / "new-target", "focused render root"
+            )
+        self.assertFalse((mutable_parent / "new-target").exists())
+
     def test_whole_visual_index_rejects_self_reseal_path_escape_and_state_gaps(self):
         workspace = self.root / "whole-index-adversarial"
         payload = _whole_index_payload(workspace)
@@ -539,6 +628,24 @@ class OrchestratorTests(unittest.TestCase):
             "surface_bidirectional_p95": .01, "surface_max": .02,
         }, payload["states"][0]["geometry_rows"][0]]
         with self.assertRaisesRegex(ValueError, "geometry.*canonical|order"):
+            orchestrator_module._write_whole_visual_index(
+                path, workspace, payload, threading.Event()
+            )
+
+        payload = _whole_index_payload(workspace)
+        payload["states"][0]["geometry_rows"][0]["surface_max"] = 0.021
+        with self.assertRaisesRegex(ValueError, "geometry.*manifest|differ"):
+            orchestrator_module._write_whole_visual_index(
+                path, workspace, payload, threading.Event()
+            )
+
+        payload = _whole_index_payload(workspace)
+        source = payload["states"][0]["sources"][0]
+        source["candidate"] = {
+            "path": source["reference"]["path"].upper(),
+            "sha256": source["reference"]["sha256"],
+        }
+        with self.assertRaisesRegex(ValueError, "case-collid|self-reference"):
             orchestrator_module._write_whole_visual_index(
                 path, workspace, payload, threading.Event()
             )
@@ -646,6 +753,71 @@ class OrchestratorTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "rank|cardinality"):
             orchestrator_module._aggregate_focused_gate(ValidationResult(True), gate)
+
+        result = FocusRegionResult(target, ValidationResult(True), "3" * 64, False)
+        mismatched = FocusedGateResult(
+            ValidationResult(False), (target,), {target.region_key: result}, "4" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "validation|region"):
+            orchestrator_module._aggregate_focused_gate(
+                ValidationResult(True), mismatched
+            )
+
+    def test_focused_aggregate_keeps_the_lowest_fidelity_failure_scope(self):
+        from dataclasses import replace
+
+        first = _focus_target()
+        second = replace(
+            first, rank=1, region_key="r-" + "8" * 64,
+            selector_input_sha256=first.selector_input_sha256,
+        )
+        first_validation = ValidationResult(
+            False, (GateFailure("edge_error", "bind", .9, .1, "failed"),),
+            {"fidelity_score": .1, "edge_error": .9}, "bind",
+        )
+        second_validation = ValidationResult(
+            False, (GateFailure("edge_error", "bind", .5, .1, "failed"),),
+            {"fidelity_score": .5, "edge_error": .5}, "bind",
+        )
+        regions = {
+            first.region_key: FocusRegionResult(
+                first, first_validation, "3" * 64, False
+            ),
+            second.region_key: FocusRegionResult(
+                second, second_validation, "4" * 64, False
+            ),
+        }
+        gate = FocusedGateResult(
+            _aggregate_visual_results((
+                (first.region_key, first_validation),
+                (second.region_key, second_validation),
+            )),
+            (first, second), regions, "5" * 64,
+        )
+        whole = ValidationResult(
+            False, (GateFailure("rgb_mae", "whole", .4, .2, "failed"),),
+            {"fidelity_score": .2, "rgb_mae": .4}, "whole",
+        )
+
+        aggregate = orchestrator_module._aggregate_focused_gate(whole, gate)
+
+        self.assertEqual(aggregate.worst_scope, f"{first.region_key}/bind")
+
+        one_region_gate = FocusedGateResult(
+            _aggregate_visual_results(((first.region_key, second_validation),)),
+            (first,), {first.region_key: FocusRegionResult(
+                first, second_validation, "6" * 64, False
+            )}, "7" * 64,
+        )
+        worse_whole_without_explicit_scope = ValidationResult(
+            False,
+            (GateFailure("rgb_mae", "whole-bind", .8, .2, "failed"),),
+            {"fidelity_score": .05, "rgb_mae": .8}, "",
+        )
+        preserved = orchestrator_module._aggregate_focused_gate(
+            worse_whole_without_explicit_scope, one_region_gate
+        )
+        self.assertEqual(preserved.worst_scope, "whole-bind")
 
     def test_schema3_compiled_cache_hit_reruns_whole_and_focused_without_second_store(self):
         self.config = MaximumRunConfig(
