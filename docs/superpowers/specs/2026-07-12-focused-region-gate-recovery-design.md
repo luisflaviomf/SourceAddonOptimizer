@@ -129,6 +129,14 @@ Each target records rank, region key, canonical descriptor, source identity, sta
 bodygroups, LOD, anchor pose, raw metrics, normalized metrics, and the hashes of all
 selector inputs.
 
+The implemented `select_focus_targets(...) -> tuple[FocusTarget, ...]` contract is
+preserved. Task 3 adds a compatible `select_focus_targets_with_evidence(...) ->
+FocusSelection` API. `FocusSelection.eligible_ranking` contains every unique region
+anchor in canonical risk order, with ranks `0..n-1`; `FocusSelection.selected` is
+exactly its first `min(policy.top_k, n)` entries. The existing function delegates to
+the same ranking implementation and returns only `.selected`. This makes the full
+ranking durable without changing any Task-1 caller.
+
 ## Isolated renderer contract
 
 `render_previews.py --focus-region REGION_KEY` uses the existing eight camera
@@ -224,30 +232,108 @@ because its intermediate SMD files are smaller.
 The existing candidate cache continues to cache compiled candidate workspaces, but
 cached diagnostics never authorize structural, whole visual, or focused gates.
 
-A separate focused-render cache may reuse expensive Blender image generation. Its
-key contains:
+A separate focused-render cache may reuse expensive Blender image generation. It
+stores render bytes only and never stores a `ValidationResult`, `passed` flag, or
+other authorization decision. `FocusCacheKey.build` accepts only the canonical
+payload produced by a typed `FocusCacheContext`. Its exact schema-1 fields are:
 
-- family input hash and candidate cache digest;
-- original and candidate contributing SMD hashes;
-- canonical region descriptor and focus target payload;
-- state/bodygroup/LOD and pose/animation source hashes;
-- region and configuration manifest hashes;
-- whole and focused profile versions plus profile-file hash;
-- focus selector, renderer, and evidence schema versions;
-- dependency proof for Blender, Source tools, renderer, VTFCmd, and meshoptimizer;
-- a deterministic material-resolution proof for the selected source.
+- `schema`, fixed to integer `1`;
+- `family_input_sha256` and `candidate_cache_digest`;
+- canonical sorted `source_pairs`, each with source identity and original/candidate
+  SMD SHA-256;
+- exact canonical region descriptor and `FocusTarget` payload;
+- a state payload containing state index/name, canonically sorted bodygroups, LOD,
+  ordered poses, selected pose/frame, and animation source SHA-256 or explicit
+  `none` state;
+- region- and configuration-manifest SHA-256 values;
+- canonical whole and focused profile proofs, each containing version, corpus hash,
+  profile-file SHA-256, and all finite limits;
+- trusted evidence-v3 SHA-256, selector version, renderer version, and
+  dependency-proof SHA-256;
+- the complete canonical cacheable schema-1 material-resolution proof, including its
+  verified digest;
+- an exact expected matrix: one region, ordered poses, the mandatory two passes and
+  eight angles, positive image width/height, and equal derived reference/candidate
+  cardinalities.
 
-Cache publication is atomic and rejects reparse points. The marker contains an exact
-file manifest and expected cardinality. Missing, extra, corrupt, duplicate, or
-non-contained files make the entry a miss. On a hit, manifests and hashes are
-validated and `compare_render_sets` runs again from cached images. If a bounded
-material proof cannot be computed safely, focus caching is disabled for that target
-and a fresh render is used; validation never fails merely because the optimization
-cache is unavailable.
+The builder rejects missing or extra fields, booleans used as integers, non-finite
+numbers, non-canonical ordering, unsupported values, and non-JSON types before
+hashing with `canonical_json(..., allow_nan=False)`. A non-cacheable material proof
+cannot be used to build a key.
+
+`material_resolution_proof(roots, requests, cancel_event)` returns a typed
+`MaterialResolutionProof`. A cacheable proof has exact fields `schema`, `cacheable`,
+`reason`, `roots`, `requests`, `files`, `resolutions`, `total_files`, `total_bytes`,
+and `digest`. Root and request order is preserved because it controls Source lookup;
+paths within roots are canonical relative POSIX paths. The sorted file inventory
+contains every regular VMT/VTF that can affect the requests, including files in
+higher-priority roots that prove a selected result was not shadowed. Each resolution
+records request identity, selected root/search indices, relative VMT/VTF paths and
+hashes, shader/directive choice, and duplicate-directive audit. Exactly 4,096 files
+and exactly 2 GiB are cacheable. Discovery stops before hashing file 4,097 or bytes
+above 2 GiB and returns `cacheable=False` with one of the fixed reasons
+`file-limit`, `byte-limit`, `unsafe-tree`, or `io-error`. A non-cacheable proof
+disables this optimization only; it neither passes nor fails visual validation.
+Cancellation is checked before traversal, between directory entries, and between
+hash chunks and propagates `ProcessCancelledError` rather than becoming a
+non-cacheable result.
+
+The nested material-proof schemas are exact. A root has only `root_index`,
+`root_identity`, and `inventory_sha256`. A request has only `request_index`,
+`material_identity`, and ordered `search_paths`. A file has only `root_index`,
+`path`, `kind` (`vmt` or `vtf`), `size`, and `sha256`. A resolution has only
+`request_index`, `material_identity`, `state` (`resolved` or `missing`), nullable
+selected `root_index`/`search_path_index`, nullable VMT/VTF relative paths and
+hashes, nullable `vtf_root_index`, shader, texture directive, and the canonical
+duplicate-root-directive audit. Cacheable proofs use reason `ok`, have canonical
+unique root/request/file identities, and their counts equal the inventory. A
+non-cacheable proof preserves roots and requests but has empty files/resolutions,
+uses null root inventory hashes and exactly one fixed failure reason, and cannot
+enter a cache context.
+
+The entry layout is exactly `complete.json`, `metadata.json`,
+`payload/reference/...`, and `payload/candidate/...`. Metadata contains the complete
+canonical key context, target, material proof, and expected matrix. The completion
+marker contains only `schema`, `key_digest`, `metadata_sha256`,
+`expected_file_count`, and a sorted exact `{path,size,sha256}` payload manifest.
+The marker is written last and is not part of its own manifest. No absolute, UNC,
+drive-qualified, backslash-aliased, empty, dot, or parent path is ever deserialized.
+Each expected render file proof has only `side`, `kind`, `path`, `size`, `sha256`,
+`width`, and `height`. Manifests use null dimensions; images use positive dimensions
+equal to the expected matrix. The exact payload set is two manifests plus the
+derived image cardinality for both sides; unreferenced files are forbidden.
+
+Publication uses a same-volume direct-child staging directory, cancellable no-follow
+copy, post-copy comparison with the expected render manifest, file and directory
+`fsync`, and staging/quarantine `os.replace` with rollback. It rejects symlinks,
+Windows junctions/reparse points, special files, reparse ancestors, case-colliding
+paths, and files whose identity/size/hash changes while read. A prepared writer
+rechecks an existing same-key entry before promotion; a valid concurrent winner is
+kept and the staging tree is discarded. Cancellation before promotion removes only
+the owned staging tree; cancellation or failure during replacement restores the old
+entry before propagating. Cleanup and invalidation operate only on verified direct
+children and never follow links.
+
+Lookup is read-only with respect to the shared cache. It recomputes the key from the
+stored canonical context, validates the marker, then no-follow copies a hit into a
+fresh caller-owned snapshot and revalidates the exact manifest after copying. A
+source identity/size/hash change during either read makes the operation a miss and
+the incomplete snapshot is removed. The comparator receives only this private
+snapshot, never the mutable shared entry; this closes the validate-then-swap window.
+Missing, extra, corrupt, duplicate, stale-material,
+non-contained, wrong-cardinality, wrong-dimension, or unsafe entries are misses and
+cannot authorize anything. `validate_focused_target(...)` is the sole Task-3 helper
+that converts cached or fresh renders into a `FocusRegionResult`. It obtains a
+validated cache hit or invokes `render_fresh`, then calls the injected comparator
+(default `compare_render_sets`) exactly once on the selected directories. A cache
+hit therefore always recomputes current metrics; any legacy/corrupt cached
+`passed=True` field is rejected or ignored. Cache unavailability falls back to the
+fresh directories and never changes the comparison result.
 
 ## Durable evidence
 
-Each candidate writes `logs/focused-region-gate.json` atomically. Schema 1 contains:
+Each candidate writes `logs/focused-region-gate.json` atomically. The no-recovery
+Task-3 schema 1 contains:
 
 - policy, profile, evidence-v3, dependency, and material proof hashes;
 - the complete ordered eligible ranking and the exact selected prefix;
@@ -255,9 +341,42 @@ Each candidate writes `logs/focused-region-gate.json` atomically. Schema 1 conta
 - original/candidate manifest and image hashes;
 - per-focus validation results;
 - cache hit/miss status that never changes authorization semantics;
-- every recovery round, donor or exact overlay, source hash proof, compile artifact
-  manifest, structural result, focused reruns, and final whole reauthorization;
+- `recoveries`, which is exactly an empty list in schema 1;
 - a canonical evidence hash.
+
+Its exact top-level keys are `schema`, `family_id`, `candidate_id`, `context`,
+`selection`, `records`, `recoveries`, `authorization_sha256`, and
+`evidence_sha256`. `authorization_sha256` seals policy, ranking/selection, trusted
+proofs, targets, manifests/images, and current validations but excludes diagnostic
+`cache_hit`. `evidence_sha256` seals every field except itself, including cache
+diagnostics. Thus a diagnostic change is auditable while being incapable of changing
+authorization.
+
+The builder receives a typed `FocusedEvidenceContext`, a `FocusSelection`, and one
+typed `FocusedRenderEvidence` per selected target. Context supplies family/candidate
+identity, policy, whole/focused profile proofs, the trusted evidence-v3 seal,
+dependency proof, and per-target material proofs. Selection supplies the complete
+eligible ranking and selected prefix. Each render record supplies its exact target,
+terminal status, expected matrix, relative manifest/image proofs, current
+`ValidationResult`, per-record evidence hash, and diagnostic `cache_hit` value.
+
+Schema 1 requires `recoveries` to be exactly an empty list. It rejects missing or
+extra targets, non-contiguous ranks, target/result mismatches, duplicate region keys,
+more than one or fewer than one terminal record per target, incoherent/non-finite
+validation payloads, untrusted seals, and non-canonical relative paths. Cache status
+is diagnostic: changing it may change the outer audit hash but never the aggregate
+`passed` decision. Task 5 introduces focused evidence schema 2 for non-empty,
+typed recovery records with contiguous round indices `0..n-1`; it never changes the
+meaning accepted for schema 1.
+
+Schema 2 keeps the same exact top-level keys and requires a non-empty `recoveries`
+list. Each recovery record has only `round_index`, `recipe`, `changed_sources`,
+`reused_region_evidence`, `compile_files`, `structural`, `rerun_records`,
+`final_whole`, and `evidence_sha256`. Each changed source corresponds to exactly one
+recipe overlay; selected regions partition exactly into rerun and reused records;
+compile files are exact relative contained artifact proofs; and the final whole
+result must be a fresh reauthorization of the composed bytes. Schema-2 parsing is
+introduced only in Task 5.
 
 There must be one terminal record for every selected focus. Recovery rounds have an
 exact contiguous index starting at zero. Every changed source appears exactly once

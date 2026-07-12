@@ -78,6 +78,168 @@ class FocusedGateResult:
     evidence_sha256: str
 
 @dataclass(frozen=True)
+class FocusSelection:
+    selector_input_sha256: str
+    eligible_ranking: tuple[FocusTarget, ...]
+    selected: tuple[FocusTarget, ...]
+
+@dataclass(frozen=True)
+class FocusExpectedMatrix:
+    region_key: str
+    poses: tuple[str, ...]
+    passes: tuple[str, ...]
+    angles: tuple[str, ...]
+    width: int
+    height: int
+    reference_count: int
+    candidate_count: int
+
+@dataclass(frozen=True)
+class FocusProfileProof:
+    version: str
+    corpus_hash: str
+    profile_file_sha256: str
+    limits: Mapping[str, float]
+
+@dataclass(frozen=True)
+class FocusStateProof:
+    state_index: int
+    state_name: str
+    bodygroups: tuple[tuple[str, int], ...]
+    lod_index: int
+    poses: tuple[str, ...]
+    selected_pose: str
+    selected_frame: int
+    animation_state: Literal["none", "source"]
+    animation_sha256: str | None
+
+@dataclass(frozen=True)
+class DuplicateDirectiveProof:
+    directive: str
+    ignored_values: tuple[str, ...]
+
+@dataclass(frozen=True)
+class MaterialRootProof:
+    root_index: int
+    root_identity: str
+    inventory_sha256: str | None
+
+@dataclass(frozen=True)
+class MaterialRequestProof:
+    request_index: int
+    material_identity: str
+    search_paths: tuple[str, ...]
+
+@dataclass(frozen=True)
+class MaterialFileProof:
+    root_index: int
+    path: str
+    kind: Literal["vmt", "vtf"]
+    size: int
+    sha256: str
+
+@dataclass(frozen=True)
+class MaterialRequestResolution:
+    request_index: int
+    material_identity: str
+    state: Literal["resolved", "missing"]
+    root_index: int | None
+    search_path_index: int | None
+    vmt_path: str | None
+    vmt_sha256: str | None
+    vtf_root_index: int | None
+    vtf_path: str | None
+    vtf_sha256: str | None
+    shader: str | None
+    texture_directive: str | None
+    duplicate_root_directives: tuple[DuplicateDirectiveProof, ...]
+
+@dataclass(frozen=True)
+class MaterialResolutionProof:
+    schema: int
+    cacheable: bool
+    reason: str
+    roots: tuple[MaterialRootProof, ...]
+    requests: tuple[MaterialRequestProof, ...]
+    files: tuple[MaterialFileProof, ...]
+    resolutions: tuple[MaterialRequestResolution, ...]
+    total_files: int
+    total_bytes: int
+    digest: str
+
+@dataclass(frozen=True)
+class FocusCacheContext:
+    schema: int
+    family_input_sha256: str
+    candidate_cache_digest: str
+    source_pairs: tuple[tuple[str, str, str], ...]
+    region_descriptor: RegionDescriptor
+    target: FocusTarget
+    state: FocusStateProof
+    region_manifest_sha256: str
+    configuration_manifest_sha256: str
+    whole_profile: FocusProfileProof
+    focused_profile: FocusProfileProof
+    trusted_evidence_v3_sha256: str
+    selector_version: str
+    renderer_version: str
+    dependency_proof_sha256: str
+    material_proof: MaterialResolutionProof
+    expected: FocusExpectedMatrix
+
+    def to_payload(self) -> Mapping[str, object]:
+        """Return the exact canonical schema-1 cache-key payload."""
+
+@dataclass(frozen=True)
+class FocusRenderDirectories:
+    reference: Path
+    candidate: Path
+
+@dataclass(frozen=True)
+class RenderFileProof:
+    side: Literal["reference", "candidate"]
+    kind: Literal["manifest", "image"]
+    path: str
+    size: int
+    sha256: str
+    width: int | None
+    height: int | None
+
+@dataclass(frozen=True)
+class FocusCacheMetadata:
+    schema: int
+    context: FocusCacheContext
+    target: FocusTarget
+    expected: FocusExpectedMatrix
+
+@dataclass(frozen=True)
+class FocusedEvidenceContext:
+    schema: int
+    family_id: str
+    candidate_id: str
+    policy: FocusedRegionPolicy
+    whole_profile: FocusProfileProof
+    focused_profile: FocusProfileProof
+    trusted_evidence_v3_sha256: str
+    dependency_proof_sha256: str
+    material_proofs: Mapping[str, MaterialResolutionProof]
+
+@dataclass(frozen=True)
+class FocusedRenderEvidence:
+    target: FocusTarget
+    terminal_status: Literal["passed", "failed", "cancelled"]
+    expected: FocusExpectedMatrix
+    reference_manifest: str
+    reference_manifest_sha256: str
+    candidate_manifest: str
+    candidate_manifest_sha256: str
+    files: tuple[RenderFileProof, ...]
+    material_proof_sha256: str
+    validation: ValidationResult
+    cache_hit: bool
+    evidence_sha256: str
+
+@dataclass(frozen=True)
 class SourceOverlay:
     source_identity: str
     mode: Literal["donor", "exact-original", "direct-position"]
@@ -100,6 +262,18 @@ class CompositeRecipe:
     prefilter_version: str | None
 
 @dataclass(frozen=True)
+class FocusedRecoveryEvidence:
+    round_index: int
+    recipe: CompositeRecipe
+    changed_sources: tuple[Mapping[str, object], ...]
+    reused_region_evidence: Mapping[str, str]
+    compile_files: tuple[Mapping[str, object], ...]
+    structural: ValidationResult
+    rerun_records: tuple[FocusedRenderEvidence, ...]
+    final_whole: ValidationResult
+    evidence_sha256: str
+
+@dataclass(frozen=True)
 class ComposedSourceTree:
     workspace: Path
     optimized_qc: Path
@@ -112,8 +286,7 @@ class FocusCacheKey:
 
     @classmethod
     def build(cls, payload: Mapping[str, object]) -> "FocusCacheKey":
-        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        return cls(hashlib.sha256(raw.encode("utf-8")).hexdigest())
+        """Validate the exact FocusCacheContext schema, then hash canonical_json."""
 ```
 
 `CandidateSpec` gains one field, `composite_recipe: CompositeRecipe | None = None`.
@@ -283,46 +456,129 @@ enable schema 3 receive the current defaults and behavior.
 - Modify: `tests/maximum_optimizer/test_focused_regions.py`
 
 **Interfaces:**
-- Produces `FocusCacheKey.build(payload: Mapping[str, object])`, `FocusedRenderCache.lookup(key)`, `FocusedRenderCache.store(key, source, metadata)`, `FocusedRenderCache.invalidate(key)`, `material_resolution_proof(roots, requests, cancel_event)`, and `focused_gate_evidence_payload(policy, targets, results, recoveries)`.
-- Cache hits return render directories only; callers must rerun `compare_render_sets`.
+- Extends selection compatibly with `select_focus_targets_with_evidence(states, manifest, profile, policy) -> FocusSelection`; existing `select_focus_targets(...)` still returns only `selection.selected`.
+- Produces `FocusCacheKey.build(payload: Mapping[str, object])`, `FocusedRenderCache.lookup(key, snapshot_root, cancel_event) -> FocusRenderDirectories | None`, `FocusedRenderCache.store(key, source: FocusRenderDirectories, metadata: FocusCacheMetadata, expected_files: Sequence[RenderFileProof], cancel_event) -> FocusRenderDirectories`, `FocusedRenderCache.invalidate(key)`, and `material_resolution_proof(roots, requests, cancel_event) -> MaterialResolutionProof`.
+- Produces `validate_focused_target(cache, key, target, profile, render_fresh, snapshot_root, metadata: FocusCacheMetadata, expected_files: Sequence[RenderFileProof], cancel_event, comparator=compare_render_sets) -> tuple[FocusRegionResult, FocusedRenderEvidence]`. This is the only Task-3 cache/fresh authorization helper and always calls the comparator exactly once.
+- Produces `focused_gate_evidence_payload(context: FocusedEvidenceContext, selection: FocusSelection, records: Sequence[FocusedRenderEvidence], recoveries: Sequence[object] = ()) -> Mapping[str, object]`. Task 3 accepts only empty `recoveries` and emits schema 1.
 
-- [ ] **Step 1: Write cache-key RED tests**
+- [ ] **Step 1: Write exact cache-key and selection-evidence RED tests**
 
-  Mutate one input at a time: original SMD, candidate SMD, region descriptor, state,
-  animation frame/hash, profile, evidence v3, renderer, tool dependency, material
-  resolution, pass, angle, and size. Every mutation must change the digest.
+  Assert `select_focus_targets_with_evidence` exposes every unique anchor in ranked
+  order and that its selected prefix equals the existing selector result. Build one
+  valid `FocusCacheContext`, then mutate family input, candidate digest, each SMD,
+  descriptor, target, state/bodygroup/LOD, pose/frame/animation, region/configuration
+  manifests, whole/focused profile payloads and file hash, trusted evidence v3,
+  selector, renderer, dependency proof, material proof, pass, angle, cardinality,
+  width, and height. Every mutation changes the digest. Missing/extra fields,
+  shuffled non-canonical sequences, bool-as-int, NaN/infinity, non-JSON values, and a
+  non-cacheable material proof are rejected before hashing.
 
-- [ ] **Step 2: Write integrity and DoS RED tests**
+  ```python
+  selection = select_focus_targets_with_evidence(states, manifest, profile, policy)
+  self.assertEqual(selection.selected, select_focus_targets(states, manifest, profile, policy))
+  self.assertEqual(tuple(item.rank for item in selection.eligible_ranking), tuple(range(len(selection.eligible_ranking))))
+  self.assertNotEqual(FocusCacheKey.build(base), FocusCacheKey.build(changed_smd))
+  with self.assertRaises(ValueError):
+      FocusCacheKey.build({**base, "unexpected": True})
+  ```
 
-  Require exact file manifests and image cardinality. Reject extra, missing, corrupt,
-  duplicate, symlink, junction, non-contained, and stale-material entries. Assert
-  material proofs above 4,096 files or 2 GiB return `cacheable=False` without
-  authorizing or failing validation.
+- [ ] **Step 2: Write material-proof DoS and cancellation RED tests**
 
-- [ ] **Step 3: Run cache tests and verify RED**
+  Assert root/request priority, case folding, selected VMT/VTF hashes, duplicate
+  directives, and earlier-root negative/shadow evidence are deterministic. Exactly
+  4,096 files and 2 GiB are cacheable; file 4,097 or the first byte above 2 GiB
+  returns `cacheable=False` and stops before hashing the excess file. Unsafe trees,
+  permissions, reparse points, and special files disable caching without producing a
+  visual pass/fail. Cancellation before traversal, between files, and during a hash
+  chunk raises `ProcessCancelledError`.
+
+  ```python
+  self.assertTrue(proof_at_limits.cacheable)
+  self.assertEqual(over_file_limit.reason, "file-limit")
+  self.assertEqual(over_byte_limit.reason, "byte-limit")
+  hasher.assert_not_called_with(file_4097)
+  with self.assertRaises(ProcessCancelledError):
+      material_resolution_proof(roots, requests, cancelled)
+  ```
+
+- [ ] **Step 3: Write cache integrity, path, and atomic RED tests**
+
+  Require the exact root layout, metadata hash, sorted payload manifest, expected
+  image matrix, dimensions, hashes, and cardinality. Reject extra, missing, corrupt,
+  duplicate, case-colliding, absolute, UNC, drive, backslash-alias, dot/parent,
+  special-file, symlink, broken-link, junction/reparse, non-contained, stale-material,
+  and source-mutated-during-copy entries. Cover each reparse case with a real-platform
+  test when available and a deterministic mocked `st_file_attributes & 0x400` test.
+
+  Inject failures/cancellation during copy, post-copy verification, marker write,
+  quarantine, promotion, and cleanup. Assert the marker is last, files/directories
+  are flushed, the previous valid entry is restored, a concurrent valid same-key
+  winner is retained, and cleanup/invalidation touches only owned direct children.
+  Mutate a valid cache entry while it is copied to `snapshot_root`; lookup must
+  remove the incomplete snapshot and return a miss rather than expose shared bytes.
+
+- [ ] **Step 4: Run cache tests and verify RED**
 
   Run: `python -m unittest tests.maximum_optimizer.test_focused_cache -v`
 
   Expected: missing module/interfaces.
 
-- [ ] **Step 4: Implement atomic focus cache**
+- [ ] **Step 5: Implement exact key and bounded material proof**
 
-  Follow `CandidateCache` staging/quarantine patterns. Store canonical marker,
-  payload manifest, target payload, material proof, and expected matrix. Never
-  deserialize an absolute payload path.
+  Use `reporting.canonical_json` with exact key sets and finite values. Preserve
+  resolver root/search priority and inventory every relevant regular VMT/VTF needed
+  to prove selected and shadowed outcomes. Check cancellation at every traversal and
+  hash boundary. Do not build or store a cache key when `cacheable` is false.
 
-- [ ] **Step 5: Implement sealed focused evidence payloads**
+- [ ] **Step 6: Implement atomic focus cache**
 
-  Validate exact selected-target cardinality, one terminal record per target,
-  contiguous recovery indices, and canonical evidence SHA-256. Include cache status
-  only as diagnostics.
+  Do not subclass or directly reuse `CandidateCache.store`: its generic `copytree`
+  and marker are insufficient for renders. Reuse the stronger no-follow walk,
+  cancellable hash/copy, reparse-bit, exact file-manifest, staging/quarantine rollback,
+  and contained-relative-path patterns already present in `orchestrator.py`. Store
+  exactly `complete.json`, `metadata.json`, `payload/reference`, and
+  `payload/candidate`; verify copied bytes against `expected_files` before writing the
+  completion marker last. Fsync content and directories before atomic promotion.
+  Lookup must recompute the key from metadata, copy a hit no-follow into an empty
+  private snapshot, and verify the copied manifest before returning it.
 
-- [ ] **Step 6: Prove cache hits revalidate**
+- [ ] **Step 7: Implement the mandatory recompare helper**
 
-  In a test, restore a valid cached render and inject a comparator that fails. Assert
-  the returned focused result fails; cached prior `passed=True` must be ignored.
+  On a valid hit, use only the returned private snapshot directories. On a miss,
+  render fresh and compare those fresh directories. If the proof is cacheable,
+  publication may also occur, but it is an optimization side effect and never the
+  source of authorization for that miss. Call `comparator` exactly once after either
+  path. Cache metadata has no validation result or `passed` field; an entry
+  containing either is invalid.
 
-- [ ] **Step 7: Run focused cache/evidence tests and commit checkpoint 3**
+  ```python
+  directories, cache_hit = cached_or_fresh(...)
+  validation = comparator(directories.reference, directories.candidate, profile)
+  return build_focus_result_and_record(target, validation, directories, cache_hit)
+  ```
+
+- [ ] **Step 8: Implement sealed no-recovery evidence payloads**
+
+  Validate complete eligible ranking, exact selected prefix, ranks `0..n-1`, unique
+  region keys, exact selected-target/record cardinality, record-target equality, one
+  terminal record per selected target, trusted profile/evidence/dependency/material
+  hashes, finite coherent validation payloads, relative contained manifest/image
+  paths, per-record seals, and the canonical outer SHA-256. Require `recoveries == ()`
+  and emit `"recoveries": []`; non-empty recovery is rejected until Task 5 schema 2.
+  Cache status is serialized only as diagnostics and is never consulted when
+  aggregating `passed`.
+
+- [ ] **Step 9: Prove cache hits revalidate and evidence fails closed**
+
+  Restore a valid cached render and inject a comparator that fails. Assert it is
+  called once and the returned focused result fails. Assert the same helper calls the
+  comparator once on a fresh render. Mutate every sealed context/selection/record
+  field and reject missing/extra targets, rank gaps, target mismatch, duplicate or
+  absent terminal records, non-empty recovery, non-finite validation, and untrusted
+  v3/material/dependency hashes. Toggling `cache_hit` may alter the audit seal but
+  leaves the hard aggregate result identical.
+
+- [ ] **Step 10: Run focused cache/evidence tests and commit checkpoint 3**
 
   Run:
   `python -m unittest tests.maximum_optimizer.test_focused_cache tests.maximum_optimizer.test_focused_regions -v`
@@ -407,8 +663,9 @@ enable schema 3 receive the current defaults and behavior.
 - Modify: `tests/maximum_optimizer/test_orchestrator.py`
 
 **Interfaces:**
-- `maximum_optimizer.domain` produces immutable `SourceOverlay`, `CompositeRecipe`, and `ComposedSourceTree`.
+- `maximum_optimizer.domain` produces immutable `SourceOverlay`, `CompositeRecipe`, `FocusedRecoveryEvidence`, and `ComposedSourceTree`.
 - `maximum_optimizer.composite` produces `select_recovery_overlays(failed, evaluations, manifests, round_index) -> tuple[SourceOverlay, ...]`, `compose_candidate_sources(base_build, recipe, workspace, cancel_event) -> ComposedSourceTree`, and `validate_composition_proof(payload, base_root, composed_root) -> Mapping[str, str]`.
+- `maximum_optimizer.focused_regions` produces `focused_recovery_evidence_payload(context, selection, initial_records, recoveries: Sequence[FocusedRecoveryEvidence]) -> Mapping[str, object]`, which emits schema 2. Schema 1 remains no-recovery-only.
 - Candidate cache payloads include the entire canonical recipe and donor evidence hashes.
 
 - [ ] **Step 1: Write donor-selection RED tests**
@@ -422,7 +679,10 @@ enable schema 3 receive the current defaults and behavior.
 
   Exhaust donors and assert one explicit original-source overlay. When two focuses
   share the source, both become affected. Reject more than four changed sources and
-  a fourth recovery round.
+  a fourth recovery round. Require schema-2 recovery indices exactly `0..n-1`, one
+  changed-source proof per overlay, explicit reused-region evidence hashes, complete
+  compile files, structural result, focused rerun records, and final whole result.
+  Reject attempts to put recovery records into schema 1.
 
 - [ ] **Step 3: Run search/composite tests and verify RED**
 
@@ -447,7 +707,10 @@ enable schema 3 receive the current defaults and behavior.
 
   Recompile complete QC. Rerender every focus whose source changed, reuse sealed
   evidence for unchanged sources, then perform one final whole visual validation
-  after all focuses pass.
+  after all focuses pass. Build one sealed `FocusedRecoveryEvidence` per round and
+  publish focused evidence schema 2 only after checking contiguous indices, exact
+  changed/reused partition, per-round seal, and final whole reauthorization. Never
+  broaden the Task-3 schema-1 parser to accept non-empty recoveries.
 
 - [ ] **Step 7: Test failure isolation and commit checkpoint 5**
 
