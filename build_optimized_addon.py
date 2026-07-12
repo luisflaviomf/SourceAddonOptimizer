@@ -18,6 +18,7 @@ import vehicle_steer_turn_basis_fix
 
 OPTIMIZER_MODE_NORMAL = "normal"
 OPTIMIZER_MODE_FIDELITY = "fidelity"
+OPTIMIZER_MODE_MAXIMUM = "maximum"
 
 
 def _ts() -> str:
@@ -180,6 +181,13 @@ def _choose_dest_dir(base: Path, *, overwrite: bool) -> Path:
         return base
     if overwrite:
         shutil.rmtree(base, ignore_errors=True)
+        return base
+    return base.parent / f"{base.name}_{_ts()}"
+
+
+def _choose_maximum_dest_dir(base: Path, *, overwrite: bool) -> Path:
+    """Maximum performs its own staged atomic replace; never delete here."""
+    if not base.exists() or overwrite:
         return base
     return base.parent / f"{base.name}_{_ts()}"
 
@@ -368,6 +376,16 @@ def _run_single_addon(
 
     t_all = time.monotonic()
     orig_models_dir = addon_path / "models"
+
+    if str(getattr(args, "optimizer_mode", OPTIMIZER_MODE_NORMAL)).lower() == OPTIMIZER_MODE_MAXIMUM:
+        from maximum_optimizer.orchestrator import run_maximum_from_existing_args
+        return run_maximum_from_existing_args(
+            args,
+            repo_root=repo_root,
+            addon_path=addon_path,
+            out_addon_dir=out_addon_dir,
+            work_dir=work_dir,
+        )
 
     try:
         # 1) Decompile + organize + backup .phy
@@ -850,10 +868,19 @@ def main(argv: list[str]) -> int:
     )
     ap.add_argument(
         "--optimizer-mode",
-        choices=[OPTIMIZER_MODE_NORMAL, OPTIMIZER_MODE_FIDELITY],
+        choices=[OPTIMIZER_MODE_NORMAL, OPTIMIZER_MODE_FIDELITY, OPTIMIZER_MODE_MAXIMUM],
         default=OPTIMIZER_MODE_NORMAL,
-        help="Official Models pipeline mode. normal keeps the current flow; fidelity uses the validated sandbox stack built from selective ground policy + round-parts wheel handling + steer basis fix.",
+        help="Official Models pipeline mode. normal/fidelity keep their established flows; maximum searches compiled bytes behind structural and calibrated visual gates.",
     )
+    ap.add_argument(
+        "--maximum-profile",
+        default=None,
+        help="Calibrated Maximum fidelity profile JSON (experimental).",
+    )
+    ap.add_argument("--maximum-max-candidates", type=int, default=18)
+    ap.add_argument("--maximum-min-ratio-step", type=float, default=0.025)
+    ap.add_argument("--maximum-min-marginal-saving", type=float, default=0.005)
+    ap.add_argument("--maximum-resume", action="store_true")
     ap.add_argument("--blender", default=None, help="Path to blender.exe (auto-detect if omitted).")
     ap.add_argument(
         "--decompile-jobs",
@@ -976,6 +1003,15 @@ def main(argv: list[str]) -> int:
         required_scripts.append(round_parts_optimize_script)
     if args.optimizer_mode == OPTIMIZER_MODE_FIDELITY:
         required_scripts.extend([selective_optimize_script, round_parts_optimize_script])
+    if args.optimizer_mode == OPTIMIZER_MODE_MAXIMUM:
+        required_scripts.extend(
+            [
+                selective_optimize_script,
+                round_parts_optimize_script,
+                (repo_root / "batch_optimize_maximum.py").resolve(),
+                (repo_root / "render_previews.py").resolve(),
+            ]
+        )
 
     for p in required_scripts:
         if not p.exists():
@@ -992,12 +1028,22 @@ def main(argv: list[str]) -> int:
     else:
         work_root = Path.cwd() if getattr(sys, "frozen", False) else repo_root
         work_base = work_root / "work" / f"{addon_path.name}{args.suffix}"
-    work_dir = _choose_work_dir(work_base, overwrite=bool(args.overwrite_work))
+    maximum_mode = args.optimizer_mode == OPTIMIZER_MODE_MAXIMUM
+    maximum_resume = bool(args.maximum_resume or args.resume_opt)
+    work_dir = (
+        work_base
+        if maximum_mode and maximum_resume
+        else _choose_work_dir(work_base, overwrite=bool(args.overwrite_work))
+    )
 
     if _looks_like_addon_root(addon_path):
         addon_name = addon_path.name
         out_addon_base = addon_path.parent / f"{addon_name}{args.suffix}"
-        out_addon_dir = _choose_dest_dir(out_addon_base, overwrite=bool(args.overwrite))
+        out_addon_dir = (
+            _choose_maximum_dest_dir(out_addon_base, overwrite=bool(args.overwrite))
+            if maximum_mode
+            else _choose_dest_dir(out_addon_base, overwrite=bool(args.overwrite))
+        )
         return _run_single_addon(
             args,
             repo_root=repo_root,
@@ -1053,7 +1099,11 @@ def main(argv: list[str]) -> int:
 
     for index, unit_addon_path in enumerate(addon_units, start=1):
         unit_out_base = unit_addon_path.parent / f"{unit_addon_path.name}{args.suffix}"
-        unit_out_dir = _choose_dest_dir(unit_out_base, overwrite=bool(args.overwrite))
+        unit_out_dir = (
+            _choose_maximum_dest_dir(unit_out_base, overwrite=bool(args.overwrite))
+            if maximum_mode
+            else _choose_dest_dir(unit_out_base, overwrite=bool(args.overwrite))
+        )
         unit_work_dir = work_dir / "units" / unit_addon_path.name
         unit_before_bytes = _sum_tree_bytes(unit_addon_path)
         total_before_bytes += unit_before_bytes

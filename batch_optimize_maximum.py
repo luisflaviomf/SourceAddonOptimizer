@@ -1038,6 +1038,52 @@ def atomic_write_bytes(root: Path, target: Path, data: bytes) -> Path:
         raise
 
 
+def write_source_region_manifest(root: Path) -> Path:
+    """Build shared region identities without simplifying or rewriting source files."""
+    root = Path(root).resolve()
+    qcs = tuple(
+        path for path in sorted(root.rglob("*.qc"), key=lambda item: item.as_posix().casefold())
+        if not path.name.casefold().endswith("_opt.qc")
+        and "output" not in {part.casefold() for part in path.parts}
+    )
+    if not qcs:
+        raise ValueError(f"no source QC files found under {root}")
+    visual_sources: dict[str, Path] = {}
+    source_occurrences: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for qc in qcs:
+        graph = parse_qc_graph(qc, root)
+        reject_unsupported_dmx(graph)
+        for reference in graph.references:
+            if reference.role != "visual":
+                continue
+            identity = normalized_source_identity(reference.source_path.relative_to(root).as_posix())
+            existing = visual_sources.get(identity)
+            if existing is not None and existing != reference.source_path:
+                raise ValueError(f"ambiguous logical visual source identity: {identity}")
+            visual_sources[identity] = reference.source_path
+            occurrence = {
+                "graph_file": reference.graph_file.relative_to(root).as_posix(),
+                "directive": reference.directive,
+                "line": reference.line,
+                "logical_path": identity,
+            }
+            if occurrence not in source_occurrences[identity]:
+                source_occurrences[identity].append(occurrence)
+    observations = tuple(
+        observation
+        for identity, source in sorted(visual_sources.items())
+        for observation in _describe_source_file(source, identity)
+    )
+    manifest = build_region_manifest(observations, occurrences=source_occurrences)
+    destination = root / "maximum_region_manifest.json"
+    atomic_write_bytes(
+        root,
+        destination,
+        (json.dumps(manifest.to_payload(), indent=2, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"),
+    )
+    return destination
+
+
 def run_blender(settings: Settings) -> dict[str, object]:
     assert bpy is not None
     import os

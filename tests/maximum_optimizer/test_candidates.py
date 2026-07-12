@@ -19,6 +19,7 @@ from maximum_optimizer.candidates import (
     CandidateBuildError,
     CandidateTools,
     FidelityAdapter,
+    MeshoptimizerAdapter,
 )
 from maximum_optimizer.domain import CandidateSpec, FamilyManifest, StructuralFingerprint
 from maximum_optimizer.processes import ProcessCancelledError, ProcessResult, run_process
@@ -465,6 +466,7 @@ class CandidateAdapterTests(unittest.TestCase):
         for script in (
             "batch_optimize_qc.py",
             "batch_optimize_round_parts_policy.py",
+            "batch_optimize_maximum.py",
             "batch_compile_opt_qc.py",
         ):
             (self.repo / script).write_text("# test tool\n", encoding="utf-8")
@@ -475,6 +477,8 @@ class CandidateAdapterTests(unittest.TestCase):
             tool.write_bytes(b"tool")
         self.heuristic_map = self.root / "heuristics.json"
         self.heuristic_map.write_text('{"entries": []}', encoding="utf-8")
+        self.meshopt_dll = self.root / "meshopt_bridge.dll"
+        self.meshopt_dll.write_bytes(b"dll")
         self.source = self.root / "family-source"
         self.source.mkdir()
         (self.source / "main.qc").write_text(
@@ -517,6 +521,7 @@ class CandidateAdapterTests(unittest.TestCase):
             self.studiomdl,
             self.repo,
             heuristic_map=self.heuristic_map,
+            meshopt_dll=self.meshopt_dll,
             compile_jobs=2,
         )
 
@@ -584,6 +589,24 @@ class CandidateAdapterTests(unittest.TestCase):
         )
         self.assertIn("--ratio 0.4 --merge 0 --autosmooth 45 --format smd", " ".join(build.commands[0]))
         self.assertFalse((self.workspace / "logs" / "vehicle_steer_turn_basis_fix_summary.json").exists())
+
+    def test_meshoptimizer_adapter_materializes_exact_candidate_payload_and_dll(self):
+        spec = CandidateSpec(
+            "meshopt-r035", "meshoptimizer", 0.35, 0.01, "transfer-v1",
+            (("r-" + "1" * 64, 0.5),),
+        )
+        build = MeshoptimizerAdapter(
+            process_runner=MaterializingRunner(self.manifest.model_rel)
+        ).generate(self.manifest, spec, self.workspace, self.tools)
+
+        optimize = build.commands[0]
+        self.assertEqual(optimize[:4], (
+            str(self.blender), "--background", "--python",
+            str(self.repo / "batch_optimize_maximum.py"),
+        ))
+        self.assertEqual(optimize[optimize.index("--meshopt-dll") + 1], str(self.meshopt_dll))
+        payload = json.loads((self.workspace / "candidate.json").read_text(encoding="utf-8"))
+        self.assertEqual(payload, spec.cache_payload())
 
     def test_build_copies_compile_mappings_and_makes_them_read_only(self):
         build = BlenderAdapter(process_runner=MaterializingRunner(self.manifest.model_rel)).generate(

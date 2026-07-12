@@ -37,6 +37,7 @@ class CandidateTools:
     studiomdl_exe: Path
     repo_root: Path
     heuristic_map: Path | None = None
+    meshopt_dll: Path | None = None
     compile_jobs: int = 1
 
     def __post_init__(self) -> None:
@@ -45,6 +46,10 @@ class CandidateTools:
         if self.heuristic_map is not None:
             object.__setattr__(
                 self, "heuristic_map", Path(self.heuristic_map).expanduser().resolve()
+            )
+        if self.meshopt_dll is not None:
+            object.__setattr__(
+                self, "meshopt_dll", Path(self.meshopt_dll).expanduser().resolve()
             )
         if self.compile_jobs < 1:
             raise ValueError("compile_jobs must be at least 1")
@@ -484,4 +489,36 @@ class FidelityAdapter(_BaseAdapter):
         apply_under_root(
             source,
             report_path=workspace / "logs" / "vehicle_steer_turn_basis_fix_summary.json",
+        )
+
+
+class MeshoptimizerAdapter(_BaseAdapter):
+    optimize_script = "batch_optimize_maximum.py"
+
+    def _validate_tools(self, tools: CandidateTools) -> None:
+        super()._validate_tools(tools)
+        if tools.meshopt_dll is None or not tools.meshopt_dll.is_file():
+            raise CandidateBuildError(
+                "meshoptimizer bridge DLL not found", stage="tool-validation"
+            )
+
+    def _optimize_command(
+        self, source: Path, spec: CandidateSpec, workspace: Path, tools: CandidateTools
+    ) -> tuple[str, ...]:
+        candidate_path = workspace / "candidate.json"
+        with candidate_path.open("x", encoding="utf-8") as stream:
+            json.dump(spec.cache_payload(), stream, sort_keys=True, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        return (
+            str(tools.blender_exe),
+            "--background",
+            "--python",
+            str(tools.repo_root / self.optimize_script),
+            "--",
+            str(source),
+            "--candidate-json",
+            str(candidate_path),
+            "--meshopt-dll",
+            str(tools.meshopt_dll),
         )

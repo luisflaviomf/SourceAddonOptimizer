@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 
 from maximum_optimizer.domain import CandidateEvaluation, CandidateSpec, SearchBudget
 from maximum_optimizer.regions import parse_region_scope
@@ -187,11 +188,16 @@ def _narrowest_bracket(
 
 
 def choose_next(
-    evaluations: list[CandidateEvaluation], budget: SearchBudget
+    evaluations: list[CandidateEvaluation],
+    budget: SearchBudget,
+    *,
+    initial: Sequence[CandidateSpec] | None = None,
+    attempted_ids: set[str] | None = None,
 ) -> CandidateSpec | None:
-    if len(evaluations) >= budget.max_candidates:
+    attempted = set(attempted_ids or ())
+    if max(len(evaluations), len(attempted)) >= budget.max_candidates:
         return None
-    used_ids = {evaluation.spec.candidate_id for evaluation in evaluations}
+    used_ids = {evaluation.spec.candidate_id for evaluation in evaluations} | attempted
 
     recovery = _regional_recovery(evaluations, used_ids)
     if recovery is not None:
@@ -223,10 +229,11 @@ def choose_next(
             passing.spec.repair_profile,
         )
 
+    schedule = tuple(initial) if initial is not None else tuple(initial_candidates())
     return next(
         (
             candidate
-            for candidate in initial_candidates()
+            for candidate in schedule
             if candidate.candidate_id not in used_ids
         ),
         None,
