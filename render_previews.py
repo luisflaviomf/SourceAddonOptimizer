@@ -6,8 +6,11 @@ import hashlib
 import json
 import math
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 
@@ -430,46 +433,131 @@ def _texture_cache_root(args, out_dir: Path) -> Path:
     )
 
 
-def _extract_base_texture(vmt_text: str) -> str | None:
-    match = re.search(
-        r'(?im)^\s*"?\$basetexture"?\s+"?([^"\s}]+)',
-        vmt_text,
-    )
-    if match is None:
+_SUPPORTED_VMT_SHADERS = frozenset({
+    "vertexlitgeneric",
+    "lightmappedgeneric",
+    "unlitgeneric",
+    "refract",
+})
+
+
+def _vmt_tokens(vmt_text: str) -> tuple[str, ...] | None:
+    tokens: list[str] = []
+    index = 0
+    while index < len(vmt_text):
+        char = vmt_text[index]
+        if char.isspace():
+            index += 1
+            continue
+        if char == "/" and index + 1 < len(vmt_text) and vmt_text[index + 1] == "/":
+            newline = vmt_text.find("\n", index + 2)
+            index = len(vmt_text) if newline < 0 else newline + 1
+            continue
+        if char in "{}":
+            tokens.append(char)
+            index += 1
+            continue
+        if char == '"':
+            index += 1
+            value: list[str] = []
+            while index < len(vmt_text) and vmt_text[index] != '"':
+                value.append(vmt_text[index])
+                index += 1
+            if index >= len(vmt_text):
+                return None
+            tokens.append("".join(value))
+            index += 1
+            continue
+        end = index
+        while (
+            end < len(vmt_text)
+            and not vmt_text[end].isspace()
+            and vmt_text[end] not in '{}"'
+            and not (vmt_text[end] == "/" and end + 1 < len(vmt_text) and vmt_text[end + 1] == "/")
+        ):
+            end += 1
+        if end == index:
+            return None
+        tokens.append(vmt_text[index:end])
+        index = end
+    return tuple(tokens)
+
+
+def _parse_vmt_root(vmt_text: str) -> tuple[str, dict[str, str]] | None:
+    tokens = _vmt_tokens(vmt_text)
+    if tokens is None or len(tokens) < 3 or tokens[1] != "{":
         return None
-    value = match.group(1).replace("\\", "/").strip()
+    shader = tokens[0].casefold()
+    if shader not in _SUPPORTED_VMT_SHADERS:
+        return None
+    directives: dict[str, str] = {}
+    depth = 1
+    index = 2
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "{":
+            depth += 1
+            index += 1
+            continue
+        if token == "}":
+            depth -= 1
+            index += 1
+            if depth == 0:
+                return (shader, directives) if index == len(tokens) else None
+            if depth < 0:
+                return None
+            continue
+        if depth == 1:
+            if index + 1 >= len(tokens) or tokens[index + 1] == "}":
+                return None
+            if tokens[index + 1] == "{":
+                index += 1
+                continue
+            key = token.casefold()
+            if key in directives:
+                return None
+            directives[key] = tokens[index + 1]
+            index += 2
+            continue
+        index += 1
+    return None
+
+
+def _extract_base_texture(vmt_text: str) -> str | None:
+    parsed = _parse_vmt_root(vmt_text)
+    if parsed is None:
+        return None
+    value = parsed[1].get("$basetexture", "").replace("\\", "/").strip()
     return value or None
 
 
 def _source_texture_reference(
     vmt_text: str,
 ) -> tuple[str, str, str, bool] | None:
-    uncommented = "\n".join(line.split("//", 1)[0] for line in vmt_text.splitlines())
-    shader_match = re.search(r'^\s*"?([^"\s{]+)"?\s*\{', uncommented)
-    if shader_match is None:
+    parsed = _parse_vmt_root(vmt_text)
+    if parsed is None:
         return None
-    shader = shader_match.group(1).casefold()
+    shader, directives = parsed
     directive = "$refracttinttexture" if shader == "refract" else "$basetexture"
-    match = re.search(
-        rf'(?im)^\s*"?{re.escape(directive)}"?\s+"?([^"\s}}]+)',
-        uncommented,
-    )
-    if match is None:
+    raw_texture = directives.get(directive)
+    if raw_texture is None:
         return None
-    texture = match.group(1).replace("\\", "/").strip()
-    return shader, directive, texture, shader == "refract" or _vmt_uses_texture_alpha(uncommented)
+    texture = raw_texture.replace("\\", "/").strip()
+    if not texture:
+        return None
+    return shader, directive, texture, shader == "refract" or _root_uses_texture_alpha(directives)
+
+
+def _root_uses_texture_alpha(directives: dict[str, str]) -> bool:
+    return any(
+        directives.get(key, "").casefold() in {"1", "true"}
+        for key in ("$translucent", "$alphatest")
+    )
 
 
 def _vmt_uses_texture_alpha(vmt_text: str) -> bool:
-    uncommented = "\n".join(line.split("//", 1)[0] for line in vmt_text.splitlines())
-    for directive in ("translucent", "alphatest"):
-        match = re.search(
-            rf'(?i)"?\${directive}"?\s+"?(1|true)"?(?=\s|\}}|$)',
-            uncommented,
-        )
-        if match is not None:
-            return True
-    return False
+    parsed = _parse_vmt_root(vmt_text)
+    return False if parsed is None else _root_uses_texture_alpha(parsed[1])
 
 
 def _render_entry(
@@ -680,27 +768,46 @@ def _convert_vtf(vtf_path: Path, vtfcmd: Path | None, cache_root: Path) -> Path 
     digest = hashlib.sha256(vtf_path.read_bytes()).hexdigest()
     output_dir = cache_root / digest
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{vtf_path.stem}.png"
+    output_path = output_dir / "texture.png"
     if output_path.is_file():
         return output_path
-    command = [
-        str(vtfcmd),
-        "-file",
-        str(vtf_path),
-        "-output",
-        str(output_dir),
-        "-exportformat",
-        "png",
-    ]
     attempts = []
     for _attempt in range(2):
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode == 0 and output_path.is_file():
-            return output_path
-        attempts.append(
-            f"rc={result.returncode}; stdout={(result.stdout or '')[-500:]!r}; "
-            f"stderr={(result.stderr or '')[-500:]!r}"
+        staging_dir = (
+            Path(tempfile.gettempdir()).resolve()
+            / "maximum-vtf-stage"
+            / uuid.uuid4().hex
         )
+        staging_dir.mkdir(parents=True, exist_ok=False)
+        staged_input = staging_dir / "texture.vtf"
+        staged_output = staging_dir / "texture.png"
+        shutil.copy2(vtf_path, staged_input)
+        command = [
+            str(vtfcmd),
+            "-file",
+            str(staged_input),
+            "-output",
+            str(staging_dir),
+            "-exportformat",
+            "png",
+        ]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            if result.returncode == 0 and staged_output.is_file():
+                if output_path.is_file():
+                    return output_path
+                try:
+                    staged_output.replace(output_path)
+                except FileExistsError:
+                    if not output_path.is_file():
+                        raise
+                return output_path
+            attempts.append(
+                f"rc={result.returncode}; stdout={(result.stdout or '')[-500:]!r}; "
+                f"stderr={(result.stderr or '')[-500:]!r}"
+            )
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
     raise RuntimeError(
         f"VTF texture conversion failed for {vtf_path}: " + " | ".join(attempts)
     )

@@ -30,6 +30,15 @@ GEOMETRY_AUDIT_ALGORITHM = {
     "relative_area_squared_epsilon": 1e-24,
     "max_filtered_fraction": 0.05,
 }
+SUPPORTED_MATERIAL_SHADERS = frozenset({
+    "vertexlitgeneric", "lightmappedgeneric", "unlitgeneric", "refract",
+})
+MATERIAL_RESOLUTION_RULE = "materials-root-order-then-qc-search-order-v1"
+MATERIAL_EVIDENCE_FIELDS = frozenset({
+    "material_identity", "resolution_rule", "root_index", "search_path_index",
+    "vtf_root_index", "vmt_sha256", "vtf_sha256", "shader",
+    "texture_directive", "uses_texture_alpha",
+})
 
 
 @dataclass(frozen=True)
@@ -220,6 +229,58 @@ def _validate_entry_matrix(
                 f"render matrix differs: missing={sorted(required - actual)!r}, extra={sorted(actual - required)!r}",
             )
         )
+
+
+def _validate_resolved_materials(
+    indexed: dict[tuple[str, str, str], dict],
+    label: str,
+    failures: list[GateFailure],
+) -> None:
+    for key, entry in indexed.items():
+        scope = _scope(key)
+        raw = entry.get("resolved_materials")
+        if type(raw) is not list:
+            failures.append(_failure(
+                "invalid_material_evidence", f"{label}/{scope}",
+                "resolved_materials must be an explicit list",
+            ))
+            continue
+        identities: set[str] = set()
+        for position, evidence in enumerate(raw):
+            evidence_scope = f"{label}/{scope}/{position}"
+            valid = type(evidence) is dict and set(evidence) == MATERIAL_EVIDENCE_FIELDS
+            if valid:
+                shader = evidence["shader"]
+                directive = evidence["texture_directive"]
+                expected_directive = (
+                    "$refracttinttexture" if shader == "refract" else "$basetexture"
+                )
+                identity = evidence["material_identity"]
+                valid = (
+                    type(identity) is str and bool(identity)
+                    and identity not in identities
+                    and evidence["resolution_rule"] == MATERIAL_RESOLUTION_RULE
+                    and all(
+                        type(evidence[field]) is int and evidence[field] >= 0
+                        for field in ("root_index", "search_path_index", "vtf_root_index")
+                    )
+                    and all(
+                        type(evidence[field]) is str
+                        and re.fullmatch(r"[0-9a-f]{64}", evidence[field]) is not None
+                        for field in ("vmt_sha256", "vtf_sha256")
+                    )
+                    and shader in SUPPORTED_MATERIAL_SHADERS
+                    and directive == expected_directive
+                    and type(evidence["uses_texture_alpha"]) is bool
+                    and (shader != "refract" or evidence["uses_texture_alpha"] is True)
+                )
+            if not valid:
+                failures.append(_failure(
+                    "invalid_material_evidence", evidence_scope,
+                    "resolved material evidence is invalid",
+                ))
+            else:
+                identities.add(evidence["material_identity"])
 
 
 def _finite_nonnegative(value: object) -> float | None:
@@ -569,6 +630,8 @@ def compare_render_sets(
             )
         reference_entries = _index_entries(reference_manifest, "reference", failures)
         candidate_entries = _index_entries(candidate_manifest, "candidate", failures)
+        _validate_resolved_materials(reference_entries, "reference", failures)
+        _validate_resolved_materials(candidate_entries, "candidate", failures)
         if reference_expected is not None:
             _validate_entry_matrix(reference_entries, reference_expected, "reference", failures)
             _validate_geometry(reference_manifest, reference_expected, "reference", failures)

@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,13 @@ def _digest(path: Path) -> str:
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(canonical_json(payload) + "\n", encoding="utf-8")
+
+
+def short_texture_cache_root(run_root: Path) -> Path:
+    identity = hashlib.sha256(
+        str(Path(run_root).resolve()).casefold().encode("utf-8")
+    ).hexdigest()[:16]
+    return Path(tempfile.gettempdir()).resolve() / "maximum-vtf-cache" / identity
 
 
 def main() -> int:
@@ -108,7 +116,7 @@ def main() -> int:
             "--vtfcmd", str(args.vtfcmd.resolve(strict=True)),
             "--region-manifest", str(state_manifest),
             "--configuration-manifest", str(configuration_path),
-            "--texture-cache", str(args.out / ".vtf-cache"),
+            "--texture-cache", str(short_texture_cache_root(args.out)),
         ))
         for materials_root in args.materials_root:
             command.extend(("--materials-root", str(materials_root.resolve(strict=True))))

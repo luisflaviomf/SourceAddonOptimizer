@@ -9,6 +9,7 @@ import shutil
 import stat
 import sys
 import threading
+import tempfile
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -2376,6 +2377,12 @@ class ProductionAdapters:
                 roots.append(root)
         return tuple(roots)
 
+    def _texture_cache_root(self, candidate: CandidateBuild) -> Path:
+        identity = hashlib.sha256(
+            str(candidate.workspace.resolve()).casefold().encode("utf-8")
+        ).hexdigest()[:16]
+        return Path(tempfile.gettempdir()).resolve() / "maximum-vtf-cache" / identity
+
     def inventory(self, config: MaximumRunConfig) -> Sequence[FamilyManifest]:
         return build_family_manifests(
             config.addon_dir / "models",
@@ -2625,7 +2632,7 @@ class ProductionAdapters:
                 "--passes", "textured,clay", "--poses", pose_arg,
                 "--region-manifest", str(state_region_manifest),
                 "--configuration-manifest", str(configuration_manifest),
-                "--texture-cache", str(render_root / ".vtf-cache"),
+                "--texture-cache", str(self._texture_cache_root(candidate)),
             ))
             for materials_root in self._materials_roots():
                 command.extend(("--materials-root", str(materials_root)))

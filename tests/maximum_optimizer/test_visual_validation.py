@@ -115,14 +115,30 @@ def _entry(root: Path, render_pass: str, pose: str, angle: str, **image_kwargs) 
     relative = f"{render_pass}/{pose}/{angle}.png"
     path = root / relative
     _write_image(path, **image_kwargs)
-    return {
+    entry = {
         "pass": render_pass,
         "pose": pose,
         "angle": angle,
         "image": relative,
         "sha256": _sha256(path),
         "texture_missing": False,
+        "missing_materials": [],
+        "resolved_materials": [],
     }
+    if render_pass == "textured":
+        entry["resolved_materials"] = [{
+            "material_identity": "fixture.smd:slot:0:body",
+            "resolution_rule": "materials-root-order-then-qc-search-order-v1",
+            "root_index": 0,
+            "search_path_index": 0,
+            "vtf_root_index": 0,
+            "vmt_sha256": "c" * 64,
+            "vtf_sha256": "d" * 64,
+            "shader": "vertexlitgeneric",
+            "texture_directive": "$basetexture",
+            "uses_texture_alpha": False,
+        }]
+    return entry
 
 
 def _entry_key(entry: dict) -> tuple[str, str, str]:
@@ -177,6 +193,29 @@ class VisualValidationTests(unittest.TestCase):
         _write_manifest(
             self.candidate, candidate_entries, poses=poses, regions=regions
         )
+
+    def test_resolved_material_evidence_mutations_fail_closed(self):
+        self.write_matching()
+        manifest_path = self.candidate / "render_manifest.json"
+        original = json.loads(manifest_path.read_text(encoding="utf-8"))
+        mutations = {
+            "unknown shader": lambda evidence: evidence.__setitem__("shader", "customshader"),
+            "wrong directive": lambda evidence: evidence.__setitem__("texture_directive", "$refracttinttexture"),
+            "non boolean alpha": lambda evidence: evidence.__setitem__("uses_texture_alpha", 1),
+            "bad hash": lambda evidence: evidence.__setitem__("vtf_sha256", "D" * 64),
+            "negative root": lambda evidence: evidence.__setitem__("root_index", -1),
+            "wrong rule": lambda evidence: evidence.__setitem__("resolution_rule", "unordered"),
+            "extra field": lambda evidence: evidence.__setitem__("unsealed", True),
+        }
+        for label, mutate in mutations.items():
+            payload = json.loads(json.dumps(original))
+            textured = next(entry for entry in payload["entries"] if entry["pass"] == "textured")
+            mutate(textured["resolved_materials"][0])
+            manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.subTest(label=label):
+                result = compare_render_sets(self.reference, self.candidate, _profile())
+                self.assertFalse(result.passed)
+                self.assertIn("invalid_material_evidence", {failure.gate for failure in result.failures})
 
     def test_profile_is_deeply_read_only_and_requires_calibrated_finite_limits(self):
         profile = _profile()
@@ -1156,6 +1195,37 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             'VertexLitGeneric { "$refracttinttexture" "wrong" }'
         ))
 
+    def test_vmt_parser_accepts_one_line_root_directive_and_ignores_comments(self):
+        import render_previews
+
+        self.assertEqual(
+            render_previews._source_texture_reference(
+                'vErTeXlItGeNeRiC { "$BaseTexture" "cars/body" } // overlay comment'
+            ),
+            ("vertexlitgeneric", "$basetexture", "cars/body", False),
+        )
+
+    def test_vmt_parser_rejects_nested_or_trailing_directive_and_unknown_shader(self):
+        import render_previews
+
+        nested = (
+            'VertexLitGeneric { Proxies { AnimatedTexture { '
+            '"$basetexture" "wrong/nested" } } }'
+        )
+        trailing = 'VertexLitGeneric { } "$basetexture" "wrong/trailing"'
+        unknown = 'CustomShader { "$basetexture" "wrong/unknown" }'
+        self.assertIsNone(render_previews._source_texture_reference(nested))
+        self.assertIsNone(render_previews._source_texture_reference(trailing))
+        self.assertIsNone(render_previews._source_texture_reference(unknown))
+        with_root_and_proxies = (
+            'VertexLitGeneric { "$basetexture" "right/root" '
+            'Proxies { AnimatedTexture { "$basetexture" "wrong/nested" } } }'
+        )
+        self.assertEqual(
+            render_previews._source_texture_reference(with_root_and_proxies),
+            ("vertexlitgeneric", "$basetexture", "right/root", False),
+        )
+
     def test_material_roots_are_ordered_overlays_and_resolution_is_audited(self):
         import render_previews
 
@@ -1216,7 +1286,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             def run(command, **_kwargs):
                 calls.append(command)
                 if len(calls) == 2:
-                    output = Path(command[command.index("-output") + 1]) / "paint.png"
+                    output = Path(command[command.index("-output") + 1]) / "texture.png"
                     output.write_bytes(b"png")
                     return subprocess.CompletedProcess(command, 0)
                 return subprocess.CompletedProcess(command, 1)
@@ -1242,6 +1312,45 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             with mock.patch.object(render_previews.subprocess, "run", return_value=failed):
                 with self.assertRaisesRegex(RuntimeError, "Error creating png file.*MAX_PATH"):
                     render_previews._convert_vtf(source, tool, root / "cache")
+
+    def test_vtfcmd_long_stem_concurrent_conversion_uses_short_unique_staging(self):
+        import concurrent.futures
+        import threading
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            long_source_dir = root.joinpath(*(["very_long_source_directory"] * 12))
+            long_source_dir.mkdir(parents=True)
+            source = long_source_dir / (("long_texture_name_" * 10) + ".vtf")
+            source.write_bytes(b"same-vtf")
+            tool = root / "VTFCmd.exe"
+            tool.write_bytes(b"tool")
+            barrier = threading.Barrier(2)
+            output_dirs = []
+            output_dirs_lock = threading.Lock()
+
+            def run(command, **_kwargs):
+                output_dir = Path(command[command.index("-output") + 1])
+                with output_dirs_lock:
+                    output_dirs.append(output_dir)
+                barrier.wait(timeout=5)
+                self.assertEqual(Path(command[command.index("-file") + 1]).name, "texture.vtf")
+                (output_dir / "texture.png").write_bytes(b"png")
+                return subprocess.CompletedProcess(command, 0)
+
+            cache = root / "short-cache"
+            with mock.patch.object(render_previews.subprocess, "run", side_effect=run):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    converted = tuple(pool.map(
+                        lambda _index: render_previews._convert_vtf(source, tool, cache),
+                        range(2),
+                    ))
+
+            self.assertEqual(converted[0], converted[1])
+            self.assertEqual(converted[0].read_bytes(), b"png")
+            self.assertEqual(len(set(output_dirs)), 2)
+            self.assertTrue(all(len(str(path / "texture.png")) < 160 for path in output_dirs))
 
     def test_textured_material_application_uses_each_objects_source_search_paths(self):
         import render_previews
