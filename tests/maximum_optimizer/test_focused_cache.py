@@ -20,6 +20,12 @@ def _limits(value: float) -> dict[str, float]:
     return {name: value for name in REQUIRED_METRICS}
 
 
+def _validation_metrics(value: float) -> dict[str, float]:
+    metrics = _limits(value)
+    metrics["fidelity_score"] = max(0.0, 1.0 - value)
+    return metrics
+
+
 def _material_proof(*, cacheable: bool = True) -> dict:
     payload = {
         "schema": 1,
@@ -362,7 +368,24 @@ class MaterialResolutionProofTests(unittest.TestCase):
                 self.roots, self.requests, threading.Event()
             )
         self.assertFalse(bounded.cacheable)
-        self.assertEqual(bounded.reason, "vmt-size-limit")
+        self.assertEqual(bounded.reason, "byte-limit")
+
+        second_vmt = self.first / "vehicles/wheel.vmt"
+        second_vmt.write_text(
+            'VertexLitGeneric { "$basetexture" "textures/body" }', encoding="utf-8"
+        )
+        requests = self.requests + ({
+            "material_identity": "wheel", "search_paths": ("vehicles",),
+        },)
+        with mock.patch.object(
+            focused_cache, "_MAX_CAPTURED_VMT_BYTES",
+            vmt.stat().st_size + second_vmt.stat().st_size - 1,
+        ):
+            aggregate = focused_cache.material_resolution_proof(
+                self.roots, requests, threading.Event()
+            )
+        self.assertFalse(aggregate.cacheable)
+        self.assertEqual(aggregate.reason, "byte-limit")
 
         cancelled = threading.Event()
         original = render_previews._parse_vmt_root
@@ -1004,7 +1027,7 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
 
         cache = FocusedRenderCache(self.base / "cache")
         cache.store(self.key, self.directories, self.metadata, self.files, threading.Event())
-        failed_metrics = _limits(0.0)
+        failed_metrics = _validation_metrics(0.0)
         failed_metrics["edge_error"] = 0.2
         failed = ValidationResult(
             False, (GateFailure("edge_error", "scope", 0.2, 0.05, "failed"),),
@@ -1032,9 +1055,9 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
         )
 
         cache = FocusedRenderCache(self.base / "cache")
-        comparator = mock.Mock(return_value=ValidationResult(True, metrics={
-            name: 0.0 for name in _limits(0.0)
-        }))
+        comparator = mock.Mock(return_value=ValidationResult(
+            True, metrics=_validation_metrics(0.0)
+        ))
         render_fresh = mock.Mock(return_value=self.directories)
 
         result, record = validate_focused_target(
@@ -1059,7 +1082,7 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
 
         forged = replace(self.target, state_index=1, state_name="forged-state")
         comparator = mock.Mock(return_value=ValidationResult(
-            True, metrics={name: 0.0 for name in _limits(0.0)}
+            True, metrics=_validation_metrics(0.0)
         ))
         with self.assertRaisesRegex(ValueError, "target"):
             validate_focused_target(
@@ -1086,7 +1109,7 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
             build_focused_render_evidence, focused_gate_evidence_payload,
         )
 
-        validation = ValidationResult(True, metrics={name: 0.0 for name in _limits(0.0)})
+        validation = ValidationResult(True, metrics=_validation_metrics(0.0))
         record = build_focused_render_evidence(
             self.target, validation, self.metadata.expected, self.files,
             self.payload["material_proof"]["digest"], False,
@@ -1126,7 +1149,7 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
         )
         from maximum_optimizer.focused_regions import FocusSelection
 
-        validation = ValidationResult(True, metrics={name: 0.0 for name in _limits(0.0)})
+        validation = ValidationResult(True, metrics=_validation_metrics(0.0))
         record = build_focused_render_evidence(
             self.target, validation, self.metadata.expected, self.files,
             self.payload["material_proof"]["digest"], False,
@@ -1146,7 +1169,7 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
         from maximum_optimizer.domain import ValidationResult
         from maximum_optimizer import focused_cache
 
-        validation = ValidationResult(True, metrics={name: 0.0 for name in _limits(0.0)})
+        validation = ValidationResult(True, metrics=_validation_metrics(0.0))
         record = focused_cache.build_focused_render_evidence(
             self.target, validation, self.metadata.expected, self.files,
             self.payload["material_proof"]["digest"], False,

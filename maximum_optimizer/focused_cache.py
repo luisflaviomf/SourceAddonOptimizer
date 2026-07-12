@@ -43,6 +43,7 @@ _REGION_KEY = re.compile(r"^r-[0-9a-f]{64}$")
 _MAX_MATERIAL_FILES = 4096
 _MAX_MATERIAL_BYTES = 2 * 1024 ** 3
 _MAX_SELECTED_VMT_BYTES = 8 * 1024 ** 2
+_MAX_CAPTURED_VMT_BYTES = 32 * 1024 ** 2
 _MAX_CONTROL_FILE_BYTES = 16 * 1024 ** 2
 _IO_CHUNK_SIZE = 1024 * 1024
 _TOP_FIELDS = {
@@ -993,8 +994,19 @@ def material_resolution_proof(
             if selected is not None:
                 break
         selected_vmt[request.request_index] = selected
+    selected_vmt_sizes = tuple(
+        candidate_by_key[key][4] for key in selected_vmt_keys
+    )
+    if (
+        any(size > _MAX_SELECTED_VMT_BYTES for size in selected_vmt_sizes)
+        or sum(selected_vmt_sizes) > _MAX_CAPTURED_VMT_BYTES
+    ):
+        return _uncacheable_material_proof(
+            "byte-limit", canonical_roots_tuple, request_tuple, 0, 0
+        )
     files: list[MaterialFileProof] = []
     captured_vmt = {}
+    captured_vmt_bytes = 0
     total_bytes = 0
     for root_index, path, _folded, relative, stat_size in candidates:
         _cancel(cancel_event, "cancelled during material inventory")
@@ -1010,25 +1022,31 @@ def material_resolution_proof(
             )
         try:
             capture = None
+            file_max_bytes = _MAX_MATERIAL_BYTES - total_bytes
             if (root_index, relative.casefold()) in selected_vmt_keys:
-                if stat_size > _MAX_SELECTED_VMT_BYTES:
+                capture_remaining = _MAX_CAPTURED_VMT_BYTES - captured_vmt_bytes
+                if stat_size > min(_MAX_SELECTED_VMT_BYTES, capture_remaining):
                     for stream in captured_vmt.values():
                         stream.close()
                     return _uncacheable_material_proof(
-                        "vmt-size-limit", canonical_roots_tuple, request_tuple,
+                        "byte-limit", canonical_roots_tuple, request_tuple,
                         len(files), total_bytes,
                     )
                 capture = tempfile.SpooledTemporaryFile(
                     max_size=_MAX_SELECTED_VMT_BYTES, mode="w+b"
                 )
+                file_max_bytes = min(
+                    file_max_bytes, _MAX_SELECTED_VMT_BYTES, capture_remaining
+                )
             size, digest = _file_proof(
                 path, cancel_event,
-                max_bytes=_MAX_MATERIAL_BYTES - total_bytes,
+                max_bytes=file_max_bytes,
                 contained_root=canonical_roots_tuple[root_index][1],
                 capture_stream=capture,
             )
             if capture is not None:
                 captured_vmt[(root_index, relative.casefold())] = capture
+                captured_vmt_bytes += size
         except _MaterialByteLimitError:
             if capture is not None:
                 capture.close()
@@ -1629,7 +1647,8 @@ def _validate_validation(value: ValidationResult, terminal_status: str) -> None:
         raise ValueError("focused validation pass/failure fields are incoherent")
     if any(not isinstance(item, GateFailure) for item in value.failures):
         raise ValueError("focused validation failure is invalid")
-    if not isinstance(value.metrics, Mapping) or set(value.metrics) != set(REQUIRED_METRICS):
+    expected_metrics = set(REQUIRED_METRICS) | {"fidelity_score"}
+    if not isinstance(value.metrics, Mapping) or set(value.metrics) != expected_metrics:
         raise ValueError("focused validation metrics are incomplete")
     for name, number in value.metrics.items():
         if type(name) is not str or isinstance(number, bool) or type(number) not in (int, float):
