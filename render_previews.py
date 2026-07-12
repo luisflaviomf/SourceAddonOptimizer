@@ -22,6 +22,7 @@ from maximum_optimizer.regions import (
     resolve_region_assignments as _resolve_region_assignments,
     source_material_slot_identities as _source_material_slot_identities,
 )
+from maximum_optimizer.qc_graph import _lex as _lex_qc
 
 try:
     import bpy
@@ -117,19 +118,75 @@ def _contained_material_path(root: Path, raw: str, suffix: str) -> Path | None:
     relative = Path(*posix.parts)
     if suffix and not str(relative).casefold().endswith(suffix.casefold()):
         relative = Path(f"{relative}{suffix}")
-    unresolved = root / relative
     current = root
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            return None
-    resolved_root = root.resolve()
-    resolved = unresolved.resolve()
-    try:
-        resolved.relative_to(resolved_root)
-    except ValueError:
+    if current.is_symlink() or not current.is_dir():
         return None
-    return resolved
+    for part in relative.parts:
+        try:
+            matches = tuple(
+                child for child in current.iterdir()
+                if child.name.casefold() == part.casefold()
+            )
+        except OSError:
+            return None
+        if len(matches) != 1 or matches[0].is_symlink():
+            return None
+        current = matches[0]
+    try:
+        current.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    return current.resolve()
+
+
+def _normalized_material_search_path(raw: str) -> str:
+    normalized = raw.replace("\\", "/").strip().rstrip("/")
+    posix = PurePosixPath(normalized)
+    windows = PureWindowsPath(raw)
+    if (
+        not normalized
+        or posix.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive)
+        or ".." in posix.parts
+    ):
+        raise ValueError(f"unsafe $cdmaterials path: {raw}")
+    return PurePosixPath(*(part for part in posix.parts if part not in ("", "."))).as_posix()
+
+
+def _source_cdmaterial_search_paths(
+    manifest: RegionManifest, manifest_root: Path
+) -> dict[str, tuple[str, ...]]:
+    manifest_root = Path(manifest_root)
+    sources = sorted({entry.descriptor.source_identity for entry in manifest.entries})
+    graph_files: dict[str, list[str]] = {source: [] for source in sources}
+    for entry in manifest.entries:
+        target = graph_files[entry.descriptor.source_identity]
+        for occurrence in entry.occurrences:
+            if occurrence.graph_file not in target:
+                target.append(occurrence.graph_file)
+    result: dict[str, tuple[str, ...]] = {}
+    for source in sources:
+        search_paths: list[str] = []
+        for graph_file in graph_files[source]:
+            path = _contained_material_path(manifest_root, graph_file, "")
+            if path is None or not path.is_file():
+                raise ValueError(f"QC/QCI material evidence is missing: {graph_file}")
+            try:
+                tokens = _lex_qc(path.read_text(encoding="utf-8-sig", errors="strict"))
+            except (OSError, UnicodeError) as exc:
+                raise ValueError(f"cannot read QC/QCI material evidence: {graph_file}") from exc
+            for index, token in enumerate(tokens):
+                if token.value.casefold() != "$cdmaterials":
+                    continue
+                cursor = index + 1
+                if cursor >= len(tokens) or tokens[cursor].kind in {"newline", "brace"}:
+                    raise ValueError(f"$cdmaterials has no path at {graph_file}:{token.line}")
+                value = _normalized_material_search_path(tokens[cursor].value)
+                if value not in search_paths:
+                    search_paths.append(value)
+        result[source] = tuple(search_paths)
+    return result
 
 
 def _parse_args(argv: list[str]):
@@ -147,7 +204,14 @@ def _parse_args(argv: list[str]):
     ap.add_argument("--poses", default=None, help="Opt-in pose frames as name:frame CSV")
     ap.add_argument("--animation-before", default=None, help="Original animation SMD/DMX for representative poses")
     ap.add_argument("--animation-after", default=None, help="Optimized animation SMD/DMX for representative poses")
-    ap.add_argument("--materials-root", default=None, help="Source materials directory")
+    ap.add_argument(
+        "--materials-root",
+        default=None,
+        help=(
+            "Source materials directory; short SMD material names are resolved "
+            "through $cdmaterials in the QC/QCI occurrences recorded by --region-manifest"
+        ),
+    )
     ap.add_argument("--vtfcmd", default=None, help="Optional VTFCmd executable")
     ap.add_argument(
         "--region-manifest", default=None,
@@ -488,15 +552,37 @@ def _source_texture_png(
     materials_root: Path | None,
     vtfcmd: Path | None,
     cache_root: Path,
+    *,
+    search_paths: tuple[str, ...] = (),
 ) -> Path | None:
     if materials_root is None or not materials_root.is_dir():
         return None
     relative = material_name.replace("\\", "/").strip()
     if relative.casefold().endswith(".vmt"):
         relative = relative[:-4]
-    vmt_path = _contained_material_path(materials_root, relative, ".vmt")
-    if vmt_path is None or not vmt_path.is_file():
+    normalized = PurePosixPath(relative)
+    windows = PureWindowsPath(material_name)
+    if (
+        not relative
+        or normalized.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive)
+        or ".." in normalized.parts
+    ):
         return None
+    candidates = (
+        tuple(PurePosixPath(path) / normalized for path in search_paths)
+        if search_paths and len(normalized.parts) == 1
+        else (normalized,)
+    )
+    matches: list[Path] = []
+    for candidate in candidates:
+        vmt_path = _contained_material_path(materials_root, candidate.as_posix(), ".vmt")
+        if vmt_path is not None and vmt_path.is_file() and vmt_path not in matches:
+            matches.append(vmt_path)
+    if len(matches) != 1:
+        return None
+    vmt_path = matches[0]
     try:
         base_texture = _extract_base_texture(vmt_path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
@@ -541,9 +627,12 @@ def _apply_textured_materials(
     materials_root: Path | None,
     vtfcmd: Path | None,
     cache_root: Path,
+    *,
+    source_search_paths: dict[str, tuple[str, ...]] | None = None,
 ) -> bool:
     missing = False
     material_cache = {}
+    source_search_paths = source_search_paths or {}
     for obj in objs:
         if not hasattr(obj.data, "materials"):
             continue
@@ -554,7 +643,15 @@ def _apply_textured_materials(
         obj.data.materials.clear()
         for index in range(original_count):
             name = source_materials.get((obj.name, index), "")
-            png_path = _source_texture_png(name, materials_root, vtfcmd, cache_root)
+            source_identity = obj.get("maximum_region_source_identity", "")
+            search_paths = source_search_paths.get(source_identity, ())
+            png_path = _source_texture_png(
+                name,
+                materials_root,
+                vtfcmd,
+                cache_root,
+                search_paths=search_paths,
+            )
             if png_path is None:
                 missing = True
                 obj.data.materials.append(_make_missing_texture_material(f"{obj.name}_{index}"))
@@ -1123,6 +1220,7 @@ def _render_extended_set(
     animation_source: Path | None = None,
     *,
     fit=None,
+    source_search_paths: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[list[dict], dict[str, dict[str, dict]], tuple, dict]:
     _clear_scene()
     _setup_scene(size, transparent=True)
@@ -1177,7 +1275,12 @@ def _render_extended_set(
             texture_missing = False
         else:
             texture_missing = _apply_textured_materials(
-                objs, blender_source_materials, materials_root, vtfcmd, texture_cache
+                objs,
+                blender_source_materials,
+                materials_root,
+                vtfcmd,
+                texture_cache,
+                source_search_paths=source_search_paths,
             )
         for pose_name, frame in poses:
             _set_pose_state(animation_binding, pose_name, frame)
@@ -1213,6 +1316,9 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
     texture_cache = out_dir / ".vtf-cache"
     region_manifest_path = _required_region_manifest(args)
     region_manifest = _load_region_manifest(region_manifest_path)
+    source_search_paths = _source_cdmaterial_search_paths(
+        region_manifest, region_manifest_path.parent
+    )
     if len(before) != len(after):
         raise ValueError("extended Maximum validation requires paired before/after sources")
     if bool(args.animation_before) != bool(args.animation_after):
@@ -1252,6 +1358,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         source_identities_tuple,
         source_materials,
         animation_before,
+        source_search_paths=source_search_paths,
     )
     candidate_entries, candidate_snapshots, _, candidate_bbox = _render_extended_set(
         "after",
@@ -1269,6 +1376,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         source_materials,
         animation_after,
         fit=fit,
+        source_search_paths=source_search_paths,
     )
     stride = 7
     seed = 0

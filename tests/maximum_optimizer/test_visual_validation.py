@@ -889,6 +889,143 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                 )
                 convert.assert_not_called()
 
+    def test_cdmaterials_resolve_short_smd_material_case_insensitively(self):
+        import render_previews
+        from maximum_optimizer.regions import build_region_manifest
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            source_root.mkdir()
+            qc = source_root / "Materials.QCI"
+            qc.write_text(
+                '$cdmaterials "Models\\DiggerCars\\Pontiac_TransAm3\\"\n',
+                encoding="utf-8",
+            )
+            manifest = build_region_manifest(
+                (("wh.smd", "wh", ("rim2",)),),
+                occurrences={
+                    "wh.smd": (
+                        {
+                            "graph_file": "materials.qci",
+                            "directive": "$body/studio",
+                            "line": 2,
+                            "logical_path": "wh.smd",
+                        },
+                    )
+                },
+            )
+            search = render_previews._source_cdmaterial_search_paths(
+                manifest, source_root
+            )
+            self.assertEqual(
+                search,
+                {"wh.smd": ("Models/DiggerCars/Pontiac_TransAm3",)},
+            )
+
+            materials = root / "materials"
+            material_dir = materials / "models" / "diggercars" / "pontiac_transam3"
+            material_dir.mkdir(parents=True)
+            (material_dir / "RIM2.VMT").write_text(
+                'VertexLitGeneric\n{\n"$basetexture" "MODELS/DIGGERCARS/PONTIAC_TRANSAM3/RIM2"\n}',
+                encoding="utf-8",
+            )
+            texture = material_dir / "rim2.VTF"
+            texture.write_bytes(b"vtf")
+            converted = root / "rim2.png"
+            converted.write_bytes(b"png")
+            with mock.patch.object(
+                render_previews, "_convert_vtf", return_value=converted
+            ) as convert:
+                resolved = render_previews._source_texture_png(
+                    "rim2",
+                    materials,
+                    root / "VTFCmd.exe",
+                    root / "cache",
+                    search_paths=search["wh.smd"],
+                )
+            self.assertEqual(resolved, converted)
+            convert.assert_called_once_with(texture, root / "VTFCmd.exe", root / "cache")
+
+    def test_cdmaterials_ambiguity_and_escape_fail_closed(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            materials = root / "materials"
+            for directory in ("models/first", "models/second"):
+                target = materials / directory
+                target.mkdir(parents=True)
+                (target / "paint.vmt").write_text(
+                    'VertexLitGeneric\n{\n"$basetexture" "models/shared/paint"\n}',
+                    encoding="utf-8",
+                )
+            shared = materials / "models" / "shared"
+            shared.mkdir()
+            (shared / "paint.vtf").write_bytes(b"vtf")
+
+            with mock.patch.object(render_previews, "_convert_vtf") as convert:
+                self.assertIsNone(
+                    render_previews._source_texture_png(
+                        "paint",
+                        materials,
+                        root / "VTFCmd.exe",
+                        root / "cache",
+                        search_paths=("models/first", "models/second"),
+                    )
+                )
+                self.assertIsNone(
+                    render_previews._source_texture_png(
+                        "paint",
+                        materials,
+                        root / "VTFCmd.exe",
+                        root / "cache",
+                        search_paths=("../outside",),
+                    )
+                )
+                convert.assert_not_called()
+
+    def test_textured_material_application_uses_each_objects_source_search_paths(self):
+        import render_previews
+
+        class Object:
+            name = "Wheel"
+
+            def __init__(self):
+                self.data = type("Data", (), {"materials": []})()
+
+            def get(self, key, default=None):
+                if key == "maximum_region_source_identity":
+                    return "models/wheel/wh.smd"
+                return default
+
+        obj = Object()
+        with mock.patch.object(
+            render_previews, "_source_texture_png", return_value=None
+        ) as texture, mock.patch.object(
+            render_previews, "_make_missing_texture_material", return_value="missing"
+        ):
+            missing = render_previews._apply_textured_materials(
+                (obj,),
+                {("Wheel", 0): "rim2"},
+                Path("materials"),
+                Path("VTFCmd.exe"),
+                Path("cache"),
+                source_search_paths={
+                    "models/wheel/wh.smd": ("models/diggercars/pontiac_transam3",)
+                },
+            )
+
+        self.assertTrue(missing)
+        texture.assert_called_once_with(
+            "rim2",
+            Path("materials"),
+            Path("VTFCmd.exe"),
+            Path("cache"),
+            search_paths=("models/diggercars/pontiac_transam3",),
+        )
+        self.assertEqual(obj.data.materials, ["missing"])
+
     def test_material_path_rejects_symlink_when_platform_allows_it(self):
         import render_previews
 
