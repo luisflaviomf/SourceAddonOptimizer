@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from benchmarks.lvs_models import build_adaptive_ratio_sweep_v1 as evidence_builder
 from benchmarks.lvs_models.run_adaptive_ratio_sweep import build_commands
 
 
@@ -30,6 +32,11 @@ class AdaptiveRatioSweepHarnessTests(unittest.TestCase):
             self.assertEqual(compile_command[2], str(workspace))
             self.assertNotIn(str(workspace / "car.qc"), optimize)
             self.assertNotIn(str(workspace / "car.qc"), compile_command)
+
+    def test_evidence_builder_fails_when_frozen_execution_blob_is_unavailable(self) -> None:
+        with patch.object(evidence_builder.subprocess, "check_output", return_value="0" * 40):
+            with self.assertRaisesRegex(SystemExit, "snapshot blob drift"):
+                evidence_builder._validate_frozen_execution_snapshot()
 
 
 if __name__ == "__main__":
