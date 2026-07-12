@@ -49,6 +49,7 @@ from maximum_optimizer.qc_graph import QcGraph, parse_qc_graph, rewritten_qc_gra
 from maximum_optimizer.mesh_attributes import (
     barycentric_weights,
     build_wedge_mesh,
+    classify_position_topology,
     interpolate_influences,
     interpolate_vector,
     normalize_influences,
@@ -59,7 +60,7 @@ from maximum_optimizer.smoothing import (
     canonicalize_export_normals,
     canonicalize_normals_by_identity,
 )
-from maximum_optimizer.smd_contract import restore_direct_smd_normals, restore_ordered_smd_normals
+from maximum_optimizer.smd_contract import restore_direct_smd_normals, restore_ordered_smd_normals, serialize_direct_smd
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -159,11 +160,12 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
     transfer = payload["transfer"]
     if (strategy, update_vertices, transfer) not in {
         ("meshopt-direct-v1", False, "direct-v1"),
+        ("meshopt-direct-position-v1", False, "direct-v1"),
         ("meshopt-project-v1", True, "projection-v1"),
     }:
         raise ValueError("unknown or inconsistent meshoptimizer strategy")
-    if from_search and strategy == "meshopt-direct-v1" and payload["repair_profile"] != strategy:
-        raise ValueError("repair_profile must identify meshopt-direct-v1")
+    if from_search and strategy.startswith("meshopt-direct-") and payload["repair_profile"] != strategy:
+        raise ValueError("repair_profile must identify the direct strategy")
     overrides = payload["region_overrides"]
     if type(overrides) is not list:
         raise ValueError("region_overrides must be a list")
@@ -218,6 +220,7 @@ def make_simplify_options(
         target_error=candidate.target_error,
         update_vertices=candidate.update_vertices,
         meshopt_options=policy.meshopt_options,
+        position_remap=candidate.strategy == "meshopt-direct-position-v1",
     )
 
 
@@ -803,7 +806,8 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         raise ValueError("imported mesh has no triangles")
     skinned = len(obj.vertex_groups) > 0
     wedges = build_wedge_mesh(
-        positions, triangles, loop_normals, loop_uvs, material_ids, vertex_influences
+        positions, triangles, loop_normals, loop_uvs, material_ids, vertex_influences,
+        exact_float32=candidate.strategy == "meshopt-direct-position-v1",
     )
     wedge_triangles = tuple(
         tuple(wedges.indices[offset : offset + 3]) for offset in range(0, len(wedges.indices), 3)
@@ -814,7 +818,19 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         material_ids=material_ids,
         skin_weights=wedges.weights if skinned else None,
     )
-    if skinned:
+    position_topology = None
+    if candidate.strategy == "meshopt-direct-position-v1":
+        position_topology = classify_position_topology(
+            wedges.positions, wedges.normals, wedges.uvs, wedges.indices, material_ids,
+            wedges.weights, wedges.bone_indices,
+            tuple(flag & PRIORITY for flag in policy.vertex_flags),
+        )
+        policy = SimplificationPolicy(
+            position_topology.vertex_flags,
+            policy.meshopt_options,
+            policy.geometry,
+        )
+    elif skinned:
         flags = list(policy.vertex_flags)
         signatures = [
             tuple(sorted({bone for bone, weight in zip(bones, weights) if weight > 0.0}))
@@ -840,7 +856,7 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
     if len(result.indices) >= len(source.indices) and ratio < 0.999999:
         raise RuntimeError("meshoptimizer did not reduce this mesh")
 
-    if candidate.strategy == "meshopt-direct-v1":
+    if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"}:
         direct = compact_direct_result(source, result)
         compact_positions = list(direct.positions)
         compact_normals = list(direct.normals)
@@ -852,6 +868,17 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         direct_corner_ordinals = tuple(
             wedges.source_loop_indices[direct.source_vertex_indices[index]] for index in direct.indices
         )
+        direct_smd_payload = {
+            "positions": tuple(compact_positions),
+            "normals": tuple(compact_normals),
+            "uvs": tuple(compact_uvs),
+            "influences": tuple(compact_influences),
+            "indices": tuple(output_indices),
+            "materials": tuple(str(mesh.materials[index].name) for index in result.material_ids),
+            "source_corner_ordinals": tuple(
+                wedges.source_loop_indices[index] for index in direct.source_vertex_indices
+            ),
+        }
     else:
         from mathutils import Vector
         from mathutils.bvhtree import BVHTree
@@ -914,6 +941,7 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         compact_influences = list(recombined.influences)
         output_indices = recombined.indices
         direct_corner_ordinals = ()
+        direct_smd_payload = None
     faces = tuple(
         tuple(output_indices[offset : offset + 3]) for offset in range(0, len(output_indices), 3)
     )
@@ -971,7 +999,15 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         "result_error": result.result_error,
         "strategy": candidate.strategy,
         "transfer": candidate.transfer,
+        "canonical_positions": position_topology.canonical_position_count if position_topology else None,
+        "open_geometric_edges": position_topology.open_edge_count if position_topology else None,
+        "nonmanifold_geometric_edges": position_topology.nonmanifold_edge_count if position_topology else None,
+        "uv_seam_vertices": position_topology.uv_seam_vertices if position_topology else None,
+        "normal_seam_vertices": position_topology.normal_seam_vertices if position_topology else None,
+        "material_seam_vertices": position_topology.material_seam_vertices if position_topology else None,
+        "skin_transition_vertices": position_topology.skin_transition_vertices if position_topology else None,
         "_direct_corner_ordinals": direct_corner_ordinals,
+        "_direct_smd_payload": direct_smd_payload,
     }
 
 
@@ -993,8 +1029,8 @@ def _describe_source_file(
 
 
 def require_direct_single_object(candidate: CandidateConfig, mesh_objects: Sequence[object]) -> None:
-    if candidate.strategy == "meshopt-direct-v1" and len(mesh_objects) != 1:
-        raise RuntimeError("meshopt-direct-v1 requires one unambiguous source object per occurrence")
+    if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"} and len(mesh_objects) != 1:
+        raise RuntimeError(f"{candidate.strategy} requires one unambiguous source object per occurrence")
 
 
 def _process_source_file(
@@ -1025,35 +1061,48 @@ def _process_source_file(
     direct_corner_ordinals = tuple(
         ordinal for item in object_metrics for ordinal in item.pop("_direct_corner_ordinals", ())
     )
+    direct_payloads = tuple(
+        payload for item in object_metrics
+        if (payload := item.pop("_direct_smd_payload", None)) is not None
+    )
     print("MAXIMUM_OBJECT_METRICS " + json.dumps({
         "source": source_identity,
         "objects": object_metrics,
     }, sort_keys=True))
     destination = safe_output_path(source.parent, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    staging_dir = Path(tempfile.mkdtemp(prefix=".maximum-export-", dir=destination.parent))
-    staging = staging_dir / destination.name
-    try:
-        source_tools.export_source_file(staging, staging.suffix.lstrip("."))
-        if not staging.is_file():
-            raise RuntimeError(f"Source Tools did not export {staging}")
-        with staging.open("r+b") as stream:
-            os.fsync(stream.fileno())
-        safe_output_path(source.parent, destination)
-        os.replace(staging, destination)
-    finally:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+    if direct_payloads:
+        if len(direct_payloads) != 1:
+            raise RuntimeError("direct SMD serialization requires one payload")
+        payload = direct_payloads[0]
+        serialized = serialize_direct_smd(
+            original_text, payload["positions"], payload["normals"], payload["uvs"],
+            payload["influences"], payload["indices"], payload["materials"],
+            source_corner_ordinals=payload["source_corner_ordinals"],
+        )
+        atomic_write_bytes(source.parent, destination, serialized.encode("utf-8"))
+    else:
+        staging_dir = Path(tempfile.mkdtemp(prefix=".maximum-export-", dir=destination.parent))
+        staging = staging_dir / destination.name
+        try:
+            source_tools.export_source_file(staging, staging.suffix.lstrip("."))
+            if not staging.is_file():
+                raise RuntimeError(f"Source Tools did not export {staging}")
+            with staging.open("r+b") as stream:
+                os.fsync(stream.fileno())
+            safe_output_path(source.parent, destination)
+            os.replace(staging, destination)
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
     if not destination.is_file():
         raise RuntimeError(f"Source Tools did not export {destination}")
     raw_export_sha256 = hashlib.sha256(destination.read_bytes()).hexdigest()
     raw_export_path = safe_output_path(source.parent, source.parent / "maximum_direct_raw" / destination.name)
     raw_export_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(source.parent, raw_export_path, destination.read_bytes())
-    restored = restore_smd_bone_identity(
-        original_text, destination.read_text(encoding="utf-8", errors="strict")
-    )
-    if candidate.strategy == "meshopt-direct-v1":
-        restored = restore_direct_smd_normals(original_text, restored, direct_corner_ordinals)
+    restored = destination.read_text(encoding="utf-8", errors="strict")
+    if not direct_payloads:
+        restored = restore_smd_bone_identity(original_text, restored)
     atomic_write_bytes(source.parent, destination, restored.encode("utf-8"))
     after_audit = audit_smd_text(destination.read_text(encoding="utf-8", errors="replace"))
     validate_smd_audits(before_audit, after_audit)

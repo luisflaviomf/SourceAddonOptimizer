@@ -3,10 +3,149 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import struct
+from collections import defaultdict
 from typing import Sequence
 
 
 Influences = tuple[tuple[str, float], ...]
+LOCK = 1 << 0
+PROTECT = 1 << 1
+
+
+@dataclass(frozen=True)
+class PositionTopology:
+    canonical_position_ids: tuple[int, ...]
+    vertex_flags: tuple[int, ...]
+    canonical_position_count: int
+    open_edge_count: int
+    nonmanifold_edge_count: int
+    locked_vertices: int
+    protected_vertices: int
+    uv_seam_vertices: int
+    normal_seam_vertices: int
+    material_seam_vertices: int
+    skin_transition_vertices: int
+
+
+def _float32_signature(values: Sequence[float], width: int) -> bytes:
+    if len(values) != width or not all(math.isfinite(float(value)) for value in values):
+        raise ValueError(f"attribute must contain finite float{width} values")
+    return struct.pack("=" + "f" * width, *(float(value) for value in values))
+
+
+def classify_position_topology(
+    positions: Sequence[Sequence[float]],
+    normals: Sequence[Sequence[float]],
+    uvs: Sequence[Sequence[float]],
+    indices: Sequence[int],
+    material_ids: Sequence[int],
+    weights: Sequence[Sequence[float]],
+    bone_indices: Sequence[Sequence[int]],
+    base_flags: Sequence[int] | None = None,
+) -> PositionTopology:
+    """Classify geometry on exact float32 positions, independently from wedge seams."""
+    vertex_count = len(positions)
+    if vertex_count == 0 or len(indices) < 3 or len(indices) % 3:
+        raise ValueError("position topology requires a non-empty triangle mesh")
+    if not (
+        len(normals) == len(uvs) == len(weights) == len(bone_indices) == vertex_count
+        and len(material_ids) == len(indices) // 3
+    ):
+        raise ValueError("position topology attribute counts do not match")
+    if base_flags is None:
+        base_flags = (0,) * vertex_count
+    if len(base_flags) != vertex_count or any(type(flag) is not int or flag < 0 or flag > 0xff for flag in base_flags):
+        raise ValueError("position topology base flags are invalid")
+    if any(type(index) is not int or index < 0 or index >= vertex_count for index in indices):
+        raise ValueError("position topology index is out of range")
+    if any(type(material) is not int or material < 0 for material in material_ids):
+        raise ValueError("position topology material is invalid")
+
+    representative_by_position: dict[bytes, int] = {}
+    canonical_ids: list[int] = []
+    wedges_by_position: dict[int, list[int]] = defaultdict(list)
+    for vertex, position in enumerate(positions):
+        signature = _float32_signature(position, 3)
+        representative = representative_by_position.setdefault(signature, vertex)
+        canonical_ids.append(representative)
+        wedges_by_position[representative].append(vertex)
+
+    edge_owners: dict[tuple[int, int], list[int]] = defaultdict(list)
+    triangle_vertices: list[tuple[int, int, int]] = []
+    for triangle in range(len(material_ids)):
+        raw = tuple(indices[triangle * 3 : triangle * 3 + 3])
+        canonical = tuple(canonical_ids[index] for index in raw)
+        triangle_vertices.append(raw)  # type: ignore[arg-type]
+        if len(set(canonical)) != 3:
+            for position in set(canonical):
+                for wedge in wedges_by_position[position]:
+                    base = list(base_flags)
+                    base[wedge] |= LOCK
+                    base_flags = tuple(base)
+            continue
+        for first, second in ((canonical[0], canonical[1]), (canonical[1], canonical[2]), (canonical[2], canonical[0])):
+            edge_owners[(min(first, second), max(first, second))].append(triangle)
+
+    flags = list(base_flags)
+    open_edges = 0
+    nonmanifold_edges = 0
+    for edge, owners in edge_owners.items():
+        if len(owners) == 1:
+            open_edges += 1
+        elif len(owners) > 2:
+            nonmanifold_edges += 1
+        else:
+            continue
+        for position in edge:
+            for wedge in wedges_by_position[position]:
+                flags[wedge] |= LOCK
+
+    incident_materials: dict[int, set[int]] = defaultdict(set)
+    for triangle, raw in enumerate(triangle_vertices):
+        for wedge in raw:
+            incident_materials[canonical_ids[wedge]].add(material_ids[triangle])
+
+    uv_positions: set[int] = set()
+    normal_positions: set[int] = set()
+    material_positions = {position for position, values in incident_materials.items() if len(values) > 1}
+    for position, wedges in wedges_by_position.items():
+        if len({_float32_signature(uvs[wedge], 2) for wedge in wedges}) > 1:
+            uv_positions.add(position)
+        if len({_float32_signature(normals[wedge], 3) for wedge in wedges}) > 1:
+            normal_positions.add(position)
+
+    def influence_signature(vertex: int) -> tuple[tuple[int, bytes], ...]:
+        if len(weights[vertex]) != 4 or len(bone_indices[vertex]) != 4:
+            raise ValueError("skin attributes must contain four slots")
+        result = []
+        for bone, weight in zip(bone_indices[vertex], weights[vertex]):
+            if type(bone) is not int or bone < 0 or not math.isfinite(float(weight)):
+                raise ValueError("skin attribute is invalid")
+            packed = struct.pack("=f", float(weight))
+            if struct.unpack("=f", packed)[0] > 0.0:
+                result.append((bone, packed))
+        return tuple(sorted(result))
+
+    skin_positions: set[int] = set()
+    for position, wedges in wedges_by_position.items():
+        bone_sets = {
+            tuple(bone for bone, _weight in influence_signature(wedge))
+            for wedge in wedges
+        }
+        if len(bone_sets) > 1:
+            skin_positions.add(position)
+
+    for position in uv_positions | normal_positions | material_positions | skin_positions:
+        for wedge in wedges_by_position[position]:
+            flags[wedge] |= PROTECT
+    return PositionTopology(
+        tuple(canonical_ids), tuple(flags), len(wedges_by_position), open_edges, nonmanifold_edges,
+        sum(bool(flag & LOCK) for flag in flags), sum(bool(flag & PROTECT) for flag in flags),
+        sum(len(wedges_by_position[position]) for position in uv_positions),
+        sum(len(wedges_by_position[position]) for position in normal_positions),
+        sum(len(wedges_by_position[position]) for position in material_positions),
+        sum(len(wedges_by_position[position]) for position in skin_positions),
+    )
 
 
 @dataclass(frozen=True)
@@ -167,6 +306,8 @@ def build_wedge_mesh(
     loop_uvs: Sequence[Sequence[float]],
     material_ids: Sequence[int],
     vertex_influences: Sequence[Sequence[tuple[str, float]]],
+    *,
+    exact_float32: bool = False,
 ) -> WedgeMesh:
     corner_count = len(triangles) * 3
     if len(loop_normals) != corner_count or len(loop_uvs) != corner_count:
@@ -199,8 +340,15 @@ def build_wedge_mesh(
             normal = tuple(float(value) for value in loop_normals[loop_index])
             uv = tuple(float(value) for value in loop_uvs[loop_index])
             influences = normalized_influences[source_vertex]
-            signature = tuple((name, round(weight, 9)) for name, weight in influences)
-            key = (_rounded(position), _rounded(normal), _rounded(uv), int(material), signature)
+            if exact_float32:
+                signature = tuple((name, struct.pack("=f", float(weight))) for name, weight in influences)
+                key = (
+                    _float32_signature(position, 3), _float32_signature(normal, 3),
+                    _float32_signature(uv, 2), int(material), signature,
+                )
+            else:
+                signature = tuple((name, round(weight, 9)) for name, weight in influences)
+                key = (_rounded(position), _rounded(normal), _rounded(uv), int(material), signature)
             wedge = wedges.get(key)
             if wedge is None:
                 wedge = len(out_positions)

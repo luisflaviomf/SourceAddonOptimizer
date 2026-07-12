@@ -8,10 +8,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -293,7 +295,7 @@ extern "C" __declspec(dllexport) int maximum_meshopt_version() noexcept
 
 extern "C" __declspec(dllexport) int maximum_meshopt_abi_version() noexcept
 {
-    return 2;
+    return 3;
 }
 
 extern "C" __declspec(dllexport) int maximum_meshopt_test_pause_at(std::uint32_t point) noexcept
@@ -451,7 +453,7 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
             return ErrorNullPointer;
         if (!std::isfinite(options->target_ratio) || options->target_ratio <= 0.f || options->target_ratio > 1.f ||
             !std::isfinite(options->target_error) || options->target_error < 0.f ||
-            options->update_vertices > 1 || (options->meshopt_options & ~kKnownMeshoptOptions) != 0)
+            options->update_vertices > 2 || (options->meshopt_options & ~kKnownMeshoptOptions) != 0)
             return ErrorOptions;
         if (!finite_values(input->positions, input->vertex_count * 3) ||
             !finite_values(input->normals, input->vertex_count * 3) ||
@@ -519,6 +521,7 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
             result.erase(std::unique(result.begin(), result.end()), result.end());
             return result;
         };
+        std::vector<std::set<std::uint32_t>> vertex_materials(input->vertex_count);
         std::vector<std::uint32_t> first_material(input->vertex_count, 0);
         std::vector<unsigned char> material_seen(input->vertex_count, 0);
         std::vector<unsigned char> shared_material(input->vertex_count, 0);
@@ -530,6 +533,7 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
             for (unsigned int corner = 0; corner < 3; ++corner)
             {
                 const std::uint32_t vertex = tri[corner];
+                vertex_materials[vertex].insert(input->material_ids[triangle]);
                 if (!material_seen[vertex])
                 {
                     material_seen[vertex] = 1;
@@ -541,7 +545,7 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
             const auto edges = {edge_key(tri[0], tri[1]), edge_key(tri[1], tri[2]), edge_key(tri[2], tri[0])};
             for (const auto& edge : edges)
             {
-                if (influence_set(edge.first) != influence_set(edge.second))
+                if (options->update_vertices != 2 && influence_set(edge.first) != influence_set(edge.second))
                 {
                     vertex_flags[edge.first] |= meshopt_SimplifyVertex_Protect;
                     vertex_flags[edge.second] |= meshopt_SimplifyVertex_Protect;
@@ -555,19 +559,46 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
         }
         for (std::size_t vertex = 0; vertex < input->vertex_count; ++vertex)
             if (shared_material[vertex])
-                vertex_flags[vertex] |= meshopt_SimplifyVertex_Lock;
+                vertex_flags[vertex] |= options->update_vertices == 2
+                    ? meshopt_SimplifyVertex_Protect
+                    : meshopt_SimplifyVertex_Lock;
         for (const auto& entry : material_boundary)
         {
             vertex_flags[entry.first.first] |= meshopt_SimplifyVertex_Protect;
             vertex_flags[entry.first.second] |= meshopt_SimplifyVertex_Protect;
         }
+        if (options->update_vertices == 2)
+        {
+            std::vector<unsigned int> position_remap(input->vertex_count);
+            meshopt_generatePositionRemap(
+                position_remap.data(), positions.data(), input->vertex_count, sizeof(float) * 3);
+            std::vector<unsigned char> position_flags(input->vertex_count, 0);
+            std::vector<std::set<std::uint32_t>> position_materials(input->vertex_count);
+            for (std::size_t vertex = 0; vertex < input->vertex_count; ++vertex)
+            {
+                const std::uint32_t position = position_remap[vertex];
+                position_flags[position] |= vertex_flags[vertex];
+                position_materials[position].insert(
+                    vertex_materials[vertex].begin(), vertex_materials[vertex].end());
+            }
+            for (std::size_t vertex = 0; vertex < input->vertex_count; ++vertex)
+            {
+                const std::uint32_t position = position_remap[vertex];
+                vertex_flags[vertex] |= position_flags[position];
+                if (position_materials[position].size() > 1)
+                    vertex_flags[vertex] |= meshopt_SimplifyVertex_Protect;
+            }
+        }
 
         std::map<std::uint32_t, std::vector<std::uint32_t>> subsets;
-        for (std::size_t triangle = 0; triangle < input->triangle_count; ++triangle)
-        {
-            auto& subset = subsets[input->material_ids[triangle]];
-            subset.insert(subset.end(), input->indices + triangle * 3, input->indices + triangle * 3 + 3);
-        }
+        if (options->update_vertices == 2)
+            subsets[0].assign(input->indices, input->indices + input->index_count);
+        else
+            for (std::size_t triangle = 0; triangle < input->triangle_count; ++triangle)
+            {
+                auto& subset = subsets[input->material_ids[triangle]];
+                subset.insert(subset.end(), input->indices + triangle * 3, input->indices + triangle * 3 + 3);
+            }
 
         const float attribute_weights[kAttributeCount] = {1.f, 1.f, 1.f, 1.f, 1.f, 0.5f, 0.5f, 0.5f, 0.5f};
         std::vector<std::uint32_t> result_indices;
@@ -585,7 +616,7 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
             const std::size_t target_indices = target_triangles * 3;
             float result_error = 0.f;
             std::size_t result_count = 0;
-            if (options->update_vertices != 0)
+            if (options->update_vertices == 1)
             {
                 result_count = meshopt_simplifyWithUpdate(
                     subset.data(), subset.size(), positions.data(), input->vertex_count, sizeof(float) * 3,
@@ -606,7 +637,27 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
                 return ErrorSimplifier;
             subset.resize(result_count);
             result_indices.insert(result_indices.end(), subset.begin(), subset.end());
-            result_materials.insert(result_materials.end(), result_count / 3, entry.first);
+            if (options->update_vertices == 2)
+            {
+                for (std::size_t triangle = 0; triangle < result_count / 3; ++triangle)
+                {
+                    std::set<std::uint32_t> ownership = vertex_materials[subset[triangle * 3]];
+                    for (unsigned int corner = 1; corner < 3; ++corner)
+                    {
+                        std::set<std::uint32_t> intersection;
+                        const auto& candidate = vertex_materials[subset[triangle * 3 + corner]];
+                        std::set_intersection(
+                            ownership.begin(), ownership.end(), candidate.begin(), candidate.end(),
+                            std::inserter(intersection, intersection.end()));
+                        ownership.swap(intersection);
+                    }
+                    if (ownership.size() != 1)
+                        return ErrorSimplifier;
+                    result_materials.push_back(*ownership.begin());
+                }
+            }
+            else
+                result_materials.insert(result_materials.end(), result_count / 3, entry.first);
             maximum_error = std::max(maximum_error, result_error);
         }
 
@@ -632,16 +683,16 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
         for (std::size_t vertex = 0; vertex < input->vertex_count; ++vertex)
         {
             const float* attribute = attributes.data() + vertex * kAttributeCount;
-            const float* normal = options->update_vertices ? attribute : input->normals + vertex * 3;
-            const float* uv = options->update_vertices ? attribute + 3 : input->uvs + vertex * 2;
-            const float* weight = options->update_vertices ? attribute + 5 : input->weights + vertex * 4;
+            const float* normal = options->update_vertices == 1 ? attribute : input->normals + vertex * 3;
+            const float* uv = options->update_vertices == 1 ? attribute + 3 : input->uvs + vertex * 2;
+            const float* weight = options->update_vertices == 1 ? attribute + 5 : input->weights + vertex * 4;
             std::copy_n(normal, 3, out_normals.get() + vertex * 3);
             std::copy_n(uv, 2, out_uvs.get() + vertex * 2);
             std::copy_n(weight, 4, out_weights.get() + vertex * 4);
         }
         std::copy(result_indices.begin(), result_indices.end(), out_indices.get());
         std::copy(result_materials.begin(), result_materials.end(), out_materials.get());
-        if (options->update_vertices)
+        if (options->update_vertices == 1)
             std::copy(canonical_bones.begin(), canonical_bones.end(), out_bones.get());
         else
             std::copy_n(input->bone_indices, input->vertex_count * 4, out_bones.get());

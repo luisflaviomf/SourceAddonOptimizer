@@ -26,6 +26,8 @@ from maximum_optimizer.meshopt_bridge import (
     _validate,
     compact_direct_result,
 )
+import maximum_optimizer.mesh_attributes as mesh_attributes
+from maximum_optimizer.mesh_attributes import build_wedge_mesh
 
 
 def _grid(size: int = 10) -> MeshInput:
@@ -68,6 +70,82 @@ def _grid(size: int = 10) -> MeshInput:
 
 
 class MeshoptBridgeTests(unittest.TestCase):
+    def test_exact_float32_wedge_mode_does_not_merge_near_zero_positions(self) -> None:
+        self.assertIn("exact_float32", __import__("inspect").signature(build_wedge_mesh).parameters)
+        mesh = build_wedge_mesh(
+            ((1e-10, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+             (2e-10, 0.0, 0.0)),
+            ((0, 1, 2), (3, 2, 1)), ((0.0, 0.0, 1.0),) * 6,
+            ((0.0, 0.0),) * 6, (0, 0), ((('root', 1.0),),) * 4,
+            exact_float32=True,
+        )
+        self.assertEqual(len(mesh.positions), 4)
+
+    def test_position_topology_connects_uv_normal_and_material_wedges(self) -> None:
+        self.assertIn("position_remap", SimplifyOptions.__dataclass_fields__)
+        self.assertTrue(hasattr(mesh_attributes, "classify_position_topology"))
+        positions = (
+            (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+            (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 0.0),
+        )
+        normals = tuple((0.0, 0.0, 1.0) if i < 3 else (1.0, 0.0, 0.0) for i in range(12))
+        uvs = tuple((float(i % 3), float((i + 1) % 3)) for i in range(12))
+        result = mesh_attributes.classify_position_topology(
+            positions, normals, uvs, tuple(range(12)), (0, 1, 0, 1),
+            ((1.0, 0.0, 0.0, 0.0),) * 12, ((0, 0, 0, 0),) * 12,
+        )
+        self.assertEqual(result.canonical_position_count, 4)
+        self.assertEqual(result.open_edge_count, 0)
+        self.assertEqual(result.nonmanifold_edge_count, 0)
+        self.assertEqual(result.locked_vertices, 0)
+        self.assertGreater(result.uv_seam_vertices, 0)
+        self.assertGreater(result.normal_seam_vertices, 0)
+        self.assertGreater(result.material_seam_vertices, 0)
+
+    def test_position_topology_locks_real_open_edges_and_nonmanifold_fail_closed(self) -> None:
+        self.assertTrue(hasattr(mesh_attributes, "classify_position_topology"))
+        common = dict(
+            normals=((0.0, 0.0, 1.0),) * 5,
+            uvs=((0.0, 0.0),) * 5,
+            material_ids=(0, 0, 0),
+            weights=((1.0, 0.0, 0.0, 0.0),) * 5,
+            bone_indices=((0, 0, 0, 0),) * 5,
+        )
+        nonmanifold = mesh_attributes.classify_position_topology(
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+             (0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),
+            indices=(0, 1, 2, 1, 0, 3, 0, 1, 4), **common,
+        )
+        self.assertEqual(nonmanifold.nonmanifold_edge_count, 1)
+        self.assertTrue(nonmanifold.vertex_flags[0] & LOCK)
+        self.assertTrue(nonmanifold.vertex_flags[1] & LOCK)
+        triangle = mesh_attributes.classify_position_topology(
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+            ((0.0, 0.0, 1.0),) * 3, ((0.0, 0.0),) * 3, (0, 1, 2), (0,),
+            ((1.0, 0.0, 0.0, 0.0),) * 3, ((0, 0, 0, 0),) * 3,
+        )
+        self.assertEqual(triangle.open_edge_count, 3)
+        self.assertEqual(triangle.locked_vertices, 3)
+
+    def test_skin_regions_protect_only_transition_boundary_without_locking_region(self) -> None:
+        self.assertTrue(hasattr(mesh_attributes, "classify_position_topology"))
+        positions = (
+            (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+            (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 0.0),
+        )
+        result = mesh_attributes.classify_position_topology(
+            positions, ((0.0, 0.0, 1.0),) * 12, ((0.0, 0.0),) * 12,
+            tuple(range(12)), (0, 0, 0, 0), ((1.0, 0.0, 0.0, 0.0),) * 12,
+            ((0, 0, 0, 0),) * 6 + ((1, 0, 0, 0),) * 6,
+        )
+        self.assertGreater(result.skin_transition_vertices, 0)
+        self.assertEqual(result.locked_vertices, 0)
+        self.assertTrue(any(flag & PROTECT for flag in result.vertex_flags))
+
     def test_direct_result_compacts_only_referenced_source_tuples_exactly(self) -> None:
         source = _grid(4)
         result = simplify_mesh(source, SimplifyOptions(0.7, 1.0, update_vertices=False))
@@ -159,6 +237,49 @@ class MeshoptBridgeTests(unittest.TestCase):
         }
         result_positions = {result.positions[index] for index in used}
         self.assertTrue(border_positions.issubset(result_positions))
+
+    def test_position_remap_global_material_split_preserves_exact_ownership(self) -> None:
+        source = _grid(12)
+        remap = {}
+        rows = {name: [] for name in ("positions", "normals", "uvs", "weights", "bone_indices")}
+        indices = []
+        for triangle, material in enumerate(source.material_ids):
+            for old in source.indices[triangle * 3 : triangle * 3 + 3]:
+                key = (old, material)
+                if key not in remap:
+                    remap[key] = len(rows["positions"])
+                    for name in rows:
+                        rows[name].append(getattr(source, name)[old])
+                indices.append(remap[key])
+        split = MeshInput(
+            tuple(rows["positions"]), tuple(rows["normals"]), tuple(rows["uvs"]),
+            tuple(rows["weights"]), tuple(indices), source.material_ids,
+            (0,) * len(rows["positions"]), tuple(rows["bone_indices"]),
+        )
+        topology = mesh_attributes.classify_position_topology(
+            split.positions, split.normals, split.uvs, split.indices, split.material_ids,
+            split.weights, split.bone_indices,
+        )
+        split = MeshInput(**{**split.__dict__, "vertex_flags": topology.vertex_flags})
+        result = simplify_mesh(split, SimplifyOptions(0.25, 1.0, position_remap=True))
+        compact_direct_result(split, result)
+        self.assertLessEqual(len(result.indices) / len(split.indices), 0.27)
+        self.assertEqual(set(result.material_ids), {0, 1})
+        locked_positions = {
+            topology.canonical_position_ids[index]
+            for index, flag in enumerate(topology.vertex_flags) if flag & LOCK
+        }
+        self.assertEqual(len(locked_positions), (12 - 1) * 4)
+
+    def test_position_remap_global_ambiguous_material_ownership_fails_closed(self) -> None:
+        source = _grid(12)
+        topology = mesh_attributes.classify_position_topology(
+            source.positions, source.normals, source.uvs, source.indices, source.material_ids,
+            source.weights, source.bone_indices,
+        )
+        source = MeshInput(**{**source.__dict__, "vertex_flags": topology.vertex_flags})
+        with self.assertRaisesRegex(RuntimeError, "native error -7"):
+            simplify_mesh(source, SimplifyOptions(0.25, 1.0, position_remap=True))
 
     def test_update_path_returns_finite_normalized_attributes(self) -> None:
         source = _grid(8)

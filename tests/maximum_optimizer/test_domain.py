@@ -67,6 +67,27 @@ class DomainTests(unittest.TestCase):
                     "meshopt-direct-v1", **values,
                 )
 
+    def test_position_remapped_direct_strategy_is_immutable_and_cache_distinct(self):
+        try:
+            position = CandidateSpec(
+                "meshopt-direct-position-r040", "meshoptimizer", 0.4, 0.01,
+                "meshopt-direct-position-v1", strategy="meshopt-direct-position-v1",
+                update_vertices=False, transfer="direct-v1",
+            )
+        except ValueError as exc:
+            self.fail(f"position-remapped strategy is not accepted: {exc}")
+        legacy = CandidateSpec(
+            "meshopt-direct-r040", "meshoptimizer", 0.4, 0.01,
+            "meshopt-direct-v1", strategy="meshopt-direct-v1",
+            update_vertices=False, transfer="direct-v1",
+        )
+        self.assertNotEqual(position.cache_payload(), legacy.cache_payload())
+        with self.assertRaisesRegex(ValueError, "immutable"):
+            CandidateSpec(
+                "bad", "meshoptimizer", 0.4, 0.01, "meshopt-direct-position-v1",
+                strategy="meshopt-direct-position-v1", update_vertices=True, transfer="direct-v1",
+            )
+
     def test_snapshot_rejects_inconsistent_total(self):
         with self.assertRaisesRegex(ValueError, "total_bytes"):
             CompiledSizeSnapshot(Path("models"), 7, {".mdl": 3}, {}, ())

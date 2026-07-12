@@ -10,12 +10,39 @@ import unittest
 
 import batch_optimize_maximum as maximum
 from maximum_optimizer.smd_contract import restore_direct_smd_normals, validate_fixed_topology_smd
+import maximum_optimizer.smd_contract as smd_contract
 from maximum_optimizer.smoothing import (
     canonicalize_export_normals, canonicalize_normals_by_identity, reconstruct_smoothing,
 )
 
 
 class SmoothingReconstructionTests(unittest.TestCase):
+    def test_direct_serializer_roundtrips_material_seams_hard_normals_and_weights(self):
+        self.assertTrue(hasattr(smd_contract, "serialize_direct_smd"))
+        original = (
+            'version 1\nnodes\n0 "root" -1\n1 "wheel" 0\nend\n'
+            'skeleton\ntime 0\n0 0 0 0 0 0 0\n1 0 0 0 0 0 0\nend\ntriangles\n'
+            'old\n0 0 0 0 0 0 1 0 0\n0 1 0 0 0 0 1 1 0\n0 0 1 0 0 0 1 0 1\nend\n'
+        )
+        text = smd_contract.serialize_direct_smd(
+            original,
+            ((0.0, -0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.0)),
+            ((0.0, 0.0, 1.0),) * 3 + ((1.0, 0.0, 0.0),),
+            ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.5, 0.5)),
+            ((('root', 1.0),), (('root', 0.25), ('wheel', 0.75)), (('wheel', 1.0),), (('root', 1.0),)),
+            (0, 1, 2, 3, 2, 1), ("paint", "glass"),
+        )
+        parsed = smd_contract.parse_smd_triangles(text)
+        self.assertEqual(tuple(triangle.material for triangle in parsed.triangles), ("paint", "glass"))
+        self.assertEqual(parsed.triangles[1].corners[0].normal, (1.0, 0.0, 0.0))
+        self.assertNotIn("-0", text)
+        self.assertIn("2 0 0.25 1 0.75", text)
+        with self.assertRaisesRegex(ValueError, "degenerate"):
+            smd_contract.serialize_direct_smd(
+                original, ((0.0, 0.0, 0.0),) * 3, ((0.0, 0.0, 1.0),) * 3,
+                ((0.0, 0.0),) * 3, ((('root', 1.0),),) * 3, (0, 1, 2), ("paint",),
+            )
+
     @staticmethod
     def _two_triangle_smd() -> str:
         return """version 1

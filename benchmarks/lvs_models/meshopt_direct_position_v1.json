@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "corpus_id": "lvs-models-v1",
+  "strategy": "meshopt-direct-position-v1",
+  "quality_status": "unverified",
+  "quality_claim": null,
+  "tools": {
+    "meshoptimizer": "v1.2@9d9890c73011d75920af614485296d1e03e95448",
+    "bridge_abi": 3,
+    "bridge_sha256": "173e1b86dad4e553d702ab3586ac8d4f77e167090f4f5abada2f09f3f3594c3c",
+    "native_source_sha256": "3df1cbdbd93ab9228a271da845c3cf01ae2f4f43c268a450d4eda50c15b07f11",
+    "runner_sha256": "1334c2ba8e540099ba92d62b8b7a88b316e74ac61f3402f8199cf3d480bdf444",
+    "direct_smd_serializer_sha256": "ebd944c558c9b5836f060845603f8e24d531fe9a5a6b7807e114c1b5bb1335f3"
+  },
+  "reproducible_build_sha256": [
+    "173e1b86dad4e553d702ab3586ac8d4f77e167090f4f5abada2f09f3f3594c3c",
+    "173e1b86dad4e553d702ab3586ac8d4f77e167090f4f5abada2f09f3f3594c3c"
+  ],
+  "baselines": {
+    "control_bytes": 1187559,
+    "meshopt_direct_v1_best_bytes": 1034283,
+    "blender_best_bytes": 633089
+  },
+  "records": [
+    {
+      "requested_ratio": 0.25,
+      "achieved_ratio": 0.5991347342398022,
+      "triangles": [16180, 9694],
+      "locks": [421, 12090],
+      "output_vertices": 8121,
+      "compiled_vertices": 8060,
+      "compiled_bytes": 784269,
+      "metrics_sha256": "3c894e028bd1d161d942f256f1b19e071eef1854c87ec6f05997db26737bb40d",
+      "compiled_sha256": {
+        "wheel.mdl": "d4e564762216aab022ca0fae55ae46ff312a7f5e920f06de2fac20c53cdf0699",
+        "wheel.vvd": "8c505a2439f764f0b5ac1652223e062ab5a2aa592b8eb59ee1f3c44f0183bd20",
+        "wheel.dx80.vtx": "995af5f8bb2e0144d35d78873cf81aee5bf1cc69154be77e03f01a0b1aff5f7c",
+        "wheel.dx90.vtx": "eeffca53c1f110bd9b3a07add5c7e03e6cfad6fff620daf23a42c8895a6714eb",
+        "wheel.phy": "c045ecd53c9f9d1ddc76f8078605c16767acdf105e37a37eadb0eb9ad957919e"
+      }
+    },
+    {
+      "requested_ratio": 0.4,
+      "achieved_ratio": 0.5987639060568604,
+      "triangles": [16180, 9688],
+      "locks": [421, 12090],
+      "output_vertices": 8125,
+      "compiled_vertices": 8064,
+      "compiled_bytes": 784525,
+      "metrics_sha256": "9d6eeea9636c53b77ca4a01a89df35d0800b408e70a66ef1b899c314b149e933",
+      "compiled_sha256": {
+        "wheel.mdl": "ca47435844492d0bb236677682b2ea170a589583d3cc9e7073d1234a04560370",
+        "wheel.vvd": "133a5dda86e4607e189067ceafd0c0ca98664d7f094f9c54271904637953e6a6",
+        "wheel.dx80.vtx": "e567fe8b771265d52c1b970e5434d746215caba44f857c479f70f1269c88512e",
+        "wheel.dx90.vtx": "d964aafebd43064682bba9ee8fe84fb0746e51c078c551f2d6816d13345f49f8",
+        "wheel.phy": "071a736aa7e51bab0299d8f6d0c28b45663ad96b6409eac02607b547c66f6846"
+      }
+    }
+  ],
+  "car_probe": {
+    "family": "dodge_charger",
+    "requested_ratio": 0.4,
+    "body_achieved_ratio": 0.3999372278237671,
+    "body_locks": [4859, 22130],
+    "nonmanifold_edges": 2,
+    "triangles": [295861, 136541],
+    "compiled_vertices": 158648,
+    "compiled_bytes": 14797755,
+    "status": "compiled_raw_structural_pass",
+    "reason": "compiled 2,893 bytes below Fidelity but 58,771 bytes above Blender; visual quality unverified"
+  },
+  "decision": {
+    "winner": false,
+    "pressure_set_run": false,
+    "reason": "wheel improves direct-v1 and control but remains larger than Blender; the first car also remains larger than Blender and textures are unavailable"
+  }
+}

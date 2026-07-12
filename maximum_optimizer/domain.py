@@ -82,19 +82,20 @@ class CandidateSpec:
     transfer: str = "projection-v1"
 
     def __post_init__(self) -> None:
+        direct_strategies = {"meshopt-direct-v1", "meshopt-direct-position-v1"}
         direct_selected = (
-            self.strategy == "meshopt-direct-v1"
+            self.strategy in direct_strategies
             or self.update_vertices is False
             or self.transfer == "direct-v1"
         )
         if direct_selected and (
             self.engine != "meshoptimizer"
-            or self.strategy != "meshopt-direct-v1"
+            or self.strategy not in direct_strategies
             or self.update_vertices is not False
             or self.transfer != "direct-v1"
-            or self.repair_profile != "meshopt-direct-v1"
+            or self.repair_profile != self.strategy
         ):
-            raise ValueError("meshopt-direct-v1 contract is immutable")
+            raise ValueError("meshopt direct strategy contract is immutable")
 
     def cache_payload(self) -> dict:
         payload = asdict(self)

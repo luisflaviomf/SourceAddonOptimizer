@@ -93,6 +93,105 @@ def parse_smd_triangles(text: str) -> ParsedSmd:
     return ParsedSmd(lines, tuple(triangles))
 
 
+def _direct_float(value: float) -> str:
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError("direct SMD contains a non-finite float")
+    if value == 0.0:
+        return "0"
+    return format(value, ".9g")
+
+
+def serialize_direct_smd(
+    original_text: str,
+    positions: Sequence[Sequence[float]],
+    normals: Sequence[Sequence[float]],
+    uvs: Sequence[Sequence[float]],
+    influences: Sequence[Sequence[tuple[str, float]]],
+    indices: Sequence[int],
+    triangle_materials: Sequence[str],
+    *,
+    source_corner_ordinals: Sequence[int] | None = None,
+) -> str:
+    """Serialize retained direct tuples without a Blender export round-trip."""
+    if not positions or len(indices) < 3 or len(indices) % 3 or len(triangle_materials) != len(indices) // 3:
+        raise ValueError("direct SMD topology/material counts are invalid")
+    if not (len(normals) == len(uvs) == len(influences) == len(positions)):
+        raise ValueError("direct SMD attribute counts are invalid")
+    source_corners = tuple(corner for triangle in parse_smd_triangles(original_text).triangles for corner in triangle.corners)
+    if source_corner_ordinals is not None and (
+        len(source_corner_ordinals) != len(positions)
+        or any(type(value) is not int or value < 0 or value >= len(source_corners) for value in source_corner_ordinals)
+    ):
+        raise ValueError("direct SMD source-corner provenance is invalid")
+    lines = original_text.splitlines(keepends=True)
+    triangle_line = next((i for i, line in enumerate(lines) if line.strip().casefold() == "triangles"), -1)
+    if triangle_line < 0:
+        raise ValueError("source SMD triangles section is missing")
+    bone_by_name: dict[str, int] = {}
+    in_nodes = False
+    for raw in lines[:triangle_line]:
+        folded = raw.strip().casefold()
+        if folded == "nodes":
+            in_nodes = True
+            continue
+        if in_nodes and folded == "end":
+            in_nodes = False
+            continue
+        if in_nodes:
+            match = re.match(r'^\s*(-?\d+)\s+"([^"]*)"\s+-?\d+', raw)
+            if match:
+                bone_by_name[match.group(2)] = int(match.group(1))
+    if not bone_by_name:
+        raise ValueError("source SMD nodes are missing")
+    output = list(lines[: triangle_line + 1])
+    if output[-1] and not output[-1].endswith(("\n", "\r")):
+        output[-1] += "\n"
+    for triangle, material in enumerate(triangle_materials):
+        if type(material) is not str or not material.strip() or "\n" in material or "\r" in material:
+            raise ValueError("direct SMD material is invalid")
+        corners = tuple(indices[triangle * 3 : triangle * 3 + 3])
+        if len(set(corners)) != 3 or any(type(index) is not int or index < 0 or index >= len(positions) for index in corners):
+            raise ValueError("direct SMD triangle is degenerate")
+        a, b, c = (positions[index] for index in corners)
+        if any(len(row) != 3 for row in (a, b, c)):
+            raise ValueError("direct SMD position is invalid")
+        ab = tuple(float(b[i]) - float(a[i]) for i in range(3))
+        ac = tuple(float(c[i]) - float(a[i]) for i in range(3))
+        cross = (ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0])
+        if sum(value * value for value in cross) <= 1e-30:
+            raise ValueError("direct SMD triangle is degenerate")
+        output.append(material.strip() + "\n")
+        for vertex in corners:
+            if source_corner_ordinals is not None:
+                output.append(" ".join(source_corners[source_corner_ordinals[vertex]].tokens) + "\n")
+                continue
+            if len(positions[vertex]) != 3 or len(normals[vertex]) != 3 or len(uvs[vertex]) != 2:
+                raise ValueError("direct SMD tuple width is invalid")
+            combined: dict[int, float] = {}
+            for name, weight in influences[vertex]:
+                if name not in bone_by_name or not math.isfinite(float(weight)) or float(weight) <= 0.0:
+                    raise ValueError("direct SMD influence is invalid")
+                bone = bone_by_name[name]
+                combined[bone] = combined.get(bone, 0.0) + float(weight)
+            links = sorted(combined.items(), key=lambda item: (-item[1], item[0]))[:4]
+            total = sum(weight for _bone, weight in links)
+            if not links or not math.isfinite(total) or total <= 1e-12:
+                raise ValueError("direct SMD influence sum is invalid")
+            links = sorted(((bone, weight / total) for bone, weight in links), key=lambda item: item[0])
+            primary = max(links, key=lambda item: (item[1], -item[0]))[0]
+            tokens = [str(primary)]
+            tokens.extend(_direct_float(value) for value in (*positions[vertex], *normals[vertex], *uvs[vertex]))
+            tokens.append(str(len(links)))
+            for bone, weight in links:
+                tokens.extend((str(bone), _direct_float(weight)))
+            output.append(" ".join(tokens) + "\n")
+    output.append("end\n")
+    serialized = "".join(output)
+    parse_smd_triangles(serialized)
+    return serialized
+
+
 def _numeric_token_equal(first: str, second: str) -> bool:
     try:
         return float(first) == float(second)

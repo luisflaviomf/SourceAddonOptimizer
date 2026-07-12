@@ -58,6 +58,7 @@ class SimplifyOptions:
     target_error: float
     update_vertices: bool = False
     meshopt_options: int = SIMPLIFY_LOCK_BORDER | SIMPLIFY_PERMISSIVE
+    position_remap: bool = False
 
 
 @dataclass(frozen=True)
@@ -201,7 +202,7 @@ def load_library(*, cache: bool = True) -> ctypes.WinDLL:
     dll.maximum_meshopt_destroy.restype = None
     if dll.maximum_meshopt_version() != 10200:
         raise RuntimeError(f"unsupported meshopt bridge version in {path}")
-    if dll.maximum_meshopt_abi_version() != 2:
+    if dll.maximum_meshopt_abi_version() != 3:
         raise RuntimeError(f"unsupported meshopt bridge ABI in {path}")
     if cache:
         _DLL_CACHE[path] = dll
@@ -274,6 +275,8 @@ def _validate(mesh: MeshInput, options: SimplifyOptions) -> None:
         raise ValueError("vertex flag is invalid")
     if type(options.update_vertices) is not bool:
         raise ValueError("update_vertices must be bool")
+    if type(options.position_remap) is not bool or (options.position_remap and options.update_vertices):
+        raise ValueError("position_remap requires the direct no-update path")
     if not math.isfinite(float(options.target_ratio)) or not 0.0 < options.target_ratio <= 1.0:
         raise ValueError("target_ratio must be in (0, 1]")
     if not math.isfinite(float(options.target_error)) or options.target_error < 0.0:
@@ -334,7 +337,7 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
         options.target_ratio,
         options.target_error,
         options.meshopt_options,
-        int(options.update_vertices),
+        2 if options.position_remap else int(options.update_vertices),
     )
     output = _MaximumMeshOutput(struct_size=ctypes.sizeof(_MaximumMeshOutput))
     code = dll.maximum_meshopt_simplify(

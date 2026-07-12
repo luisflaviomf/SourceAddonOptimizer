@@ -40,6 +40,8 @@ def _candidate_id(engine: str, ratio: float, strategy: str = "") -> str:
     prefix = "meshopt" if engine == "meshoptimizer" else engine
     if strategy == "meshopt-direct-v1":
         prefix = "meshopt-direct"
+    elif strategy == "meshopt-direct-position-v1":
+        prefix = "meshopt-direct-position"
     return f"{prefix}-r{_ratio_id(ratio)}"
 
 
@@ -55,12 +57,12 @@ def initial_candidates() -> list[CandidateSpec]:
     ]
     candidates.extend(
         CandidateSpec(
-            _candidate_id("meshoptimizer", ratio, "meshopt-direct-v1"),
+            _candidate_id("meshoptimizer", ratio, "meshopt-direct-position-v1"),
             "meshoptimizer",
             ratio,
             0.01,
-            "meshopt-direct-v1",
-            strategy="meshopt-direct-v1",
+            "meshopt-direct-position-v1",
+            strategy="meshopt-direct-position-v1",
             update_vertices=False,
             transfer="direct-v1",
         )

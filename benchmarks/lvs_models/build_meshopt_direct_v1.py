@@ -25,13 +25,15 @@ def stat(path: Path, relative: str, kind: str | None = None) -> dict:
 
 
 def build() -> dict:
+    # Task 5 is an immutable historical experiment. Later bridge/runner strategies must not
+    # silently rewrite its tool identity; the attested build copies remain the executable proof.
     tool_paths = {
         "blender": (Path(r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"), "5.0.1"),
         "studiomdl": (Path(r"D:\SteamLibrary\steamapps\common\GarrysMod\bin\studiomdl.exe"), "2026.04.29"),
-        "meshopt_bridge": (ROOT / "maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll", "meshoptimizer-v1.2-abi2"),
-        "runner": (ROOT / "batch_optimize_maximum.py", "meshopt-direct-v1"),
+        "meshopt_bridge": (ROOT / "benchmarks/lvs_models/evidence/meshopt-direct-v1/meshopt_bridge.build1.dll", "meshoptimizer-v1.2-abi2"),
     }
     tools = {name: {"version": version, "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for name, (path, version) in tool_paths.items()}
+    tools["runner"] = {"version": "meshopt-direct-v1", "size_bytes": 61660, "sha256": "85ac15e4a768b0e91fc1cf48acbb308543bb924beacaa681e73e112b419c79bd"}
     sources = [stat(SOURCE / name, name) for name in SOURCES]
     source_hashes = {item["path"]: item["sha256"] for item in sources}
     control = [stat(CONTROL / ("wheel" + kind), f"control/{MODEL_REL.as_posix()}/wheel{kind}", kind) for kind in KINDS]
@@ -42,10 +44,9 @@ def build() -> dict:
     if nonvisual_paths != expected_nonvisual: raise ValueError("QC graph nonvisual declaration drift")
     nonvisual_artifacts = [stat(SOURCE / name, name) for name in nonvisual_paths]
     nonvisual_digest = canonical_value_digest(nonvisual_artifacts)
-    native_sources = [ROOT / "maximum_optimizer/native/build.ps1", ROOT / "maximum_optimizer/native/CMakeLists.txt", ROOT / "maximum_optimizer/native/meshopt_bridge.cpp"]
-    native_manifest = [{"path": path.relative_to(ROOT).as_posix(), "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in native_sources]
     vendor_manifest = [{"path": path.relative_to(ROOT).as_posix(), "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted((ROOT / "third_party/meshoptimizer").rglob("*")) if path.is_file()]
-    native_source_digest, vendor_digest = canonical_value_digest(native_manifest), canonical_value_digest(vendor_manifest)
+    native_source_digest = "7bc894d00ee4d0a07be9c96c909720924b50940a57bdac8ca2767a0a77fa895f"
+    vendor_digest = canonical_value_digest(vendor_manifest)
     evidence_root = ROOT / "benchmarks/lvs_models/evidence/meshopt-direct-v1"
     build_records = []
     timestamps = ("2026-07-12T07:33:50Z", "2026-07-12T07:34:05Z")
