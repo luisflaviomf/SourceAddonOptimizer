@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from unittest import mock
 
 import batch_optimize_maximum as maximum
@@ -434,6 +435,30 @@ class MaximumBlenderPureTests(unittest.TestCase):
         self.assertEqual(captured["Antenna"].target_ratio, 0.85)
         self.assertEqual({item["achieved_ratio"] for item in metrics}, {0.99})
 
+    def test_blender_candidate_dispatches_native_decimator_per_stable_region(self) -> None:
+        class Material:
+            name = "paint"
+        class Data:
+            materials = (Material(),)
+        class Obj:
+            name = "Body"
+            data = Data()
+
+        observations = (("car/body.smd", "Body", ("paint",)),)
+        manifest = build_region_manifest(observations)
+        key = manifest.entries[0].key
+        candidate = maximum.CandidateConfig(
+            "adaptive", "blender", 0.3, 0.0, True, ((key, 0.65),),
+            strategy="blender-adaptive-v1", transfer="blender-native-v1",
+        )
+        with patch.object(maximum, "_optimize_blender_object", return_value={"achieved_ratio": 0.6}) as decimate:
+            metrics = maximum.optimize_region_objects(
+                "car/body.smd", (Obj(),), candidate, manifest
+            )
+
+        decimate.assert_called_once_with(unittest.mock.ANY, candidate, 0.65)
+        self.assertEqual(metrics[0]["region_key"], key)
+
     def test_projection_material_plan_rejects_mixed_and_out_of_range_mappings(self) -> None:
         self.assertEqual(
             maximum.projection_vertex_materials(4, (0, 1, 2, 0, 2, 3), (1, 1), (0, 1), 2),
@@ -501,6 +526,43 @@ class MaximumBlenderPureTests(unittest.TestCase):
         self.assertEqual(settings.candidate.candidate_id, "meshopt-r035")
         self.assertEqual(settings.candidate.ratio, 0.35)
         self.assertEqual(settings.candidate.region_overrides, (("r-" + "1" * 64, 0.7),))
+
+    def test_parses_immutable_compiler_aware_blender_candidate(self) -> None:
+        payload = {
+            "candidate_id": "blender-adaptive-r040",
+            "engine": "blender",
+            "ratio": 0.4,
+            "target_error": 0.0,
+            "update_vertices": True,
+            "region_overrides": [{"region_key": "r-" + "a" * 64, "ratio": 0.7}],
+            "strategy": "blender-adaptive-v1",
+            "transfer": "blender-native-v1",
+        }
+
+        candidate = maximum.load_candidate_payload(payload)
+
+        self.assertEqual(candidate.engine, "blender")
+        self.assertEqual(candidate.strategy, "blender-adaptive-v1")
+        self.assertEqual(candidate.region_overrides, (("r-" + "a" * 64, 0.7),))
+
+    def test_blender_strategy_contract_rejects_projection_or_nonzero_error(self) -> None:
+        base = {
+            "candidate_id": "blender-adaptive-r040",
+            "engine": "blender",
+            "ratio": 0.4,
+            "target_error": 0.0,
+            "update_vertices": True,
+            "region_overrides": [],
+            "strategy": "blender-adaptive-v1",
+            "transfer": "blender-native-v1",
+        }
+        for mutation in (
+            {**base, "transfer": "projection-v1"},
+            {**base, "update_vertices": False},
+            {**base, "target_error": 0.01},
+        ):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                maximum.load_candidate_payload(mutation)
 
     def test_candidate_rejects_unknown_fields_bool_numbers_and_traversal(self) -> None:
         valid = {

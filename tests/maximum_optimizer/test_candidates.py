@@ -590,6 +590,29 @@ class CandidateAdapterTests(unittest.TestCase):
         self.assertIn("--ratio 0.4 --merge 0 --autosmooth 45 --format smd", " ".join(build.commands[0]))
         self.assertFalse((self.workspace / "logs" / "vehicle_steer_turn_basis_fix_summary.json").exists())
 
+    def test_blender_adaptive_adapter_routes_through_maximum_with_region_payload(self):
+        region = "r-" + "a" * 64
+        spec = CandidateSpec(
+            "blender-adaptive-r04", "blender", 0.4, 0.0,
+            "blender-adaptive-v1", ((region, 0.65),),
+            strategy="blender-adaptive-v1", update_vertices=True,
+            transfer="blender-native-v1",
+        )
+        build = BlenderAdapter(
+            process_runner=MaterializingRunner(self.manifest.model_rel)
+        ).generate(self.manifest, spec, self.workspace, self.tools)
+
+        optimize = build.commands[0]
+        self.assertEqual(optimize[:4], (
+            str(self.blender), "--background", "--python",
+            str(self.repo / "batch_optimize_maximum.py"),
+        ))
+        self.assertEqual(optimize[optimize.index("--meshopt-dll") + 1], str(self.meshopt_dll))
+        self.assertEqual(
+            json.loads((self.workspace / "candidate.json").read_text(encoding="utf-8")),
+            spec.cache_payload(),
+        )
+
     def test_meshoptimizer_adapter_materializes_exact_candidate_payload_and_dll(self):
         spec = CandidateSpec(
             "meshopt-direct-r055", "meshoptimizer", 0.55, 0.01, "meshopt-direct-v1",

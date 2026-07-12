@@ -82,6 +82,14 @@ class CandidateSpec:
     transfer: str = "projection-v1"
 
     def __post_init__(self) -> None:
+        if self.strategy == "blender-adaptive-v1" and (
+            self.engine != "blender"
+            or self.update_vertices is not True
+            or self.transfer != "blender-native-v1"
+            or self.repair_profile != "blender-adaptive-v1"
+            or self.target_error != 0.0
+        ):
+            raise ValueError("Blender adaptive strategy contract is immutable")
         direct_strategies = {"meshopt-direct-v1", "meshopt-direct-position-v1"}
         direct_selected = (
             self.strategy in direct_strategies

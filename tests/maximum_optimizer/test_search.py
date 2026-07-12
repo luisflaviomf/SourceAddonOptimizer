@@ -13,6 +13,7 @@ from maximum_optimizer.domain import (
     ValidationResult,
 )
 from maximum_optimizer.search import (
+    blender_adaptive_candidates,
     choose_next,
     initial_candidates,
     position_remap_candidates,
@@ -60,6 +61,13 @@ def evaluation_at(
 
 
 class SearchTests(unittest.TestCase):
+    def test_blender_adaptive_schedule_searches_below_frozen_half_ratio(self):
+        candidates = blender_adaptive_candidates()
+        self.assertEqual(tuple(item.target_ratio for item in candidates), (0.45, 0.40, 0.35, 0.30, 0.25))
+        self.assertTrue(all(item.engine == "blender" for item in candidates))
+        self.assertTrue(all(item.strategy == "blender-adaptive-v1" for item in candidates))
+        self.assertTrue(all(item.transfer == "blender-native-v1" for item in candidates))
+
     def test_custom_schedule_compares_marginal_savings_within_engine_trail(self):
         schedule = (
             CandidateSpec("fidelity-baseline", "fidelity", 0.5, 0.0, "fidelity"),

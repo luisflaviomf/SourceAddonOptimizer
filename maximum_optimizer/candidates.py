@@ -460,6 +460,33 @@ class _BaseAdapter:
 
 class BlenderAdapter(_BaseAdapter):
     optimize_script = "batch_optimize_qc.py"
+    supports_region_overrides = True
+
+    def _optimize_command(
+        self, source: Path, spec: CandidateSpec, workspace: Path, tools: CandidateTools
+    ) -> tuple[str, ...]:
+        if spec.strategy != "blender-adaptive-v1":
+            if spec.region_overrides:
+                raise CandidateBuildError(
+                    "legacy blender adapter does not support region_overrides",
+                    stage="candidate-validation",
+                )
+            return super()._optimize_command(source, spec, workspace, tools)
+        if tools.meshopt_dll is None or not tools.meshopt_dll.is_file():
+            raise CandidateBuildError(
+                "optimizer bridge DLL not found", stage="tool-validation"
+            )
+        candidate_path = workspace / "candidate.json"
+        with candidate_path.open("x", encoding="utf-8") as stream:
+            json.dump(spec.cache_payload(), stream, sort_keys=True, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        return (
+            str(tools.blender_exe), "--background", "--python",
+            str(tools.repo_root / "batch_optimize_maximum.py"), "--", str(source),
+            "--candidate-json", str(candidate_path),
+            "--meshopt-dll", str(tools.meshopt_dll),
+        )
 
 
 class FidelityAdapter(_BaseAdapter):

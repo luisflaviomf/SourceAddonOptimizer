@@ -10,6 +10,7 @@ from maximum_optimizer.regions import parse_region_scope
 
 _INITIAL_RATIOS = (0.85, 0.70, 0.55, 0.40, 0.25)
 _MIN_RATIO = 0.01
+_BLENDER_ADAPTIVE_RATIOS = (0.45, 0.40, 0.35, 0.30, 0.25)
 
 
 def _trail_key(spec: CandidateSpec) -> tuple[object, ...]:
@@ -79,6 +80,24 @@ def position_remap_candidates() -> tuple[CandidateSpec, ...]:
             strategy="meshopt-direct-position-v1", update_vertices=False, transfer="direct-v1",
         )
         for ratio in _INITIAL_RATIOS
+    )
+
+
+def blender_adaptive_candidates() -> tuple[CandidateSpec, ...]:
+    """Compiler-aware Blender probes below the frozen b050 topology target.
+
+    Stable-region overrides are introduced only by measured gate recovery; this
+    deliberately avoids the legacy filename-token floors that silently raised many
+    bodygroups to 0.90-0.98.
+    """
+    return tuple(
+        CandidateSpec(
+            _candidate_id("blender", ratio),
+            "blender", ratio, 0.0, "blender-adaptive-v1",
+            strategy="blender-adaptive-v1", update_vertices=True,
+            transfer="blender-native-v1",
+        )
+        for ratio in _BLENDER_ADAPTIVE_RATIOS
     )
 
 

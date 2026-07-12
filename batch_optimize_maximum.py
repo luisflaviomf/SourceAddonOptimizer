@@ -36,6 +36,10 @@ from maximum_optimizer.meshopt_bridge import (
     compact_direct_result,
     simplify_mesh,
 )
+from maximum_optimizer.compiler_aware import (
+    allows_exact_fallback, engine_evidence, exact_source_payload,
+    preserve_whole_source, provenance_status, require_triangular_mesh,
+)
 from maximum_optimizer.regions import (
     RegionManifest,
     build_region_manifest,
@@ -147,8 +151,8 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
     candidate_id = payload["candidate_id"]
     if type(candidate_id) is not str or not _ID_RE.fullmatch(candidate_id):
         raise ValueError("candidate_id is unsafe")
-    if payload["engine"] != "meshoptimizer":
-        raise ValueError("engine must be meshoptimizer")
+    if payload["engine"] not in {"meshoptimizer", "blender"}:
+        raise ValueError("engine must be meshoptimizer or blender")
     if from_search and (
         type(payload["repair_profile"]) is not str
         or not _ID_RE.fullmatch(payload["repair_profile"])
@@ -162,12 +166,16 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
         raise ValueError("update_vertices must be bool")
     strategy = payload["strategy"]
     transfer = payload["transfer"]
-    if (strategy, update_vertices, transfer) not in {
-        ("meshopt-direct-v1", False, "direct-v1"),
-        ("meshopt-direct-position-v1", False, "direct-v1"),
-        ("meshopt-project-v1", True, "projection-v1"),
+    contract = (payload["engine"], strategy, update_vertices, transfer)
+    if contract not in {
+        ("meshoptimizer", "meshopt-direct-v1", False, "direct-v1"),
+        ("meshoptimizer", "meshopt-direct-position-v1", False, "direct-v1"),
+        ("meshoptimizer", "meshopt-project-v1", True, "projection-v1"),
+        ("blender", "blender-adaptive-v1", True, "blender-native-v1"),
     }:
-        raise ValueError("unknown or inconsistent meshoptimizer strategy")
+        raise ValueError("unknown or inconsistent optimizer strategy")
+    if strategy == "blender-adaptive-v1" and target_error != 0.0:
+        raise ValueError("blender adaptive target_error must be zero")
     if from_search and strategy.startswith("meshopt-direct-") and payload["repair_profile"] != strategy:
         raise ValueError("repair_profile must identify the direct strategy")
     overrides = payload["region_overrides"]
@@ -185,7 +193,7 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
         )
     return CandidateConfig(
         candidate_id=candidate_id,
-        engine="meshoptimizer",
+        engine=payload["engine"],
         ratio=ratio,
         target_error=target_error,
         update_vertices=update_vertices,
@@ -257,7 +265,11 @@ def optimize_region_objects(
     optimizer=None,
 ) -> list[dict[str, object]]:
     if optimizer is None:
-        optimizer = _optimize_mesh_object
+        optimizer = (
+            _optimize_blender_object
+            if candidate.strategy == "blender-adaptive-v1"
+            else _optimize_mesh_object
+        )
     observations = _object_region_observations(source_identity, objects, source_materials)
     source_manifest = manifest_for_source(manifest, source_identity)
     assignments = resolve_region_assignments(source_manifest, observations)
@@ -276,6 +288,58 @@ def optimize_region_objects(
         }
         for obj, observation in zip(objects, observations)
     ]
+
+
+def _optimize_blender_object(
+    obj: object, candidate: CandidateConfig, ratio: float
+) -> dict[str, object]:
+    """Apply Blender collapse decimation to one stable source region.
+
+    Blender owns interpolation of UVs and vertex groups. The post-modifier loop
+    normals are reapplied as custom split normals so Source Tools consumes the
+    evaluated shading instead of falling back to flat ``from_pydata`` normals.
+    """
+    if bpy is None:
+        raise RuntimeError("Blender adaptive strategy requires Blender")
+    if candidate.strategy != "blender-adaptive-v1":
+        raise ValueError("Blender optimizer received a non-Blender strategy")
+    mesh = obj.data
+    mesh.calc_loop_triangles()
+    triangles_before = len(mesh.loop_triangles)
+    vertices_before = len(mesh.vertices)
+    if triangles_before <= 0:
+        raise ValueError("imported mesh has no triangles")
+    modifier = obj.modifiers.new(name="MaximumCompilerAware", type="DECIMATE")
+    modifier.decimate_type = "COLLAPSE"
+    modifier.ratio = float(ratio)
+    modifier.use_collapse_triangulate = True
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.object.modifier_apply(modifier=modifier.name)
+    mesh.calc_loop_triangles()
+    triangles_after = len(mesh.loop_triangles)
+    if triangles_after <= 0:
+        raise RuntimeError("Blender adaptive strategy removed the complete region")
+    require_triangular_mesh(len(mesh.polygons), triangles_after)
+    faces = tuple(tuple(int(index) for index in tri.vertices) for tri in mesh.loop_triangles)
+    positions = tuple(tuple(float(value) for value in vertex.co) for vertex in mesh.vertices)
+    loop_normals = tuple(
+        tuple(float(value) for value in mesh.loops[index].normal)
+        for tri in mesh.loop_triangles for index in tri.loops
+    )
+    reconstruction = apply_reconstructed_smoothing(mesh, positions, faces, loop_normals)
+    return {
+        "triangles_before": triangles_before,
+        "triangles_after": triangles_after,
+        "source_vertices": vertices_before,
+        "output_vertices": len(mesh.vertices),
+        "requested_ratio": ratio,
+        "achieved_ratio": triangles_after / triangles_before,
+        "smooth_faces": sum(reconstruction.smooth_faces),
+        "sharp_edges": len(reconstruction.sharp_edges),
+        "strategy": candidate.strategy,
+        "transfer": candidate.transfer,
+    }
 
 
 def reject_unsupported_dmx(graph: QcGraph) -> None:
@@ -1056,6 +1120,23 @@ def _process_source_file(
     if not mesh_objects:
         raise RuntimeError(f"Source Tools imported no mesh from {source}")
     require_direct_single_object(candidate, mesh_objects)
+    source_observations = _object_region_observations(
+        source_identity, mesh_objects, before_audit.materials
+    )
+    source_manifest = manifest_for_source(region_manifest, source_identity)
+    source_assignments = resolve_region_assignments(source_manifest, source_observations)
+    source_overrides = tuple(
+        (key, ratio) for key, ratio in candidate.region_overrides
+        if key in source_manifest.by_key
+    )
+    source_ratios = resolve_region_ratios(
+        source_manifest, source_observations, source_overrides, candidate.ratio
+    )
+    preserve_exact = (
+        candidate.strategy == "blender-adaptive-v1"
+        and preserve_whole_source(source_ratios.values())
+    )
+    fallback_reason: str | None = None
     if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"}:
         used_source_triangles: set[int] = set()
         for obj in mesh_objects:
@@ -1076,9 +1157,48 @@ def _process_source_file(
             _DIRECT_SOURCE_CORNER_MAP[id(obj)] = mapping
             used_source_triangles.update(ordinal // 3 for ordinal in mapping)
     try:
-        object_metrics = optimize_region_objects(
-            source_identity, mesh_objects, candidate, region_manifest, before_audit.materials,
-        )
+        if preserve_exact:
+            object_metrics = []
+            for obj, observation in zip(mesh_objects, source_observations):
+                obj.data.calc_loop_triangles()
+                triangles = len(obj.data.loop_triangles)
+                object_metrics.append({
+                    "triangles_before": triangles,
+                    "triangles_after": triangles,
+                    "source_vertices": len(obj.data.vertices),
+                    "output_vertices": len(obj.data.vertices),
+                    "requested_ratio": source_ratios[observation],
+                    "achieved_ratio": 1.0,
+                    "strategy": candidate.strategy,
+                    "transfer": "exact-source-v1",
+                    "preserved_exact": True,
+                    "region_key": source_assignments[observation],
+                })
+        else:
+            object_metrics = optimize_region_objects(
+                source_identity, mesh_objects, candidate, region_manifest, before_audit.materials,
+            )
+    except (ValueError, RuntimeError) as exc:
+        if candidate.strategy != "blender-adaptive-v1" or not allows_exact_fallback(str(exc)):
+            raise
+        preserve_exact = True
+        fallback_reason = str(exc)
+        object_metrics = [
+            {
+                "triangles_before": None,
+                "triangles_after": None,
+                "source_vertices": None,
+                "output_vertices": None,
+                "requested_ratio": source_ratios[observation],
+                "achieved_ratio": 1.0,
+                "strategy": candidate.strategy,
+                "transfer": "exact-source-fallback-v1",
+                "preserved_exact": True,
+                "fallback_reason": fallback_reason,
+                "region_key": source_assignments[observation],
+            }
+            for observation in source_observations
+        ]
     finally:
         for obj in mesh_objects:
             _DIRECT_SOURCE_CORNER_MAP.pop(id(obj), None)
@@ -1095,7 +1215,9 @@ def _process_source_file(
     }, sort_keys=True))
     destination = safe_output_path(source.parent, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if direct_payloads:
+    if preserve_exact:
+        atomic_write_bytes(source.parent, destination, exact_source_payload(source.read_bytes()))
+    elif direct_payloads:
         combined = {"positions": [], "normals": [], "uvs": [], "influences": [], "indices": [], "materials": [], "source_corner_ordinals": []}
         for payload in direct_payloads:
             offset = len(combined["positions"])
@@ -1128,13 +1250,29 @@ def _process_source_file(
     raw_export_path = safe_output_path(source.parent, source.parent / "maximum_direct_raw" / destination.name)
     raw_export_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(source.parent, raw_export_path, destination.read_bytes())
-    restored = destination.read_text(encoding="utf-8", errors="strict")
-    if not direct_payloads:
-        restored = restore_smd_bone_identity(original_text, restored)
-    atomic_write_bytes(source.parent, destination, restored.encode("utf-8"))
+    if not preserve_exact:
+        restored = destination.read_text(encoding="utf-8", errors="strict")
+        if not direct_payloads:
+            restored = restore_smd_bone_identity(original_text, restored)
+        atomic_write_bytes(source.parent, destination, restored.encode("utf-8"))
     after_audit = audit_smd_text(destination.read_text(encoding="utf-8", errors="replace"))
-    validate_smd_audits(before_audit, after_audit)
-    if after_audit.triangle_count >= before_audit.triangle_count:
+    try:
+        validate_smd_audits(before_audit, after_audit)
+    except RuntimeError as exc:
+        if candidate.strategy != "blender-adaptive-v1" or not allows_exact_fallback(str(exc)):
+            raise
+        preserve_exact = True
+        fallback_reason = str(exc)
+        atomic_write_bytes(source.parent, destination, exact_source_payload(source.read_bytes()))
+        after_audit = audit_smd_text(destination.read_text(encoding="utf-8", errors="replace"))
+        validate_smd_audits(before_audit, after_audit)
+        for item in object_metrics:
+            item["attempted_achieved_ratio"] = item.get("achieved_ratio")
+            item["achieved_ratio"] = 1.0
+            item["preserved_exact"] = True
+            item["fallback_reason"] = fallback_reason
+            item["transfer"] = "exact-source-fallback-v1"
+    if not preserve_exact and after_audit.triangle_count >= before_audit.triangle_count:
         raise RuntimeError("export did not reduce SMD triangle count")
     return {
         "source": source.as_posix(),
@@ -1162,6 +1300,7 @@ def _process_source_file(
         "influence_sets_after": after_audit.influence_sets,
         "objects": object_metrics,
         "regions": [item["region_key"] for item in object_metrics],
+        "fallback_reason": fallback_reason,
     }
 
 
@@ -1407,7 +1546,10 @@ def run_blender(settings: Settings) -> dict[str, object]:
                             matched_regions[key] += 1
                 destination, _item = processed[reference.source_path]
                 optimized_sources[reference.source_path] = destination
-                status, reason = "optimized", "meshoptimizer-attribute-aware"
+                if settings.candidate.strategy == "blender-adaptive-v1":
+                    status, reason = provenance_status(item.get("fallback_reason"))
+                else:
+                    status, reason = "optimized", settings.candidate.strategy
                 output_hash = hashlib.sha256(destination.read_bytes()).hexdigest()
             else:
                 status = "preserved"
@@ -1441,11 +1583,13 @@ def run_blender(settings: Settings) -> dict[str, object]:
 
     before = sum(int(item["triangles_before"]) for item in files)
     after = sum(int(item["triangles_after"]) for item in files)
+    engine = engine_evidence(
+        settings.candidate.engine, settings.candidate.strategy, tuple(bpy.app.version)
+    )
     metrics = {
         "schema_version": 1,
         "candidate_id": settings.candidate.candidate_id,
-        "engine": "meshoptimizer",
-        "engine_version": 10200,
+        **engine,
         "triangles_before": before,
         "triangles_after": after,
         "triangle_reduction_ratio": (before - after) / before if before else 0.0,
