@@ -5,7 +5,7 @@
     "required_pressure_families": 5,
     "winner": false
   },
-  "evidence_sha256": "e621947f1b3dc68de3e1e1cdf7071d87e12b26adce90b0d31d29031e483735e7",
+  "evidence_sha256": "52bf296ca088cc94ad60157f2ff4b8324c529dfb7549428324dbc95b6408c788",
   "implementation": {
     "scripts": {
       "batch_optimize_maximum.py": "54bc5fb8befaca22b63229760d75d0d0350b9256fcbb5c60e4f0c7d0702056ad",
@@ -14,10 +14,12 @@
     }
   },
   "quality": {
+    "charger_render_failure_log_sha256": "54689e4502e0f851dc0e2f91dc4ce9c095918ddb8233b1da7dcfe2cfb9f711a0",
     "reason": "wheel QC-aware manifest has no missing textures but bodygroups occlude internal detail; Charger render attempt produced no accepted manifest because geometry metrics fail closed on a preserved degenerate source; thresholds and runtime are not calibrated",
     "render_status": "wheel-raw-ranking-only-charger-failed-closed",
     "status": "unverified",
-    "texture_status": "resolved-wheel-only"
+    "texture_status": "resolved-wheel-only",
+    "wheel_render_manifest_sha256": "f37191a8ccb2d073457444d9173030573c078da530d86706ca4ee9bfb4b60f40"
   },
   "records": [
     {

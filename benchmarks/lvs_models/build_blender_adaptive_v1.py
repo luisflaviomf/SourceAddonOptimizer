@@ -127,6 +127,8 @@ def main() -> int:
             "texture_status": "resolved-wheel-only",
             "render_status": "wheel-raw-ranking-only-charger-failed-closed",
             "reason": "wheel QC-aware manifest has no missing textures but bodygroups occlude internal detail; Charger render attempt produced no accepted manifest because geometry metrics fail closed on a preserved degenerate source; thresholds and runtime are not calibrated",
+            "wheel_render_manifest_sha256": digest(runs / "wheel-r040" / "renders-qc-aware" / "optimized" / "render_manifest.json"),
+            "charger_render_failure_log_sha256": digest(runs / "charger-auto-r040" / "render-qc-aware.log"),
         },
         "decision": {
             "winner": False,

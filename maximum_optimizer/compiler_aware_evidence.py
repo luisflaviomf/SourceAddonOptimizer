@@ -131,9 +131,14 @@ def parse_compiler_aware_evidence(raw: object) -> dict:
         raise ValueError("checkpoint families or order changed")
     quality = _keys(root["quality"], {
         "status", "texture_status", "render_status", "reason",
+        "wheel_render_manifest_sha256", "charger_render_failure_log_sha256",
     }, "quality")
     if quality["status"] != "unverified" or quality["render_status"] == "pass":
         raise ValueError("Task 7 quality must remain unverified")
+    if any(_SHA.fullmatch(quality[name]) is None for name in (
+        "wheel_render_manifest_sha256", "charger_render_failure_log_sha256"
+    )):
+        raise ValueError("raw render evidence hashes are invalid")
     decision = _keys(root["decision"], {
         "winner", "reason", "pressure_families_run", "required_pressure_families",
     }, "decision")

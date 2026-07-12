@@ -18,6 +18,8 @@ class CompilerAwareEvidenceTests(unittest.TestCase):
         self.assertEqual(tuple(record["family_id"] for record in evidence["records"]),
                          ("pontiac_transam_wheel", "dodge_charger"))
         self.assertEqual(evidence["quality"]["status"], "unverified")
+        self.assertRegex(evidence["quality"]["wheel_render_manifest_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(evidence["quality"]["charger_render_failure_log_sha256"], r"^[0-9a-f]{64}$")
         self.assertFalse(evidence["decision"]["winner"])
 
     def test_rejects_false_winner_proxy_drift_and_nonexact_fallback(self) -> None:
