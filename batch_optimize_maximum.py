@@ -58,6 +58,7 @@ from maximum_optimizer.smoothing import (
     canonicalize_export_normals,
     canonicalize_normals_by_identity,
 )
+from maximum_optimizer.smd_contract import restore_ordered_smd_normals
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -512,153 +513,12 @@ def restore_smd_normal_identity(
     max_distance: float = 2e-2,
     position_tolerance: float = 2e-6,
 ) -> str:
-    """Undo Blender fan-space normal drift using unambiguous original SMD identities."""
-    if not math.isfinite(max_distance) or max_distance <= 0.0:
-        raise ValueError("normal restore tolerance must be finite and positive")
-    if not math.isfinite(position_tolerance) or position_tolerance <= 0.0:
-        raise ValueError("position identity tolerance must be finite and positive")
-
-    def exact_position(parts: Sequence[str]) -> tuple[float, float, float]:
-        return tuple(round(float(parts[index]), 6) for index in (1, 2, 3))  # type: ignore[return-value]
-
-    def vertex_key(material: str, parts: Sequence[str]) -> tuple[object, ...]:
-        # Source Tools roundtrips float32 positions with occasional last-place SMD
-        # drift (for example 95.664063 -> 95.664062). Five decimals forms the
-        # canonical position identity; material, UV and skin identity remain exact.
-        position = tuple(round(float(parts[index]), 5) for index in (1, 2, 3))
-        uv = tuple(round(float(parts[index]), 6) for index in (7, 8))
-        primary = int(parts[0])
-        influences: tuple[tuple[int, float], ...]
-        if len(parts) > 9:
-            link_count = int(parts[9])
-            if link_count < 0 or len(parts) < 10 + link_count * 2:
-                raise ValueError("SMD normal identity has truncated influences")
-            influences = tuple(sorted(
-                (int(parts[10 + offset * 2]), round(float(parts[11 + offset * 2]), 6))
-                for offset in range(link_count)
-            )) if link_count else ((primary, 1.0),)
-        else:
-            influences = ((primary, 1.0),)
-        return material, position, uv, influences
-
-    def original_identities(text: str) -> dict[
-        tuple[object, ...],
-        dict[
-            tuple[float, float, float],
-            dict[tuple[float, float, float], tuple[str, str, str]],
-        ],
-    ]:
-        identities: dict[
-            tuple[object, ...],
-            dict[
-                tuple[float, float, float],
-                dict[tuple[float, float, float], tuple[str, str, str]],
-            ],
-        ] = defaultdict(dict)
-        section = ""
-        material = ""
-        expect_material = False
-        vertices_in_triangle = 0
-        for raw in text.splitlines():
-            line = raw.strip()
-            folded = line.casefold()
-            if folded == "triangles":
-                section, expect_material = "triangles", True
-                continue
-            if section != "triangles":
-                continue
-            if folded == "end":
-                break
-            if expect_material:
-                material, expect_material, vertices_in_triangle = line, False, 0
-                continue
-            parts = line.split()
-            if len(parts) < 9 or not parts[0].lstrip("-").isdigit():
-                raise ValueError("SMD normal identity has an invalid vertex row")
-            normal = tuple(float(parts[index]) for index in (4, 5, 6))
-            by_position = identities[vertex_key(material, parts)]
-            by_position.setdefault(exact_position(parts), {}).setdefault(
-                normal, (parts[4], parts[5], parts[6])
-            )
-            vertices_in_triangle += 1
-            if vertices_in_triangle == 3:
-                expect_material = True
-        return identities
-
-    identities = original_identities(original_text)
-    output = exported_text.splitlines(keepends=True)
-    section = ""
-    material = ""
-    expect_material = False
-    vertices_in_triangle = 0
-    restored_rows = 0
-    for row, raw in enumerate(output):
-        line = raw.strip()
-        folded = line.casefold()
-        if folded == "triangles":
-            section, expect_material = "triangles", True
-            continue
-        if section != "triangles":
-            continue
-        if folded == "end":
-            break
-        if expect_material:
-            material, expect_material, vertices_in_triangle = line, False, 0
-            continue
-        spans = tuple(re.finditer(r"\S+", raw))
-        parts = [match.group(0) for match in spans]
-        if len(parts) < 9 or not parts[0].lstrip("-").isdigit():
-            raise ValueError("exported SMD normal identity has an invalid vertex row")
-        positions = identities.get(vertex_key(material, parts))
-        if not positions:
-            raise RuntimeError(
-                "exported SMD normal has no original corner identity: "
-                f"key={vertex_key(material, parts)!r}"
-            )
-        if len(positions) != 1:
-            raise RuntimeError(
-                "exported SMD normal canonical position is ambiguous: "
-                f"key={vertex_key(material, parts)!r} positions={sorted(positions)!r}"
-            )
-        source_position, candidates = next(iter(positions.items()))
-        exported_position = exact_position(parts)
-        position_distance = math.sqrt(sum(
-            (a - b) ** 2 for a, b in zip(source_position, exported_position)
-        ))
-        if position_distance > position_tolerance:
-            raise RuntimeError(
-                "exported SMD position is outside original identity tolerance: "
-                f"distance={position_distance:.9g} limit={position_tolerance:.9g}"
-            )
-        exported_normal = tuple(float(parts[index]) for index in (4, 5, 6))
-        ranked = sorted(
-            (
-                sum((a - b) ** 2 for a, b in zip(exported_normal, normal)),
-                normal,
-                tokens,
-            )
-            for normal, tokens in candidates.items()
-        )
-        if ranked[0][0] > max_distance * max_distance:
-            raise RuntimeError(
-                "exported SMD normal is outside original identity tolerance: "
-                f"distance={math.sqrt(ranked[0][0]):.9g} limit={max_distance:.9g} "
-                f"key={vertex_key(material, parts)!r}"
-            )
-        if len(ranked) > 1 and abs(ranked[1][0] - ranked[0][0]) <= 1e-16:
-            raise RuntimeError("exported SMD normal identity is ambiguous")
-        restored = raw
-        for token_index, replacement in reversed(tuple(zip((4, 5, 6), ranked[0][2]))):
-            match = spans[token_index]
-            restored = restored[: match.start()] + replacement + restored[match.end() :]
-        output[row] = restored
-        restored_rows += 1
-        vertices_in_triangle += 1
-        if vertices_in_triangle == 3:
-            expect_material = True
-    if restored_rows == 0:
-        raise ValueError("exported SMD has no normal rows")
-    return "".join(output)
+    return restore_ordered_smd_normals(
+        original_text,
+        exported_text,
+        max_distance=max_distance,
+        position_tolerance=position_tolerance,
+    )
 
 
 def restore_smd_bone_identity(original_text: str, exported_text: str) -> str:

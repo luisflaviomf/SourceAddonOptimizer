@@ -55,8 +55,15 @@ Large compiled binaries and control workspaces are deliberately not committed.
 `run_smoothing_fixed_v1.py`; it operates only on an isolated copy of one family, rebuilds the
 same triangle indices/positions/UV/material/skin payload, reconstructs sharp boundaries from
 canonical positions and intended corner normals, and applies Blender 5 custom normals per loop.
+The fixed-topology SMD contract is ordered and corner-exact: triangle order/winding, triangle
+material, corner ordinal, UV, bone/link/weight payload and every other non-normal value must match.
+Only position components permit the documented Source Tools float32 serialization equivalence of
+at most `0.000002`; normals are restored one-to-one from the corresponding original corner and are
+never selected by nearest attribute key or collapsed across duplicate corners.
 
 The lane remains `unverified`: the Pontiac wheel compiled byte-for-byte equal to the strict
-control, while Dodge Charger was rejected before compile by the normal-identity gate. Textures,
+control, while Dodge Charger was rejected before compile by the ordered corner/bone gate. Textures,
 Task 8 renders and runtime validation were not available/run, so this record makes no quality
-claim and the strategy is not a winner.
+claim and the strategy is not a winner. The wheel record embeds every candidate/control artifact
+path, size and SHA-256 plus a recomputable canonical bundle digest; its strict parser rejects any
+path, size, hash, digest, membership, ordering or equality drift.

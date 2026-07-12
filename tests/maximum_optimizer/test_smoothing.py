@@ -9,12 +9,70 @@ import sys
 import unittest
 
 import batch_optimize_maximum as maximum
+from maximum_optimizer.smd_contract import validate_fixed_topology_smd
 from maximum_optimizer.smoothing import (
     canonicalize_export_normals, canonicalize_normals_by_identity, reconstruct_smoothing,
 )
 
 
 class SmoothingReconstructionTests(unittest.TestCase):
+    @staticmethod
+    def _two_triangle_smd() -> str:
+        return """version 1
+nodes
+0 \"root\" -1
+1 \"tip\" 0
+end
+skeleton
+time 0
+0 0 0 0 0 0 0
+1 0 0 0 0 0 0
+end
+triangles
+paint
+0 0 0 0 0 0 1 0 0 1 0 1.000000
+0 1 0 0 0 0 1 1 0 1 0 1.000000
+0 0 1 0 0 0 1 0 1 1 0 1.000000
+glass
+1 0 0 0 0 1 0 0.5 0.5 1 1 1.000000
+1 0 1 0 0 1 0 0 1 1 1 1.000000
+1 0 0 1 0 1 0 1 1 1 1 1.000000
+end
+"""
+
+    def test_fixed_topology_contract_rejects_triangle_reorder_and_winding(self) -> None:
+        original = self._two_triangle_smd()
+        first, second = original.split("paint\n", 1)[1].split("glass\n", 1)
+        header = original.split("paint\n", 1)[0]
+        reordered = header + "glass\n" + second.rsplit("end\n", 1)[0] + "paint\n" + first + "end\n"
+        with self.assertRaisesRegex(RuntimeError, "triangle order|material"):
+            validate_fixed_topology_smd(original, reordered)
+
+        lines = original.splitlines(keepends=True)
+        start = lines.index("paint\n") + 1
+        lines[start], lines[start + 1] = lines[start + 1], lines[start]
+        with self.assertRaisesRegex(RuntimeError, "corner order|winding|payload|position"):
+            validate_fixed_topology_smd(original, "".join(lines))
+
+    def test_fixed_topology_contract_rejects_position_uv_bone_and_weight_replacement(self) -> None:
+        original = self._two_triangle_smd()
+        replacements = (
+            ("0 0 0 0 0 0 1 0 0", "0 0.01 0 0 0 0 1 0 0"),
+            ("0 0 0 0 0 0 1 0 0", "0 0 0 0 0 0 1 0.25 0"),
+            ("1 0 0 0 0 1 0 0.5 0.5", "0 0 0 0 0 1 0 0.5 0.5"),
+            ("1 1 1.000000", "1 1 0.500000"),
+        )
+        for before, after in replacements:
+            with self.subTest(after=after):
+                with self.assertRaisesRegex(RuntimeError, "payload|position|UV|bone|weight"):
+                    validate_fixed_topology_smd(original, original.replace(before, after, 1))
+
+    def test_normal_restore_is_ordinal_and_rejects_true_normal_collapse(self) -> None:
+        original = self._two_triangle_smd()
+        collapsed = original.replace("0 1 0 0.5 0.5", "0 0 1 0.5 0.5", 1)
+        with self.assertRaisesRegex(RuntimeError, "normal.*tolerance"):
+            maximum.restore_smd_normal_identity(original, collapsed)
+
     def test_export_normal_canonicalization_merges_only_source_precision_equals(self) -> None:
         result = canonicalize_export_normals(
             ((0.0, 0.70710676, 0.70710676), (0.0, 0.70710679, 0.70710679), (0, 0, 1))
@@ -71,7 +129,7 @@ end
             maximum.audit_smd_text(original).position_normal_keys,
         )
 
-    def test_smd_normal_restore_rejects_two_positions_in_canonical_bucket(self) -> None:
+    def test_smd_normal_restore_keeps_close_distinct_positions_one_to_one(self) -> None:
         original = """version 1
 nodes
 0 \"root\" -1
@@ -91,8 +149,11 @@ mat
 0 13 14 15 0 1 0 0 1
 end
 """
-        with self.assertRaisesRegex(RuntimeError, "canonical position.*ambiguous"):
-            maximum.restore_smd_normal_identity(original, original)
+        restored = maximum.restore_smd_normal_identity(original, original)
+        self.assertEqual(
+            tuple(corner.normal for triangle in validate_fixed_topology_smd(original, restored)[1].triangles for corner in triangle.corners),
+            tuple(corner.normal for triangle in validate_fixed_topology_smd(original, restored)[0].triangles for corner in triangle.corners),
+        )
 
     def test_triangulated_flat_island_uses_custom_normals_without_global_smoothing(self) -> None:
         result = reconstruct_smoothing(

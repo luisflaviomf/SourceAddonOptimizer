@@ -30,6 +30,43 @@
   },
   "records": [
     {
+      "artifact_comparison": {
+        "artifacts": [
+          {
+            "candidate": {"path": "models/diggercars/pontiac_transam3/wheel.mdl", "sha256": "ed14f39e518a148fd9b9977aded6613269bcec840c23b4a7ae3a49dfee1f9081", "size_bytes": 2768},
+            "control": {"path": "models/diggercars/pontiac_transam3/wheel.mdl", "sha256": "ed14f39e518a148fd9b9977aded6613269bcec840c23b4a7ae3a49dfee1f9081", "size_bytes": 2768},
+            "equal": true,
+            "kind": ".mdl"
+          },
+          {
+            "candidate": {"path": "models/diggercars/pontiac_transam3/wheel.vvd", "sha256": "eee6d88c0715c16ec3ac785522b23ec7246aa65f75a8f4ed7899ef4fdf7f7819", "size_bytes": 769920},
+            "control": {"path": "models/diggercars/pontiac_transam3/wheel.vvd", "sha256": "eee6d88c0715c16ec3ac785522b23ec7246aa65f75a8f4ed7899ef4fdf7f7819", "size_bytes": 769920},
+            "equal": true,
+            "kind": ".vvd"
+          },
+          {
+            "candidate": {"path": "models/diggercars/pontiac_transam3/wheel.dx80.vtx", "sha256": "60ecff78c6b83298a306c2780158f95898a9ad391b5db96df09a142cae8b988c", "size_bytes": 205737},
+            "control": {"path": "models/diggercars/pontiac_transam3/wheel.dx80.vtx", "sha256": "60ecff78c6b83298a306c2780158f95898a9ad391b5db96df09a142cae8b988c", "size_bytes": 205737},
+            "equal": true,
+            "kind": ".dx80.vtx"
+          },
+          {
+            "candidate": {"path": "models/diggercars/pontiac_transam3/wheel.dx90.vtx", "sha256": "5db270e614a4c26f8ce4661eda822df68ac209a054e4c0b3382592ab68fbddeb", "size_bytes": 205737},
+            "control": {"path": "models/diggercars/pontiac_transam3/wheel.dx90.vtx", "sha256": "5db270e614a4c26f8ce4661eda822df68ac209a054e4c0b3382592ab68fbddeb", "size_bytes": 205737},
+            "equal": true,
+            "kind": ".dx90.vtx"
+          },
+          {
+            "candidate": {"path": "models/diggercars/pontiac_transam3/wheel.phy", "sha256": "6589355722447d7c45bab21ea12f99344d9142b2b621ccfa350be82cf7929099", "size_bytes": 3397},
+            "control": {"path": "models/diggercars/pontiac_transam3/wheel.phy", "sha256": "6589355722447d7c45bab21ea12f99344d9142b2b621ccfa350be82cf7929099", "size_bytes": 3397},
+            "equal": true,
+            "kind": ".phy"
+          }
+        ],
+        "bundle_equal": true,
+        "bundle_sha256": "2a4ab2442eed5aa7410a44ba5af80298e62f9984cc3cb8d142532ac4566f9669",
+        "schema_version": 1
+      },
       "compiled": {
         "artifacts": {
           ".dx80.vtx": 205737,
@@ -49,6 +86,7 @@
         "compiled_size": "pass_equal_control",
         "nonvisual_hashes": "pass",
         "position_normal_keys": "pass_equal",
+        "ordered_corner_contract": "pass_exact",
         "runtime": "not_run",
         "task8_renders": "not_run",
         "textures": "not_verified",
@@ -74,38 +112,18 @@
       }
     },
     {
-      "completed_sources": [
-        {
-          "position_normal_keys": 17953,
-          "source": "body.smd",
-          "triangles": 25489
-        },
-        {
-          "position_normal_keys": 5151,
-          "source": "Steeringwheel.smd",
-          "triangles": 7582
-        },
-        {
-          "position_normal_keys": 8558,
-          "source": "hood_a.smd",
-          "triangles": 9557
-        },
-        {
-          "position_normal_keys": 8467,
-          "source": "hood_d.smd",
-          "triangles": 10152
-        }
-      ],
-      "failure": "unique skin corner exported normal distance 1.41378769 exceeded strict 0.02 identity gate",
+      "completed_sources": [],
+      "failure": "body.smd fixed-topology ordered contract rejected changed bone id at triangle 0 corner 0",
       "family_id": "dodge_charger",
       "gates": {
         "compiled_size": "not_run",
-        "normal_identity": "fail",
+        "ordered_corner_contract": "fail",
         "runtime": "not_run",
         "task8_renders": "not_run",
         "textures": "not_verified",
         "visual": "not_run"
       },
+      "rejection": {"corner": 0, "source": "body.smd", "stage": "ordered_corner_contract", "triangle": 0},
       "status": "rejected_precompile"
     }
   ],
