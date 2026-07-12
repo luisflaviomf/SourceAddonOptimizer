@@ -4,22 +4,33 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from PIL import Image, PngImagePlugin
+
 from benchmarks.lvs_models.build_blender_importance_map_v1 import image_set_sha256
 
 
 class ImportanceBuilderTests(unittest.TestCase):
     def test_image_set_digest_is_deterministic_and_content_bound(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp) / "first"
+            equivalent = Path(tmp) / "equivalent"
             for index, angle in enumerate(
                 ("front", "back", "left", "right", "top", "bottom", "iso1", "iso2")
             ):
-                path = root / "clay" / "bind" / f"{angle}.png"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(f"fixture-{index}".encode("ascii"))
+                for target, note in ((root, "first"), (equivalent, "different metadata")):
+                    path = target / "clay" / "bind" / f"{angle}.png"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    metadata = PngImagePlugin.PngInfo()
+                    metadata.add_text("note", note)
+                    Image.new("RGBA", (2, 2), (index, 20, 30, 255)).save(
+                        path, pnginfo=metadata
+                    )
             first = image_set_sha256(root)
             self.assertEqual(first, image_set_sha256(root))
-            (root / "clay" / "bind" / "iso2.png").write_bytes(b"changed")
+            self.assertEqual(first, image_set_sha256(equivalent))
+            Image.new("RGBA", (2, 2), (255, 0, 0, 255)).save(
+                root / "clay" / "bind" / "iso2.png"
+            )
             self.assertNotEqual(first, image_set_sha256(root))
 
 

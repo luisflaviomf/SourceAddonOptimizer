@@ -36,6 +36,16 @@ class ImportanceEvidenceTests(unittest.TestCase):
         )
         self.assertIn("render_previews.py", evidence["implementation"])
         self.assertIn("maximum_optimizer/visual_validation.py", evidence["implementation"])
+        determinism = evidence["quality"]["render_determinism"]
+        self.assertEqual(determinism["status"], "decoded-rgba-identical-across-repeat")
+        self.assertEqual(
+            determinism["repeat_reference_image_set_sha256"],
+            evidence["candidate"]["render"]["reference_image_set_sha256"],
+        )
+        self.assertEqual(
+            determinism["repeat_candidate_image_set_sha256"],
+            evidence["candidate"]["render"]["candidate_image_set_sha256"],
+        )
         self.assertLess(evidence["candidate"]["compiled"]["total_bytes"],
                         evidence["baseline"]["compiled"]["total_bytes"])
         self.assertGreater(evidence["candidate"]["raw_clay"]["max_edge_error"],

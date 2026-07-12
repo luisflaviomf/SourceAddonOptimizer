@@ -44,10 +44,10 @@
       "max_silhouette_error": 0.003682881905554547
     },
     "render": {
-      "candidate_image_set_sha256": "1482e3ce92f39ceec09611ae17e2d12c8dc9f470063063d4eb29fb9048b4d8dc",
-      "candidate_manifest_sha256": "ba91df764fadfc772458d5821dd611aabb19b6b5ea96cba6e050aefe2c084f1e",
-      "reference_image_set_sha256": "0cda282499c5ee233435ae6c6bc2d67979fbfa8d7422e9864eb05a4c960879c3",
-      "reference_manifest_sha256": "60218ff60f9910d9ea3f6ba47d05e665da729ce08c66f82911e929556e30f950"
+      "candidate_image_set_sha256": "a57021551447aaad65d48bcd3d6f8e4b9e19e7ead4bcd53c2a6be7c1f101aa1e",
+      "candidate_manifest_sha256": "11403f9cb2efb0297a3c73b2f32ca7abddb402f872d35a8a7b5a21e77aa59ddf",
+      "reference_image_set_sha256": "b9d46a8bb1101ac671863cf4caca6bf4058fbe223f0c29ac19e29f5369e34e95",
+      "reference_manifest_sha256": "3a85e52164cc7deed22740b3728748d242ef4c83b78b712fd32925eb3c35e4b6"
     },
     "strategy": "blender-adaptive-v1"
   },
@@ -96,10 +96,10 @@
       "max_silhouette_error": 0.00485803183781619
     },
     "render": {
-      "candidate_image_set_sha256": "556a6ea27022c1d238816c6cf6d70c80aac1b29f679920532430f4b5ff9d6a31",
-      "candidate_manifest_sha256": "cf24f9b2b314785f8cf9c27456d98cb8d1a2a8723918cb5d1f759844da7df4d7",
-      "reference_image_set_sha256": "0cda282499c5ee233435ae6c6bc2d67979fbfa8d7422e9864eb05a4c960879c3",
-      "reference_manifest_sha256": "60218ff60f9910d9ea3f6ba47d05e665da729ce08c66f82911e929556e30f950"
+      "candidate_image_set_sha256": "84604cd9052b900434b99046964ad03189eac414cd850c7424bc3b51877e772e",
+      "candidate_manifest_sha256": "15241a6bdcb8091911ac06b89c43acfc285a018f8813ff05d2b74ef295219ac7",
+      "reference_image_set_sha256": "b9d46a8bb1101ac671863cf4caca6bf4058fbe223f0c29ac19e29f5369e34e95",
+      "reference_manifest_sha256": "3a85e52164cc7deed22740b3728748d242ef4c83b78b712fd32925eb3c35e4b6"
     },
     "strategy": "blender-importance-map-v1"
   },
@@ -108,17 +108,23 @@
     "status": "rejected-visible-boundary-regression",
     "winner": false
   },
-  "evidence_sha256": "41180487f075c1b6b13efe4183bc68bbf79adc9682cdba6b01995249416e2fdf",
+  "evidence_sha256": "9dfcf00e07b0906f94c8c4e62008b9fda6810d672d8791e144b6613e04d4c56d",
   "family_id": "pontiac_transam_wheel",
   "implementation": {
     "batch_optimize_maximum.py": "76cd2f9ca769d92e49fd66b1f8e383adb4492208a50a231147cf9a5fbb5e8098",
-    "benchmarks/lvs_models/build_blender_importance_map_v1.py": "1ea4a686bbaf93849ea0b8205b2784998d41840efd2b299878e9b8895e81998e",
+    "benchmarks/lvs_models/build_blender_importance_map_v1.py": "bd296d16ff4083eac2f8bb61b9fe6157d3a40accd4e4df4a793fb5077cb5643a",
     "maximum_optimizer/importance_map.py": "7c39de32df61275666dff51650427baf308780bf2c19f528bfc10c3f2d1dfe60",
     "maximum_optimizer/search.py": "043ef97c8498a453ae624d6554355c60ab903367ebed6745c3bcf0caed9c6e24",
     "maximum_optimizer/visual_validation.py": "12134678157b3e8dd7198e39202ce37887d6c78670c5cde3f6544a74b1bed63e",
-    "render_previews.py": "1952761e655c2be3901962782d0dd952d7d9aa26341ab3878f335e26c269560a"
+    "render_previews.py": "e9a05aac855a8fbdd9a2e21bda0b8504f348f4643611f3864d555bd5b38dad8e"
   },
   "quality": {
+    "container_status": "png-bytes-vary-but-decoded-pixels-are-identical",
+    "render_determinism": {
+      "repeat_candidate_image_set_sha256": "84604cd9052b900434b99046964ad03189eac414cd850c7424bc3b51877e772e",
+      "repeat_reference_image_set_sha256": "b9d46a8bb1101ac671863cf4caca6bf4058fbe223f0c29ac19e29f5369e34e95",
+      "status": "decoded-rgba-identical-across-repeat"
+    },
     "scope": "rim1-bind-8-views",
     "status": "uncalibrated-raw-ranking-only",
     "texture_status": "clay-authoritative"

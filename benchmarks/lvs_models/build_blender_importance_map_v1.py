@@ -34,9 +34,15 @@ def image_set_sha256(root: Path) -> str:
         path = Path(root) / "clay" / "bind" / f"{angle}.png"
         if not path.is_file():
             raise ValueError(f"missing controlled clay image: {path}")
+        with Image.open(path) as source:
+            source.load()
+            pixels = source.convert("RGBA")
         entries.append({
             "path": path.relative_to(root).as_posix(),
-            "sha256": digest(path),
+            "width": pixels.width,
+            "height": pixels.height,
+            "mode": pixels.mode,
+            "pixel_sha256": hashlib.sha256(pixels.tobytes()).hexdigest(),
         })
     encoded = (json.dumps(entries, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -114,7 +120,17 @@ def build_payload(root: Path, blender: Path, studiomdl: Path) -> dict:
     ):
         if digest(adaptive / relative) != digest(importance / relative):
             raise ValueError("controlled ablation source meshes differ")
-    shared_reference = importance / "renders-rim1-ablation" / "original"
+    adaptive_render = adaptive / "renders-rim1-final-bcc9af2"
+    importance_render = importance / "renders-rim1-final-bcc9af2"
+    repeat_render = importance / "renders-rim1-final-bcc9af2-repeat"
+    shared_reference = importance_render / "original"
+    reference_pixels = image_set_sha256(shared_reference)
+    candidate_pixels = image_set_sha256(importance_render / "optimized")
+    repeat_reference_pixels = image_set_sha256(repeat_render / "original")
+    repeat_candidate_pixels = image_set_sha256(repeat_render / "optimized")
+    if (reference_pixels != repeat_reference_pixels
+            or candidate_pixels != repeat_candidate_pixels):
+        raise ValueError("final renderer is not deterministic at decoded RGBA pixel level")
     payload = {
         "schema_version": 2,
         "strategy": "blender-importance-map-v1",
@@ -134,19 +150,25 @@ def build_payload(root: Path, blender: Path, studiomdl: Path) -> dict:
         "baseline": record(
             adaptive, strategy="blender-adaptive-v1", compiled_name="compiled",
             optimize_log="optimize.log", compile_log="compile.log",
-            candidate_render=adaptive / "renders-rim1" / "optimized",
+            candidate_render=adaptive_render / "optimized",
             shared_reference=shared_reference,
         ),
         "candidate": record(
             importance, strategy="blender-importance-map-v1", compiled_name="compiled-final",
             optimize_log="optimize-final.log", compile_log="compile-final.log",
-            candidate_render=importance / "renders-rim1-ablation" / "optimized",
+            candidate_render=importance_render / "optimized",
             shared_reference=shared_reference,
         ),
         "quality": {
             "status": "uncalibrated-raw-ranking-only",
             "scope": "rim1-bind-8-views",
             "texture_status": "clay-authoritative",
+            "container_status": "png-bytes-vary-but-decoded-pixels-are-identical",
+            "render_determinism": {
+                "status": "decoded-rgba-identical-across-repeat",
+                "repeat_reference_image_set_sha256": repeat_reference_pixels,
+                "repeat_candidate_image_set_sha256": repeat_candidate_pixels,
+            },
         },
         "decision": {
             "winner": False,

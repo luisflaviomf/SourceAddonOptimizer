@@ -98,8 +98,21 @@ def parse_importance_evidence(payload: object) -> dict:
             or baseline["render"]["reference_image_set_sha256"]
             != candidate["render"]["reference_image_set_sha256"]):
         raise ValueError("controlled ablation must use one identical reference render")
-    quality = _exact(root["quality"], {"status", "scope", "texture_status"}, "quality")
-    if quality != {"status": "uncalibrated-raw-ranking-only", "scope": "rim1-bind-8-views", "texture_status": "clay-authoritative"}:
+    quality = _exact(root["quality"], {
+        "status", "scope", "texture_status", "container_status", "render_determinism",
+    }, "quality")
+    determinism = _exact(quality["render_determinism"], {
+        "status", "repeat_reference_image_set_sha256", "repeat_candidate_image_set_sha256",
+    }, "render determinism")
+    if (quality["status"] != "uncalibrated-raw-ranking-only"
+            or quality["scope"] != "rim1-bind-8-views"
+            or quality["texture_status"] != "clay-authoritative"
+            or quality["container_status"] != "png-bytes-vary-but-decoded-pixels-are-identical"
+            or determinism["status"] != "decoded-rgba-identical-across-repeat"
+            or determinism["repeat_reference_image_set_sha256"]
+                != candidate["render"]["reference_image_set_sha256"]
+            or determinism["repeat_candidate_image_set_sha256"]
+                != candidate["render"]["candidate_image_set_sha256"]):
         raise ValueError("quality disclosure is invalid")
     decision = _exact(root["decision"], {"winner", "status", "reason"}, "decision")
     boundary_regressed = (
