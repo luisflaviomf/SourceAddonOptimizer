@@ -8,10 +8,12 @@ import re
 import shutil
 import stat
 import threading
+import tempfile
 import uuid
+from contextlib import contextmanager
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 
 from maximum_optimizer.calibration_evidence import (
@@ -48,6 +50,10 @@ _TOP_FIELDS = {
     "trusted_evidence_v3_sha256", "selector_version", "renderer_version",
     "dependency_proof_sha256", "material_proof", "expected",
 }
+
+
+class _MaterialByteLimitError(ValueError):
+    pass
 
 
 def _exact(value: object, fields: set[str], label: str) -> dict:
@@ -661,37 +667,157 @@ def _has_reparse_ancestor(path: Path) -> bool:
     return any(_is_reparse(item) for item in (*reversed(absolute.parents), absolute))
 
 
+def _opened_file_identity(info) -> tuple[int, int, int, int]:
+    return (
+        int(info.st_dev), int(info.st_ino), int(info.st_size),
+        int(getattr(info, "st_mtime_ns", int(info.st_mtime * 1e9))),
+    )
+
+
+def _open_regular_no_follow(path: Path, *, contained_root: Path | None = None):
+    path = Path(path)
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        class BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", wintypes.DWORD),
+                ("ftCreationTime", wintypes.FILETIME),
+                ("ftLastAccessTime", wintypes.FILETIME),
+                ("ftLastWriteTime", wintypes.FILETIME),
+                ("dwVolumeSerialNumber", wintypes.DWORD),
+                ("nFileSizeHigh", wintypes.DWORD),
+                ("nFileSizeLow", wintypes.DWORD),
+                ("nNumberOfLinks", wintypes.DWORD),
+                ("nFileIndexHigh", wintypes.DWORD),
+                ("nFileIndexLow", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.GetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(BY_HANDLE_FILE_INFORMATION),
+        ]
+        kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+        kernel32.GetFinalPathNameByHandleW.argtypes = [
+            wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD,
+        ]
+        kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+        handle = kernel32.CreateFileW(
+            str(path), 0x80000000, 0x00000007, None, 3,
+            0x00200000 | 0x08000000, None,
+        )
+        invalid = ctypes.c_void_p(-1).value
+        if handle in (0, -1, invalid):
+            raise OSError(ctypes.get_last_error(), f"cannot open file without following links: {path}")
+        try:
+            information = BY_HANDLE_FILE_INFORMATION()
+            if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
+                raise OSError(ctypes.get_last_error(), f"cannot inspect opened file: {path}")
+            if information.dwFileAttributes & (0x400 | 0x10):
+                raise ValueError(f"opened file is a reparse point or directory: {path}")
+            if contained_root is not None:
+                buffer = ctypes.create_unicode_buffer(32768)
+                length = kernel32.GetFinalPathNameByHandleW(handle, buffer, len(buffer), 0)
+                if not length or length >= len(buffer):
+                    raise OSError(ctypes.get_last_error(), f"cannot resolve opened file handle: {path}")
+                final_name = buffer.value
+                if final_name.startswith("\\\\?\\UNC\\"):
+                    final_name = "\\\\" + final_name[8:]
+                elif final_name.startswith("\\\\?\\"):
+                    final_name = final_name[4:]
+                final_path = Path(final_name)
+                root = Path(contained_root).resolve(strict=True)
+                try:
+                    final_path.relative_to(root)
+                except ValueError as exc:
+                    raise ValueError("opened file handle escapes contained root") from exc
+            descriptor = msvcrt.open_osfhandle(
+                int(handle), os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            )
+            handle = None
+            stream = os.fdopen(descriptor, "rb", closefd=True)
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                stream.close()
+                raise ValueError("opened handle is not a regular file")
+            return stream, _opened_file_identity(info)
+        finally:
+            if handle not in (None, 0, -1, invalid):
+                kernel32.CloseHandle(handle)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ValueError("platform cannot open files without following links")
+    descriptor = os.open(path, flags | nofollow)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("opened handle is not a regular file")
+        if contained_root is not None:
+            proc = Path(f"/proc/self/fd/{descriptor}")
+            if not proc.exists():
+                raise ValueError("platform cannot prove opened handle containment")
+            final_path = proc.resolve(strict=True)
+            try:
+                final_path.relative_to(Path(contained_root).resolve(strict=True))
+            except ValueError as exc:
+                raise ValueError("opened file handle escapes contained root") from exc
+        stream = os.fdopen(descriptor, "rb", closefd=True)
+        descriptor = -1
+        return stream, _opened_file_identity(info)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _file_proof(
     path: Path,
     cancel_event: threading.Event | None = None,
     *,
     chunk_size: int = _IO_CHUNK_SIZE,
+    max_bytes: int | None = None,
+    contained_root: Path | None = None,
+    capture_stream=None,
 ) -> tuple[int, str]:
     _cancel(cancel_event, "cancelled before material hash")
-    before = Path(path).lstat()
-    if _is_reparse(path) or not stat.S_ISREG(before.st_mode):
-        raise ValueError("material file is unsafe")
     digest = hashlib.sha256()
     size = 0
-    with Path(path).open("rb") as stream:
+    stream, before_identity = _open_regular_no_follow(
+        Path(path), contained_root=contained_root
+    )
+    if max_bytes is not None and before_identity[2] > max_bytes:
+        stream.close()
+        raise _MaterialByteLimitError("file exceeds byte limit")
+    with stream:
         while True:
             _cancel(cancel_event, "cancelled during material hash")
-            block = stream.read(chunk_size)
+            if max_bytes is not None and size >= max_bytes:
+                break
+            request_size = chunk_size
+            if max_bytes is not None:
+                request_size = min(request_size, max_bytes - size)
+            block = stream.read(request_size)
             if not block:
                 break
             digest.update(block)
+            if capture_stream is not None:
+                capture_stream.write(block)
             size += len(block)
-    after = Path(path).lstat()
-    identity_before = (
-        before.st_dev, before.st_ino, before.st_size,
-        getattr(before, "st_mtime_ns", int(before.st_mtime * 1e9)),
-    )
-    identity_after = (
-        after.st_dev, after.st_ino, after.st_size,
-        getattr(after, "st_mtime_ns", int(after.st_mtime * 1e9)),
-    )
-    if identity_before != identity_after or size != after.st_size or _is_reparse(path):
+        after_identity = _opened_file_identity(os.fstat(stream.fileno()))
+    if max_bytes is not None and after_identity[2] > max_bytes:
+        raise _MaterialByteLimitError("file exceeds byte limit")
+    if before_identity != after_identity or size != after_identity[2]:
         raise ValueError("material file changed while hashing")
+    if capture_stream is not None:
+        capture_stream.flush()
+        capture_stream.seek(0)
     _cancel(cancel_event, "cancelled after material hash")
     return size, digest.hexdigest()
 
@@ -763,6 +889,7 @@ def material_resolution_proof(
     request_tuple = tuple(request_proofs)
 
     candidates: list[tuple[int, Path, str, str, int]] = []
+    discovered_bytes = 0
     try:
         for root_index, (_identity, root) in enumerate(canonical_roots_tuple):
             _cancel(cancel_event, "cancelled during material traversal")
@@ -773,22 +900,35 @@ def material_resolution_proof(
             for directory, directory_names, file_names in os.walk(root, followlinks=False):
                 _cancel(cancel_event, "cancelled during material traversal")
                 parent = Path(directory)
+                directory_names.sort(key=str.casefold)
                 for name in directory_names:
                     if _is_reparse(parent / name):
                         return _uncacheable_material_proof(
                             "unsafe-tree", canonical_roots_tuple, request_tuple, 0, 0
                         )
-                for name in file_names:
+                for name in sorted(file_names, key=str.casefold):
                     path = parent / name
                     suffix = path.suffix.casefold().lstrip(".")
                     if suffix not in {"vmt", "vtf"}:
                         continue
-                    if _is_reparse(path) or not stat.S_ISREG(path.lstat().st_mode):
+                    if len(candidates) >= _MAX_MATERIAL_FILES:
+                        return _uncacheable_material_proof(
+                            "file-limit", canonical_roots_tuple, request_tuple,
+                            len(candidates), discovered_bytes,
+                        )
+                    info = path.lstat()
+                    if _is_reparse(path) or not stat.S_ISREG(info.st_mode):
                         return _uncacheable_material_proof(
                             "unsafe-tree", canonical_roots_tuple, request_tuple, 0, 0
                         )
+                    if discovered_bytes + info.st_size > _MAX_MATERIAL_BYTES:
+                        return _uncacheable_material_proof(
+                            "byte-limit", canonical_roots_tuple, request_tuple,
+                            len(candidates), discovered_bytes,
+                        )
                     relative = path.relative_to(root).as_posix()
-                    candidates.append((root_index, path, relative.casefold(), relative, path.lstat().st_size))
+                    candidates.append((root_index, path, relative.casefold(), relative, info.st_size))
+                    discovered_bytes += info.st_size
     except OSError:
         return _uncacheable_material_proof(
             "io-error", canonical_roots_tuple, request_tuple, 0, 0
@@ -798,7 +938,35 @@ def material_resolution_proof(
         return _uncacheable_material_proof(
             "unsafe-tree", canonical_roots_tuple, request_tuple, 0, 0
         )
+    candidate_by_key = {
+        (item[0], item[2]): item for item in candidates
+    }
+    selected_vmt: dict[int, tuple[int, int, str] | None] = {}
+    selected_vmt_keys: set[tuple[int, str]] = set()
+    for request in request_tuple:
+        identity = request.material_identity
+        if identity.casefold().endswith(".vmt"):
+            identity = identity[:-4]
+        normalized = PurePosixPath(identity)
+        search_candidates = (
+            tuple((PurePosixPath(path) / normalized).as_posix() for path in request.search_paths)
+            if request.search_paths and len(normalized.parts) == 1
+            else (normalized.as_posix(),)
+        )
+        selected = None
+        for root_index in range(len(canonical_roots_tuple)):
+            for search_index, relative in enumerate(search_candidates):
+                key = (root_index, f"{relative}.vmt".casefold())
+                file = candidate_by_key.get(key)
+                if file is not None:
+                    selected = (root_index, search_index, file[3])
+                    selected_vmt_keys.add((root_index, file[3].casefold()))
+                    break
+            if selected is not None:
+                break
+        selected_vmt[request.request_index] = selected
     files: list[MaterialFileProof] = []
+    captured_vmt = {}
     total_bytes = 0
     for root_index, path, _folded, relative, stat_size in candidates:
         _cancel(cancel_event, "cancelled during material inventory")
@@ -813,17 +981,50 @@ def material_resolution_proof(
                 len(files), total_bytes,
             )
         try:
-            size, digest = _file_proof(path, cancel_event)
+            capture = None
+            if (root_index, relative.casefold()) in selected_vmt_keys:
+                capture = tempfile.SpooledTemporaryFile(max_size=_IO_CHUNK_SIZE, mode="w+b")
+            size, digest = _file_proof(
+                path, cancel_event,
+                max_bytes=_MAX_MATERIAL_BYTES - total_bytes,
+                contained_root=canonical_roots_tuple[root_index][1],
+                capture_stream=capture,
+            )
+            if capture is not None:
+                captured_vmt[(root_index, relative.casefold())] = capture
+        except _MaterialByteLimitError:
+            if capture is not None:
+                capture.close()
+            for stream in captured_vmt.values():
+                stream.close()
+            return _uncacheable_material_proof(
+                "byte-limit", canonical_roots_tuple, request_tuple,
+                len(files), total_bytes,
+            )
         except OSError:
+            if capture is not None:
+                capture.close()
+            for stream in captured_vmt.values():
+                stream.close()
             return _uncacheable_material_proof(
                 "io-error", canonical_roots_tuple, request_tuple,
                 len(files), total_bytes,
             )
         except ValueError:
+            if capture is not None:
+                capture.close()
+            for stream in captured_vmt.values():
+                stream.close()
             return _uncacheable_material_proof(
                 "unsafe-tree", canonical_roots_tuple, request_tuple,
                 len(files), total_bytes,
             )
+        except ProcessCancelledError:
+            if capture is not None:
+                capture.close()
+            for stream in captured_vmt.values():
+                stream.close()
+            raise
         files.append(MaterialFileProof(root_index, relative, path.suffix.casefold()[1:], size, digest))
         total_bytes += size
 
@@ -831,34 +1032,73 @@ def material_resolution_proof(
     resolutions: list[MaterialRequestResolution] = []
     import render_previews
     for request in request_tuple:
-        _cancel(cancel_event, "cancelled during material resolution")
-        resolved = render_previews._source_material_files(
-            request.material_identity,
-            tuple(path for _identity, path in canonical_roots_tuple),
-            search_paths=request.search_paths,
-        )
-        if resolved is None:
+        try:
+            _cancel(cancel_event, "cancelled during material resolution")
+        except ProcessCancelledError:
+            for stream in captured_vmt.values():
+                stream.close()
+            raise
+        selected = selected_vmt[request.request_index]
+        if selected is None:
             resolutions.append(MaterialRequestResolution(
                 request.request_index, request.material_identity, "missing",
                 None, None, None, None, None, None, None, None, None, (),
             ))
             continue
-        vmt_root = int(resolved["vmt_root_index"])
-        vtf_root = int(resolved["vtf_root_index"])
-        vmt_relative = Path(resolved["vmt_path"]).relative_to(canonical_roots_tuple[vmt_root][1]).as_posix()
-        vtf_relative = Path(resolved["vtf_path"]).relative_to(canonical_roots_tuple[vtf_root][1]).as_posix()
+        vmt_root, search_index, vmt_relative = selected
+        stream = captured_vmt[(vmt_root, vmt_relative.casefold())]
+        stream.seek(0)
+        vmt_text = stream.read().decode("utf-8", errors="replace")
+        parsed = render_previews._parse_vmt_root(vmt_text)
+        texture_reference = render_previews._source_texture_reference(vmt_text)
+        if parsed is None or texture_reference is None:
+            resolutions.append(MaterialRequestResolution(
+                request.request_index, request.material_identity, "missing",
+                None, None, None, None, None, None, None, None, None, (),
+            ))
+            continue
+        shader, texture_directive, base_texture, _uses_alpha = texture_reference
+        normalized_texture = base_texture.replace("\\", "/").strip()
+        texture_path = PurePosixPath(normalized_texture)
+        if (
+            not normalized_texture or texture_path.is_absolute()
+            or PureWindowsPath(normalized_texture).is_absolute()
+            or PureWindowsPath(normalized_texture).drive
+            or ".." in texture_path.parts
+        ):
+            resolutions.append(MaterialRequestResolution(
+                request.request_index, request.material_identity, "missing",
+                None, None, None, None, None, None, None, None, None, (),
+            ))
+            continue
+        vtf_file = None
+        for root_index in range(len(canonical_roots_tuple)):
+            candidate = file_map.get((root_index, f"{texture_path.as_posix()}.vtf".casefold()))
+            if candidate is not None and candidate.kind == "vtf":
+                vtf_file = candidate
+                break
+        if vtf_file is None:
+            resolutions.append(MaterialRequestResolution(
+                request.request_index, request.material_identity, "missing",
+                None, None, None, None, None, None, None, None, None, (),
+            ))
+            continue
+        vtf_root = vtf_file.root_index
+        vtf_relative = vtf_file.path
         vmt = file_map[(vmt_root, vmt_relative.casefold())]
-        vtf = file_map[(vtf_root, vtf_relative.casefold())]
+        vtf = vtf_file
         duplicates = tuple(
-            DuplicateDirectiveProof(item["directive"], tuple(item["ignored_values"]))
-            for item in resolved["duplicate_root_directives"]
+            DuplicateDirectiveProof(directive, tuple(values))
+            for directive, values in sorted(parsed[2].items())
         )
         resolutions.append(MaterialRequestResolution(
             request.request_index, request.material_identity, "resolved",
-            vmt_root, int(resolved["search_path_index"]), vmt_relative, vmt.sha256,
-            vtf_root, vtf_relative, vtf.sha256, str(resolved["shader"]),
-            str(resolved["texture_directive"]), duplicates,
+            vmt_root, search_index, vmt_relative, vmt.sha256,
+            vtf_root, vtf_relative, vtf.sha256, shader,
+            texture_directive, duplicates,
         ))
+    for stream in captured_vmt.values():
+        stream.close()
     root_proofs = []
     for root_index, (identity, _root) in enumerate(canonical_roots_tuple):
         inventory = tuple(item for item in files if item.root_index == root_index)
@@ -935,7 +1175,7 @@ def _render_file_manifest(
             if key in folded:
                 raise ValueError("render tree contains case-colliding paths")
             folded.add(key)
-            size, digest = _file_proof(path, cancel_event)
+            size, digest = _file_proof(path, cancel_event, contained_root=root)
             if relative == "render_manifest.json":
                 kind, width, height = "manifest", None, None
             elif relative.casefold().endswith(".png"):
@@ -975,30 +1215,28 @@ def _copy_file_no_follow(
     source: Path,
     destination: Path,
     cancel_event: threading.Event | None,
+    *,
+    contained_root: Path | None = None,
 ) -> None:
     _cancel(cancel_event, "cancelled before cache file copy")
-    before = source.lstat()
-    if _is_reparse(source) or not stat.S_ISREG(before.st_mode):
-        raise ValueError("cache copy source is a reparse or special file")
-    digest = hashlib.sha256()
     size = 0
-    with source.open("rb") as reader, destination.open("xb") as writer:
+    reader, before_identity = _open_regular_no_follow(
+        source, contained_root=contained_root
+    )
+    with reader, destination.open("xb") as writer:
         while True:
             _cancel(cancel_event, "cancelled during cache file copy")
             block = reader.read(_IO_CHUNK_SIZE)
             if not block:
                 break
             writer.write(block)
-            digest.update(block)
             size += len(block)
         writer.flush()
         os.fsync(writer.fileno())
-    after = source.lstat()
+        after_identity = _opened_file_identity(os.fstat(reader.fileno()))
     if (
-        _is_reparse(source)
-        or (before.st_dev, before.st_ino, before.st_size, getattr(before, "st_mtime_ns", 0))
-        != (after.st_dev, after.st_ino, after.st_size, getattr(after, "st_mtime_ns", 0))
-        or size != after.st_size
+        before_identity != after_identity
+        or size != after_identity[2]
     ):
         raise ValueError("cache copy source changed while reading")
 
@@ -1024,7 +1262,10 @@ def _copy_render_tree(
                     raise ValueError("cache copy source contains a reparse directory")
                 (target_parent / name).mkdir()
             for name in sorted(file_names):
-                _copy_file_no_follow(parent / name, target_parent / name, cancel_event)
+                _copy_file_no_follow(
+                    parent / name, target_parent / name, cancel_event,
+                    contained_root=source_root,
+                )
             _fsync_directory(target_parent)
 
 
@@ -1056,6 +1297,11 @@ def _remove_owned_tree(path: Path, parent: Path) -> None:
     if path.exists():
         _assert_safe_tree(path)
         shutil.rmtree(path)
+
+
+def _path_identity(path: Path) -> tuple[int, int]:
+    info = Path(path).lstat()
+    return int(info.st_dev), int(info.st_ino)
 
 
 class FocusedRenderCache:
@@ -1168,21 +1414,60 @@ class FocusedRenderCache:
             _fsync_directory(staging)
             _cancel(cancel_event, "cancelled before focus cache promotion")
             final = self._entry(key)
+            staging_identity = _path_identity(staging)
+            concurrent = self._validate_entry(key, cancel_event)
+            if concurrent is not None:
+                _remove_owned_tree(staging, self.root)
+                return FocusRenderDirectories(
+                    final / "payload/reference", final / "payload/candidate"
+                )
             if os.path.lexists(final):
                 if _is_reparse(final):
                     raise ValueError("focused cache final is a reparse point")
                 quarantine = self.root / f"{key.digest}.quarantine-{uuid.uuid4().hex}"
                 os.replace(final, quarantine)
+                os.replace(quarantine, final)
+                if self._validate_entry(key, cancel_event) is not None:
+                    _remove_owned_tree(staging, self.root)
+                    return FocusRenderDirectories(
+                        final / "payload/reference", final / "payload/candidate"
+                    )
+                os.replace(final, quarantine)
             try:
                 os.replace(staging, final)
+                if _path_identity(final) != staging_identity:
+                    if self._validate_entry(key, None) is not None:
+                        _cancel(cancel_event, "cancelled after concurrent cache winner")
+                        if quarantine is not None:
+                            try:
+                                _remove_owned_tree(quarantine, self.root)
+                            except (OSError, ValueError):
+                                pass
+                            quarantine = None
+                        return FocusRenderDirectories(
+                            final / "payload/reference", final / "payload/candidate"
+                        )
+                    raise ValueError("focus cache destination changed during promotion")
+                _cancel(cancel_event, "cancelled after focus cache promotion")
                 _fsync_directory(self.root)
             except BaseException:
+                final_exists = os.path.lexists(final) and not _is_reparse(final)
+                final_is_ours = final_exists and _path_identity(final) == staging_identity
+                if final_is_ours:
+                    _remove_owned_tree(final, self.root)
+                    final_exists = False
+                concurrent_valid = final_exists and self._validate_entry(key, None) is not None
                 if quarantine is not None:
-                    if os.path.lexists(final) and not _is_reparse(final):
-                        _remove_owned_tree(final, self.root)
-                    os.replace(quarantine, final)
-                    quarantine = None
-                    _fsync_directory(self.root)
+                    if not final_exists:
+                        os.replace(quarantine, final)
+                        quarantine = None
+                        _fsync_directory(self.root)
+                    elif concurrent_valid:
+                        try:
+                            _remove_owned_tree(quarantine, self.root)
+                            quarantine = None
+                        except (OSError, ValueError):
+                            pass
                 raise
             if quarantine is not None:
                 try:
@@ -1306,6 +1591,68 @@ def _record_digest(record: FocusedRenderEvidence) -> str:
     ).hexdigest()
 
 
+def _validate_focused_render_record(
+    record: FocusedRenderEvidence,
+    *,
+    verify_seal: bool,
+) -> None:
+    if not isinstance(record, FocusedRenderEvidence) or not isinstance(record.target, FocusTarget):
+        raise ValueError("focused render record type is invalid")
+    expected = json.loads(canonical_json(record.expected))
+    expected = _exact(expected, {
+        "region_key", "poses", "passes", "angles", "width", "height",
+        "reference_count", "candidate_count",
+    }, "focused record expected matrix")
+    if expected["region_key"] != record.target.region_key:
+        raise ValueError("focused record expected region differs from target")
+    poses = expected["poses"]
+    if (
+        type(poses) is not list or not poses or len(poses) > 2
+        or poses[0] != "bind" or len(set(poses)) != len(poses)
+        or record.target.anchor_pose not in poses
+    ):
+        raise ValueError("focused record poses are invalid")
+    if tuple(expected["passes"]) != EXPECTED_PASSES or tuple(expected["angles"]) != EXPECTED_ANGLES:
+        raise ValueError("focused record matrix is invalid")
+    _integer(expected["width"], "focused record width", minimum=1)
+    _integer(expected["height"], "focused record height", minimum=1)
+    count = len(poses) * len(EXPECTED_PASSES) * len(EXPECTED_ANGLES)
+    if expected["reference_count"] != count or expected["candidate_count"] != count:
+        raise ValueError("focused record cardinality is invalid")
+    if type(record.cache_hit) is not bool:
+        raise ValueError("focused record cache diagnostic is invalid")
+    _hash(record.material_proof_sha256, "focused record material proof")
+    _hash(record.reference_manifest_sha256, "focused reference manifest")
+    _hash(record.candidate_manifest_sha256, "focused candidate manifest")
+    _relative(record.reference_manifest, "focused reference manifest path")
+    _relative(record.candidate_manifest, "focused candidate manifest path")
+    files = tuple(record.files)
+    if any(not isinstance(item, RenderFileProof) for item in files):
+        raise ValueError("focused record file proof is invalid")
+    _validate_render_files(files, expected)
+    reference = next(
+        (item for item in files if item.side == "reference" and item.kind == "manifest"),
+        None,
+    )
+    candidate = next(
+        (item for item in files if item.side == "candidate" and item.kind == "manifest"),
+        None,
+    )
+    if (
+        reference is None or candidate is None
+        or record.reference_manifest != f"reference/{reference.path}"
+        or record.candidate_manifest != f"candidate/{candidate.path}"
+        or record.reference_manifest_sha256 != reference.sha256
+        or record.candidate_manifest_sha256 != candidate.sha256
+    ):
+        raise ValueError("focused record manifest proof is inconsistent")
+    _validate_validation(record.validation, record.terminal_status)
+    if verify_seal:
+        _hash(record.evidence_sha256, "focused record evidence")
+        if _record_digest(record) != record.evidence_sha256:
+            raise ValueError("focused record seal is invalid")
+
+
 def build_focused_render_evidence(
     target: FocusTarget,
     validation: ValidationResult,
@@ -1348,13 +1695,16 @@ def build_focused_render_evidence(
         f"candidate/{candidate_manifest.path}", candidate_manifest.sha256,
         file_tuple, material_proof_sha256, validation, cache_hit, "0" * 64,
     )
-    return FocusedRenderEvidence(
+    _validate_focused_render_record(unsealed, verify_seal=False)
+    result = FocusedRenderEvidence(
         target, terminal, exact_expected,
         unsealed.reference_manifest, unsealed.reference_manifest_sha256,
         unsealed.candidate_manifest, unsealed.candidate_manifest_sha256,
         file_tuple, material_proof_sha256, validation, cache_hit,
         _record_digest(unsealed),
     )
+    _validate_focused_render_record(result, verify_seal=True)
+    return result
 
 
 def validate_focused_target(
@@ -1449,9 +1799,7 @@ def focused_gate_evidence_payload(
     if set(context.material_proofs) != {item.region_key for item in selected}:
         raise ValueError("focused material proof cardinality differs from selection")
     for record in record_tuple:
-        _validate_validation(record.validation, record.terminal_status)
-        if _record_digest(record) != record.evidence_sha256:
-            raise ValueError("focused record seal is invalid")
+        _validate_focused_render_record(record, verify_seal=True)
         proof = context.material_proofs[record.target.region_key]
         if record.material_proof_sha256 != proof["digest"]:
             raise ValueError("focused record material proof differs from context")

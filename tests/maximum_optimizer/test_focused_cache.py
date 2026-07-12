@@ -323,6 +323,32 @@ class MaterialResolutionProofTests(unittest.TestCase):
         self.assertNotEqual(changed.digest, first.digest)
         self.assertEqual(changed.resolutions[0].root_index, 0)
 
+    def test_resolution_is_derived_from_sealed_vmt_bytes_during_swap_and_restore(self):
+        from maximum_optimizer import focused_cache
+        import render_previews
+
+        original_resolver = render_previews._source_material_files
+
+        original_bytes = (self.first / "vehicles/body.vmt").read_bytes()
+
+        def swap_resolve_restore(*args, **kwargs):
+            (self.first / "vehicles/body.vmt").write_text(
+                'UnlitGeneric { "$basetexture" "textures/body" }', encoding="utf-8"
+            )
+            try:
+                return original_resolver(*args, **kwargs)
+            finally:
+                (self.first / "vehicles/body.vmt").write_bytes(original_bytes)
+
+        with mock.patch.object(
+            render_previews, "_source_material_files", side_effect=swap_resolve_restore
+        ):
+            proof = focused_cache.material_resolution_proof(
+                self.roots, self.requests, threading.Event()
+            )
+        self.assertTrue(proof.cacheable)
+        self.assertEqual(proof.resolutions[0].shader, "vertexlitgeneric")
+
     def test_material_proof_bounds_are_inclusive_and_stop_before_excess_hash(self):
         from maximum_optimizer import focused_cache
 
@@ -345,7 +371,7 @@ class MaterialResolutionProofTests(unittest.TestCase):
             )
         self.assertFalse(over_files.cacheable)
         self.assertEqual(over_files.reason, "file-limit")
-        self.assertEqual(file_proof.call_count, 1)
+        file_proof.assert_not_called()
 
         with mock.patch.object(focused_cache, "_MAX_MATERIAL_BYTES", 1), mock.patch.object(
             focused_cache, "_file_proof", wraps=focused_cache._file_proof
@@ -356,6 +382,42 @@ class MaterialResolutionProofTests(unittest.TestCase):
         self.assertFalse(over_bytes.cacheable)
         self.assertEqual(over_bytes.reason, "byte-limit")
         file_proof.assert_not_called()
+
+    def test_file_limit_stops_discovery_before_touching_file_4097(self):
+        from maximum_optimizer import focused_cache
+
+        first = self.first / "one.vmt"
+        second = self.first / "two.vmt"
+        first.write_text("one", encoding="utf-8")
+        second.write_text("two", encoding="utf-8")
+        real_lstat = Path.lstat
+
+        def lstat(path):
+            if Path(path) == second:
+                raise AssertionError("file beyond discovery bound was touched")
+            return real_lstat(path)
+
+        with mock.patch.object(focused_cache, "_MAX_MATERIAL_FILES", 1), mock.patch.object(
+            focused_cache, "_is_reparse", return_value=False
+        ), mock.patch.object(Path, "lstat", lstat), mock.patch.object(
+            focused_cache.os, "walk",
+            return_value=iter([(str(self.first), [], ["one.vmt", "two.vmt"])]),
+        ):
+            proof = focused_cache.material_resolution_proof(
+                (("first", self.first),), self.requests, threading.Event()
+            )
+        self.assertFalse(proof.cacheable)
+        self.assertEqual(proof.reason, "file-limit")
+
+    def test_file_hash_honors_remaining_byte_budget_without_excess_read(self):
+        from maximum_optimizer import focused_cache
+
+        path = self.first / "growing.vmt"
+        path.write_bytes(b"0123456789")
+        with self.assertRaisesRegex(ValueError, "byte limit"):
+            focused_cache._file_proof(
+                path, threading.Event(), max_bytes=9, contained_root=self.first
+            )
 
     def test_material_proof_unsafe_tree_disables_cache_and_cancellation_propagates(self):
         from maximum_optimizer.focused_cache import material_resolution_proof
@@ -579,12 +641,12 @@ class FocusedRenderCacheTests(unittest.TestCase):
         real_copy = focused_cache._copy_file_no_follow
         changed = False
 
-        def mutate_then_copy(source, destination, cancel_event):
+        def mutate_then_copy(source, destination, cancel_event, **kwargs):
             nonlocal changed
             if not changed:
                 shared.write_bytes(b"changed-before-copy")
                 changed = True
-            return real_copy(source, destination, cancel_event)
+            return real_copy(source, destination, cancel_event, **kwargs)
 
         with mock.patch.object(
             focused_cache, "_copy_file_no_follow", side_effect=mutate_then_copy
@@ -594,6 +656,160 @@ class FocusedRenderCacheTests(unittest.TestCase):
             )
         self.assertIsNone(restored)
         self.assertFalse((self.base / "snapshots/toctou").exists())
+
+    def test_store_keeps_valid_concurrent_same_key_winner(self):
+        import hashlib
+        import json
+        import shutil
+        from maximum_optimizer import focused_cache
+
+        winner_cache = focused_cache.FocusedRenderCache(self.base / "winner-cache")
+        winner_cache.store(
+            self.key, self.directories, self.metadata, self.files, threading.Event()
+        )
+        winner = self.base / "winner-cache" / self.key.digest
+        metadata_path = winner / "metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        marker_path = winner / "complete.json"
+        marker = json.loads(marker_path.read_text())
+        marker["metadata_sha256"] = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+        marker_path.write_text(json.dumps(marker, indent=2), encoding="utf-8")
+        winner_metadata = metadata_path.read_bytes()
+
+        cache = focused_cache.FocusedRenderCache(self.base / "cache")
+        final = self.base / "cache" / self.key.digest
+        real_write = focused_cache._write_json_fsync
+
+        def publish_winner_after_marker(path, payload):
+            real_write(path, payload)
+            if Path(path).name == "complete.json" and ".tmp-" in Path(path).parent.name:
+                shutil.copytree(winner, final)
+
+        with mock.patch.object(
+            focused_cache, "_write_json_fsync", side_effect=publish_winner_after_marker
+        ):
+            cache.store(
+                self.key, self.directories, self.metadata, self.files, threading.Event()
+            )
+        self.assertEqual((final / "metadata.json").read_bytes(), winner_metadata)
+
+    def test_cancellation_after_promotion_rolls_back_new_entry(self):
+        from maximum_optimizer import focused_cache
+        from maximum_optimizer.processes import ProcessCancelledError
+
+        cache = focused_cache.FocusedRenderCache(self.base / "cache")
+        final = self.base / "cache" / self.key.digest
+        cancelled = threading.Event()
+        real_replace = focused_cache.os.replace
+
+        def cancel_after_replace(source, destination):
+            result = real_replace(source, destination)
+            if ".tmp-" in Path(source).name and Path(destination) == final:
+                cancelled.set()
+            return result
+
+        with mock.patch.object(
+            focused_cache.os, "replace", side_effect=cancel_after_replace
+        ), self.assertRaises(ProcessCancelledError):
+            cache.store(self.key, self.directories, self.metadata, self.files, cancelled)
+        self.assertFalse(final.exists())
+
+    def test_valid_winner_appearing_at_quarantine_is_restored(self):
+        import hashlib
+        import json
+        import shutil
+        from maximum_optimizer import focused_cache
+
+        winner_cache = focused_cache.FocusedRenderCache(self.base / "winner-gap")
+        winner_cache.store(
+            self.key, self.directories, self.metadata, self.files, threading.Event()
+        )
+        winner = self.base / "winner-gap" / self.key.digest
+        winner_metadata_path = winner / "metadata.json"
+        winner_metadata = json.loads(winner_metadata_path.read_text())
+        winner_metadata_path.write_text(json.dumps(winner_metadata, indent=2), encoding="utf-8")
+        winner_marker_path = winner / "complete.json"
+        winner_marker = json.loads(winner_marker_path.read_text())
+        winner_marker["metadata_sha256"] = hashlib.sha256(winner_metadata_path.read_bytes()).hexdigest()
+        winner_marker_path.write_text(json.dumps(winner_marker, indent=2), encoding="utf-8")
+        expected_bytes = winner_metadata_path.read_bytes()
+
+        cache = focused_cache.FocusedRenderCache(self.base / "cache")
+        final = self.base / "cache" / self.key.digest
+        real_lexists = focused_cache.os.path.lexists
+        injected = False
+
+        def inject_winner(path):
+            nonlocal injected
+            if Path(path) == final and not injected:
+                shutil.copytree(winner, final)
+                injected = True
+                return True
+            return real_lexists(path)
+
+        with mock.patch.object(
+            focused_cache.os.path, "lexists", side_effect=inject_winner
+        ):
+            cache.store(
+                self.key, self.directories, self.metadata, self.files, threading.Event()
+            )
+        self.assertEqual((final / "metadata.json").read_bytes(), expected_bytes)
+
+    def test_cancellation_never_deletes_concurrent_winner_after_promotion(self):
+        import hashlib
+        import json
+        import shutil
+        from maximum_optimizer import focused_cache
+        from maximum_optimizer.processes import ProcessCancelledError
+
+        winner_cache = focused_cache.FocusedRenderCache(self.base / "winner-after")
+        winner_cache.store(
+            self.key, self.directories, self.metadata, self.files, threading.Event()
+        )
+        winner = self.base / "winner-after" / self.key.digest
+        winner_metadata_path = winner / "metadata.json"
+        winner_metadata = json.loads(winner_metadata_path.read_text())
+        winner_metadata_path.write_text(json.dumps(winner_metadata, indent=2), encoding="utf-8")
+        winner_marker_path = winner / "complete.json"
+        winner_marker = json.loads(winner_marker_path.read_text())
+        winner_marker["metadata_sha256"] = hashlib.sha256(winner_metadata_path.read_bytes()).hexdigest()
+        winner_marker_path.write_text(json.dumps(winner_marker, indent=2), encoding="utf-8")
+        expected_bytes = winner_metadata_path.read_bytes()
+
+        cache = focused_cache.FocusedRenderCache(self.base / "cache")
+        final = self.base / "cache" / self.key.digest
+        cancelled = threading.Event()
+        real_replace = focused_cache.os.replace
+
+        def replace_then_winner(source, destination):
+            result = real_replace(source, destination)
+            if ".tmp-" in Path(source).name and Path(destination) == final:
+                shutil.rmtree(final)
+                shutil.copytree(winner, final)
+                cancelled.set()
+            return result
+
+        with mock.patch.object(
+            focused_cache.os, "replace", side_effect=replace_then_winner
+        ), self.assertRaises(ProcessCancelledError):
+            cache.store(self.key, self.directories, self.metadata, self.files, cancelled)
+        self.assertEqual((final / "metadata.json").read_bytes(), expected_bytes)
+
+    def test_file_hash_rejects_symlink_even_if_path_precheck_is_bypassed(self):
+        from maximum_optimizer import focused_cache
+
+        target = self.base / "target.bin"; target.write_bytes(b"outside")
+        link = self.base / "link.bin"
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            self.skipTest(f"symlink privilege unavailable: {exc}")
+        with mock.patch.object(focused_cache, "_is_reparse", return_value=False):
+            with self.assertRaises(ValueError):
+                focused_cache._file_proof(
+                    link, threading.Event(), contained_root=self.base
+                )
 
 
 def _target():
@@ -762,6 +978,23 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
         for selection, records in invalid_cases:
             with self.subTest(selection=selection, records=records), self.assertRaises(ValueError):
                 focused_gate_evidence_payload(self.context, selection, records)
+
+    def test_schema1_revalidates_self_resealed_record_internal_consistency(self):
+        from dataclasses import replace
+        from maximum_optimizer.domain import ValidationResult
+        from maximum_optimizer import focused_cache
+
+        validation = ValidationResult(True, metrics={name: 0.0 for name in _limits(0.0)})
+        record = focused_cache.build_focused_render_evidence(
+            self.target, validation, self.metadata.expected, self.files,
+            self.payload["material_proof"]["digest"], False,
+        )
+        forged = replace(record, reference_manifest_sha256=HASHES["9"])
+        forged = replace(forged, evidence_sha256=focused_cache._record_digest(forged))
+        with self.assertRaisesRegex(ValueError, "manifest"):
+            focused_cache.focused_gate_evidence_payload(
+                self.context, self.selection, (forged,)
+            )
 
 
 if __name__ == "__main__":
