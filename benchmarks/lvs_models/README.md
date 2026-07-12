@@ -84,22 +84,32 @@ quality `unverified`; this lane does not authorize a winner.
 
 ## Compiler-aware Blender adaptive checkpoint
 
-`blender_adaptive_v1.json` freezes the Task 7 wheel and Dodge Charger checkpoints. Both compile
-smaller than the frozen `b050` artifacts: wheel `502,779` vs `633,089` bytes (-20.58%), and Charger
-`13,326,209` vs `14,738,984` bytes (-9.59%). Actual StudioMDL compiled bytes select candidates;
+`blender_adaptive_v1.json` freezes the Task 7 checkpoints plus the Task 8B corpus expansion.
+Actual StudioMDL compiled bytes select candidates;
 the `82V+12T` proxy is diagnostic only and is checked against VVD plus both VTX variants. The
 record binds tool, implementation, candidate-metrics, payload, compile-log and sidecar hashes.
-Charger preserves exactly two visual
-SMDs after fail-closed appearance checks (`roof_paint.smd` and `body29_model0.smd`); their source
-and output hashes are identical in the evidence.
+Every audit fallback preserves the complete SMD byte-for-byte and records matching source/output
+hashes. The post-hardening r0.40 results are:
 
-This is a positive compiled-byte result, not a promoted winner. Only one pressure family plus the
-wheel checkpoint ran. Wheel QC-aware textures resolved, but bodygroups occlude internal detail.
+| family | candidate | frozen b050 | delta vs b050 |
+|---|---:|---:|---:|
+| Pontiac wheel | 502,779 | 633,089 | -20.58% |
+| Dodge Charger | 13,326,209 | 14,738,984 | -9.59% |
+| Dodge Monaco police | 13,817,692 | 11,716,117 | +17.94% |
+| Toyota Supra | 10,520,251 | 11,579,284 | -9.15% |
+| Nissan Skyline GTR32 | 6,802,199 | 6,630,288 | +2.59% |
+| VW Beetle | 4,185,594 | 3,612,514 | +15.86% |
+| VW Touareg | 6,203,485 | 4,848,924 | +27.94% |
+
+This is a mixed compiled-byte result, not a promoted winner. Four of five pressure families ran;
+Ford Fairlane remains the explicit duplicate-animation non-roundtrippable control. Wheel QC-aware
+textures resolved, but bodygroups occlude internal detail.
 The Charger render attempt produced no accepted manifest because its aggregate geometry metric
 fails closed on an original degenerate triangle. Thresholds and runtime remain uncalibrated, so
 quality is explicitly `unverified`.
 
 Regenerate from ignored local artifacts by setting `LVS_TASK7_EVIDENCE_ROOT`,
+`LVS_TASK8_EVIDENCE_ROOT`,
 `LVS_BLENDER_MODELS_ROOT`, `BLENDER_EXE` and `STUDIOMDL_EXE`, then run:
 
 ```text

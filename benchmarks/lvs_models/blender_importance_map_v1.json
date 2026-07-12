@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "strategy": "blender-importance-map-v1",
+  "family_id": "pontiac_transam_wheel",
+  "toolchain": {
+    "blender": "f81d3bca0af0d917e03fdf09255981b2ed0750d3a2815da991ea5425a87f8f7c",
+    "studiomdl": "9e40454499890d0de941068f2b47db4d3be69ab7213f95e4d9c09f255a7230cf"
+  },
+  "implementation": {
+    "batch_optimize_maximum.py": "ba2a05ff72f3758def4e9833a8526ac010e054d0a93727e01425dc77d68c9c75",
+    "maximum_optimizer/importance_map.py": "7c39de32df61275666dff51650427baf308780bf2c19f528bfc10c3f2d1dfe60",
+    "maximum_optimizer/search.py": "043ef97c8498a453ae624d6554355c60ab903367ebed6745c3bcf0caed9c6e24"
+  },
+  "baseline": {
+    "strategy": "blender-adaptive-v1",
+    "ratio": 0.4,
+    "compiled": {
+      "total_bytes": 502779,
+      "artifacts": [
+        {"path": "wheel.dx80.vtx", "size_bytes": 85107, "sha256": "931caa6152a4a753640fc064b684e7e19b39dc2ae8adb98206a2ccfac2f6048b"},
+        {"path": "wheel.dx90.vtx", "size_bytes": 85107, "sha256": "b6116547714cc03333f260c8b152314b455db4081d7b8c24ccb6b7cb5e1ae37e"},
+        {"path": "wheel.mdl", "size_bytes": 2768, "sha256": "ab31d26e10fe3a2124521021310837a2906812d7d6905993a80fcf908d4c8827"},
+        {"path": "wheel.phy", "size_bytes": 3397, "sha256": "c76370f7016e19af6d91d41f3ec8fcb27a5dff077ee173bd6e90c80b9c175ba1"},
+        {"path": "wheel.vvd", "size_bytes": 326400, "sha256": "a26bf6fd760209eb865d87c7e4f9277f7c35bca281a41743877b114f16cddaab"}
+      ]
+    },
+    "candidate_sha256": "7c223b998574b61d1acbd2d86e76d424b4295ecf4ed0f1eb833c73abafc7f5a7",
+    "metrics_sha256": "7b056c33051e984c6bf3f7fb2d4de9465244021ae065e8e52cd13b21ddc784e2",
+    "optimize_log_sha256": "a9610aa09cfb13d5c7d0ed4cd912e2607603fe1c33cf23dcc0e3550807c8b419",
+    "compile_log_sha256": "cec00fa8fc66e549bda70f8a03974a5db2e5e5808d8da86961cd8ff2738a3727",
+    "render_manifests": {"reference_sha256": "a527e70d238823cdffed7c3f8be4c6189faf4c5ea8a5df9a68005847f2375c89", "candidate_sha256": "6c0140c4c02243e60108729aab5feb96968067c18700be36b18097ac1e92ac01"},
+    "raw_clay": {"average_silhouette_error": 0.0018774008346019166, "max_silhouette_error": 0.0029558435845807862, "average_edge_error": 0.041151737828188525, "max_edge_error": 0.07933579335793357, "average_rgb_mae": 0.00010094962648850038, "max_rgb_mae": 0.00020634130306877228}
+  },
+  "candidate": {
+    "strategy": "blender-importance-map-v1",
+    "ratio": 0.35,
+    "compiled": {
+      "total_bytes": 440415,
+      "artifacts": [
+        {"path": "wheel.dx80.vtx", "size_bytes": 74469, "sha256": "fcbafa0d13cf29dd41863067c7cb0b4b422dc1f61ba082d977567fc94bf3b32c"},
+        {"path": "wheel.dx90.vtx", "size_bytes": 74469, "sha256": "2c65e2b952ea89ae8862bbc5c9431b3dd893808be9d1a7876204f70bb8715f32"},
+        {"path": "wheel.mdl", "size_bytes": 2768, "sha256": "34e3c6983d93df336ab4fad94d2333dadc79d970714daeecfe9596637eb308a8"},
+        {"path": "wheel.phy", "size_bytes": 3397, "sha256": "469067a9678bdbe0f96cc49e22fa97acabe775035ae90ae84aac8fbb746915db"},
+        {"path": "wheel.vvd", "size_bytes": 285312, "sha256": "b6d2d20a1167f3833e6a068a3015f1cb5ddaa28c4674b5eda73f975c9531bf2e"}
+      ]
+    },
+    "candidate_sha256": "958167991dc6088f4536bd1ee0e7fa02061ceec47f8f62cfc4574612503bc5a9",
+    "metrics_sha256": "320b5fbe39e85c179a9ed00c2c2b7e4d89944e883cb3f3dde9e785b0ed58ab62",
+    "optimize_log_sha256": "c53a6613ab81b632790292081a7050ac3b0d5ea6d49d8261b450b0fedebcb025",
+    "compile_log_sha256": "0080e7e831c2581cc5d585d1d631f59f99118fb1ed03e03f09a25833df7b00de",
+    "render_manifests": {"reference_sha256": "ea070557eb5475796ae391fd52aa1ce5264b70498c793c056bb4c216776e530c", "candidate_sha256": "56eaa621aacdfba7bea48c327b73a4bf7d74de6dffc42de0038540824ac1dcb6"},
+    "raw_clay": {"average_silhouette_error": 0.0015676824438737025, "max_silhouette_error": 0.00485803183781619, "average_edge_error": 0.027637662115682103, "max_edge_error": 0.10354223433242507, "average_rgb_mae": 0.00012959763043189984, "max_rgb_mae": 0.0002513946879513835}
+  },
+  "quality": {"status": "uncalibrated-raw-ranking-only", "scope": "rim1-bind-8-views", "texture_status": "clay-authoritative"},
+  "decision": {"winner": false, "status": "rejected-visible-boundary-regression", "reason": "12.4% fewer compiled bytes than adaptive r0.40, but worst clay silhouette and edge errors are both higher"}
+}

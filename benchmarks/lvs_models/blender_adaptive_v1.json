@@ -1,16 +1,16 @@
 {
   "decision": {
-    "pressure_families_run": 1,
-    "reason": "both compiled checkpoints beat b050, but only one of five pressure families ran and visual/runtime acceptance is incomplete",
+    "pressure_families_run": 4,
+    "reason": "only wheel, Charger and Supra beat b050; Monaco, Skyline, Beetle and Touareg regress, Ford remains non-roundtrippable, and visual/runtime acceptance is incomplete",
     "required_pressure_families": 5,
     "winner": false
   },
-  "evidence_sha256": "52bf296ca088cc94ad60157f2ff4b8324c529dfb7549428324dbc95b6408c788",
+  "evidence_sha256": "d2ac5ff3ddeed0ad945b2a47671736ae48ce15d2694273483371f99a010b96e8",
   "implementation": {
     "scripts": {
-      "batch_optimize_maximum.py": "54bc5fb8befaca22b63229760d75d0d0350b9256fcbb5c60e4f0c7d0702056ad",
+      "batch_optimize_maximum.py": "ba2a05ff72f3758def4e9833a8526ac010e054d0a93727e01425dc77d68c9c75",
       "maximum_optimizer/candidates.py": "12a8a9b96308483bd0d1cd0d3ecefa94e2f153134cdfdd4c489bcf5ffd733cd6",
-      "maximum_optimizer/compiler_aware.py": "a15300251261acb317362c3ec9ad47ff6ffddc48731efe2311dbf017754e14cd"
+      "maximum_optimizer/compiler_aware.py": "186c4d7cd49f8085dd3741c9d4221cc5daa7e8b80ca7c83d7d4d0ee0d6c45b13"
     }
   },
   "quality": {
@@ -88,6 +88,36 @@
       "compile_log_sha256": "c1e5a99c4e2ec11c685dc298ab673745bf5c4c1c5f8829f7b4685821a0c44d55",
       "fallbacks": [],
       "family_id": "pontiac_transam_wheel",
+      "original": {
+        "artifacts": [
+          {
+            "path": "wheel.dx80.vtx",
+            "sha256": "76d554de0663500543235492aeeefe627f3c7b7b2113bd1ae7e54e0100c39429",
+            "size_bytes": 205801
+          },
+          {
+            "path": "wheel.dx90.vtx",
+            "sha256": "4e448c602f63347fd717d591b80a2f24cfb7b22bc892815c6f952e03548a4842",
+            "size_bytes": 205801
+          },
+          {
+            "path": "wheel.mdl",
+            "sha256": "24271210d29b9f0c5b1d377e377bd3aeb3c624f54e922af4c732486e56de012a",
+            "size_bytes": 2768
+          },
+          {
+            "path": "wheel.phy",
+            "sha256": "fa3e392bdd115a77570f8f323fc5f8ae28590e7843744b0eaefcd116a905cb3c",
+            "size_bytes": 3387
+          },
+          {
+            "path": "wheel.vvd",
+            "sha256": "a9e5343aa6cc7de17ea3f2273510b20adc3906e07a062b111fdc062a26fb2dc3",
+            "size_bytes": 769920
+          }
+        ],
+        "total_bytes": 1187677
+      },
       "proxy": {
         "absolute_error_bytes": 856,
         "actual_payload_bytes": 496614,
@@ -102,6 +132,7 @@
         "status": "pass"
       },
       "ratio": 0.4,
+      "status": "compiled",
       "triangles": {
         "after": 6470,
         "before": 16180
@@ -188,6 +219,36 @@
         }
       ],
       "family_id": "dodge_charger",
+      "original": {
+        "artifacts": [
+          {
+            "path": "charger.dx80.vtx",
+            "sha256": "8bbdc9f799e84accd1a7fff75f9147015d4e50747698bf67ec9c291e81dcb8a1",
+            "size_bytes": 4220437
+          },
+          {
+            "path": "charger.dx90.vtx",
+            "sha256": "121e3f3a4ad0bde732e4d0eb780bf9656ca5d309de5bf81a600bf09557c845fd",
+            "size_bytes": 4220437
+          },
+          {
+            "path": "charger.mdl",
+            "sha256": "17fcadaeacd617588ebea26726a1969e674ccdf27c2c990ea0f5908f5b9c801d",
+            "size_bytes": 73588
+          },
+          {
+            "path": "charger.phy",
+            "sha256": "674e8f1e4917ffb5e08b31c5d18886dc88f61cd7c70a03ace524b180b2cb5f71",
+            "size_bytes": 17964
+          },
+          {
+            "path": "charger.vvd",
+            "sha256": "434d6100285939d84292cb01be9ae6f2b5e6e5653afd0a5bfbc0e9b7704c929d",
+            "size_bytes": 17278912
+          }
+        ],
+        "total_bytes": 25811338
+      },
       "proxy": {
         "absolute_error_bytes": 24176,
         "actual_payload_bytes": 13200242,
@@ -202,13 +263,774 @@
         "status": "pass"
       },
       "ratio": 0.4,
+      "status": "compiled",
       "triangles": {
         "after": 131697,
         "before": 295861
       }
+    },
+    {
+      "baseline": {
+        "artifacts": [
+          {
+            "path": "monaco_police.dx80.vtx",
+            "sha256": "dc460f1d35a0285d4718c450fddce64b4c6e2d02b02a20bb9b44a0ace0622c79",
+            "size_bytes": 1761250
+          },
+          {
+            "path": "monaco_police.dx90.vtx",
+            "sha256": "54f91eda84f49ffe32359bbd2ff5280f8dc99adad21d43f4669c66aef7520033",
+            "size_bytes": 1761223
+          },
+          {
+            "path": "monaco_police.mdl",
+            "sha256": "a35364f5698656e90d0c0d63afeb809b3f8e50782606499a4aac58930e57bf03",
+            "size_bytes": 203848
+          },
+          {
+            "path": "monaco_police.phy",
+            "sha256": "3a6410cecac2a3c78540abc7ff699adb4f33b0f2b20e433dabfda9000aedf632",
+            "size_bytes": 15204
+          },
+          {
+            "path": "monaco_police.vvd",
+            "sha256": "5d20a3b79dd93fb4b58dcf2a526c3bab7ad564d35b3a70c4a84593eb65c2abb3",
+            "size_bytes": 7974592
+          }
+        ],
+        "total_bytes": 11716117
+      },
+      "candidate": {
+        "artifacts": [
+          {
+            "path": "monaco_police.dx80.vtx",
+            "sha256": "7010e6b704046b9fa46d2c04aa85c26e51e4a339f6491c2cb06eeac40b711426",
+            "size_bytes": 2092621
+          },
+          {
+            "path": "monaco_police.dx90.vtx",
+            "sha256": "9b579928f7fd6378b077075e954d5c3a6d404a2982f967afa95a79fff2b2964a",
+            "size_bytes": 2092594
+          },
+          {
+            "path": "monaco_police.mdl",
+            "sha256": "da3dfe5356fee9d61f80d6daf259ebbac17d4cba9f8515c64cc7aadf505d2f91",
+            "size_bytes": 198280
+          },
+          {
+            "path": "monaco_police.phy",
+            "sha256": "625dfed6c0f12ebd219496adcbea315601f241c7955d221efb245c5fb0b7f7c5",
+            "size_bytes": 14933
+          },
+          {
+            "path": "monaco_police.vvd",
+            "sha256": "f3236c1bfdccb1c4eddeed3b060afde7184551e5b0aa846081149e7255ef51cd",
+            "size_bytes": 9419264
+          }
+        ],
+        "total_bytes": 13817692
+      },
+      "candidate_metrics_sha256": "b69e53e27cad42225ad939927357b387e89b0d16b6b1dec9e0b6333896e7a66b",
+      "candidate_payload_sha256": "a92aeca88622ac57e25aba8bc36512214060b19ac1b7db9ff3e6b0e428904918",
+      "compile_log_sha256": "9baf1dbea2030813c9dfcb63580a6790f442a85c093c6d2f4a83083615982934",
+      "fallbacks": [
+        {
+          "output_sha256": "82029ac2732c705549197ef54cae6b6fbda7a29fdb9e2ac962512484e3c18723",
+          "reason": "normal must be non-zero",
+          "size_bytes": 3741009,
+          "source": "bar1.smd",
+          "source_sha256": "82029ac2732c705549197ef54cae6b6fbda7a29fdb9e2ac962512484e3c18723"
+        },
+        {
+          "output_sha256": "c6669a8ca2492aa0767561d7db4fc303ebef67d8f718f385e415b313641c498d",
+          "reason": "normal must be non-zero",
+          "size_bytes": 987838,
+          "source": "rear.smd",
+          "source_sha256": "c6669a8ca2492aa0767561d7db4fc303ebef67d8f718f385e415b313641c498d"
+        },
+        {
+          "output_sha256": "fe6d268234c26e8b19c5241ba1415c9b706492a7e9c76f3c306ca3a5c8bc0721",
+          "reason": "normal must be non-zero",
+          "size_bytes": 907799,
+          "source": "rear_dam.smd",
+          "source_sha256": "fe6d268234c26e8b19c5241ba1415c9b706492a7e9c76f3c306ca3a5c8bc0721"
+        },
+        {
+          "output_sha256": "7a0a2393b7e69ab868b2ff7463b434e87589a595670a49d3279bde0b10727f4d",
+          "reason": "normal must be non-zero",
+          "size_bytes": 1438563,
+          "source": "fbp.smd",
+          "source_sha256": "7a0a2393b7e69ab868b2ff7463b434e87589a595670a49d3279bde0b10727f4d"
+        },
+        {
+          "output_sha256": "530364a1da9e49cdd781e0aaa39ee65f22a1637549e6f747210fed06f935eea4",
+          "reason": "normal must be non-zero",
+          "size_bytes": 1353173,
+          "source": "fbp_damnoj.smd",
+          "source_sha256": "530364a1da9e49cdd781e0aaa39ee65f22a1637549e6f747210fed06f935eea4"
+        },
+        {
+          "output_sha256": "ec120f9b4dc65ce88e7ab4744b45a159f44c3a98e76fd3037fb90728bf2003c5",
+          "reason": "normal must be non-zero",
+          "size_bytes": 1250391,
+          "source": "fb.smd",
+          "source_sha256": "ec120f9b4dc65ce88e7ab4744b45a159f44c3a98e76fd3037fb90728bf2003c5"
+        },
+        {
+          "output_sha256": "d4aa87d169b3d852e18bd76e92a015be238cd91da40888d4dd5e8545f8b6dc8c",
+          "reason": "export lost SMD bone influence identities",
+          "size_bytes": 5597438,
+          "source": "body20_model0.smd",
+          "source_sha256": "d4aa87d169b3d852e18bd76e92a015be238cd91da40888d4dd5e8545f8b6dc8c"
+        },
+        {
+          "output_sha256": "bf5e1333f9a42e957c73f25a256749e03c7830b8ba6c813f2cc30e99dd5242c4",
+          "reason": "normal must be non-zero",
+          "size_bytes": 5873107,
+          "source": "body21_model0.smd",
+          "source_sha256": "bf5e1333f9a42e957c73f25a256749e03c7830b8ba6c813f2cc30e99dd5242c4"
+        }
+      ],
+      "family_id": "dodge_monaco_police",
+      "original": {
+        "artifacts": [
+          {
+            "path": "monaco_police.dx80.vtx",
+            "sha256": "956c109bbf49d2a245d9887e5774496843693e77e729fcad3373ef66b6d9205d",
+            "size_bytes": 3339724
+          },
+          {
+            "path": "monaco_police.dx90.vtx",
+            "sha256": "0dd9b344c9730890a5b92a1725069c3119a32860893921551d64608f1d9bde38",
+            "size_bytes": 3339689
+          },
+          {
+            "path": "monaco_police.mdl",
+            "sha256": "4fa077e8fa06d8bf152500e3d801c55b5f48b11735b83d0b898303bcb1b4261d",
+            "size_bytes": 101056
+          },
+          {
+            "path": "monaco_police.phy",
+            "sha256": "3a6410cecac2a3c78540abc7ff699adb4f33b0f2b20e433dabfda9000aedf632",
+            "size_bytes": 15204
+          },
+          {
+            "path": "monaco_police.vvd",
+            "sha256": "2ceee136b1eb73d7872dbf0c016247ee485c18b362c0cb5f1cbafa670d29a570",
+            "size_bytes": 14791232
+          }
+        ],
+        "total_bytes": 21586905
+      },
+      "proxy": {
+        "absolute_error_bytes": 32349,
+        "actual_payload_bytes": 13604479,
+        "compiled_vertices": 147175,
+        "predicted_bytes": 13572130,
+        "triangles": 125315
+      },
+      "qc": {
+        "differing_fields": [
+          "mesh_files"
+        ],
+        "status": "pass"
+      },
+      "ratio": 0.4,
+      "status": "compiled",
+      "triangles": {
+        "after": 125315,
+        "before": 206754
+      }
+    },
+    {
+      "baseline": {
+        "artifacts": [
+          {
+            "path": "supra.dx80.vtx",
+            "sha256": "ead85a138fde08bf81532d2d0a8f8d935339657513824db5af25f750482f4788",
+            "size_bytes": 2023890
+          },
+          {
+            "path": "supra.dx90.vtx",
+            "sha256": "ea633e2abc85be3c755c71ed805890b9bdedc168bf5dcfae989b5613e899e515",
+            "size_bytes": 2023890
+          },
+          {
+            "path": "supra.mdl",
+            "sha256": "035c2ca7dfa7c2985d429f622df40565b24554710883197229d9ce990e9900d0",
+            "size_bytes": 66940
+          },
+          {
+            "path": "supra.phy",
+            "sha256": "a0a75de3b0417b10fdc750838e05a5e184cf44408c9d51f5f78708347c9d5d03",
+            "size_bytes": 19124
+          },
+          {
+            "path": "supra.vvd",
+            "sha256": "5066a89b10cb6d8c57bb87de9c853db85ffcd9b0a4a1b7804a5e117a6ff98cfe",
+            "size_bytes": 7445440
+          }
+        ],
+        "total_bytes": 11579284
+      },
+      "candidate": {
+        "artifacts": [
+          {
+            "path": "supra.dx80.vtx",
+            "sha256": "e5cf4c17e6fb2080614fdf4765879d78bee69101f94da52e6da11d5202a0d5b5",
+            "size_bytes": 1833615
+          },
+          {
+            "path": "supra.dx90.vtx",
+            "sha256": "29c963fb186e11c1bb919223dd516069dc0ed6d2c36725bcb199717812198f96",
+            "size_bytes": 1833615
+          },
+          {
+            "path": "supra.mdl",
+            "sha256": "78c7a60c98516f360cd78fdf7eee3dff560306674762d03593f038584040f97e",
+            "size_bytes": 63808
+          },
+          {
+            "path": "supra.phy",
+            "sha256": "226128599fc1cbda7a5c790ccbcd0a9f5087167a1591e4252abb70038f14031d",
+            "size_bytes": 18973
+          },
+          {
+            "path": "supra.vvd",
+            "sha256": "1c9435a35af89e80123fc0c908182c79af1dd614ae87d71c3574d9e3f3ba3ea4",
+            "size_bytes": 6770240
+          }
+        ],
+        "total_bytes": 10520251
+      },
+      "candidate_metrics_sha256": "af19bbf60c9c386d3cd98c5ccab1d94a8514b74d2ffbe280a0f7dd0057c40f0d",
+      "candidate_payload_sha256": "a92aeca88622ac57e25aba8bc36512214060b19ac1b7db9ff3e6b0e428904918",
+      "compile_log_sha256": "d86f49256987f361bd9a1e208778b2a100e3b7b2c0cc77c1a863cd082373c4fb",
+      "fallbacks": [
+        {
+          "output_sha256": "5e3be7bb80b0ea3395be46b722e1e31979d4ca9edeb6a3f2bac7eed30a9ee5ca",
+          "reason": "normal must be non-zero",
+          "size_bytes": 4151568,
+          "source": "body_stock.smd",
+          "source_sha256": "5e3be7bb80b0ea3395be46b722e1e31979d4ca9edeb6a3f2bac7eed30a9ee5ca"
+        },
+        {
+          "output_sha256": "06fbcef2fb4e405f42d8905e25beef46c12aaa155c2c504e57c0ff2c4ae49f11",
+          "reason": "export lost all hard-normal seam evidence",
+          "size_bytes": 1728430,
+          "source": "wing_stock.smd",
+          "source_sha256": "06fbcef2fb4e405f42d8905e25beef46c12aaa155c2c504e57c0ff2c4ae49f11"
+        },
+        {
+          "output_sha256": "6a146fe14b8a7e2cde93d2de199785bab75ed0540aa9d56cc7b80f8a753a02e1",
+          "reason": "normal must be non-zero",
+          "size_bytes": 2369546,
+          "source": "engine_bay.smd",
+          "source_sha256": "6a146fe14b8a7e2cde93d2de199785bab75ed0540aa9d56cc7b80f8a753a02e1"
+        }
+      ],
+      "family_id": "toyota_supra",
+      "original": {
+        "artifacts": [
+          {
+            "path": "supra.dx80.vtx",
+            "sha256": "c11be14c34915d50228df362640a26cbf945db0278f6b47b445179d044679822",
+            "size_bytes": 3858649
+          },
+          {
+            "path": "supra.dx90.vtx",
+            "sha256": "62598cb70fa54c4074451f1633459c1916194c333448035138289f83fa6f419a",
+            "size_bytes": 3858649
+          },
+          {
+            "path": "supra.mdl",
+            "sha256": "fc6e3759ae563b2d9c2d6f3bc71d52562ef29df706a6f3474a49bea5443f55ff",
+            "size_bytes": 59164
+          },
+          {
+            "path": "supra.phy",
+            "sha256": "a0a75de3b0417b10fdc750838e05a5e184cf44408c9d51f5f78708347c9d5d03",
+            "size_bytes": 19124
+          },
+          {
+            "path": "supra.vvd",
+            "sha256": "3cb23fb88918f278e2fc6f3e400c497be47e07dc861f8ca471929165cf7361a1",
+            "size_bytes": 13620544
+          }
+        ],
+        "total_bytes": 21416130
+      },
+      "proxy": {
+        "absolute_error_bytes": 19654,
+        "actual_payload_bytes": 10437470,
+        "compiled_vertices": 105784,
+        "predicted_bytes": 10417816,
+        "triangles": 145294
+      },
+      "qc": {
+        "differing_fields": [
+          "mesh_files"
+        ],
+        "status": "pass"
+      },
+      "ratio": 0.4,
+      "status": "compiled",
+      "triangles": {
+        "after": 145294,
+        "before": 321715
+      }
+    },
+    {
+      "baseline": {
+        "artifacts": [
+          {
+            "path": "bnr32.dx80.vtx",
+            "sha256": "530908a707be1186e3ed1fc36d7ca83f42407970b1c0b683d686264bc8183ecb",
+            "size_bytes": 1091577
+          },
+          {
+            "path": "bnr32.dx90.vtx",
+            "sha256": "8ddc598d2cdd024514ec6a45f103f3a2197a109ab6341ddd4d9962df8268a8c4",
+            "size_bytes": 1091523
+          },
+          {
+            "path": "bnr32.mdl",
+            "sha256": "785804b6ab85d8b3593f5be075193dcf3381b501c012d1701a6becff99495097",
+            "size_bytes": 167664
+          },
+          {
+            "path": "bnr32.phy",
+            "sha256": "e49e524c3ef915c43034ce2a2d42936826f74ca448be7b6d01f96a610285cf4f",
+            "size_bytes": 15716
+          },
+          {
+            "path": "bnr32.vvd",
+            "sha256": "eb969f93a78d55572500808cbff6b159ba1b2540255b167060e13c04601b5d69",
+            "size_bytes": 4263808
+          }
+        ],
+        "total_bytes": 6630288
+      },
+      "candidate": {
+        "artifacts": [
+          {
+            "path": "bnr32.dx80.vtx",
+            "sha256": "cbdd7265fc42492897744f6cd9d3056e798095b309c737097fba18a981d690a4",
+            "size_bytes": 1121106
+          },
+          {
+            "path": "bnr32.dx90.vtx",
+            "sha256": "decf4e02171b3264cd91f810eb8e07881412955aac951e1444e8c4f022bbad2c",
+            "size_bytes": 1121052
+          },
+          {
+            "path": "bnr32.mdl",
+            "sha256": "596dac81f128d84a4cb25f3bce2e7af34b9a7eab0a2b21b1f799c5dba3fb33f7",
+            "size_bytes": 164764
+          },
+          {
+            "path": "bnr32.phy",
+            "sha256": "513b4d5e624265cefaa8154365f267927462529bda5614673b10d31f0bec0be7",
+            "size_bytes": 15629
+          },
+          {
+            "path": "bnr32.vvd",
+            "sha256": "e5dbafc0b8309dd8745a7b36f8db44ca920c949cb68e45ddf6926e6c98fb149b",
+            "size_bytes": 4379648
+          }
+        ],
+        "total_bytes": 6802199
+      },
+      "candidate_metrics_sha256": "b74f03c8562e4aa29af8af1f306387a0625f71f1aed3016e7beed4ac22696fb6",
+      "candidate_payload_sha256": "a92aeca88622ac57e25aba8bc36512214060b19ac1b7db9ff3e6b0e428904918",
+      "compile_log_sha256": "820e0d211d2e83281b292831c02d2a689b2d02ac59d051c2e2c197647d139194",
+      "fallbacks": [
+        {
+          "output_sha256": "3a2ccd6efcc3bd304e3569838a3df32d38e232355805e05e00452432c1a233be",
+          "reason": "normal must be non-zero",
+          "size_bytes": 5967484,
+          "source": "body.smd",
+          "source_sha256": "3a2ccd6efcc3bd304e3569838a3df32d38e232355805e05e00452432c1a233be"
+        },
+        {
+          "output_sha256": "fb24a904423bb29cf8d52dc11ecf391cf091e5380e5dad90f4c3c50fde3454d8",
+          "reason": "export lost all hard-normal seam evidence",
+          "size_bytes": 345200,
+          "source": "diffuser_mid_a.smd",
+          "source_sha256": "fb24a904423bb29cf8d52dc11ecf391cf091e5380e5dad90f4c3c50fde3454d8"
+        },
+        {
+          "output_sha256": "f62b69b28da0119a2c58147d7d8d4439de293930b095601ec74b378d5208704c",
+          "reason": "export lost all hard-normal seam evidence",
+          "size_bytes": 212907,
+          "source": "diffuser_mid_b.smd",
+          "source_sha256": "f62b69b28da0119a2c58147d7d8d4439de293930b095601ec74b378d5208704c"
+        },
+        {
+          "output_sha256": "c818540947ab5ae85ee7ce9f38d9065f7dc0a24605cce489e5a6f66d252d1e52",
+          "reason": "export lost all hard-normal seam evidence",
+          "size_bytes": 184421,
+          "source": "canards_d.smd",
+          "source_sha256": "c818540947ab5ae85ee7ce9f38d9065f7dc0a24605cce489e5a6f66d252d1e52"
+        },
+        {
+          "output_sha256": "c3ab5ceaa4fd80412939df7102c98040a9d527eb6d437bc0e85ff6c704a2d8a4",
+          "reason": "normal must be non-zero",
+          "size_bytes": 55078,
+          "source": "roofspoiler.smd",
+          "source_sha256": "c3ab5ceaa4fd80412939df7102c98040a9d527eb6d437bc0e85ff6c704a2d8a4"
+        },
+        {
+          "output_sha256": "b31d33b70304374b5ff8c105c12eb63e3c0e69e7ef7bfb13efba7bbd35ce26cb",
+          "reason": "export lost all hard-normal seam evidence",
+          "size_bytes": 1451423,
+          "source": "wing_b.smd",
+          "source_sha256": "b31d33b70304374b5ff8c105c12eb63e3c0e69e7ef7bfb13efba7bbd35ce26cb"
+        },
+        {
+          "output_sha256": "06a26d80c0ef1b05ad402e0018898fddb252b73a6d9449f4a0e5c4963d798008",
+          "reason": "export lost all hard-normal seam evidence",
+          "size_bytes": 392874,
+          "source": "wing_c.smd",
+          "source_sha256": "06a26d80c0ef1b05ad402e0018898fddb252b73a6d9449f4a0e5c4963d798008"
+        },
+        {
+          "output_sha256": "8f7952b2c769c0741254c78df73c35d3e142bdbaaa6efcc81c6b83daad9135bc",
+          "reason": "export lost all hard-normal seam evidence",
+          "size_bytes": 375315,
+          "source": "splitter2_a.smd",
+          "source_sha256": "8f7952b2c769c0741254c78df73c35d3e142bdbaaa6efcc81c6b83daad9135bc"
+        },
+        {
+          "output_sha256": "7d50d593f6dfbbca9e3ea6609cbdd2d5b91de78783baa018c93a7bb7b5a28631",
+          "reason": "export lost all hard-normal seam evidence",
+          "size_bytes": 146959,
+          "source": "splitter2_c.smd",
+          "source_sha256": "7d50d593f6dfbbca9e3ea6609cbdd2d5b91de78783baa018c93a7bb7b5a28631"
+        }
+      ],
+      "family_id": "nissan_skyline_gtr32",
+      "original": {
+        "artifacts": [
+          {
+            "path": "bnr32.dx80.vtx",
+            "sha256": "70cbcd4bd0f67e62090a05d00f9a609c61464c68cc35e73e106d77151065a1b6",
+            "size_bytes": 2028281
+          },
+          {
+            "path": "bnr32.dx90.vtx",
+            "sha256": "ca79e834ad15171999ee841370b5c751c8f04ddfb714e8e1dfa01baf33f6a83b",
+            "size_bytes": 2028211
+          },
+          {
+            "path": "bnr32.mdl",
+            "sha256": "ef34863769bd17eb9d0dc3e194ff4f0a36214689e4eb7b88cac5a0698443470b",
+            "size_bytes": 83604
+          },
+          {
+            "path": "bnr32.phy",
+            "sha256": "e49e524c3ef915c43034ce2a2d42936826f74ca448be7b6d01f96a610285cf4f",
+            "size_bytes": 15716
+          },
+          {
+            "path": "bnr32.vvd",
+            "sha256": "bd9640a78737dbd87b4153ef9750acfb4bc0df3dc2b8bfd2d597dfd7df774fbc",
+            "size_bytes": 7531328
+          }
+        ],
+        "total_bytes": 11687140
+      },
+      "proxy": {
+        "absolute_error_bytes": 28108,
+        "actual_payload_bytes": 6621806,
+        "compiled_vertices": 68431,
+        "predicted_bytes": 6593698,
+        "triangles": 81863
+      },
+      "qc": {
+        "differing_fields": [
+          "mesh_files"
+        ],
+        "status": "pass"
+      },
+      "ratio": 0.4,
+      "status": "compiled",
+      "triangles": {
+        "after": 81863,
+        "before": 158734
+      }
+    },
+    {
+      "baseline": {
+        "artifacts": [
+          {
+            "path": "beetle.dx80.vtx",
+            "sha256": "c580312da7106f098cd1acd91f6debbca67c1236f58a3681262c92657f94c884",
+            "size_bytes": 552445
+          },
+          {
+            "path": "beetle.dx90.vtx",
+            "sha256": "6906b6505f5d3e94c5d5da204b6403a67ab0c1f62808e54c940a39b3112bf176",
+            "size_bytes": 552445
+          },
+          {
+            "path": "beetle.mdl",
+            "sha256": "d71428b9c13748bf839c0989342eed15465ff1ad3ba7a76a5a5cddc31bf42bd3",
+            "size_bytes": 79228
+          },
+          {
+            "path": "beetle.phy",
+            "sha256": "d92188ff28f67842bd378183ab30cd4fd402cf6f9627046caf48aba3ebc7ca36",
+            "size_bytes": 29804
+          },
+          {
+            "path": "beetle.vvd",
+            "sha256": "6f57027d4ebbf9a569f9b357275435f667b68d9d972b76a4b5044aca67beb1a0",
+            "size_bytes": 2398592
+          }
+        ],
+        "total_bytes": 3612514
+      },
+      "candidate": {
+        "artifacts": [
+          {
+            "path": "beetle.dx80.vtx",
+            "sha256": "a2708f53d2fa858b604d6b42dd9bf8403925925e6789568d6268c8a6d3ed7c83",
+            "size_bytes": 660392
+          },
+          {
+            "path": "beetle.dx90.vtx",
+            "sha256": "35c1f43a9f41c60884ddbd362de1d259ac03af69550f3663d31d9375a792ff75",
+            "size_bytes": 660392
+          },
+          {
+            "path": "beetle.mdl",
+            "sha256": "25fb7aab519d25454c7431b393ace73ce786493a24c3f6f7be20fab80148f30c",
+            "size_bytes": 76740
+          },
+          {
+            "path": "beetle.phy",
+            "sha256": "2d7b2fec7818e4530867b7a7d586e8a0f50eeef07833fcd4c08825b0d4263bd3",
+            "size_bytes": 29606
+          },
+          {
+            "path": "beetle.vvd",
+            "sha256": "b04198834641de32d85da5040bea9c5fe5bd9c801cbfa7a69bbd01a8a01e4511",
+            "size_bytes": 2758464
+          }
+        ],
+        "total_bytes": 4185594
+      },
+      "candidate_metrics_sha256": "fd51ea4549e36e500504d0bdbe252873b5409a97fb12184b748f151dac655c1a",
+      "candidate_payload_sha256": "a92aeca88622ac57e25aba8bc36512214060b19ac1b7db9ff3e6b0e428904918",
+      "compile_log_sha256": "9e0ac96e792e589b7a80bbd0eddd5f804a9716d376a4d4431123533ba3929995",
+      "fallbacks": [
+        {
+          "output_sha256": "bb435c5ba6bb655da43a1fe0e186946f14ffd8cccea7707afeb2bd6c6e25ce2d",
+          "reason": "export lost SMD bone influence identities",
+          "size_bytes": 7969382,
+          "source": "body.smd",
+          "source_sha256": "bb435c5ba6bb655da43a1fe0e186946f14ffd8cccea7707afeb2bd6c6e25ce2d"
+        },
+        {
+          "output_sha256": "bdf529edcd198f077e6426310ffe0030c92176c66b2bddd62126eb073a91f09d",
+          "reason": "normal must be non-zero",
+          "size_bytes": 146772,
+          "source": "boot_ok.smd",
+          "source_sha256": "bdf529edcd198f077e6426310ffe0030c92176c66b2bddd62126eb073a91f09d"
+        }
+      ],
+      "family_id": "vw_beetle",
+      "original": {
+        "artifacts": [
+          {
+            "path": "beetle.dx80.vtx",
+            "sha256": "ec071c8edac9663f7d0faddc39ddcb4d8b8943a7ee26839086ef7bf371580510",
+            "size_bytes": 1010843
+          },
+          {
+            "path": "beetle.dx90.vtx",
+            "sha256": "d7de7df3978e7257e968aa1373a7c23be9100ae7245ceca1b539e244270f54e6",
+            "size_bytes": 1010843
+          },
+          {
+            "path": "beetle.mdl",
+            "sha256": "d7bf582909b55beae2b567047c33cc98ea479f75b976ddf55dc0384d5c94db75",
+            "size_bytes": 55460
+          },
+          {
+            "path": "beetle.phy",
+            "sha256": "d92188ff28f67842bd378183ab30cd4fd402cf6f9627046caf48aba3ebc7ca36",
+            "size_bytes": 29804
+          },
+          {
+            "path": "beetle.vvd",
+            "sha256": "134f3715ea5eb8d048c6fc9e4f9b16a3fedd3d977acd10554fb1877e581c581d",
+            "size_bytes": 4211264
+          }
+        ],
+        "total_bytes": 6318214
+      },
+      "proxy": {
+        "absolute_error_bytes": 21956,
+        "actual_payload_bytes": 4079248,
+        "compiled_vertices": 43100,
+        "predicted_bytes": 4057292,
+        "triangles": 43591
+      },
+      "qc": {
+        "differing_fields": [
+          "mesh_files"
+        ],
+        "status": "pass"
+      },
+      "ratio": 0.4,
+      "status": "compiled",
+      "triangles": {
+        "after": 43591,
+        "before": 67556
+      }
+    },
+    {
+      "baseline": {
+        "artifacts": [
+          {
+            "path": "touareg.dx80.vtx",
+            "sha256": "cd7db0772ad2ef9ee3ab0ce098fdbe7ced00aab86bf8762bc3828f88eb8526bb",
+            "size_bytes": 756559
+          },
+          {
+            "path": "touareg.dx90.vtx",
+            "sha256": "62b0b2cfcbab07afd2d59ffe167c1b02eed5a44a19e739ee055399c2a6993e76",
+            "size_bytes": 756505
+          },
+          {
+            "path": "touareg.mdl",
+            "sha256": "729698c9dc39549796f583ffb0663364c9d382b734c730ae95864f347590ed7c",
+            "size_bytes": 165664
+          },
+          {
+            "path": "touareg.phy",
+            "sha256": "ff191b23bff93882ca31cb4b2d16a5ee7090b9173ea32fc92a869d4d351ee602",
+            "size_bytes": 23956
+          },
+          {
+            "path": "touareg.vvd",
+            "sha256": "d695277178ef2d7cbd366da4a6cfbd38d0fcd31b92fc78bada33932fd8735331",
+            "size_bytes": 3146240
+          }
+        ],
+        "total_bytes": 4848924
+      },
+      "candidate": {
+        "artifacts": [
+          {
+            "path": "touareg.dx80.vtx",
+            "sha256": "4821c8d76a75d8e1c92cdf03a4d70d62f06a430ea84baecc5cfb89980ec3a538",
+            "size_bytes": 995164
+          },
+          {
+            "path": "touareg.dx90.vtx",
+            "sha256": "c532ac51be5580259c10d85f6446ba3623564f36bc1641138850e7bb413e8b9e",
+            "size_bytes": 995110
+          },
+          {
+            "path": "touareg.mdl",
+            "sha256": "d299d121f98c2b072355baa5fc16c48dd42b849b6321f3410828a3697c4a6084",
+            "size_bytes": 162300
+          },
+          {
+            "path": "touareg.phy",
+            "sha256": "0a106280ae2d78df893280feb003ffd6e093a19bf9c144d7f0a78fa58ef24244",
+            "size_bytes": 23903
+          },
+          {
+            "path": "touareg.vvd",
+            "sha256": "230428baf256263477703f19c74142376980890111246bfc39e852d4b5d3170b",
+            "size_bytes": 4027008
+          }
+        ],
+        "total_bytes": 6203485
+      },
+      "candidate_metrics_sha256": "a0df54080b39297266891a0f288da3f8c46d48601d0299a1ab4fb211e51c9743",
+      "candidate_payload_sha256": "a92aeca88622ac57e25aba8bc36512214060b19ac1b7db9ff3e6b0e428904918",
+      "compile_log_sha256": "921d1de5190538be6b4c56b0e2bab8ff0d9d2beabdd6b9c0cd8a2e2041d17c95",
+      "fallbacks": [
+        {
+          "output_sha256": "10d5f01be441b0643b094ee2323fb1a8a9747ca736bb58c5715da0431afefe9f",
+          "reason": "normal must be non-zero",
+          "size_bytes": 8258312,
+          "source": "body.smd",
+          "source_sha256": "10d5f01be441b0643b094ee2323fb1a8a9747ca736bb58c5715da0431afefe9f"
+        },
+        {
+          "output_sha256": "937de2902a1767f0d659048af481452b5dce8527256c65c943c2e46894db3ffd",
+          "reason": "export amplified SMD position-normal keys (432->534)",
+          "size_bytes": 156874,
+          "source": "hood.smd",
+          "source_sha256": "937de2902a1767f0d659048af481452b5dce8527256c65c943c2e46894db3ffd"
+        },
+        {
+          "output_sha256": "b4f8ab6844f585cecffb20b798c34e628a80c314567fd2d1175d2c6a5ebb6562",
+          "reason": "normal must be non-zero",
+          "size_bytes": 6016775,
+          "source": "body8_model0.smd",
+          "source_sha256": "b4f8ab6844f585cecffb20b798c34e628a80c314567fd2d1175d2c6a5ebb6562"
+        }
+      ],
+      "family_id": "vw_touareg",
+      "original": {
+        "artifacts": [
+          {
+            "path": "touareg.dx80.vtx",
+            "sha256": "20a707bb396ef5ce26f6558d96a57724f8568d4e0a8308177a5599a588b540f1",
+            "size_bytes": 1386530
+          },
+          {
+            "path": "touareg.dx90.vtx",
+            "sha256": "127aa4bb3268fd5f4ef429f152c71971be3e75eb59b914ebba305369dab4ec8f",
+            "size_bytes": 1386460
+          },
+          {
+            "path": "touareg.mdl",
+            "sha256": "42a319f1f5432349986a57cf3727c9df7d35be5eaa26e50a8238e6c3e8b3f3e0",
+            "size_bytes": 71880
+          },
+          {
+            "path": "touareg.phy",
+            "sha256": "ff191b23bff93882ca31cb4b2d16a5ee7090b9173ea32fc92a869d4d351ee602",
+            "size_bytes": 23956
+          },
+          {
+            "path": "touareg.vvd",
+            "sha256": "401520f12b8e291429b0511bb99b511a58b3cada4a2b41be4f380a722b2e7875",
+            "size_bytes": 5462912
+          }
+        ],
+        "total_bytes": 8331738
+      },
+      "proxy": {
+        "absolute_error_bytes": 12852,
+        "actual_payload_bytes": 6017282,
+        "compiled_vertices": 62921,
+        "predicted_bytes": 6004430,
+        "triangles": 70409
+      },
+      "qc": {
+        "differing_fields": [
+          "mesh_files"
+        ],
+        "status": "pass"
+      },
+      "ratio": 0.4,
+      "status": "compiled",
+      "triangles": {
+        "after": 70409,
+        "before": 101645
+      }
     }
   ],
-  "schema_version": 1,
+  "schema_version": 2,
   "scoring": {
     "proxy_role": "diagnostic-only-confirmed-by-snapshot",
     "selector": "actual-studiomdl-compiled-bytes"

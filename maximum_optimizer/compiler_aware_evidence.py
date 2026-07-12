@@ -48,7 +48,7 @@ def parse_compiler_aware_evidence(raw: object) -> dict:
         "schema_version", "strategy", "toolchain", "records", "quality",
         "implementation", "scoring", "decision", "evidence_sha256",
     }, "evidence")
-    if root["schema_version"] != 1 or root["strategy"] != "blender-adaptive-v1":
+    if root["schema_version"] != 2 or root["strategy"] != "blender-adaptive-v1":
         raise ValueError("unsupported adaptive evidence")
     tools = _keys(root["toolchain"], {"blender", "studiomdl"}, "toolchain")
     for value in tools.values():
@@ -68,16 +68,18 @@ def parse_compiler_aware_evidence(raw: object) -> dict:
         "proxy_role": "diagnostic-only-confirmed-by-snapshot",
     }:
         raise ValueError("Task 7 scoring must select actual compiled bytes")
-    if type(root["records"]) is not list or len(root["records"]) != 2:
-        raise ValueError("adaptive evidence must contain two checkpoint records")
+    if type(root["records"]) is not list or len(root["records"]) != 7:
+        raise ValueError("adaptive evidence must contain seven corpus records")
     family_ids = []
     for record_raw in root["records"]:
         record = _keys(record_raw, {
-            "family_id", "ratio", "baseline", "candidate", "triangles", "proxy",
+            "family_id", "status", "ratio", "original", "baseline", "candidate", "triangles", "proxy",
             "fallbacks", "qc", "candidate_metrics_sha256", "candidate_payload_sha256",
             "compile_log_sha256",
         }, "record")
         family_ids.append(record["family_id"])
+        if record["status"] != "compiled":
+            raise ValueError("adaptive corpus record must be compiled")
         if any(_SHA.fullmatch(record[name]) is None for name in (
             "candidate_metrics_sha256", "candidate_payload_sha256", "compile_log_sha256"
         )):
@@ -85,7 +87,7 @@ def parse_compiler_aware_evidence(raw: object) -> dict:
         if type(record["ratio"]) not in (int, float) or not 0 < record["ratio"] < 1:
             raise ValueError("record ratio is invalid")
         lanes = {}
-        for lane in ("baseline", "candidate"):
+        for lane in ("original", "baseline", "candidate"):
             lane_value = _keys(record[lane], {"total_bytes", "artifacts"}, lane)
             artifacts = _artifacts(lane_value["artifacts"], lane)
             if lane_value["total_bytes"] != sum(item["size_bytes"] for item in artifacts):
@@ -127,7 +129,10 @@ def parse_compiler_aware_evidence(raw: object) -> dict:
         qc = _keys(record["qc"], {"status", "differing_fields"}, "qc")
         if qc["status"] != "pass" or qc["differing_fields"] != ["mesh_files"]:
             raise ValueError("QC evidence is not the expected optimized-source mapping")
-    if family_ids != ["pontiac_transam_wheel", "dodge_charger"]:
+    if family_ids != [
+        "pontiac_transam_wheel", "dodge_charger", "dodge_monaco_police",
+        "toyota_supra", "nissan_skyline_gtr32", "vw_beetle", "vw_touareg",
+    ]:
         raise ValueError("checkpoint families or order changed")
     quality = _keys(root["quality"], {
         "status", "texture_status", "render_status", "reason",
@@ -142,7 +147,7 @@ def parse_compiler_aware_evidence(raw: object) -> dict:
     decision = _keys(root["decision"], {
         "winner", "reason", "pressure_families_run", "required_pressure_families",
     }, "decision")
-    if decision["winner"] is not False or decision["pressure_families_run"] != 1 \
+    if decision["winner"] is not False or decision["pressure_families_run"] != 4 \
             or decision["required_pressure_families"] != 5:
         raise ValueError("Task 7 cannot authorize a winner")
     digest = root["evidence_sha256"]
