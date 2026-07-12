@@ -15,6 +15,7 @@ if str(REPO) not in sys.path:
 
 from maximum_optimizer.importance_evidence import (
     canonical_importance_evidence_hash,
+    canonical_implementation_snapshot_hash,
     parse_importance_evidence,
 )
 from maximum_optimizer.visual_validation import _image_metrics
@@ -26,6 +27,15 @@ OUTPUT = Path(__file__).with_name("blender_importance_map_v1.json")
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def implementation_snapshot(paths: dict[str, Path]) -> dict:
+    files = {relative: digest(path) for relative, path in paths.items()}
+    return {
+        "scope": "archived-execution-snapshot",
+        "snapshot_sha256": canonical_implementation_snapshot_hash(files),
+        "files": files,
+    }
 
 
 def image_set_sha256(root: Path) -> str:
@@ -132,12 +142,12 @@ def build_payload(root: Path, blender: Path, studiomdl: Path) -> dict:
             or candidate_pixels != repeat_candidate_pixels):
         raise ValueError("final renderer is not deterministic at decoded RGBA pixel level")
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "strategy": "blender-importance-map-v1",
         "family_id": "pontiac_transam_wheel",
         "toolchain": {"blender": digest(blender), "studiomdl": digest(studiomdl)},
-        "implementation": {
-            path: digest(REPO / path)
+        "implementation": implementation_snapshot({
+            path: REPO / path
             for path in (
                 "batch_optimize_maximum.py",
                 "maximum_optimizer/importance_map.py",
@@ -146,7 +156,7 @@ def build_payload(root: Path, blender: Path, studiomdl: Path) -> dict:
                 "maximum_optimizer/visual_validation.py",
                 "benchmarks/lvs_models/build_blender_importance_map_v1.py",
             )
-        },
+        }),
         "baseline": record(
             adaptive, strategy="blender-adaptive-v1", compiled_name="compiled",
             optimize_log="optimize.log", compile_log="compile.log",

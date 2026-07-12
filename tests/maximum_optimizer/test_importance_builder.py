@@ -6,10 +6,29 @@ import unittest
 
 from PIL import Image, PngImagePlugin
 
-from benchmarks.lvs_models.build_blender_importance_map_v1 import image_set_sha256
+from benchmarks.lvs_models.build_blender_importance_map_v1 import (
+    image_set_sha256,
+    implementation_snapshot,
+)
+from maximum_optimizer.importance_evidence import (
+    canonical_implementation_snapshot_hash,
+)
 
 
 class ImportanceBuilderTests(unittest.TestCase):
+    def test_implementation_snapshot_is_explicitly_archived_and_self_sealed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "first.py"
+            second = Path(tmp) / "second.py"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            snapshot = implementation_snapshot({"first.py": first, "second.py": second})
+        self.assertEqual(snapshot["scope"], "archived-execution-snapshot")
+        self.assertEqual(
+            snapshot["snapshot_sha256"],
+            canonical_implementation_snapshot_hash(snapshot["files"]),
+        )
+
     def test_image_set_digest_is_deterministic_and_content_bound(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "first"

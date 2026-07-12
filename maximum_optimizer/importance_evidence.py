@@ -26,6 +26,15 @@ def canonical_importance_evidence_hash(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def canonical_implementation_snapshot_hash(files: object) -> str:
+    if type(files) is not dict:
+        raise ValueError("implementation snapshot files must be an object")
+    encoded = (json.dumps(
+        files, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ) + "\n").encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _record(value: object, expected_strategy: str, label: str) -> dict:
     record = _exact(value, {
         "strategy", "ratio", "compiled", "candidate_sha256", "metrics_sha256",
@@ -72,7 +81,7 @@ def parse_importance_evidence(payload: object) -> dict:
         "schema_version", "strategy", "family_id", "toolchain", "implementation",
         "baseline", "candidate", "quality", "decision", "evidence_sha256",
     }, "importance evidence")
-    if (root["schema_version"] != 2 or root["strategy"] != "blender-importance-map-v1"
+    if (root["schema_version"] != 3 or root["strategy"] != "blender-importance-map-v1"
             or root["family_id"] != "pontiac_transam_wheel"):
         raise ValueError("importance evidence identity is invalid")
     if (type(root["evidence_sha256"]) is not str
@@ -84,13 +93,26 @@ def parse_importance_evidence(payload: object) -> dict:
         "maximum_optimizer/visual_validation.py",
         "benchmarks/lvs_models/build_blender_importance_map_v1.py",
     }
-    for section in ("toolchain", "implementation"):
-        values = root[section]
-        if (type(values) is not dict or not values
-                or any(type(item) is not str or _HASH.fullmatch(item) is None for item in values.values())):
-            raise ValueError(f"{section} hashes are invalid")
-    if set(root["implementation"]) != required_implementation:
+    toolchain = root["toolchain"]
+    if (type(toolchain) is not dict or not toolchain
+            or any(type(item) is not str or _HASH.fullmatch(item) is None
+                   for item in toolchain.values())):
+        raise ValueError("toolchain hashes are invalid")
+    implementation = _exact(root["implementation"], {
+        "scope", "snapshot_sha256", "files",
+    }, "implementation")
+    files = implementation["files"]
+    if (implementation["scope"] != "archived-execution-snapshot"
+            or type(files) is not dict or not files
+            or any(type(item) is not str or _HASH.fullmatch(item) is None
+                   for item in files.values())):
+        raise ValueError("implementation snapshot is invalid")
+    if set(files) != required_implementation:
         raise ValueError("implementation coverage is invalid")
+    if (type(implementation["snapshot_sha256"]) is not str
+            or implementation["snapshot_sha256"]
+                != canonical_implementation_snapshot_hash(files)):
+        raise ValueError("implementation snapshot digest is invalid")
     baseline = _record(root["baseline"], "blender-adaptive-v1", "baseline")
     candidate = _record(root["candidate"], "blender-importance-map-v1", "candidate")
     if (baseline["render"]["reference_manifest_sha256"]

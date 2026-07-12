@@ -8,6 +8,7 @@ import unittest
 
 from maximum_optimizer.importance_evidence import (
     canonical_importance_evidence_hash,
+    canonical_implementation_snapshot_hash,
     parse_importance_evidence,
 )
 
@@ -20,7 +21,7 @@ class ImportanceEvidenceTests(unittest.TestCase):
 
     def test_committed_experiment_is_smaller_but_honestly_rejected(self) -> None:
         evidence = parse_importance_evidence(self.payload)
-        self.assertEqual(evidence["schema_version"], 2)
+        self.assertEqual(evidence["schema_version"], 3)
         self.assertEqual(evidence["baseline"]["ratio"], 0.35)
         self.assertEqual(evidence["candidate"]["ratio"], 0.35)
         self.assertEqual(
@@ -34,8 +35,14 @@ class ImportanceEvidenceTests(unittest.TestCase):
         self.assertEqual(
             evidence["evidence_sha256"], canonical_importance_evidence_hash(evidence)
         )
-        self.assertIn("render_previews.py", evidence["implementation"])
-        self.assertIn("maximum_optimizer/visual_validation.py", evidence["implementation"])
+        implementation = evidence["implementation"]
+        self.assertEqual(implementation["scope"], "archived-execution-snapshot")
+        self.assertIn("render_previews.py", implementation["files"])
+        self.assertIn("maximum_optimizer/visual_validation.py", implementation["files"])
+        self.assertEqual(
+            implementation["snapshot_sha256"],
+            canonical_implementation_snapshot_hash(implementation["files"]),
+        )
         determinism = evidence["quality"]["render_determinism"]
         self.assertEqual(determinism["status"], "decoded-rgba-identical-across-repeat")
         self.assertEqual(
@@ -62,7 +69,7 @@ class ImportanceEvidenceTests(unittest.TestCase):
         sidecar["candidate"]["compiled"]["artifacts"][0]["sha256"] = "0" * 64
         mutations.append(sidecar)
         implementation = copy.deepcopy(self.payload)
-        implementation["implementation"]["render_previews.py"] = "0" * 64
+        implementation["implementation"]["files"]["render_previews.py"] = "0" * 64
         mutations.append(implementation)
         manifest = copy.deepcopy(self.payload)
         manifest["candidate"]["render"]["candidate_manifest_sha256"] = "0" * 64
@@ -77,12 +84,22 @@ class ImportanceEvidenceTests(unittest.TestCase):
         reparsed["evidence_sha256"] = "f" * 64
         self.assertEqual(first, canonical_importance_evidence_hash(reparsed))
 
-    def test_implementation_hashes_match_the_committed_inputs(self) -> None:
-        for relative, expected in self.payload["implementation"].items():
-            with self.subTest(relative=relative):
-                self.assertEqual(
-                    hashlib.sha256(Path(relative).read_bytes()).hexdigest(), expected
-                )
+    def test_archived_execution_snapshot_is_not_a_current_worktree_claim(self) -> None:
+        execution = self.payload["implementation"]
+        current = {
+            relative: hashlib.sha256(Path(relative).read_bytes()).hexdigest()
+            for relative in execution["files"]
+        }
+        self.assertNotEqual(current, execution["files"])
+        self.assertEqual(execution["scope"], "archived-execution-snapshot")
+        parse_importance_evidence(self.payload)
+
+    def test_resealed_snapshot_with_wrong_snapshot_digest_is_rejected(self) -> None:
+        mutation = copy.deepcopy(self.payload)
+        mutation["implementation"]["snapshot_sha256"] = "0" * 64
+        mutation["evidence_sha256"] = canonical_importance_evidence_hash(mutation)
+        with self.assertRaisesRegex(ValueError, "snapshot digest"):
+            parse_importance_evidence(mutation)
 
     def test_resealed_evidence_still_rejects_different_reference_artifacts(self) -> None:
         mutation = copy.deepcopy(self.payload)
