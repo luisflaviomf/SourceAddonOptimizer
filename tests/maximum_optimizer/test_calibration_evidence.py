@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import json
 import unittest
+from pathlib import Path
 
 from maximum_optimizer.calibration_evidence import (
     CALIBRATION_FAMILIES,
@@ -42,7 +44,7 @@ def _configuration(name: str, scope: str) -> dict:
     }
 
 
-def _payload() -> dict:
+def _synthetic_payload() -> dict:
     state_names = {
         "pontiac_transam_wheel": (
             "engine-default", "bodygroup-rim-001-1569ec5b-1",
@@ -269,6 +271,13 @@ def _payload() -> dict:
     return payload
 
 
+def _payload() -> dict:
+    return json.loads(
+        (Path(__file__).resolve().parents[2]
+         / "benchmarks/lvs_models/calibration_evidence_v2.json").read_text(encoding="utf-8")
+    )
+
+
 class CalibrationEvidenceTests(unittest.TestCase):
     def test_schema_requires_five_fixed_families_and_honest_lanes(self) -> None:
         parsed = parse_calibration_evidence(_payload())
@@ -356,6 +365,32 @@ class CalibrationEvidenceTests(unittest.TestCase):
             mutate(changed)
             changed["evidence_sha256"] = canonical_calibration_evidence_hash(changed)
             with self.subTest(changed=changed), self.assertRaises(ValueError):
+                parse_calibration_evidence(changed)
+
+    def test_child_and_outer_reseals_cannot_forge_trusted_snapshot(self) -> None:
+        source = copy.deepcopy(_payload())
+        lane = source["families"][0]["candidate"]
+        lane["configurations"][0]["source_pairs"][0]["candidate_sha256"] = "9" * 64
+        lane["lane_binding_sha256"] = canonical_lane_binding_hash(lane)
+        source["evidence_sha256"] = canonical_calibration_evidence_hash(source)
+
+        provenance = copy.deepcopy(_payload())
+        lane = provenance["families"][0]["candidate"]
+        lane["provenance"]["artifacts"][0]["sha256"] = "9" * 64
+        lane["lane_binding_sha256"] = canonical_lane_binding_hash(lane)
+        provenance["evidence_sha256"] = canonical_calibration_evidence_hash(provenance)
+
+        alternative = copy.deepcopy(_payload())
+        winner_compiled = copy.deepcopy(alternative["families"][0]["candidate"]["compiled"])
+        evidence = alternative["families"][0]["alternatives"][1]["evidence"]
+        evidence["compiled"] = winner_compiled
+        evidence["compiled_sha256"] = canonical_compiled_hash(winner_compiled)
+        alternative["evidence_sha256"] = canonical_calibration_evidence_hash(alternative)
+
+        for changed in (source, provenance, alternative):
+            with self.subTest(changed=changed), self.assertRaisesRegex(
+                ValueError, "trusted"
+            ):
                 parse_calibration_evidence(changed)
 
     def test_b050_aggregate_cannot_be_reintroduced_as_calibration_baseline(self) -> None:

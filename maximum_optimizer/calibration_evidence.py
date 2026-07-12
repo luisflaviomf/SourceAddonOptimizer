@@ -79,6 +79,35 @@ _MONACO_EXTERNAL = {
     "canonical_payload_sha256": "713c09b7b177bb6c949d696f20966251144887bebec7c68839b56f13b57fdbb9",
     "candidate_metrics_sha256": "4f5001804dfb5002915289dbb62cb2029eb5e1d76fe6c361e999be4e0431faa5",
 }
+EXPECTED_FAMILY_BINDING_SEALS = {
+    "pontiac_transam_wheel": {
+        "baseline": "d79e659975123b616ecb7b3942cfa1574a86f1c1aabb8288d05c6b40c49e69ae",
+        "candidate": "f9fcfe65f4c596521315e8caa04d800b1c98f73962fc72f576f71457c246772f",
+    },
+    "dodge_charger": {
+        "baseline": "31c8f3160f22fd2879510a3c7d598a0b53493773eeeee0f81a70f67160b3ee49",
+        "candidate": "d538625dfc8f69300fec92d8f8e38e5dadf771dee9099cdd24d4f0663a45afca",
+    },
+    "toyota_supra": {
+        "baseline": "bbe2953da126f54269587c5847395becabb0c79d07bdf88c32724ffc1d4b80bb",
+        "candidate": "91a61f6f727fdc0e3c9869e848a62fe8caa7e5add29d232592fb2c7200350261",
+    },
+    "nissan_skyline_gtr32": {
+        "baseline": "50658fefae9a123872c8bf6dfe8fa218d78d25e17dde07139b2314127627d49a",
+        "candidate": "4a0c4f87b96de84b6a22cb1e1e9bd0bcf219ea72e2a237e48bab1756eb29bf33",
+    },
+    "dodge_monaco_police": {
+        "baseline": "ba07ac488d71bf33b3cd60e1c47cf95022be307fabfab8ccfec3edce0b73b21a",
+        "candidate": "f43c24d125265e91b2985b88ae1e9b70d2a52007abe28c89d2e56807d8c89cc2",
+    },
+}
+EXPECTED_ALTERNATIVE_BINDING_SEALS = {
+    "r035": "0924df022b01aaa70509eee6870538a4c5c53d5323a563b8fd79599651827c39",
+    "v4-r035": "3ac02abd23be42b8bedcbaa461e2d3df4ef6ee48cfdbdb9c0af7208b41b7b522",
+    "v4-r045": "d2054f483fff9803f0f440bd55698c5e621fa418a6034f4f0acbf4ab21fdc8ac",
+    "v4-r0475": "a7ca4775bad1f4ab66048c9426937d3d987667bab6df6ea7b7359a13c95622d5",
+    "importance-r035": "60e0b6af16e1b98b70cb69a1ee9457410a79cbd063cf75bd66862ffd422f5682",
+}
 
 
 def _exact(value: object, fields: set[str], label: str) -> dict:
@@ -432,6 +461,8 @@ def _alternative(value: object, expected: tuple[str, str], label: str) -> dict:
         or evidence["compiled_sha256"] != canonical_compiled_hash(evidence["compiled"])
     ):
         raise ValueError(f"{label} compiled binding is invalid")
+    if _canonical_hash(item) != EXPECTED_ALTERNATIVE_BINDING_SEALS[candidate_id]:
+        raise ValueError(f"{label} differs from the trusted research snapshot")
     return item
 
 
@@ -499,6 +530,12 @@ def parse_calibration_evidence(payload: object) -> dict:
             _STATE_NAMES[family_id],
             f"{family_id} candidate",
         )
+        trusted = EXPECTED_FAMILY_BINDING_SEALS[family_id]
+        if (
+            baseline["lane_binding_sha256"] != trusted["baseline"]
+            or candidate["lane_binding_sha256"] != trusted["candidate"]
+        ):
+            raise ValueError(f"{family_id} differs from the trusted calibration snapshot")
         for baseline_config, candidate_config in zip(
             baseline["configurations"], candidate["configurations"]
         ):
