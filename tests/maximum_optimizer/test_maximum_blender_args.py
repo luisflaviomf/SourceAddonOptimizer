@@ -301,6 +301,8 @@ class MaximumBlenderPureTests(unittest.TestCase):
             "target_error": 0.01,
             "update_vertices": True,
             "region_overrides": [{"region_key": antenna_key, "ratio": 0.7}],
+            "strategy": "meshopt-project-v1",
+            "transfer": "projection-v1",
         }
         candidate = maximum.load_candidate_payload(payload)
         ratios = maximum.resolve_region_ratios(
@@ -316,13 +318,39 @@ class MaximumBlenderPureTests(unittest.TestCase):
     def test_search_candidate_cache_payload_is_directly_consumable(self) -> None:
         region_key = "r-" + "a" * 64
         spec = CandidateSpec(
-            "regional", "meshoptimizer", 0.25, 0.01, "transfer-v1",
+            "regional", "meshoptimizer", 0.25, 0.01, "meshopt-direct-v1",
             ((region_key, 0.5),),
+            strategy="meshopt-direct-v1", update_vertices=False, transfer="direct-v1",
         )
         candidate = maximum.load_candidate_payload(spec.cache_payload())
         self.assertEqual(candidate.ratio, 0.25)
-        self.assertTrue(candidate.update_vertices)
+        self.assertFalse(candidate.update_vertices)
+        self.assertEqual(candidate.strategy, "meshopt-direct-v1")
+        self.assertEqual(candidate.transfer, "direct-v1")
         self.assertEqual(candidate.region_overrides, ((region_key, 0.5),))
+
+    def test_direct_candidate_requires_known_complete_strategy(self) -> None:
+        valid = {
+            "candidate_id": "meshopt-direct-r055",
+            "engine": "meshoptimizer",
+            "target_ratio": 0.55,
+            "target_error": 0.01,
+            "repair_profile": "meshopt-direct-v1",
+            "region_overrides": [],
+            "strategy": "meshopt-direct-v1",
+            "update_vertices": False,
+            "transfer": "direct-v1",
+        }
+        for missing in ("strategy", "update_vertices", "transfer"):
+            with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, "missing or unknown"):
+                maximum.load_candidate_payload({key: value for key, value in valid.items() if key != missing})
+        for mutation in (
+            {**valid, "strategy": "unknown"},
+            {**valid, "update_vertices": True},
+            {**valid, "transfer": "project-v1"},
+        ):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                maximum.load_candidate_payload(mutation)
 
     def test_unknown_or_ambiguous_region_override_fails(self) -> None:
         observations = (("body.smd", "Body", ("paint",)),)
@@ -451,6 +479,8 @@ class MaximumBlenderPureTests(unittest.TestCase):
                         "target_error": 0.01,
                         "update_vertices": True,
                         "region_overrides": [{"region_key": "r-" + "1" * 64, "ratio": 0.7}],
+                        "strategy": "meshopt-project-v1",
+                        "transfer": "projection-v1",
                     }
                 ),
                 encoding="utf-8",

@@ -4,6 +4,7 @@ import ctypes
 from dataclasses import dataclass
 import math
 import os
+import struct
 from pathlib import Path
 from typing import Iterable
 
@@ -70,6 +71,57 @@ class SimplifiedMesh:
     bone_indices: tuple[tuple[int, int, int, int], ...]
     result_error: float
     engine_version: int
+    source_vertex_indices: tuple[int, ...] = ()
+
+
+def _float32_row(values: Iterable[float]) -> tuple[bytes, ...]:
+    return tuple(struct.pack("=f", float(value)) for value in values)
+
+
+def compact_direct_result(mesh: MeshInput, result: SimplifiedMesh) -> SimplifiedMesh:
+    """Compact a no-update result without synthesizing or merging any vertex tuple."""
+    if len(result.material_ids) != len(result.indices) // 3:
+        raise RuntimeError("direct material ownership is invalid")
+    if not (
+        len(result.positions) == len(result.normals) == len(result.uvs)
+        == len(result.weights) == len(result.bone_indices) == len(mesh.positions)
+    ):
+        raise RuntimeError("direct attribute arrays do not match the source")
+    source_materials: dict[int, set[int]] = {}
+    for triangle, material in enumerate(mesh.material_ids):
+        for source_index in mesh.indices[triangle * 3 : triangle * 3 + 3]:
+            source_materials.setdefault(source_index, set()).add(material)
+    for triangle, material in enumerate(result.material_ids):
+        if any(
+            material not in source_materials.get(source_index, set())
+            for source_index in result.indices[triangle * 3 : triangle * 3 + 3]
+        ):
+            raise RuntimeError("direct material ownership differs from the source tuple")
+    order = tuple(dict.fromkeys(result.indices))
+    for source_index in order:
+        if source_index < 0 or source_index >= len(mesh.positions):
+            raise RuntimeError("direct result references an invalid source tuple")
+        if (
+            _float32_row(result.positions[source_index]) != _float32_row(mesh.positions[source_index])
+            or _float32_row(result.normals[source_index]) != _float32_row(mesh.normals[source_index])
+            or _float32_row(result.uvs[source_index]) != _float32_row(mesh.uvs[source_index])
+            or _float32_row(result.weights[source_index]) != _float32_row(mesh.weights[source_index])
+            or result.bone_indices[source_index] != mesh.bone_indices[source_index]
+        ):
+            raise RuntimeError("direct attribute tuple is not bitwise source-identical")
+    remap = {source_index: target for target, source_index in enumerate(order)}
+    return SimplifiedMesh(
+        positions=tuple(result.positions[index] for index in order),
+        normals=tuple(result.normals[index] for index in order),
+        uvs=tuple(result.uvs[index] for index in order),
+        weights=tuple(result.weights[index] for index in order),
+        bone_indices=tuple(result.bone_indices[index] for index in order),
+        indices=tuple(remap[index] for index in result.indices),
+        material_ids=result.material_ids,
+        result_error=result.result_error,
+        engine_version=result.engine_version,
+        source_vertex_indices=order,
+    )
 
 
 class _MaximumMeshInput(ctypes.Structure):
@@ -248,13 +300,15 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
     )
     canonical_weights = tuple(weights for weights, _bones in canonical_skin)
     canonical_bones = tuple(bones for _weights, bones in canonical_skin)
+    input_weights = canonical_weights if options.update_vertices else mesh.weights
+    input_bones = canonical_bones if options.update_vertices else mesh.bone_indices
 
     position_buffer = (ctypes.c_float * (len(mesh.positions) * 3))(*_flat(mesh.positions))
     normal_buffer = (ctypes.c_float * (len(mesh.normals) * 3))(*_flat(mesh.normals))
     uv_buffer = (ctypes.c_float * (len(mesh.uvs) * 2))(*_flat(mesh.uvs))
-    weight_buffer = (ctypes.c_float * (len(canonical_weights) * 4))(*_flat(canonical_weights))
-    bone_buffer = (ctypes.c_uint32 * (len(canonical_bones) * 4))(
-        *(value for row in canonical_bones for value in row)
+    weight_buffer = (ctypes.c_float * (len(input_weights) * 4))(*_flat(input_weights))
+    bone_buffer = (ctypes.c_uint32 * (len(input_bones) * 4))(
+        *(value for row in input_bones for value in row)
     )
     index_buffer = (ctypes.c_uint32 * len(mesh.indices))(*mesh.indices)
     material_buffer = (ctypes.c_uint32 * len(mesh.material_ids))(*mesh.material_ids)
@@ -267,7 +321,7 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
         uv_buffer,
         weight_buffer,
         bone_buffer,
-        max((value for row in canonical_bones for value in row), default=0) + 1,
+        max((value for row in input_bones for value in row), default=0) + 1,
         len(mesh.positions),
         index_buffer,
         len(mesh.indices),
@@ -333,7 +387,7 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
             for row in weights
         ):
             raise RuntimeError("invalid native output weights")
-        bone_count = max((value for row in canonical_bones for value in row), default=0) + 1
+        bone_count = max((value for row in input_bones for value in row), default=0) + 1
         if any(
             bone >= bone_count
             for row_weights, row_bones in zip(weights, bone_indices)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import struct
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -23,6 +24,7 @@ from maximum_optimizer.meshopt_bridge import (
     _MaximumMeshOutput,
     _canonicalize_skin_slots,
     _validate,
+    compact_direct_result,
 )
 
 
@@ -66,6 +68,72 @@ def _grid(size: int = 10) -> MeshInput:
 
 
 class MeshoptBridgeTests(unittest.TestCase):
+    def test_direct_result_compacts_only_referenced_source_tuples_exactly(self) -> None:
+        source = _grid(4)
+        result = simplify_mesh(source, SimplifyOptions(0.7, 1.0, update_vertices=False))
+        compact = compact_direct_result(source, result)
+
+        self.assertLessEqual(len(compact.positions), len(source.positions))
+        self.assertEqual(compact.material_ids, result.material_ids)
+        self.assertEqual(set(compact.indices), set(range(len(compact.positions))))
+        source_float32 = {
+            (
+                tuple(struct.pack("=f", value) for value in position),
+                tuple(struct.pack("=f", value) for value in normal),
+                tuple(struct.pack("=f", value) for value in uv),
+                tuple(struct.pack("=f", value) for value in weights),
+                bones,
+            )
+            for position, normal, uv, weights, bones in zip(
+                source.positions, source.normals, source.uvs, source.weights, source.bone_indices
+            )
+        }
+        for retained in zip(
+            compact.positions, compact.normals, compact.uvs, compact.weights, compact.bone_indices
+        ):
+            signature = tuple(
+                tuple(struct.pack("=f", value) for value in row) if index < 4 else row
+                for index, row in enumerate(retained)
+            )
+            self.assertIn(signature, source_float32)
+
+    def test_direct_compaction_rejects_non_direct_or_mutated_attributes(self) -> None:
+        source = _grid(4)
+        direct = simplify_mesh(source, SimplifyOptions(0.7, 1.0, update_vertices=False))
+        changed = list(direct.positions)
+        changed[direct.indices[0]] = (999.0, 0.0, 0.0)
+        hostile = type(direct)(**{**direct.__dict__, "positions": tuple(changed)})
+        with self.assertRaisesRegex(RuntimeError, "direct attribute"):
+            compact_direct_result(source, hostile)
+        changed_materials = (99,) * len(direct.material_ids)
+        hostile_material = type(direct)(**{**direct.__dict__, "material_ids": changed_materials})
+        with self.assertRaisesRegex(RuntimeError, "material ownership"):
+            compact_direct_result(source, hostile_material)
+
+    def test_no_update_native_output_preserves_raw_normal_weight_and_bone_slots(self) -> None:
+        source = _grid(4)
+        normals = list(source.normals)
+        weights = list(source.weights)
+        bones = list(source.bone_indices)
+        normals[5] = (0.0, 0.0, 2.0)
+        weights[5] = (0.2, 0.8, 0.0, 0.0)
+        bones[5] = (7, 2, 0, 0)
+        source = MeshInput(**{
+            **source.__dict__, "normals": tuple(normals), "weights": tuple(weights),
+            "bone_indices": tuple(bones),
+        })
+
+        result = simplify_mesh(source, SimplifyOptions(0.95, 1.0, update_vertices=False))
+        compact = compact_direct_result(source, result)
+
+        retained = compact.source_vertex_indices.index(5)
+        self.assertEqual(compact.normals[retained], (0.0, 0.0, 2.0))
+        self.assertEqual(
+            tuple(struct.pack("=f", value) for value in compact.weights[retained]),
+            tuple(struct.pack("=f", value) for value in (0.2, 0.8, 0.0, 0.0)),
+        )
+        self.assertEqual(compact.bone_indices[retained], (7, 2, 0, 0))
+
     def test_checkpoint_keeps_meshoptimizer_non_preferred(self) -> None:
         self.assertIs(MESHOPT_ENGINE_PREFERRED, False)
     def test_real_dll_simplifies_grid_and_preserves_locked_border_and_materials(self) -> None:

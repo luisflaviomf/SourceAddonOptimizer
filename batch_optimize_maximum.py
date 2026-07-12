@@ -33,6 +33,7 @@ from maximum_optimizer.meshopt_bridge import (
     SIMPLIFY_REGULARIZE_LIGHT,
     MeshInput,
     SimplifyOptions,
+    compact_direct_result,
     simplify_mesh,
 )
 from maximum_optimizer.regions import (
@@ -58,15 +59,17 @@ from maximum_optimizer.smoothing import (
     canonicalize_export_normals,
     canonicalize_normals_by_identity,
 )
-from maximum_optimizer.smd_contract import restore_ordered_smd_normals
+from maximum_optimizer.smd_contract import restore_direct_smd_normals, restore_ordered_smd_normals
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _EXPECTED_CANDIDATE_FIELDS = {
-    "candidate_id", "engine", "ratio", "target_error", "update_vertices", "region_overrides"
+    "candidate_id", "engine", "ratio", "target_error", "update_vertices", "region_overrides",
+    "strategy", "transfer",
 }
 _SEARCH_CANDIDATE_FIELDS = {
-    "candidate_id", "engine", "target_ratio", "target_error", "repair_profile", "region_overrides"
+    "candidate_id", "engine", "target_ratio", "target_error", "repair_profile", "region_overrides",
+    "strategy", "update_vertices", "transfer",
 }
 
 
@@ -78,6 +81,8 @@ class CandidateConfig:
     target_error: float
     update_vertices: bool
     region_overrides: tuple[tuple[str, float], ...]
+    strategy: str = "meshopt-project-v1"
+    transfer: str = "projection-v1"
 
 
 @dataclass(frozen=True)
@@ -147,9 +152,18 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
     ratio_key = "target_ratio" if from_search else "ratio"
     ratio = _strict_number(ratio_key, payload[ratio_key], minimum=0.000001, maximum=1.0)
     target_error = _strict_number("target_error", payload["target_error"], minimum=0.0, maximum=1.0)
-    update_vertices = True if from_search else payload["update_vertices"]
+    update_vertices = payload["update_vertices"]
     if type(update_vertices) is not bool:
         raise ValueError("update_vertices must be bool")
+    strategy = payload["strategy"]
+    transfer = payload["transfer"]
+    if (strategy, update_vertices, transfer) not in {
+        ("meshopt-direct-v1", False, "direct-v1"),
+        ("meshopt-project-v1", True, "projection-v1"),
+    }:
+        raise ValueError("unknown or inconsistent meshoptimizer strategy")
+    if from_search and strategy == "meshopt-direct-v1" and payload["repair_profile"] != strategy:
+        raise ValueError("repair_profile must identify meshopt-direct-v1")
     overrides = payload["region_overrides"]
     if type(overrides) is not list:
         raise ValueError("region_overrides must be a list")
@@ -170,6 +184,8 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
         target_error=target_error,
         update_vertices=update_vertices,
         region_overrides=tuple(cleaned.items()),
+        strategy=strategy,
+        transfer=transfer,
     )
 
 
@@ -501,7 +517,10 @@ def validate_smd_audits(before: SmdAudit, after: SmdAudit) -> None:
     if before.hard_normal_positions and not after.hard_normal_positions:
         raise RuntimeError("export lost all hard-normal seam evidence")
     if after.position_normal_keys > before.position_normal_keys:
-        raise RuntimeError("export amplified SMD position-normal keys")
+        raise RuntimeError(
+            "export amplified SMD position-normal keys "
+            f"({before.position_normal_keys}->{after.position_normal_keys})"
+        )
     if after.uv_bounds is None or after.finite_normal_count != after.triangle_count * 3:
         raise RuntimeError("export has incomplete UV or hard-normal evidence")
 
@@ -776,10 +795,6 @@ def rebuild_mesh_smoothing_only(
 
 
 def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float) -> dict[str, object]:
-    from mathutils import Vector
-    from mathutils.bvhtree import BVHTree
-    from mathutils.geometry import closest_point_on_tri
-
     mesh = obj.data
     mesh.calc_loop_triangles()
     positions, triangles, loop_normals, loop_uvs, material_ids, vertex_influences = _vertex_source_attributes(obj)
@@ -825,64 +840,82 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
     if len(result.indices) >= len(source.indices) and ratio < 0.999999:
         raise RuntimeError("meshoptimizer did not reduce this mesh")
 
-    vertex_materials = projection_vertex_materials(
-        len(result.positions), result.indices, result.material_ids, material_ids, len(mesh.materials)
-    )
-    used_vertices = set(result.indices)
-    transferred: dict[int, tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float], tuple[tuple[str, float], ...]]] = {}
-    material_bvhs = build_region_material_bvhs(
-        positions,
-        triangles,
-        material_ids,
-        vector_factory=Vector,
-        bvh_factory=lambda vertices, polygons: BVHTree.FromPolygons(
-            vertices, polygons, all_triangles=True
-        ),
-    )
-    for index in used_vertices:
-        target_material = vertex_materials[index]
-        projected, face_index, nearest_distance = find_compatible_projection(
-            material_bvhs, target_material, Vector(result.positions[index])
+    if candidate.strategy == "meshopt-direct-v1":
+        direct = compact_direct_result(source, result)
+        compact_positions = list(direct.positions)
+        compact_normals = list(direct.normals)
+        compact_uvs = list(direct.uvs)
+        compact_influences = [
+            wedges.corner_influences[index] for index in direct.source_vertex_indices
+        ]
+        output_indices = direct.indices
+        direct_corner_ordinals = tuple(
+            wedges.source_loop_indices[direct.source_vertex_indices[index]] for index in direct.indices
         )
-        hint_face = wedges.source_loop_indices[index] // 3
-        if material_ids[hint_face] != target_material:
-            raise RuntimeError("projection hint has an incompatible region/material")
-        hint_triangle = triangles[hint_face]
-        hint_projected = closest_point_on_tri(
-            Vector(result.positions[index]), *(Vector(positions[vertex]) for vertex in hint_triangle)
-        )
-        hint_distance = (hint_projected - Vector(result.positions[index])).length
-        if hint_distance <= nearest_distance + max(1e-6, nearest_distance * 1e-4):
-            projected = hint_projected
-            face_index = hint_face
-        triangle = triangles[face_index]
-        barycentric = barycentric_weights(projected, *(positions[vertex] for vertex in triangle))
-        corner_offset = face_index * 3
-        normals = loop_normals[corner_offset : corner_offset + 3]
-        uvs = loop_uvs[corner_offset : corner_offset + 3]
-        influences = tuple(vertex_influences[vertex] for vertex in triangle)
-        transferred[index] = (
-            tuple(float(value) for value in projected),
-            interpolate_vector(normals, barycentric, normalize=True),
-            interpolate_vector(uvs, barycentric, normalize=False),
-            interpolate_influences(influences, barycentric),
-        )
+    else:
+        from mathutils import Vector
+        from mathutils.bvhtree import BVHTree
+        from mathutils.geometry import closest_point_on_tri
 
-    transfer_positions = [tuple(position) for position in result.positions]
-    transfer_normals = [tuple(normal) for normal in result.normals]
-    transfer_uvs = [tuple(uv) for uv in result.uvs]
-    transfer_influences = [wedges.corner_influences[index] for index in range(len(result.positions))]
-    for index, values in transferred.items():
-        transfer_positions[index], transfer_normals[index], transfer_uvs[index], transfer_influences[index] = values
-    recombined = recombine_full_attribute_vertices(
-        result.indices, result.material_ids, transfer_positions, transfer_normals, transfer_uvs, transfer_influences
-    )
-    compact_positions = list(recombined.positions)
-    compact_normals = list(recombined.normals)
-    compact_uvs = list(recombined.uvs)
-    compact_influences = list(recombined.influences)
+        vertex_materials = projection_vertex_materials(
+            len(result.positions), result.indices, result.material_ids, material_ids, len(mesh.materials)
+        )
+        used_vertices = set(result.indices)
+        transferred: dict[int, tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float], tuple[tuple[str, float], ...]]] = {}
+        material_bvhs = build_region_material_bvhs(
+            positions,
+            triangles,
+            material_ids,
+            vector_factory=Vector,
+            bvh_factory=lambda vertices, polygons: BVHTree.FromPolygons(
+                vertices, polygons, all_triangles=True
+            ),
+        )
+        for index in used_vertices:
+            target_material = vertex_materials[index]
+            projected, face_index, nearest_distance = find_compatible_projection(
+                material_bvhs, target_material, Vector(result.positions[index])
+            )
+            hint_face = wedges.source_loop_indices[index] // 3
+            if material_ids[hint_face] != target_material:
+                raise RuntimeError("projection hint has an incompatible region/material")
+            hint_triangle = triangles[hint_face]
+            hint_projected = closest_point_on_tri(
+                Vector(result.positions[index]), *(Vector(positions[vertex]) for vertex in hint_triangle)
+            )
+            hint_distance = (hint_projected - Vector(result.positions[index])).length
+            if hint_distance <= nearest_distance + max(1e-6, nearest_distance * 1e-4):
+                projected = hint_projected
+                face_index = hint_face
+            triangle = triangles[face_index]
+            barycentric = barycentric_weights(projected, *(positions[vertex] for vertex in triangle))
+            corner_offset = face_index * 3
+            normals = loop_normals[corner_offset : corner_offset + 3]
+            uvs = loop_uvs[corner_offset : corner_offset + 3]
+            influences = tuple(vertex_influences[vertex] for vertex in triangle)
+            transferred[index] = (
+                tuple(float(value) for value in projected),
+                interpolate_vector(normals, barycentric, normalize=True),
+                interpolate_vector(uvs, barycentric, normalize=False),
+                interpolate_influences(influences, barycentric),
+            )
+        transfer_positions = [tuple(position) for position in result.positions]
+        transfer_normals = [tuple(normal) for normal in result.normals]
+        transfer_uvs = [tuple(uv) for uv in result.uvs]
+        transfer_influences = [wedges.corner_influences[index] for index in range(len(result.positions))]
+        for index, values in transferred.items():
+            transfer_positions[index], transfer_normals[index], transfer_uvs[index], transfer_influences[index] = values
+        recombined = recombine_full_attribute_vertices(
+            result.indices, result.material_ids, transfer_positions, transfer_normals, transfer_uvs, transfer_influences
+        )
+        compact_positions = list(recombined.positions)
+        compact_normals = list(recombined.normals)
+        compact_uvs = list(recombined.uvs)
+        compact_influences = list(recombined.influences)
+        output_indices = recombined.indices
+        direct_corner_ordinals = ()
     faces = tuple(
-        tuple(recombined.indices[offset : offset + 3]) for offset in range(0, len(recombined.indices), 3)
+        tuple(output_indices[offset : offset + 3]) for offset in range(0, len(output_indices), 3)
     )
     preserved_materials = tuple(mesh.materials)
     mesh.clear_geometry()
@@ -899,12 +932,8 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
     for loop in mesh.loops:
         uv_layer.data[loop.index].uv = compact_uvs[loop.vertex_index]
     mesh.update()
-    apply_reconstructed_smoothing(
-        mesh,
-        compact_positions,
-        faces,
-        tuple(compact_normals[index] for face in faces for index in face),
-    )
+    loop_output_normals = tuple(compact_normals[index] for face in faces for index in face)
+    apply_reconstructed_smoothing(mesh, compact_positions, faces, loop_output_normals)
 
     if skinned:
         existing_names = {group.name for group in obj.vertex_groups}
@@ -930,8 +959,9 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         "triangles_after": len(result.indices) // 3,
         "source_vertices": len(positions),
         "wedge_vertices": len(wedges.positions),
-        "recombined_vertices": len(recombined.positions),
+        "output_vertices": len(compact_positions),
         "locked_vertices": sum(bool(flag & LOCK) for flag in policy.vertex_flags),
+        "locked_percentage": sum(bool(flag & LOCK) for flag in policy.vertex_flags) / len(policy.vertex_flags),
         "protected_vertices": sum(bool(flag & PROTECT) for flag in policy.vertex_flags),
         "priority_vertices": sum(bool(flag & PRIORITY) for flag in policy.vertex_flags),
         "requested_ratio": ratio,
@@ -939,6 +969,9 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         "is_thin": policy.geometry.is_thin,
         "skinned": skinned,
         "result_error": result.result_error,
+        "strategy": candidate.strategy,
+        "transfer": candidate.transfer,
+        "_direct_corner_ordinals": direct_corner_ordinals,
     }
 
 
@@ -983,6 +1016,13 @@ def _process_source_file(
         region_manifest,
         before_audit.materials,
     )
+    direct_corner_ordinals = tuple(
+        ordinal for item in object_metrics for ordinal in item.pop("_direct_corner_ordinals", ())
+    )
+    print("MAXIMUM_OBJECT_METRICS " + json.dumps({
+        "source": source_identity,
+        "objects": object_metrics,
+    }, sort_keys=True))
     destination = safe_output_path(source.parent, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=".maximum-export-", dir=destination.parent))
@@ -1002,6 +1042,8 @@ def _process_source_file(
     restored = restore_smd_bone_identity(
         original_text, destination.read_text(encoding="utf-8", errors="strict")
     )
+    if candidate.strategy == "meshopt-direct-v1":
+        restored = restore_direct_smd_normals(original_text, restored, direct_corner_ordinals)
     atomic_write_bytes(source.parent, destination, restored.encode("utf-8"))
     after_audit = audit_smd_text(destination.read_text(encoding="utf-8", errors="replace"))
     validate_smd_audits(before_audit, after_audit)

@@ -115,7 +115,7 @@ class SearchTests(unittest.TestCase):
         ]
         self.assertEqual(
             choose_next(evaluations, SearchBudget.experimental_default()).candidate_id,
-            "meshopt-r075",
+            "meshopt-direct-r085",
         )
 
     def test_profiles_and_regional_overrides_are_separate_search_trails(self):
@@ -163,13 +163,11 @@ class SearchTests(unittest.TestCase):
             [(item.candidate_id, item.engine, item.target_ratio) for item in candidates],
             [
                 ("fidelity-baseline", "fidelity", 0.50),
-                ("meshopt-r075", "meshoptimizer", 0.75),
-                ("meshopt-r050", "meshoptimizer", 0.50),
-                ("meshopt-r035", "meshoptimizer", 0.35),
-                ("meshopt-r025", "meshoptimizer", 0.25),
-                ("meshopt-r015", "meshoptimizer", 0.15),
-                ("meshopt-r010", "meshoptimizer", 0.10),
-                ("meshopt-r005", "meshoptimizer", 0.05),
+                ("meshopt-direct-r085", "meshoptimizer", 0.85),
+                ("meshopt-direct-r070", "meshoptimizer", 0.70),
+                ("meshopt-direct-r055", "meshoptimizer", 0.55),
+                ("meshopt-direct-r040", "meshoptimizer", 0.40),
+                ("meshopt-direct-r025", "meshoptimizer", 0.25),
             ],
         )
         self.assertEqual(candidates[0].target_error, 0.0)
@@ -178,8 +176,11 @@ class SearchTests(unittest.TestCase):
             all(item.target_error == 0.01 for item in candidates[1:])
         )
         self.assertTrue(
-            all(item.repair_profile == "transfer-v1" for item in candidates[1:])
+            all(item.repair_profile == "meshopt-direct-v1" for item in candidates[1:])
         )
+        self.assertTrue(all(item.strategy == "meshopt-direct-v1" for item in candidates[1:]))
+        self.assertTrue(all(item.update_vertices is False for item in candidates[1:]))
+        self.assertTrue(all(item.transfer == "direct-v1" for item in candidates[1:]))
 
     def test_pareto_frontier_excludes_failures_and_dominated_candidates(self):
         evaluations = [

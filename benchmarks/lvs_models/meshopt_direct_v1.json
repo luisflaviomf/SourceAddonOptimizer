@@ -1,0 +1,30 @@
+{
+  "corpus_id": "lvs-models-v1",
+  "quality_claim": null,
+  "quality_status": "unverified",
+  "schema_version": 1,
+  "strategy": "meshopt-direct-v1",
+  "strategy_result": "compiled_improvement_but_not_blender_winner",
+  "settings": {"ratios": [0.85, 0.7, 0.55, 0.4, 0.25], "staged_order": ["wheel", "one_car", "pressure_five"], "transfer": "direct-v1", "update_vertices": false},
+  "tools": {
+    "blender": {"sha256": "f81d3bca0af0d917e03fdf09255981b2ed0750d3a2815da991ea5425a87f8f7c", "version": "5.0.1"},
+    "meshopt_bridge": {"meshoptimizer_version": "v1.2", "sha256": "c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa"}
+  },
+  "records": [{
+    "family_id": "pontiac_transam_wheel", "ratio": 0.85, "stage": "wheel", "status": "compiled_structural_pass_visual_unverified",
+    "compiled": {"candidate_bytes": 1070535, "control_bytes": 1187559, "delta_bytes": -117024, "best_blender_bytes": 633089, "beats_control": true, "beats_best_blender": false},
+    "gate": {"name": "direct_provenance_bijection", "message": "all retained normals restored by exact nonvisual tuple provenance", "position_normal_keys_before": 1137, "position_normal_keys_after": 1137},
+    "mesh": {"achieved_ratio": 0.8663967611336032, "locked_percentage": 0.5256317689530686, "locked_vertices": 728, "output_vertices": 1253, "requested_ratio": 0.85, "source_vertices": 1041, "triangles_after": 1712, "triangles_before": 1976, "wedge_vertices": 1385},
+    "nonvisual_sources": [
+      {"path": "wheel.qc", "sha256": "6066206afe1c7084c0250e0acdfd7f52883e44980e47245eeec1cd265e956e62", "size_bytes": 930},
+      {"path": "wheel_anims/idle.smd", "sha256": "4ef9631312c0e17b2ecf37569b47adaba7e84f8752a8576940c4468f2e8c962a", "size_bytes": 153},
+      {"path": "wheel_anims/neutral.smd", "sha256": "4ef9631312c0e17b2ecf37569b47adaba7e84f8752a8576940c4468f2e8c962a", "size_bytes": 153},
+      {"path": "wheel_physics.smd", "sha256": "b085c7108b6335c5490dfb56cf3fd7ae8f980cc2fa6c1f50623a620bbd90f00f", "size_bytes": 26663}
+    ],
+    "raw_export_sha256": "192edd54b5d94904e228ca8f60def783f2595f4651029a16c56633aac7086fbe"
+  }],
+  "skipped": [
+    {"stage": "one_car", "reason": "best direct wheel was 1034283 bytes versus 633089 best Blender and saturated by r0.40"},
+    {"stage": "pressure_five", "reason": "direct strategy did not beat Blender on the wheel"}
+  ]
+}

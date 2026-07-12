@@ -28,6 +28,45 @@ class DomainTests(unittest.TestCase):
             [{"region_key": "r-" + "a" * 64, "ratio": 0.5}],
         )
 
+    def test_meshopt_direct_strategy_is_explicit_and_cache_distinct(self):
+        candidate = CandidateSpec(
+            "meshopt-direct-r055",
+            "meshoptimizer",
+            0.55,
+            0.01,
+            "meshopt-direct-v1",
+            strategy="meshopt-direct-v1",
+            update_vertices=False,
+            transfer="direct-v1",
+        )
+
+        self.assertEqual(
+            candidate.cache_payload(),
+            {
+                "candidate_id": "meshopt-direct-r055",
+                "engine": "meshoptimizer",
+                "target_ratio": 0.55,
+                "target_error": 0.01,
+                "repair_profile": "meshopt-direct-v1",
+                "region_overrides": [],
+                "strategy": "meshopt-direct-v1",
+                "update_vertices": False,
+                "transfer": "direct-v1",
+            },
+        )
+
+    def test_meshopt_direct_strategy_rejects_mutable_or_mismatched_contract(self):
+        for values in (
+            {"strategy": "meshopt-direct-v1", "update_vertices": True, "transfer": "direct-v1"},
+            {"strategy": "meshopt-direct-v1", "update_vertices": False, "transfer": "project-v1"},
+            {"strategy": "unknown", "update_vertices": False, "transfer": "direct-v1"},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                CandidateSpec(
+                    "meshopt-direct-r055", "meshoptimizer", 0.55, 0.01,
+                    "meshopt-direct-v1", **values,
+                )
+
     def test_snapshot_rejects_inconsistent_total(self):
         with self.assertRaisesRegex(ValueError, "total_bytes"):
             CompiledSizeSnapshot(Path("models"), 7, {".mdl": 3}, {}, ())

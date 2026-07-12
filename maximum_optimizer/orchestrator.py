@@ -382,8 +382,12 @@ def _default_schedule() -> tuple[CandidateSpec, ...]:
         for ratio in _RATIOS
     )
     meshopt = tuple(
-        CandidateSpec(f"meshopt-r{str(ratio).replace('.', '')}", "meshoptimizer", ratio, 0.01, "transfer-v1")
-        for ratio in _RATIOS
+        CandidateSpec(
+            f"meshopt-direct-r{str(ratio).replace('.', '')}",
+            "meshoptimizer", ratio, 0.01, "meshopt-direct-v1",
+            strategy="meshopt-direct-v1", update_vertices=False, transfer="direct-v1",
+        )
+        for ratio in (0.85, 0.70, 0.55, 0.40, 0.25)
     )
     return (fidelity, *meshopt, *blender) if MESHOPT_ENGINE_PREFERRED else (fidelity, *blender, *meshopt)
 

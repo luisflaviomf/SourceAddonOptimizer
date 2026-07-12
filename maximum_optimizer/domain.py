@@ -77,6 +77,24 @@ class CandidateSpec:
     target_error: float
     repair_profile: str
     region_overrides: tuple[tuple[str, float], ...] = ()
+    strategy: str = "legacy-v1"
+    update_vertices: bool = True
+    transfer: str = "projection-v1"
+
+    def __post_init__(self) -> None:
+        direct_selected = (
+            self.strategy == "meshopt-direct-v1"
+            or self.update_vertices is False
+            or self.transfer == "direct-v1"
+        )
+        if direct_selected and (
+            self.engine != "meshoptimizer"
+            or self.strategy != "meshopt-direct-v1"
+            or self.update_vertices is not False
+            or self.transfer != "direct-v1"
+            or self.repair_profile != "meshopt-direct-v1"
+        ):
+            raise ValueError("meshopt-direct-v1 contract is immutable")
 
     def cache_payload(self) -> dict:
         payload = asdict(self)

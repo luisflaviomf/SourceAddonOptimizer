@@ -8,7 +8,7 @@ from maximum_optimizer.domain import CandidateEvaluation, CandidateSpec, SearchB
 from maximum_optimizer.regions import parse_region_scope
 
 
-_INITIAL_RATIOS = (0.75, 0.50, 0.35, 0.25, 0.15, 0.10, 0.05)
+_INITIAL_RATIOS = (0.85, 0.70, 0.55, 0.40, 0.25)
 _MIN_RATIO = 0.01
 
 
@@ -18,6 +18,9 @@ def _trail_key(spec: CandidateSpec) -> tuple[object, ...]:
         spec.target_error,
         spec.repair_profile,
         spec.region_overrides,
+        spec.strategy,
+        spec.update_vertices,
+        spec.transfer,
     )
 
 
@@ -33,8 +36,10 @@ def _ratio_id(ratio: float) -> str:
     return f"{whole}{fraction}"
 
 
-def _candidate_id(engine: str, ratio: float) -> str:
+def _candidate_id(engine: str, ratio: float, strategy: str = "") -> str:
     prefix = "meshopt" if engine == "meshoptimizer" else engine
+    if strategy == "meshopt-direct-v1":
+        prefix = "meshopt-direct"
     return f"{prefix}-r{_ratio_id(ratio)}"
 
 
@@ -50,11 +55,14 @@ def initial_candidates() -> list[CandidateSpec]:
     ]
     candidates.extend(
         CandidateSpec(
-            _candidate_id("meshoptimizer", ratio),
+            _candidate_id("meshoptimizer", ratio, "meshopt-direct-v1"),
             "meshoptimizer",
             ratio,
             0.01,
-            "transfer-v1",
+            "meshopt-direct-v1",
+            strategy="meshopt-direct-v1",
+            update_vertices=False,
+            transfer="direct-v1",
         )
         for ratio in _INITIAL_RATIOS
     )
@@ -163,7 +171,7 @@ def _regional_recovery(
     region_key, _pose = parsed_scope
     scope_hash = hashlib.sha256(region_key.encode("utf-8")).hexdigest()[:8]
     candidate_id = (
-        f"{_candidate_id(failed.spec.engine, failed.spec.target_ratio)}"
+        f"{_candidate_id(failed.spec.engine, failed.spec.target_ratio, failed.spec.strategy)}"
         f"-region-{scope_hash}"
     )
     if candidate_id in used_ids:
@@ -175,6 +183,9 @@ def _regional_recovery(
         failed.spec.target_error,
         failed.spec.repair_profile,
         ((region_key, min(passing_ratios)),),
+        strategy=failed.spec.strategy,
+        update_vertices=failed.spec.update_vertices,
+        transfer=failed.spec.transfer,
     )
 
 
@@ -245,6 +256,9 @@ def choose_next(
                     recovery.target_error,
                     recovery.repair_profile,
                     recovery.region_overrides,
+                    strategy=recovery.strategy,
+                    update_vertices=recovery.update_vertices,
+                    transfer=recovery.transfer,
                 )
             return recovery
     for key in ordered_keys:
@@ -261,7 +275,7 @@ def choose_next(
         if not failed.spec.target_ratio < midpoint < passing.spec.target_ratio:
             retired.add(key)
             continue
-        candidate_id = _candidate_id(passing.spec.engine, midpoint)
+        candidate_id = _candidate_id(passing.spec.engine, midpoint, passing.spec.strategy)
         if engine_trails[passing.spec.engine] > 1:
             candidate_id += "-s" + _strategy_suffix(key)
         if midpoint >= _MIN_RATIO and candidate_id not in used_ids:
@@ -272,6 +286,9 @@ def choose_next(
                 passing.spec.target_error,
                 passing.spec.repair_profile,
                 passing.spec.region_overrides,
+                strategy=passing.spec.strategy,
+                update_vertices=passing.spec.update_vertices,
+                transfer=passing.spec.transfer,
             )
         retired.add(key)
 

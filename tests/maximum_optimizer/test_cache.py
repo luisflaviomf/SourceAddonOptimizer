@@ -42,6 +42,23 @@ def symlink_or_skip(
 
 
 class CacheKeyTests(unittest.TestCase):
+    def test_meshopt_direct_strategy_fields_each_invalidate_cache(self):
+        candidate = {
+            "strategy": "meshopt-direct-v1",
+            "update_vertices": False,
+            "transfer": "direct-v1",
+        }
+        base = CacheKey.build("input", candidate, {"meshopt": "1.2"}, "profile")
+        variants = (
+            {**candidate, "strategy": "meshopt-direct-v2"},
+            {**candidate, "update_vertices": True},
+            {**candidate, "transfer": "projection-v1"},
+        )
+        self.assertEqual(
+            len({base.digest, *(CacheKey.build("input", item, {"meshopt": "1.2"}, "profile").digest for item in variants)}),
+            4,
+        )
+
     def test_rejects_non_sha256_digest(self):
         invalid = (
             "",

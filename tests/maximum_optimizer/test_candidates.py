@@ -592,8 +592,9 @@ class CandidateAdapterTests(unittest.TestCase):
 
     def test_meshoptimizer_adapter_materializes_exact_candidate_payload_and_dll(self):
         spec = CandidateSpec(
-            "meshopt-r035", "meshoptimizer", 0.35, 0.01, "transfer-v1",
+            "meshopt-direct-r055", "meshoptimizer", 0.55, 0.01, "meshopt-direct-v1",
             (("r-" + "1" * 64, 0.5),),
+            strategy="meshopt-direct-v1", update_vertices=False, transfer="direct-v1",
         )
         build = MeshoptimizerAdapter(
             process_runner=MaterializingRunner(self.manifest.model_rel)
@@ -607,6 +608,9 @@ class CandidateAdapterTests(unittest.TestCase):
         self.assertEqual(optimize[optimize.index("--meshopt-dll") + 1], str(self.meshopt_dll))
         payload = json.loads((self.workspace / "candidate.json").read_text(encoding="utf-8"))
         self.assertEqual(payload, spec.cache_payload())
+        self.assertEqual(payload["strategy"], "meshopt-direct-v1")
+        self.assertIs(payload["update_vertices"], False)
+        self.assertEqual(payload["transfer"], "direct-v1")
 
     def test_fidelity_and_blender_reject_regional_specs_before_launch(self):
         region = "r-" + "2" * 64

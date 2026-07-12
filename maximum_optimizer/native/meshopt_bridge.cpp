@@ -632,13 +632,19 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
         for (std::size_t vertex = 0; vertex < input->vertex_count; ++vertex)
         {
             const float* attribute = attributes.data() + vertex * kAttributeCount;
-            std::copy_n(attribute, 3, out_normals.get() + vertex * 3);
-            std::copy_n(attribute + 3, 2, out_uvs.get() + vertex * 2);
-            std::copy_n(attribute + 5, 4, out_weights.get() + vertex * 4);
+            const float* normal = options->update_vertices ? attribute : input->normals + vertex * 3;
+            const float* uv = options->update_vertices ? attribute + 3 : input->uvs + vertex * 2;
+            const float* weight = options->update_vertices ? attribute + 5 : input->weights + vertex * 4;
+            std::copy_n(normal, 3, out_normals.get() + vertex * 3);
+            std::copy_n(uv, 2, out_uvs.get() + vertex * 2);
+            std::copy_n(weight, 4, out_weights.get() + vertex * 4);
         }
         std::copy(result_indices.begin(), result_indices.end(), out_indices.get());
         std::copy(result_materials.begin(), result_materials.end(), out_materials.get());
-        std::copy(canonical_bones.begin(), canonical_bones.end(), out_bones.get());
+        if (options->update_vertices)
+            std::copy(canonical_bones.begin(), canonical_bones.end(), out_bones.get());
+        else
+            std::copy_n(input->bone_indices, input->vertex_count * 4, out_bones.get());
 
         if (!reservation.publish(
                 out_positions, out_normals, out_uvs, out_weights, out_bones, out_indices,
