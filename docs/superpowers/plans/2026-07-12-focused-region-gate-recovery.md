@@ -21,6 +21,14 @@
 - Schema-1 and schema-2 runs never call `focused_visual` and never write a
   whole-visual index.
 - Focus bounds are fixed: top-K maximum 4, eight angles, two passes, two poses, sixteen whole states, and three recovery rounds.
+- Recovery source manifests are limited to 4,096 regular files and 2 GiB; compiled
+  composition manifests are limited to 64 regular artifacts and 2 GiB.
+- Donor inspection is limited to eight ordered snapshots per changed source; invalid
+  snapshots in the ordered prefix consume the bound and the ninth is never touched.
+- A recovery composition changes at most four sources and consumes one recovery round
+  and one `SearchBudget.max_candidates` slot before any mutation or process launch.
+- Under trusted schema 3, byte-exact composite recovery disables the legacy
+  `search._regional_recovery` path; schema-1/schema-2 search remains unchanged.
 - Monaco uses exactly four global direct ratios `(0.50, 0.45, 0.40, 0.35)` and at most eight fallback sources.
 - Every candidate still requires complete QC compilation, structural validation, whole visual validation, and focused validation before promotion.
 - No task changes the WPF or CLI surface.
@@ -246,45 +254,163 @@ class FocusedRenderEvidence:
     evidence_sha256: str
 
 @dataclass(frozen=True)
+class FocusedRecoveryContext:
+    schema: int
+    base_context: FocusedEvidenceContext
+    base_cache_digest: str
+    initial_authorization_sha256: str
+
+@dataclass(frozen=True)
+class SourceFileProof:
+    file_identity: str
+    kind: Literal[
+        "qc", "visual-source", "animation-source", "physics-source", "auxiliary",
+    ]
+    relative_path: str
+    size: int
+    sha256: str
+
+@dataclass(frozen=True)
+class SourceTreeManifest:
+    schema: int
+    root_identity: str
+    files: tuple[SourceFileProof, ...]
+    total_files: int
+    total_bytes: int
+    digest: str
+
+@dataclass(frozen=True)
+class FocusedEvidenceRef:
+    region_key: str
+    evidence_sha256: str
+
+@dataclass(frozen=True)
+class RecoverySourceSnapshot:
+    schema: int
+    kind: Literal["candidate", "original"]
+    family_id: str
+    family_input_sha256: str
+    optimizer_contract_sha256: str
+    whole_profile_sha256: str
+    focused_profile_sha256: str
+    dependency_proof_sha256: str
+    candidate_id: str | None
+    candidate_cache_digest: str | None
+    source_root: Path
+    source_manifest: SourceTreeManifest
+    focused_evidence: tuple[FocusedEvidenceRef, ...]
+    snapshot_sha256: str
+
+@dataclass(frozen=True)
 class SourceOverlay:
     source_identity: str
     mode: Literal["donor", "exact-original", "direct-position"]
-    donor_candidate_id: str | None
+    motivating_region_key: str | None
+    base_source_sha256: str
+    replacement_sha256: str
+    replacement_size: int
+    replacement_snapshot_sha256: str
+    replacement_candidate_id: str | None
+    replacement_cache_digest: str | None
     effective_ratio: float | None
-    input_sha256: str
-    output_sha256: str
-    focused_evidence_sha256: str | None
+    focused_evidence: tuple[FocusedEvidenceRef, ...]
+    reason: str | None
 
 @dataclass(frozen=True)
 class CompositeRecipe:
     schema: int
     kind: Literal["focused-recovery-v1", "adaptive-direct-fallback-v1"]
+    family_id: str
+    family_input_sha256: str
     base_candidate_id: str
+    base_spec_sha256: str
     base_cache_digest: str
+    base_source_manifest_sha256: str
+    optimizer_contract_sha256: str
+    whole_profile_sha256: str
+    focused_profile_sha256: str
+    dependency_proof_sha256: str
     round_index: int
     direct_ratio: float | None
     overlays: tuple[SourceOverlay, ...]
     selector_version: str
     prefilter_version: str | None
+    recipe_sha256: str
 
 @dataclass(frozen=True)
-class FocusedRecoveryEvidence:
-    round_index: int
-    recipe: CompositeRecipe
-    changed_sources: tuple[Mapping[str, object], ...]
-    reused_region_evidence: Mapping[str, str]
-    compile_files: tuple[Mapping[str, object], ...]
-    structural: ValidationResult
-    rerun_records: tuple[FocusedRenderEvidence, ...]
-    final_whole: ValidationResult
+class ChangedSourceProof:
+    source_identity: str
+    relative_path: str
+    before_size: int
+    before_sha256: str
+    after_size: int
+    after_sha256: str
+    overlay_sha256: str
+    replacement_snapshot_sha256: str
+
+@dataclass(frozen=True)
+class CompileFileProof:
+    relative_path: str
+    kind: str
+    size: int
+    sha256: str
+
+@dataclass(frozen=True)
+class CompositionProof:
+    schema: int
+    recipe_sha256: str
+    base_manifest_sha256: str
+    composed_manifest_sha256: str
+    changed_sources: tuple[ChangedSourceProof, ...]
+    evidence_sha256: str
+
+@dataclass(frozen=True)
+class StructuralAuthorizationEvidence:
+    candidate_cache_digest: str
+    composition_evidence_sha256: str
+    compile_manifest_sha256: str
+    fingerprint_sha256: str
+    validation: ValidationResult
     evidence_sha256: str
 
 @dataclass(frozen=True)
 class ComposedSourceTree:
     workspace: Path
     optimized_qc: Path
-    source_hashes: Mapping[str, str]
+    source_manifest: SourceTreeManifest
+    composition: CompositionProof
+
+# These evidence types live in focused_cache.py beside FocusedRenderEvidence;
+# they do not live in domain.py and therefore introduce no import cycle.
+@dataclass(frozen=True)
+class FinalWholeAuthorizationEvidence:
+    candidate_id: str
+    candidate_cache_digest: str
+    recipe_sha256: str
     composition_evidence_sha256: str
+    compile_manifest_sha256: str
+    whole_index_path: str
+    whole_index_sha256: str
+    whole_render_evidence_sha256: str
+    validation: ValidationResult
+    evidence_sha256: str
+
+@dataclass(frozen=True)
+class FocusedRecoveryEvidence:
+    round_index: int
+    terminal_status: Literal[
+        "composition_failed", "compile_failed", "structural_failed",
+        "focused_failed", "final_whole_failed", "authorized",
+    ]
+    recipe: CompositeRecipe
+    composition: CompositionProof | None
+    changed_sources: tuple[ChangedSourceProof, ...]
+    reused_region_evidence: tuple[FocusedEvidenceRef, ...]
+    compile_files: tuple[CompileFileProof, ...]
+    structural: StructuralAuthorizationEvidence | None
+    rerun_records: tuple[FocusedRenderEvidence, ...]
+    final_whole: FinalWholeAuthorizationEvidence | None
+    evidence_sha256: str
 
 @dataclass(frozen=True)
 class FocusCacheKey:
@@ -295,7 +421,23 @@ class FocusCacheKey:
         """Validate the exact FocusCacheContext schema, then hash canonical_json."""
 ```
 
-`CandidateSpec` gains one field, `composite_recipe: CompositeRecipe | None = None`.
+`SourceFileProof` through `StructuralAuthorizationEvidence` live in
+`maximum_optimizer.domain`. `FocusedRecoveryContext`,
+`FinalWholeAuthorizationEvidence`, and `FocusedRecoveryEvidence` live in
+`maximum_optimizer.focused_cache` beside `FocusedRenderEvidence`;
+`focused_regions` delegates schema-2 construction to that module and never owns a
+second authorization parser.
+
+`CandidateSpec` gains one trailing field,
+`composite_recipe: CompositeRecipe | None = None`. Ordinary candidates require it to
+be `None`; composite candidates require the complete validated recipe. Its canonical
+payload, not merely `candidate_id` or `recipe_sha256`, is included in
+`CandidateSpec.cache_payload()`, candidate-ID derivation, and `CacheKey`.
+`CandidateBuild` gains trailing
+`source_snapshot: RecoverySourceSnapshot | None = None`; schema-3 completed builds
+require it. Nested recipes/proofs are never serialized into the existing
+`Mapping[str, str]` provenance field; provenance remains a string-only report summary
+containing evidence IDs/hashes, while typed payloads use their dedicated fields.
 `CandidateEvaluation` gains `whole_visual: ValidationResult | None = None` and
 `focused_by_region: Mapping[str, FocusRegionResult]`. Existing callers that do not
 enable schema 3 receive the current defaults and behavior.
@@ -730,65 +872,200 @@ enable schema 3 receive the current defaults and behavior.
 - Modify: `maximum_optimizer/domain.py`
 - Modify: `maximum_optimizer/search.py`
 - Modify: `maximum_optimizer/candidates.py`
+- Modify: `maximum_optimizer/focused_cache.py`
+- Modify: `maximum_optimizer/orchestrator.py`
 - Modify: `tests/maximum_optimizer/test_search.py`
+- Modify: `tests/maximum_optimizer/test_focused_cache.py`
 - Modify: `tests/maximum_optimizer/test_orchestrator.py`
 
 **Interfaces:**
-- `maximum_optimizer.domain` produces immutable `SourceOverlay`, `CompositeRecipe`, `FocusedRecoveryEvidence`, and `ComposedSourceTree`.
-- `maximum_optimizer.composite` produces `select_recovery_overlays(failed, evaluations, manifests, round_index) -> tuple[SourceOverlay, ...]`, `compose_candidate_sources(base_build, recipe, workspace, cancel_event) -> ComposedSourceTree`, and `validate_composition_proof(payload, base_root, composed_root) -> Mapping[str, str]`.
-- `maximum_optimizer.focused_regions` produces `focused_recovery_evidence_payload(context, selection, initial_records, recoveries: Sequence[FocusedRecoveryEvidence]) -> Mapping[str, object]`, which emits schema 2. Schema 1 remains no-recovery-only.
-- Candidate cache payloads include the entire canonical recipe and donor evidence hashes.
+- `maximum_optimizer.domain` produces the locked core types `SourceFileProof`,
+  `SourceTreeManifest`, `FocusedEvidenceRef`, `RecoverySourceSnapshot`,
+  `SourceOverlay`, `CompositeRecipe`, `ChangedSourceProof`, `CompileFileProof`,
+  `CompositionProof`, `StructuralAuthorizationEvidence`, and `ComposedSourceTree`.
+- `CandidateBuild` gains trailing
+  `source_snapshot: RecoverySourceSnapshot | None = None`. It is required for every
+  completed schema-3 ordinary/composite build and is revalidated after cache restore.
+- `maximum_optimizer.search.choose_next` gains trailing keyword
+  `recovery_mode: Literal["legacy-regional", "external-byte-exact"] =
+  "legacy-regional"`. The external mode never calls `_regional_recovery`; only the
+  trusted schema-3 orchestrator supplies it.
+- `maximum_optimizer.composite` produces:
+  `build_source_tree_manifest(root, graph, root_identity, cancel_event) -> SourceTreeManifest`,
+  `revalidate_recovery_snapshot(snapshot, cancel_event) -> SourceTreeManifest`,
+  `select_recovery_overlays(failed, selection, evaluations,
+  snapshots_by_candidate: Mapping[str, RecoverySourceSnapshot],
+  original_snapshot, current_recipe, attempted_overlay_sha256,
+  round_index) -> tuple[SourceOverlay, ...]`,
+  `recovery_candidate_spec(base_spec, recipe) -> CandidateSpec`,
+  `compose_candidate_sources(base_build, recipe,
+  snapshots_by_sha256: Mapping[str, RecoverySourceSnapshot], workspace,
+  cancel_event) -> ComposedSourceTree`, and
+  `validate_composition_proof(recipe, snapshots_by_sha256, base_root, composed_root,
+  cancel_event) -> CompositionProof`.
+- `maximum_optimizer.focused_cache` produces the locked
+  `FocusedRecoveryContext`, `FinalWholeAuthorizationEvidence`,
+  `FocusedRecoveryEvidence`, and
+  `focused_recovery_evidence_payload(context: FocusedRecoveryContext, selection,
+  initial_records,
+  recoveries: Sequence[FocusedRecoveryEvidence]) -> Mapping[str, object]`.
+  It emits schema 2; `focused_gate_evidence_payload` remains schema-1-only.
+- The orchestrator retains at most `SearchBudget.max_candidates` entries in a
+  per-family `candidate_id -> (CandidateBuild, CandidateEvaluation,
+  RecoverySourceSnapshot)` registry plus exactly one original snapshot. The registry
+  is discarded at the family terminal and never reconstructed from candidate IDs.
+- `CandidateSpec.cache_payload()`, recovery candidate ID, `CacheKey`, cache record,
+  and composition evidence include the entire canonical recipe and every donor or
+  exact snapshot/focused evidence hash.
 
-- [ ] **Step 1: Write donor-selection RED tests**
+- [ ] **Step 1: Write typed-contract RED tests**
 
-  Use a globally failed candidate whose target region passed as a donor. Assert the
-  least less-aggressive same-contract donor wins. Reject cross-family, cross-profile,
-  cross-strategy, equal/lower ratio, self, duplicated, missing-proof, and more than
-  eight inspected donors.
+  In `test_composite.py`, construct every locked type and mutate each field. Require
+  exact schemas, deep immutability, lowercase SHA-256, finite non-bool ratios,
+  canonical relative source paths, sorted unique source identities and focus refs,
+  exact totals/seals, and no case collisions. Enforce at most 4 overlays, 4,096/2-GiB
+  source proofs, and 64/2-GiB compile proofs.
 
-- [ ] **Step 2: Write exact-fallback RED tests**
+  Candidate snapshots require candidate/cache identity; original snapshots forbid
+  both and forbid focused refs. `snapshot_sha256` seals every field except the runtime
+  absolute `source_root`, which is revalidated against the sealed manifest whenever
+  used.
 
-  Exhaust donors and assert one explicit original-source overlay. When two focuses
-  share the source, both become affected. Reject more than four changed sources and
-  a fourth recovery round. Require schema-2 recovery indices exactly `0..n-1`, one
-  changed-source proof per overlay, explicit reused-region evidence hashes, complete
-  compile files, structural result, focused rerun records, and final whole result.
-  Reject attempts to put recovery records into schema 1.
+  Enforce the overlay mode matrix exactly. `donor` requires donor ID/cache, strictly
+  higher ratio, replacement snapshot, a motivating region contained in non-empty
+  focused refs. `exact-original` requires a motivating region, forbids
+  donor/ratio/focused refs, and requires `donors-exhausted-v1` plus the original
+  snapshot. `direct-position` requires no motivating region, direct candidate/cache,
+  the recipe's global ratio, its snapshot, no donor focus refs, and
+  `approved-direct-position-v1`.
 
-- [ ] **Step 3: Run search/composite tests and verify RED**
+- [ ] **Step 2: Write durable source-snapshot RED tests**
+
+  Build fresh and cache-restored candidate snapshots from complete optimized QC
+  graphs. Assert canonical identity/path/hash/size equivalence and bind family input,
+  optimizer, profile, dependency, candidate/cache, and focused evidence. Mutate a
+  source after publication, swap equal-size bytes during a read, add/remove/alias a
+  source, corrupt a cache record, or use a reparse/special/escaping path; fresh
+  validation rejects and cache restore becomes a miss. Original snapshot bytes must
+  come from the authoritative original QC graph and per-source proof, never from the
+  base candidate clone.
+
+- [ ] **Step 3: Write bounded donor-selection RED tests**
+
+  Use a candidate rejected only because another focused region failed: structural,
+  initial whole, and the motivating focus pass, so it is eligible. Assert the least
+  strictly less-aggressive effective ratio wins, with candidate ID and snapshot hash
+  tie-breaks. Reject structural/whole failure, missing/mismatched focused evidence,
+  cross-family/input/profile/dependency/optimizer/strategy, self, equal/lower ratio,
+  duplicate source/candidate, recursive recovery donor, stale source manifest, and
+  repeated replacement bytes.
+
+  Compute `optimizer_contract_sha256` from exactly engine, target error, repair
+  profile, strategy, update-vertices, and transfer. Exclude ID, target ratio, region
+  overrides, and recipe; bind family/input, profile, dependency, and tools separately.
+  Compute effective ratio from the motivating region's override or target ratio.
+
+  Feed prior attempted overlay hashes back into selection. After composition,
+  compile, structural, focused, or final-whole failure, the next reserved round skips
+  that exact replacement and deterministically advances the same failed source to the
+  next donor or original fallback; it never retries an identical recipe.
+
+  Present nine ordered snapshots and instrument manifest access. Invalid candidates
+  in the first eight consume the bound and the ninth is never opened or hashed.
+  Under schema 3, call `choose_next(...,
+  recovery_mode="external-byte-exact")` and assert it never invokes legacy
+  `_regional_recovery`; the default keeps all prior tests unchanged.
+
+- [ ] **Step 4: Write exact-original, dependency-closure, and accounting RED tests**
+
+  Exhaust donors and require one exact-original overlay. If original bytes already
+  equal current replacement bytes, return no overlay and consume neither candidate
+  nor round. When two focuses share a target source, or a changed source appears in
+  another focus's sealed `source_pairs`/configuration/animation dependency closure,
+  both are affected and rerun; equality of only `target.source_identity` never
+  authorizes reuse.
+
+  Reject a fifth changed source, fourth reserved round, or exhausted candidate budget
+  before opening a snapshot, mutating a workspace, or launching a process. Reserve
+  both counters before composition; composition, compile, structural, focus, and
+  final-whole failures keep their reserved attempt index.
+
+- [ ] **Step 5: Run source/search tests and verify RED**
 
   Run:
   `python -m unittest tests.maximum_optimizer.test_search tests.maximum_optimizer.test_composite -v`
 
   Expected: missing typed recovery APIs.
 
-- [ ] **Step 4: Implement canonical recipes and candidate IDs**
+- [ ] **Step 6: Implement snapshots, canonical cumulative recipes, and cache identity**
 
-  Hash family, base candidate, optimizer contract, sorted overlays, donor/exact
-  hashes, focused evidence hashes, and round index. Composite and recovery candidates
-  consume `SearchBudget.max_candidates` and cannot repeat an attempted ID.
+  Implement source manifests with no-follow current-byte validation and the fixed
+  bounds. Keep one immutable ordinary base. Every round recipe contains the complete
+  cumulative overlay set sorted by source identity; replacing a source replaces its
+  prior overlay and duplicate overlays are impossible. Hash family/input, base
+  spec/cache/source manifest, optimizer/profile/dependency, selector, round, sorted
+  overlays, replacement snapshots, and all focused refs.
 
-- [ ] **Step 5: Implement source composition proof**
+  Derive the safe recovery candidate ID from the full recipe hash and store the full
+  canonical recipe in `CandidateSpec.cache_payload()`. Any recipe/donor/evidence
+  mutation changes both ID and `CacheKey`. Ordinary candidates require
+  `composite_recipe=None`; composite candidates require exact base-contract equality
+  and cannot repeat an attempted ID.
 
-  Copy into a fresh workspace. Compare canonical source manifests before and after;
-  every changed hash must have one overlay and every undeclared hash must remain
-  equal. Parse and pair the full optimized QC graph before compilation.
+- [ ] **Step 7: Implement byte-exact source composition and proof**
 
-- [ ] **Step 6: Integrate compile, structural, and selective rerender**
+  Require a fresh non-existing, non-overlapping private workspace. Resolve every
+  replacement only through the supplied sealed snapshot registry. Traverse, hash,
+  and copy through contained no-follow handles with cancellation and file/byte
+  bounds. Compare complete base/result manifests: each changed source has exactly one
+  overlay/proof, replacement bytes equal its snapshot, every undeclared source is
+  byte-identical, and no extra/missing/case-alias path or QC rewrite exists. Reparse
+  and pair the complete optimized and original QC graphs. A TOCTOU change, unsafe
+  tree, ambiguity, cancellation, or proof mismatch leaves no complete composed tree.
 
-  Recompile complete QC. Rerender every focus whose source changed, reuse sealed
-  evidence for unchanged sources, then perform one final whole visual validation
-  after all focuses pass. Build one sealed `FocusedRecoveryEvidence` per round and
-  publish focused evidence schema 2 only after checking contiguous indices, exact
-  changed/reused partition, per-round seal, and final whole reauthorization. Never
-  broaden the Task-3 schema-1 parser to accept non-empty recoveries.
+- [ ] **Step 8: Write and implement schema-2 fold and byte-bound authorization**
 
-- [ ] **Step 7: Test failure isolation and commit checkpoint 5**
+  First write RED tests for exact top-level/round keys, non-empty contiguous reserved
+  indices `0..n-1`, status/optional-field matrix, cumulative recipe continuity, one
+  changed-source proof per overlay, complete compile files, structural binding,
+  dependency-derived rerun/reuse partition, immediately-prior reused hashes, and
+  per-round seals. Mutate/reseal every composition, compile, structural, rerun,
+  reused, and final-whole binding independently. Recompute outer seals after forging
+  pass/failure, metrics, fidelity score, profile limits, artifact hash, whole-index
+  hash, or candidate digest; the parser must still reject semantic inconsistency.
+
+  Fold from the exact initial records. Each rerun replaces exactly its affected
+  target; reused targets preserve only the immediately prior evidence hash. Failed
+  rounds cannot authorize. Intermediate rounds require `final_whole=None`.
+  `final_whole_failed` may carry one fresh failed byte-bound whole record; exactly the
+  last `authorized` round carries the only passing final-whole record. Bind it to the
+  composite candidate/cache/recipe/composition/compile digests and fresh whole
+  index/render proof. The terminal fold has exactly one current passing record per
+  selected target. Keep schema 1 byte-for-byte no-recovery-only.
+
+- [ ] **Step 9: Integrate retained builds, compile, structural, selective rerender, and final whole**
+
+  Retain every completed ordinary candidate build/evaluation/snapshot until its
+  family terminal, including focused-rejected donors. Revalidate snapshots before
+  selection and copy. Recompile the complete QC, seal the exact artifact manifest,
+  and create structural evidence bound to composition and current fingerprint.
+  Rerender the full dependency-affected focus set; reuse only exact prior context.
+  After the folded focused set passes, run final whole exactly once for that round and
+  bind its fresh whole index/render evidence. Only an `authorized` schema-2 payload
+  may enter winner selection/cache store/best update/output promotion.
+
+  Compile/proof/gate failures reject only the recovery candidate, consume the
+  reserved candidate/round, and may continue to the next bounded recipe. Cancellation
+  emits one terminal event, leaves atomic partial diagnostics only, performs no cache
+  store/best/output promotion, and preserves the original family.
+
+- [ ] **Step 10: Test failure isolation and commit checkpoint 5**
 
   Run:
-  `python -m unittest tests.maximum_optimizer.test_composite tests.maximum_optimizer.test_search tests.maximum_optimizer.test_orchestrator -v`
+  `python -m unittest tests.maximum_optimizer.test_composite tests.maximum_optimizer.test_search tests.maximum_optimizer.test_focused_cache tests.maximum_optimizer.test_orchestrator -v`
 
-  Expected: zero failures; compile or proof errors reject only that candidate.
+  Expected: zero failures; compile/proof/gate errors reject only that recovery
+  candidate, all hard bounds reject before excess work, and schema 1 is unchanged.
 
   Commit:
   `git commit -m "feat: recover focused failures with source donors"`

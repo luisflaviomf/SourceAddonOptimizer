@@ -242,38 +242,155 @@ authorize an unattempted target.
 
 ## Recovery donors and exact fallback
 
-Recovery operates on source identities because exact preservation is a source-file
-operation. A failed region is mapped through its canonical descriptor to one source.
-If several selected focuses share that source, all of them are affected and must be
-rerun.
+Recovery operates on canonical QC-graph source identities because exact preservation
+is a source-file operation. It never reconstructs a path from a candidate ID or a
+filename token. Every ordinary candidate that completes source generation publishes
+a bounded, sealed `SourceTreeManifest` and a runtime `RecoverySourceSnapshot`. The
+snapshot binds family/input identity, optimizer contract, canonical whole and focused
+profile proofs,
+dependency proof, candidate/cache identity, the current contained source root, the
+complete source-tree manifest, and the focused evidence hashes available for that
+candidate. The source root is runtime-only; canonical recipe/evidence payloads seal
+its logical manifest and snapshot hash, never an absolute path.
+
+`SourceTreeManifest` inventories every regular file under the optimized source root
+that can participate in the complete QC graph, plus required auxiliary files. Each
+entry has one canonical logical file identity, typed kind (`qc`, `visual-source`,
+`animation-source`, `physics-source`, or `auxiliary`), canonical contained relative
+path, size, and SHA-256. File identities and case-folded paths are unique and sorted;
+declared totals and the manifest seal are exact.
+
+The orchestrator retains a bounded `candidate_id -> (CandidateBuild,
+CandidateEvaluation, RecoverySourceSnapshot)` registry for every completed ordinary
+candidate in the current family, including candidates rejected only by focused
+validation. The registry contains at most `SearchBudget.max_candidates` candidate
+entries plus the one original snapshot and is discarded at the family terminal.
+A cache hit is eligible only after its source-tree manifest is reopened
+and revalidated against current no-follow bytes. Structural failure, initial whole
+failure, missing focused proof, stale source bytes, or a mismatched family, profile,
+dependency, input, or optimizer contract makes a candidate ineligible as a donor.
+The original graph has its own sealed snapshot built from the authoritative original
+QC graph and per-source hashes; it is not inferred from the base candidate tree.
+Candidate snapshots require candidate/cache identity and may carry canonical focused
+refs. The original snapshot forbids candidate/cache identity and focused refs. Both
+forms require the same family/input, optimizer/whole-profile/focused-profile/dependency
+binding and current
+manifest validation.
+
+A failed focus is mapped through its canonical descriptor to one source. A changed
+source affects every selected focus whose sealed Task-3 `source_pairs`, configuration,
+or animation dependency closure names that source. That complete affected set is
+rerendered. Equality with only `FocusTarget.source_identity` is never sufficient for
+reuse. A focus may be reused only when every source pair and configuration/animation,
+profile, selector, renderer, dependency, and material proof in its prior cache context
+is byte-identical in the composed candidate.
 
 The recovery order is:
 
-1. A byte-exact output from an already built candidate with the same optimizer
-   contract, a less aggressive effective ratio, and a passing focused result for the
-   failed region. The donor may fail another focused region globally.
+1. A byte-exact output from an already built ordinary candidate with the same family,
+   input, optimizer, profile, and dependency contract, a strictly less-aggressive
+   effective ratio, and a passing focused result for the motivating failed region.
+   The donor may fail another focused region globally, but its structural and initial
+   whole gates must have passed. Recovery candidates are not donors in Task 5.
 2. The exact original source bytes when no eligible donor remains.
 
-Donor output hashes, candidate ID, optimizer contract, effective ratio, and focused
-evidence hash are part of the recipe. Exact fallback records the original source
-hash and reason. A donor cannot donate to itself, repeat an existing overlay, reduce
-the effective ratio, or cross family/strategy/profile boundaries.
+For each source, candidate snapshots are ordered canonically by effective ratio
+ascending and then candidate ID and snapshot hash. Only ratios strictly above the
+current effective ratio are eligible; the first eligible entry wins. At most eight
+ordered candidate snapshots are inspected per changed source, and the ninth snapshot
+is not opened or hashed. Invalid entries encountered in that ordered prefix consume
+the bound. A donor cannot donate to itself, repeat the current replacement bytes,
+reduce or preserve the effective ratio, or cross any contract boundary.
 
-The compositor copies the base candidate source tree, replaces only declared source
-outputs, rewrites no unrelated QC directive, and emits a source manifest proving:
+`optimizer_contract_sha256` is the canonical hash of exactly `engine`,
+`target_error`, `repair_profile`, `strategy`, `update_vertices`, and `transfer`.
+Candidate ID, target ratio, region overrides, and composite recipe are excluded so
+less-aggressive ordinary donors remain comparable; family/input, profile, dependency,
+and tool bytes are bound separately and must still match. Effective ratio is computed
+for the motivating region from its exact override or the candidate target ratio.
+
+Each `SourceOverlay` records `base_source_sha256`, `replacement_sha256`, the sealed
+replacement snapshot, and a canonical tuple of every `(region_key,
+focused_evidence_sha256)` used to justify donor selection. Donor/original recovery
+also names the canonical motivating region; direct-position has none. The mode matrix
+is exact:
+
+- `donor` requires donor candidate/cache identity, a finite strictly larger effective
+  ratio for the motivating region, a donor snapshot hash, non-empty focused evidence
+  hashes containing that region, and no exact reason;
+- `exact-original` forbids donor identity, ratio, and focused evidence, requires the
+  motivating region, authoritative original snapshot hash, and reason
+  `donors-exhausted-v1`;
+- `direct-position` is reserved for Task 6 and requires its direct candidate/cache
+  identity, no motivating region, the global direct ratio, its source snapshot, no
+  focused donor hashes, and reason `approved-direct-position-v1`.
+
+If exact-original bytes already equal the base/replacement bytes, recovery is a no-op:
+it emits no overlay, consumes no composition candidate, and the source is exhausted.
+
+Every recovery round starts from the same immutable ordinary base candidate. Its
+`CompositeRecipe` carries the entire cumulative overlay set, sorted by canonical
+source identity; a later round may replace one prior overlay for a source but never
+stack two overlays for it. It also seals family/input, base spec/cache/source manifest,
+optimizer/whole-profile/focused-profile/dependency contract, selector version, round
+index, and all donor
+or original proofs. The complete recipe is part of `CandidateSpec.cache_payload`, the
+candidate ID hash, and `CacheKey`; hashing only the candidate ID is insufficient.
+
+The compositor receives the typed recipe plus the exact snapshot registry, copies the
+ordinary base into a fresh non-overlapping private workspace, replaces only declared
+source outputs through no-follow handles, rewrites no QC directive, and emits a
+bounded source manifest proving:
 
 - every base source and resulting source has a canonical identity and hash;
 - a changed source has exactly one declared overlay;
 - every undeclared source hash is identical to the base;
-- every donor/exact hash equals the bytes copied;
+- every donor/exact hash and size equals the bytes copied from the sealed snapshot;
 - the complete optimized QC graph still pairs with the original graph.
 
-The complete QC is recompiled and structurally validated after every composition.
-Only focuses whose source hash changed are rerendered during recovery; unchanged
-focus evidence is reused after its source, profile, selector, and material proofs are
-revalidated. After all focused regions pass, one final whole visual validation is
-mandatory because the composed candidate differs from the initially authorized
-whole render.
+Canonical relative paths reject absolute, UNC, drive, backslash aliases, dot/parent,
+case collisions, symlinks, junctions/reparse points, and special files. Discovery,
+copy, hashing, manifest comparison, and cleanup have explicit file/byte bounds and
+cancellation checkpoints. A source changed during a handle read, an undeclared
+change, an extra/missing file, a QC rewrite, ambiguous graph pairing, or a stale
+snapshot rejects only that composition and never publishes a complete tree.
+
+The complete QC is recompiled after every composition and its exact contained
+artifact manifest is sealed.
+Structural evidence binds the composition hash, compile-manifest hash, current
+fingerprint proof, and validation. Focused evidence schema 2 folds the initial records
+with each round in order: rerun records replace prior records for the exact affected
+dependency closure, while reused records name the immediately prior evidence hash.
+The folded terminal set must contain exactly one current passing record per selected
+target.
+
+Intermediate rounds have `final_whole=None`. Exactly the last authorized round has a
+non-null `FinalWholeAuthorizationEvidence`, created by one fresh post-composition
+whole render. It binds the composite candidate/cache/recipe/composition and compile
+digests, the fresh whole-index/render-manifest proof, current validation, and its own
+seal. A bare `ValidationResult` cannot authorize structural or final whole state.
+Exactly one terminal final-whole authorization is permitted across schema 2.
+
+Budget/round availability is checked before donor inspection. Overlay proposal uses
+the retained sealed manifests; an empty/no-op proposal stops without consuming a
+slot. Once a non-empty proposal exists, both slots are reserved before the selected
+snapshot is reopened, before any filesystem mutation, and before any process launch.
+Every attempted
+composition consumes both one recovery round and one `SearchBudget.max_candidates`
+slot, including composition, compile, structural, focused, or final-whole failure.
+Every attempted overlay/recipe hash is retained for the base candidate. A later
+round skips it and advances the same failed source, in canonical source order, to the
+next donor or exact-original fallback; an identical recipe is never retried.
+The fourth round and an exhausted candidate budget reject before opening a snapshot or
+starting a process. Failed stages remain typed, sealed round records with later-stage
+fields absent according to the status matrix; they are diagnostic and cannot alter the
+folded pass. Cancellation writes only atomic partial diagnostics and no authoritative
+schema 2.
+
+When trusted schema 3 is active, the byte-exact recovery coordinator exclusively
+owns recovery scheduling. The legacy `search._regional_recovery` ratio/override path
+is not called and cannot preempt or duplicate a composite round. Schema-1/schema-2
+and non-focused search behavior remain unchanged.
 
 ## Monaco adaptive-direct composite
 
@@ -302,6 +419,12 @@ because its intermediate SMD files are smaller.
 
 The existing candidate cache continues to cache compiled candidate workspaces, but
 cached diagnostics never authorize structural, whole visual, or focused gates.
+For schema-3 candidates it also records the complete canonical recipe, source-tree
+manifest/snapshot seal, composition seal, and structural/final authorization evidence
+hashes with exact keys. Cache restoration validates current contained source bytes
+before the build enters the retained donor registry. A valid hit still reruns every
+current hard gate; an old schema, mixed ordinary/composite fields, stale recipe,
+same-size source mutation, or missing source manifest is a cache miss.
 
 A separate focused-render cache may reuse expensive Blender image generation. It
 stores render bytes only and never stores a `ValidationResult`, `passed` flag, or
@@ -447,18 +570,58 @@ is diagnostic: changing it may change the outer audit hash but never the aggrega
 typed recovery records with contiguous round indices `0..n-1`; it never changes the
 meaning accepted for schema 1.
 
-Schema 2 keeps the same exact top-level keys and requires a non-empty `recoveries`
-list. Each recovery record has only `round_index`, `recipe`, `changed_sources`,
-`reused_region_evidence`, `compile_files`, `structural`, `rerun_records`,
-`final_whole`, and `evidence_sha256`. Each changed source corresponds to exactly one
-recipe overlay; selected regions partition exactly into rerun and reused records;
-compile files are exact relative contained artifact proofs; and the final whole
-result must be a fresh reauthorization of the composed bytes. Schema-2 parsing is
-introduced only in Task 5.
+Schema 2 stays in the same authorization module as schema 1 and keeps the same exact
+top-level keys. It requires a non-empty `recoveries` list. Core source/composition
+types live in `maximum_optimizer.domain`; recovery evidence types that reference
+`FocusedRenderEvidence` live beside that existing type in
+`maximum_optimizer.focused_cache`. `focused_regions` never implements a second
+schema parser and may only delegate to the shared builder. This placement avoids a
+`domain <-> focused_cache` import cycle and prevents schema-1/2 validation drift.
 
-There must be one terminal record for every selected focus. Recovery rounds have an
-exact contiguous index starting at zero. Every changed source appears exactly once
-per round and every reused focus names the prior evidence hash it depends on.
+Schema 2 receives a typed `FocusedRecoveryContext` with exact fields `schema=2`, the
+complete initial `FocusedEvidenceContext`, ordinary-base cache digest, and initial
+schema-1 `authorization_sha256`. Thus initial records remain bound to the ordinary
+base that produced them. The schema-2 top-level `candidate_id` is derived from the
+last authorized recipe/final-whole record and names the terminal composite; it is
+never accepted as a caller-supplied alias. Every round recipe must chain back to the
+same base context/cache and initial authorization.
+
+Each recovery record has only `round_index`, `terminal_status`, `recipe`,
+`composition`, `changed_sources`, `reused_region_evidence`, `compile_files`,
+`structural`, `rerun_records`, `final_whole`, and `evidence_sha256`. Round indices are
+the reserved attempt indices and are exactly contiguous `0..n-1`; failed attempts are
+not removed or renumbered. An absent optional object is exactly `null`/`None`; an
+absent sequence is exactly an empty list/tuple, never a missing key. The exact status
+matrix is:
+
+- `composition_failed`: composition/changed sources, compile files, structural,
+  reruns, and final whole are absent;
+- `compile_failed`: composition and changed sources are present; compile files,
+  structural, reruns, and final whole are absent;
+- `structural_failed`: composition, changed sources, complete compile files, and
+  structural evidence are present; reruns and final whole are absent;
+- `focused_failed`: composition, changed sources, complete compile files, structural
+  pass, rerun records, and reused hashes are present; final whole is absent;
+- `final_whole_failed`: the same fields as `focused_failed` fold to all-focused pass,
+  and one failed fresh final-whole evidence is present but cannot authorize;
+- `authorized`: all prior fields are complete, the folded focused set passes, and one
+  fresh passing final-whole evidence is present.
+
+`ChangedSourceProof` and `CompileFileProof` are typed exact-key records, not arbitrary
+mappings. Each changed source corresponds to exactly one cumulative recipe overlay
+and proves canonical path, before/after size and hash, and replacement snapshot.
+Compile files are the complete required contained artifact set and seal kind, size,
+and current hash. Structural and final-whole records bind those manifests and the
+composition/candidate/cache digests.
+
+For every round that reaches focus validation, selected targets partition exactly
+into dependency-affected rerun records and reusable prior evidence hashes. A reused
+focus names its immediately prior evidence hash. Folding starts with the exact initial
+records and replaces only rerun targets in round order. The last record must be
+`authorized`; its folded set contains exactly one passing current record per selected
+target. No earlier record may authorize, no record after `authorized` is accepted,
+and exactly one final-whole pass exists. Schema-2 parsing is introduced only in Task
+5; schema 1 remains byte-for-byte no-recovery-only.
 
 ## Resource and denial-of-service bounds
 
@@ -473,6 +636,10 @@ The following are hard validation limits, not tunable environment variables:
 - recovery rounds per base candidate: maximum 3;
 - changed sources per recovery composition: maximum 4;
 - donor candidates inspected per changed source: maximum 8;
+- source-tree manifest: maximum 4,096 regular files and 2 GiB total bytes;
+- compiled composition manifest: maximum 64 regular artifacts and 2 GiB total bytes;
+- retained recovery registry: `SearchBudget.max_candidates` candidate snapshots plus
+  exactly one original snapshot;
 - Monaco exact-fallback visual sources: maximum 8;
 - Monaco direct ratios: exactly 4 and no Cartesian expansion;
 - focus-cache material proof: maximum 4,096 files and 2 GiB of hashed content; over
@@ -498,9 +665,9 @@ atomic and explicitly mark unattempted focuses and rounds cancelled.
 Create:
 
 - `maximum_optimizer/focused_regions.py`: policy, whole-evidence parsing, target
-  selection, focused aggregation, and evidence payloads.
+  selection, focused aggregation, and delegation to the shared evidence builder.
 - `maximum_optimizer/focused_cache.py`: atomic focused-render cache and material
-  proof validation.
+  proof validation plus the single schema-1/schema-2 authorization parser.
 - `maximum_optimizer/composite.py`: donor selection, overlay recipes, composition
   proofs, and Monaco adaptive-direct assembly.
 - `tests/maximum_optimizer/test_focused_regions.py`
