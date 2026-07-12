@@ -545,6 +545,20 @@ class MaximumBlenderPureTests(unittest.TestCase):
         self.assertEqual(candidate.strategy, "blender-adaptive-v1")
         self.assertEqual(candidate.region_overrides, (("r-" + "a" * 64, 0.7),))
 
+    def test_parses_explicit_importance_map_research_candidate(self) -> None:
+        payload = {
+            "candidate_id": "blender-importance-r030",
+            "engine": "blender", "ratio": 0.3, "target_error": 0.0,
+            "update_vertices": True, "region_overrides": [],
+            "strategy": "blender-importance-map-v1",
+            "transfer": "blender-native-v1",
+        }
+
+        candidate = maximum.load_candidate_payload(payload)
+
+        self.assertEqual(candidate.strategy, "blender-importance-map-v1")
+        self.assertEqual(candidate.ratio, 0.3)
+
     def test_blender_candidate_parse_does_not_require_meshoptimizer_dll(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

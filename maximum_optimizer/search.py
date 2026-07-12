@@ -11,6 +11,7 @@ from maximum_optimizer.regions import parse_region_scope
 _INITIAL_RATIOS = (0.85, 0.70, 0.55, 0.40, 0.25)
 _MIN_RATIO = 0.01
 _BLENDER_ADAPTIVE_RATIOS = (0.45, 0.40, 0.35, 0.30, 0.25)
+_BLENDER_IMPORTANCE_RATIOS = (0.35, 0.30, 0.25, 0.20)
 
 
 def _trail_key(spec: CandidateSpec) -> tuple[object, ...]:
@@ -43,6 +44,8 @@ def _candidate_id(engine: str, ratio: float, strategy: str = "") -> str:
         prefix = "meshopt-direct"
     elif strategy == "meshopt-direct-position-v1":
         prefix = "meshopt-direct-position"
+    elif strategy == "blender-importance-map-v1":
+        prefix = "blender-importance"
     return f"{prefix}-r{_ratio_id(ratio)}"
 
 
@@ -98,6 +101,19 @@ def blender_adaptive_candidates() -> tuple[CandidateSpec, ...]:
             transfer="blender-native-v1",
         )
         for ratio in _BLENDER_ADAPTIVE_RATIOS
+    )
+
+
+def blender_importance_candidates() -> tuple[CandidateSpec, ...]:
+    """Explicit R&D probes; never included in the production/default schedule."""
+    return tuple(
+        CandidateSpec(
+            _candidate_id("blender", ratio, "blender-importance-map-v1"),
+            "blender", ratio, 0.0, "blender-importance-map-v1",
+            strategy="blender-importance-map-v1", update_vertices=True,
+            transfer="blender-native-v1",
+        )
+        for ratio in _BLENDER_IMPORTANCE_RATIOS
     )
 
 

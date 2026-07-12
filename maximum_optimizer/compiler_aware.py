@@ -54,9 +54,13 @@ def allows_exact_fallback(message: str) -> bool:
     }
 
 
-def provenance_status(fallback_reason: str | None) -> tuple[str, str]:
+def provenance_status(
+    fallback_reason: str | None, *, strategy: str
+) -> tuple[str, str]:
+    if strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"}:
+        raise ValueError("unknown Blender research strategy")
     if fallback_reason is None:
-        return "optimized", "blender-adaptive-v1"
+        return "optimized", strategy
     return "preserved", f"exact-source-fallback-v1: {fallback_reason}"
 
 

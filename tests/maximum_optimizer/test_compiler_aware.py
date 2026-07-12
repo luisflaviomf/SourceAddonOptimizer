@@ -73,10 +73,19 @@ class CompilerAwareTests(unittest.TestCase):
 
     def test_fallback_provenance_is_disclosed_as_preserved(self) -> None:
         self.assertEqual(
-            provenance_status("normal must be non-zero"),
+            provenance_status("normal must be non-zero", strategy="blender-adaptive-v1"),
             ("preserved", "exact-source-fallback-v1: normal must be non-zero"),
         )
-        self.assertEqual(provenance_status(None), ("optimized", "blender-adaptive-v1"))
+        self.assertEqual(
+            provenance_status(None, strategy="blender-adaptive-v1"),
+            ("optimized", "blender-adaptive-v1"),
+        )
+        self.assertEqual(
+            provenance_status(None, strategy="blender-importance-map-v1"),
+            ("optimized", "blender-importance-map-v1"),
+        )
+        with self.assertRaisesRegex(ValueError, "strategy"):
+            provenance_status(None, strategy="made-up")
 
     def test_decimate_modifier_is_moved_before_imported_armature(self) -> None:
         class Modifier:

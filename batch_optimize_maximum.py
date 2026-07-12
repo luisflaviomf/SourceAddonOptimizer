@@ -40,6 +40,7 @@ from maximum_optimizer.compiler_aware import (
     allows_exact_fallback, engine_evidence, exact_source_payload,
     move_modifier_first, preserve_whole_source, provenance_status, require_triangular_mesh,
 )
+from maximum_optimizer.importance_map import MeshImportanceInput, build_importance_weights
 from maximum_optimizer.regions import (
     RegionManifest,
     build_region_manifest,
@@ -172,10 +173,11 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
         ("meshoptimizer", "meshopt-direct-position-v1", False, "direct-v1"),
         ("meshoptimizer", "meshopt-project-v1", True, "projection-v1"),
         ("blender", "blender-adaptive-v1", True, "blender-native-v1"),
+        ("blender", "blender-importance-map-v1", True, "blender-native-v1"),
     }:
         raise ValueError("unknown or inconsistent optimizer strategy")
-    if strategy == "blender-adaptive-v1" and target_error != 0.0:
-        raise ValueError("blender adaptive target_error must be zero")
+    if strategy in {"blender-adaptive-v1", "blender-importance-map-v1"} and target_error != 0.0:
+        raise ValueError("Blender research target_error must be zero")
     if from_search and strategy.startswith("meshopt-direct-") and payload["repair_profile"] != strategy:
         raise ValueError("repair_profile must identify the direct strategy")
     overrides = payload["region_overrides"]
@@ -267,7 +269,7 @@ def optimize_region_objects(
     if optimizer is None:
         optimizer = (
             _optimize_blender_object
-            if candidate.strategy == "blender-adaptive-v1"
+            if candidate.strategy in {"blender-adaptive-v1", "blender-importance-map-v1"}
             else _optimize_mesh_object
         )
     observations = _object_region_observations(source_identity, objects, source_materials)
@@ -301,7 +303,7 @@ def _optimize_blender_object(
     """
     if bpy is None:
         raise RuntimeError("Blender adaptive strategy requires Blender")
-    if candidate.strategy != "blender-adaptive-v1":
+    if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"}:
         raise ValueError("Blender optimizer received a non-Blender strategy")
     mesh = obj.data
     mesh.calc_loop_triangles()
@@ -314,9 +316,52 @@ def _optimize_blender_object(
     modifier.decimate_type = "COLLAPSE"
     modifier.ratio = float(ratio)
     modifier.use_collapse_triangulate = True
+    importance = None
+    importance_group = None
+    if candidate.strategy == "blender-importance-map-v1":
+        uv_layer = mesh.uv_layers.active
+        if uv_layer is None:
+            raise RuntimeError("importance strategy requires an active UV layer")
+        faces = tuple(tuple(int(index) for index in tri.vertices) for tri in mesh.loop_triangles)
+        corner_uvs = tuple(
+            tuple(tuple(float(value) for value in uv_layer.data[index].uv) for index in tri.loops)
+            for tri in mesh.loop_triangles
+        )
+        materials = tuple(
+            int(mesh.polygons[tri.polygon_index].material_index) for tri in mesh.loop_triangles
+        )
+        skin = tuple(
+            tuple(sorted(
+                (int(item.group), float(item.weight))
+                for item in vertex.groups if float(item.weight) > 0.0
+            ))
+            for vertex in mesh.vertices
+        )
+        importance = build_importance_weights(MeshImportanceInput(
+            positions=tuple(tuple(float(value) for value in vertex.co) for vertex in mesh.vertices),
+            faces=faces,
+            face_materials=materials,
+            corner_uvs=corner_uvs,
+            skin_signatures=skin,
+        ))
+        if obj.vertex_groups.get("__maximum_importance_v1__") is not None:
+            raise RuntimeError("reserved importance vertex group already exists")
+        importance_group = obj.vertex_groups.new(name="__maximum_importance_v1__")
+        for vertex_index, weight in enumerate(importance.weights):
+            if weight > 0.0:
+                importance_group.add([vertex_index], weight, "REPLACE")
+        modifier.vertex_group = importance_group.name
+        # Blender Decimate interprets the named group as the affected region.
+        # Inversion is therefore required to protect high-importance weights.
+        modifier.invert_vertex_group = True
+        modifier.vertex_group_factor = 1.0
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     bpy.ops.object.modifier_apply(modifier=modifier.name)
+    if importance_group is not None:
+        remaining_group = obj.vertex_groups.get("__maximum_importance_v1__")
+        if remaining_group is not None:
+            obj.vertex_groups.remove(remaining_group)
     mesh.calc_loop_triangles()
     triangles_after = len(mesh.loop_triangles)
     if triangles_after <= 0:
@@ -329,7 +374,7 @@ def _optimize_blender_object(
         for tri in mesh.loop_triangles for index in tri.loops
     )
     reconstruction = apply_reconstructed_smoothing(mesh, positions, faces, loop_normals)
-    return {
+    metrics = {
         "triangles_before": triangles_before,
         "triangles_after": triangles_after,
         "source_vertices": vertices_before,
@@ -341,6 +386,16 @@ def _optimize_blender_object(
         "strategy": candidate.strategy,
         "transfer": candidate.transfer,
     }
+    if importance is not None:
+        reason_counts = Counter(reason for items in importance.reasons for reason in items)
+        metrics.update({
+            "importance_protected_vertices": len(importance.protected_vertices),
+            "importance_protected_fraction": len(importance.protected_vertices) / vertices_before,
+            "importance_reasons": dict(sorted(reason_counts.items())),
+            "importance_group_inverted": True,
+            "importance_group_removed": obj.vertex_groups.get("__maximum_importance_v1__") is None,
+        })
+    return metrics
 
 
 def reject_unsupported_dmx(graph: QcGraph) -> None:
@@ -1137,7 +1192,7 @@ def _process_source_file(
         source_manifest, source_observations, source_overrides, candidate.ratio
     )
     preserve_exact = (
-        candidate.strategy == "blender-adaptive-v1"
+        candidate.strategy in {"blender-adaptive-v1", "blender-importance-map-v1"}
         and preserve_whole_source(source_ratios.values())
     )
     fallback_reason: str | None = None
@@ -1183,7 +1238,7 @@ def _process_source_file(
                 source_identity, mesh_objects, candidate, region_manifest, before_audit.materials,
             )
     except (ValueError, RuntimeError) as exc:
-        if candidate.strategy != "blender-adaptive-v1" or not allows_exact_fallback(str(exc)):
+        if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"} or not allows_exact_fallback(str(exc)):
             raise
         preserve_exact = True
         fallback_reason = str(exc)
@@ -1263,7 +1318,7 @@ def _process_source_file(
     try:
         validate_smd_audits(before_audit, after_audit)
     except RuntimeError as exc:
-        if candidate.strategy != "blender-adaptive-v1" or not allows_exact_fallback(str(exc)):
+        if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"} or not allows_exact_fallback(str(exc)):
             raise
         preserve_exact = True
         fallback_reason = str(exc)
@@ -1551,8 +1606,10 @@ def run_blender(settings: Settings) -> dict[str, object]:
                             matched_regions[key] += 1
                 destination, _item = processed[reference.source_path]
                 optimized_sources[reference.source_path] = destination
-                if settings.candidate.strategy == "blender-adaptive-v1":
-                    status, reason = provenance_status(_item.get("fallback_reason"))
+                if settings.candidate.strategy in {"blender-adaptive-v1", "blender-importance-map-v1"}:
+                    status, reason = provenance_status(
+                        _item.get("fallback_reason"), strategy=settings.candidate.strategy
+                    )
                 else:
                     status, reason = "optimized", settings.candidate.strategy
                 output_hash = hashlib.sha256(destination.read_bytes()).hexdigest()

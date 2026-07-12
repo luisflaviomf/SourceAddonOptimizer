@@ -14,6 +14,7 @@ from maximum_optimizer.domain import (
 )
 from maximum_optimizer.search import (
     blender_adaptive_candidates,
+    blender_importance_candidates,
     choose_next,
     initial_candidates,
     position_remap_candidates,
@@ -72,6 +73,12 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(tuple(item.target_ratio for item in candidates), (0.45, 0.40, 0.35, 0.30, 0.25))
         self.assertTrue(all(item.engine == "blender" for item in candidates))
         self.assertTrue(all(item.strategy == "blender-adaptive-v1" for item in candidates))
+
+    def test_blender_importance_schedule_is_more_aggressive_and_r_and_d_only(self):
+        candidates = blender_importance_candidates()
+        self.assertEqual(tuple(item.target_ratio for item in candidates), (0.35, 0.3, 0.25, 0.2))
+        self.assertTrue(all(item.strategy == "blender-importance-map-v1" for item in candidates))
+        self.assertTrue(all(item.transfer == "blender-native-v1" for item in candidates))
         self.assertTrue(all(item.transfer == "blender-native-v1" for item in candidates))
 
     def test_blender_adaptive_visual_failure_generates_stable_region_recovery(self):
