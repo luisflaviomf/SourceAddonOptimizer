@@ -14,6 +14,12 @@
 - Do not modify or regenerate evidence v3 as part of these tasks.
 - Schema-1 and schema-2 profile behavior must remain unchanged.
 - New behavior is enabled only by a trusted schema-3 profile.
+- The real Models bridge validates every profile-set schema with
+  `load_fidelity_profile_set`; no CLI field or argument changes.
+- The `roundtrip-control` baseline never runs focused validation and never writes a
+  whole-visual index.
+- Schema-1 and schema-2 runs never call `focused_visual` and never write a
+  whole-visual index.
 - Focus bounds are fixed: top-K maximum 4, eight angles, two passes, two poses, sixteen whole states, and three recovery rounds.
 - Monaco uses exactly four global direct ratios `(0.50, 0.45, 0.40, 0.35)` and at most eight fallback sources.
 - Every candidate still requires complete QC compilation, structural validation, whole visual validation, and focused validation before promotion.
@@ -599,20 +605,50 @@ enable schema 3 receive the current defaults and behavior.
 
 **Interfaces:**
 - Adds immutable whole/per-region focused result fields to `CandidateEvaluation` using the Task 1 domain types.
-- `ProductionAdapters.visual` still returns the current whole `ValidationResult` and writes `logs/whole-visual-index.json`.
+- `ProductionAdapters.visual(..., whole_profile, *, focused_profile=None)` still
+  returns the current whole `ValidationResult`; existing schema-1/2/control callers
+  use the unchanged four positional arguments. For a schema-3 search candidate
+  only, the orchestrator supplies `focused_profile=` and requires a fresh authoritative
+  `logs/whole-visual-index.json`; schemas 1/2 and `roundtrip-control` write none.
 - Adds `ProductionAdapters.focused_visual(manifest, control, candidate, whole_profile, focused_profile, policy) -> FocusedGateResult`.
+- Consumes Task-3 `select_focus_targets_with_evidence`,
+  `validate_focused_target`, and `focused_gate_evidence_payload(...,
+  recoveries=())`; no alternate cache/compare/evidence authorization path is
+  permitted.
 
 - [ ] **Step 1: Write ordering and compatibility RED tests**
 
-  Assert schema 1/2 never call `focused_visual`. For schema 3, assert the call order is
-  build, structural, whole visual, focused selection/render, cache store. Structural
-  or whole failure must make zero focused calls.
+  Assert schema 1/2 never call `focused_visual`, never require that method on fake
+  adapters, never write `whole-visual-index.json`, and preserve the current
+  five-argument `CandidateEvaluation` defaults. Assert `roundtrip-control` performs
+  only structural and whole compatibility gates. For a schema-3 search candidate,
+  assert exact miss order `build -> structural -> whole -> focused -> candidate
+  cache store`; a compiled-cache hit skips build/store but reruns all three hard
+  gates. Structural or whole failure, focused exception, invalid focused return,
+  focused cancellation, and a missing target result make zero candidate-cache
+  stores and zero promotions. A smaller focus-failed candidate cannot win.
+
+  Add a bridge regression that patches decompile/run dependencies and proves
+  `run_maximum_from_existing_args` accepts trusted schema 3 through
+  `load_fidelity_profile_set` without adding a CLI argument. Schema 1 and schema 2
+  remain accepted; an untrusted schema 3 fails before decompile.
 
 - [ ] **Step 2: Write whole-index RED tests**
 
-  Require ordered states, relative contained paths, exact source pairs, manifest
-  hashes, geometry rows, animation classification, profile versions, and an outer
-  seal. Mutations and path escapes fail before focused rendering.
+  Require exact schema/root keys; family/model/input and candidate/spec/cache
+  identity; selected whole/focused profile versions; dependency/renderer proofs;
+  full canonical family region-manifest path/hash; ordered contiguous states up to
+  16; canonical bodygroups/LOD/poses; exact source pairs; state filtered
+  region/configuration manifests; reference/candidate render manifests; complete
+  geometry rows; animation classification and paired source proofs; and the outer
+  canonical seal.
+
+  Mutate each field and current file independently, including same-size bytes after
+  index publication. Reject self-resealed changes, stale cache-restored indexes,
+  reordered/duplicate/missing states, incomplete region-pose rows, and absolute,
+  UNC, drive, backslash-alias, dot/parent, case-colliding, special-file, symlink,
+  junction/reparse, and non-contained paths before focused rendering. A failed or
+  cancelled whole visual must remove/leave no authoritative index.
 
 - [ ] **Step 3: Run orchestrator tests and verify RED**
 
@@ -623,26 +659,61 @@ enable schema 3 receive the current defaults and behavior.
 
 - [ ] **Step 4: Implement whole-index writing and focused adapter**
 
+  Change the real bridge preflight from `load_profile` to
+  `load_fidelity_profile_set` while preserving every existing CLI argument and
+  return code. Activate focus only when `profile_set.focused_policy is not None` and
+  obtain `focused_profile_for(profile_class)`; do not branch on the shared typed
+  selector mode.
+
   Refactor only the evidence returned by the current render loop; do not change its
-  state matrix or whole comparison. Render targets in selector order and atomically
-  update `focused-region-gate.json` after each target.
+  state matrix, comparison, camera, material, or bodygroup behavior. Clear stale
+  candidate whole/focused evidence safely before schema-3 validation. Build and
+  atomically publish the whole index only after a fresh whole pass. The focused
+  adapter reparses the sealed index against current contained bytes, uses the full
+  family manifest for selection, selects the exact indexed state/source pair, and
+  supplies Task 2 the complete selected-state source manifest before object
+  isolation.
+
+  Render/process targets in selector-rank order through Task-3
+  `validate_focused_target`; cache hits still compare exactly once from their
+  private snapshots. After every terminal target, atomically update diagnostic-only
+  `logs/focused-region-gate.partial.json`; Task-3 evidence parsers reject this
+  progress schema. Only after exact terminal cardinality is complete, call
+  `focused_gate_evidence_payload` with the complete ranking, exact selected prefix,
+  every terminal record, and `recoveries=()`, then atomically publish authoritative
+  `logs/focused-region-gate.json` and remove the partial journal. Continue later
+  focuses after a validation failure for complete diagnostics; stop only on
+  cancellation/infrastructure failure.
 
 - [ ] **Step 5: Aggregate focused hard gates**
 
-  Preserve `whole_visual` separately, set `CandidateEvaluation.visual` to the hard
-  aggregate, and expose immutable `focused_by_region`. A missing focused result is a
-  candidate rejection with an explicit gate failure.
+  Extend `CandidateEvaluation` with trailing defaults so existing positional callers
+  remain valid. Preserve `whole_visual` separately, expose an immutable exact
+  `focused_by_region`, and set `visual` to the search-authoritative hard aggregate.
+  Require exactly one matching `FocusRegionResult` per selected target. Missing,
+  duplicate, extra, target-mismatched, or invalidly sealed results create an
+  explicit focused gate failure; never rely on `all([])`.
+
+  Preserve every whole failure, metric, and worst-scope contribution. Add focused
+  failures with canonical `REGION_KEY/POSE` scope and combine metrics without
+  erasing or making a worse whole result appear better. `AttemptReport.visual`,
+  `CandidateEvaluation.passed`, `select_winner`, best events, and candidate cache
+  diagnostics all consume the aggregate, not the whole-only result.
 
 - [ ] **Step 6: Add cancellation tests**
 
   Cover cancellation before selection, between focuses, during cache restore,
-  during render, after comparison, and before evidence publication. Assert no
-  promotion and exact terminal events.
+  during render, after comparison, before every atomic evidence publication, after
+  `focused_visual` returns, and before candidate-cache store. At every injection,
+  assert exactly one candidate terminal event, no `best_updated`, no candidate-cache
+  store, no selected-build/output promotion, original-family preservation, and the
+  existing family/run cancellation outcome. Completed per-target evidence must be
+  atomic and complete; a partial write or unattempted target cannot authorize pass.
 
 - [ ] **Step 7: Run focused orchestrator gate and commit checkpoint 4**
 
   Run:
-  `python -m unittest tests.maximum_optimizer.test_orchestrator tests.maximum_optimizer.test_focused_regions tests.maximum_optimizer.test_focused_cache -v`
+  `python -m unittest tests.maximum_optimizer.test_orchestrator tests.maximum_optimizer.test_focused_regions tests.maximum_optimizer.test_focused_cache tests.maximum_optimizer.test_cache -v`
 
   Expected: zero failures.
 

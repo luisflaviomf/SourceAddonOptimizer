@@ -87,23 +87,41 @@ schema-3 mode. Calling it in legacy or schema-2 mode is an error.
 
 ## Whole visual evidence index
 
-Every successful whole visual validation writes
-`logs/whole-visual-index.json` inside the candidate workspace. It contains:
+Only a successful schema-3 search-candidate whole visual validation writes
+`logs/whole-visual-index.json` inside the candidate workspace. Schema-1 and
+schema-2 runs do not create this file. The `roundtrip-control` baseline never
+writes it and never runs the focused gate; the control remains the existing
+structural/whole compatibility denominator. Before a schema-3 candidate whole
+render starts, any stale index restored with a compiled-candidate cache payload is
+removed without following links. A failed or cancelled whole validation leaves no
+authoritative index.
+
+The exact schema-1 index binds:
 
 - schema and selector versions;
-- family and candidate identities;
+- family ID, model-relative path, family input hash, candidate ID, candidate spec,
+  and candidate cache digest;
 - selected whole and focused profile versions;
-- ordered state identity, bodygroup indices, and LOD index;
-- relative original and candidate manifest paths plus SHA-256 hashes;
+- the full canonical family region-manifest relative path and SHA-256;
+- ordered contiguous state identity, bodygroup indices, LOD index, and poses;
+- each state's canonical filtered region/configuration-manifest relative paths and
+  SHA-256 hashes;
+- relative original and candidate render-manifest paths plus SHA-256 hashes;
 - canonical source-pair identities and hashes;
-- animation classification and pose list;
-- canonical region-manifest path and hash;
+- animation classification, its relative path and hash, and the paired animation
+  source proofs when representative animation is active;
 - every geometry row needed for focus ranking;
+- renderer/dependency identities needed to prove the current render contract;
 - a canonical `evidence_sha256` over the complete index.
 
 The focused gate does not glob render directories. It accepts only an exact,
-sealed index whose files are contained by the candidate workspace and whose hashes
-match current bytes.
+sealed index whose files are canonical relative regular files contained by the
+candidate workspace and whose hashes match current bytes. Absolute, UNC,
+drive-qualified, backslash-aliased, dot/parent, case-colliding, symlink,
+junction/reparse, special-file, missing, extra-field, reordered-state, and
+same-size-mutated inputs fail before target selection. Recomputing the outer seal
+cannot compensate for a changed current file, family/candidate identity, profile,
+dependency, source pair, manifest, animation proof, or geometry row.
 
 ## Deterministic focus selection
 
@@ -168,6 +186,59 @@ pass.
 The aggregate result preserves the whole result and adds per-region results. Its
 worst scope is `REGION_KEY/POSE`, allowing deterministic recovery. A focused
 metric never replaces or weakens a worse whole-model metric in reporting.
+
+## Orchestrator authorization contract
+
+The real Models bridge validates schema-1, schema-2, and schema-3 profile sets with
+`load_fidelity_profile_set`; it does not call the schema-1-only `load_profile` and
+does not add or change any CLI field. Focus activation is determined only by
+`FidelityProfileSet.focused_policy is not None`, because schema-2 and schema-3 share
+the typed family selector mode.
+
+For each schema-3 search candidate the authorization order is fixed:
+
+1. build or privately restore compiled candidate bytes;
+2. recompute structural validation;
+3. recompute the existing whole visual validation and write a fresh authoritative
+   whole index only on pass;
+4. validate the index, select focuses, and process them in selector-rank order via
+   the Task-3 `validate_focused_target` helper;
+5. atomically rewrite diagnostic-only
+   `logs/focused-region-gate.partial.json` after each terminal target; this progress
+   schema has no authorization hash and is rejected by the Task-3 evidence parser;
+6. after every selected target has exactly one terminal record, build and atomically
+   publish authoritative schema-1 `logs/focused-region-gate.json` with
+   `focused_gate_evidence_payload(..., recoveries=())`;
+7. build the hard aggregate and only then publish a compiled-candidate cache entry
+   on a cache miss.
+
+Structural or whole failure performs no focus selection, focused-render-cache
+restore, focus render, or focused evidence authorization. Cached structural, whole,
+or focused diagnostics never authorize a candidate: a compiled-cache hit reruns every hard
+gate, and a focused-render-cache hit is compared exactly once from its private
+Task-3 snapshot. One failed focus rejects the candidate but does not omit later
+selected focuses from the terminal diagnostic evidence unless cancellation stops
+the run. A missing, duplicate, extra, mismatched, unsealed, or invalid focused
+record is an explicit focused-gate failure, never an empty aggregate pass.
+
+`CandidateEvaluation.whole_visual` retains the fresh whole result.
+`CandidateEvaluation.focused_by_region` is an immutable exact mapping for the
+selected targets. `CandidateEvaluation.visual` remains the search/report authority
+and is the hard aggregate of whole plus every focused result. Whole metrics,
+failures, and worst scope remain represented; focused failures use
+`REGION_KEY/POSE`, and focused metrics cannot erase or make a worse whole result
+appear better. Existing five-positional-argument construction and schema-1/2
+behavior retain their current defaults.
+
+Cancellation is checked before focused selection, between targets, during Task-3
+cache lookup/private restore, before and during render, after comparison, before
+each atomic evidence publication, after the focused adapter returns, and before
+compiled-candidate cache storage. Cancellation emits one candidate terminal event,
+does not emit `best_updated`, does not store/promote the candidate, and preserves
+the original family through the existing cancellation path. Already published
+partial progress remains complete and atomic but diagnostic only. The authoritative
+file is absent until complete terminal cardinality is proven, so no partial file can
+authorize an unattempted target.
 
 ## Recovery donors and exact fallback
 
@@ -332,8 +403,8 @@ fresh directories and never changes the comparison result.
 
 ## Durable evidence
 
-Each candidate writes `logs/focused-region-gate.json` atomically. The no-recovery
-Task-3 schema 1 contains:
+Each schema-3 candidate that reaches complete focused terminal cardinality writes
+`logs/focused-region-gate.json` atomically. The no-recovery Task-3 schema 1 contains:
 
 - policy, profile, evidence-v3, dependency, and material proof hashes;
 - the complete ordered eligible ranking and the exact selected prefix;
@@ -343,6 +414,13 @@ Task-3 schema 1 contains:
 - cache hit/miss status that never changes authorization semantics;
 - `recoveries`, which is exactly an empty list in schema 1;
 - a canonical evidence hash.
+
+During Task-4 orchestration, completed targets may also be journaled atomically in
+`logs/focused-region-gate.partial.json`. That file is a diagnostic progress envelope,
+not Task-3 schema 1: it has no `authorization_sha256`, is rejected by authorization
+parsers, and is removed only after the complete authoritative file is published.
+Cancellation may leave the partial journal for diagnosis but never an incomplete
+authoritative file.
 
 Its exact top-level keys are `schema`, `family_id`, `candidate_id`, `context`,
 `selection`, `records`, `recoveries`, `authorization_sha256`, and
