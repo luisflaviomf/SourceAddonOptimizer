@@ -2631,6 +2631,7 @@ class ProductionAdapters:
                 "--out", str(state_root), "--size", "512",
                 "--passes", "textured,clay", "--poses", pose_arg,
                 "--region-manifest", str(state_region_manifest),
+                "--source-root", str(copied_source_root),
                 "--configuration-manifest", str(configuration_manifest),
                 "--texture-cache", str(self._texture_cache_root(candidate)),
             ))

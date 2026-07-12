@@ -700,6 +700,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertIsNone(args.texture_cache)
         self.assertFalse(args.aggregate_regions)
         self.assertIsNone(args.region_manifest)
+        self.assertIsNone(args.source_root)
         self.assertFalse(render_previews._is_extended_mode(args))
 
     def test_new_arguments_parse_passes_and_pose_frames_deterministically(self):
@@ -725,6 +726,8 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                 "shared-vtf-cache",
                 "--region-manifest",
                 "maximum_region_manifest.json",
+                "--source-root",
+                "source-root",
                 "--aggregate-regions",
             ]
         )
@@ -736,7 +739,43 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertEqual(args.vtfcmd, "VTFCmd.exe")
         self.assertEqual(args.texture_cache, "shared-vtf-cache")
         self.assertEqual(args.region_manifest, "maximum_region_manifest.json")
+        self.assertEqual(args.source_root, "source-root")
         self.assertTrue(args.aggregate_regions)
+
+    def test_extended_source_context_is_independent_from_manifest_directory(self):
+        import render_previews
+        from maximum_optimizer.regions import build_region_manifest
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "deep" / "source"
+            source_root.mkdir(parents=True)
+            (source_root / "wheel.qc").write_text(
+                '$cdmaterials "models/cars/wheel"\n$body "wheel" "wh.smd"\n',
+                encoding="utf-8",
+            )
+            smd = source_root / "wh.smd"
+            smd.write_text(
+                "version 1\nnodes\n0 \"root\" -1\nend\nskeleton\ntime 0\n"
+                "0 0 0 0 0 0 0\nend\ntriangles\nrim\n"
+                "0 0 0 0 0 0 1 0 0\n0 1 0 0 0 0 1 1 0\n0 0 1 0 0 0 1 0 1\nend\n",
+                encoding="utf-8",
+            )
+            manifest = build_region_manifest(
+                (("wh.smd", "wheel", ("rim",)),),
+                occurrences={"wh.smd": ({
+                    "graph_file": "wheel.qc", "directive": "$body/studio",
+                    "line": 2, "logical_path": "wh.smd",
+                },)},
+            )
+
+            identities, materials, search = render_previews._extended_source_context(
+                manifest, source_root, [smd]
+            )
+
+            self.assertEqual(identities, ("wh.smd",))
+            self.assertEqual(materials, {"wh.smd": ("rim",)})
+            self.assertEqual(search, {"wh.smd": ("models/cars/wheel",)})
 
     def test_explicit_texture_cache_is_shared_outside_long_state_name(self):
         import render_previews

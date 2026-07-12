@@ -275,6 +275,10 @@ def _parse_args(argv: list[str]):
         help="Required shared Maximum region manifest for extended validation",
     )
     ap.add_argument(
+        "--source-root", default=None,
+        help="Required source/QC root for extended validation; independent of manifest location",
+    )
+    ap.add_argument(
         "--configuration-manifest", default=None,
         help="Required paired bodygroup/LOD configuration identity for extended validation",
     )
@@ -332,6 +336,40 @@ def _required_region_manifest(args) -> Path:
     if not path.is_file():
         raise ValueError(f"region manifest does not exist: {path}")
     return path
+
+
+def _required_source_root(args) -> Path:
+    if not args.source_root:
+        raise ValueError("extended Maximum validation requires an explicit source root")
+    path = Path(args.source_root).expanduser().resolve()
+    if not path.is_dir():
+        raise ValueError(f"source root does not exist: {path}")
+    return path
+
+
+def _extended_source_context(
+    region_manifest: RegionManifest,
+    source_root: Path,
+    before: list[Path],
+) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    source_root = Path(source_root).resolve(strict=True)
+    source_search_paths = _source_cdmaterial_search_paths(region_manifest, source_root)
+    manifest_sources = {
+        entry.descriptor.source_identity for entry in region_manifest.entries
+    }
+    source_identities = []
+    source_materials: dict[str, tuple[str, ...]] = {}
+    for source in before:
+        try:
+            relative = source.resolve(strict=True).relative_to(source_root)
+        except ValueError as exc:
+            raise ValueError(f"render source is outside explicit source root: {source}") from exc
+        identity = _normalized_source_identity(relative.as_posix())
+        if identity not in manifest_sources:
+            raise ValueError(f"render source is missing from region manifest: {identity}")
+        source_identities.append(identity)
+        source_materials[identity] = _smd_material_names(source)
+    return tuple(source_identities), source_materials, source_search_paths
 
 
 def _required_configuration_manifest(args) -> dict:
@@ -1864,33 +1902,18 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
     vtfcmd = Path(args.vtfcmd).resolve() if args.vtfcmd else None
     texture_cache = _texture_cache_root(args, out_dir)
     region_manifest_path = _required_region_manifest(args)
+    source_root = _required_source_root(args)
     configuration = _required_configuration_manifest(args)
     region_manifest = _load_region_manifest(region_manifest_path)
-    source_search_paths = _source_cdmaterial_search_paths(
-        region_manifest, region_manifest_path.parent
-    )
     if len(before) != len(after):
         raise ValueError("extended Maximum validation requires paired before/after sources")
     if bool(args.animation_before) != bool(args.animation_after):
         raise ValueError("extended Maximum validation requires paired animation sources")
     animation_before = Path(args.animation_before).resolve(strict=True) if args.animation_before else None
     animation_after = Path(args.animation_after).resolve(strict=True) if args.animation_after else None
-    manifest_sources = {
-        entry.descriptor.source_identity for entry in region_manifest.entries
-    }
-    source_identities = []
-    source_materials: dict[str, tuple[str, ...]] = {}
-    for source in before:
-        try:
-            relative = source.resolve(strict=True).relative_to(region_manifest_path.parent.resolve(strict=True))
-        except ValueError as exc:
-            raise ValueError(f"render source is outside region manifest root: {source}") from exc
-        identity = _normalized_source_identity(relative.as_posix())
-        if identity not in manifest_sources:
-            raise ValueError(f"render source is missing from region manifest: {identity}")
-        source_identities.append(identity)
-        source_materials[identity] = _smd_material_names(source)
-    source_identities_tuple = tuple(source_identities)
+    source_identities_tuple, source_materials, source_search_paths = _extended_source_context(
+        region_manifest, source_root, before
+    )
     original_dir = out_dir / "original"
     candidate_dir = out_dir / "optimized"
     reference_entries, reference_snapshots, fit, bbox = _render_extended_set(

@@ -1087,9 +1087,12 @@ class OrchestratorTests(unittest.TestCase):
                     for index, item in enumerate(command)
                     if item == "--before"
                 )
+                explicit_source_root = Path(
+                    command[command.index("--source-root") + 1]
+                )
                 observations = tuple(
                     (
-                        path.relative_to(region_manifest_path.parent).as_posix(),
+                        path.relative_to(explicit_source_root).as_posix(),
                         "Body",
                         ("material/lod",) if path.name == "lod.smd" else ("material/base",),
                     )
@@ -1126,6 +1129,9 @@ class OrchestratorTests(unittest.TestCase):
             renders[1][renders[1].index("--region-manifest") + 1],
         )
         for render in renders:
+            self.assertTrue(
+                render[render.index("--source-root") + 1].endswith("render-source")
+            )
             self.assertEqual(render[render.index("--poses") + 1], "bind:0,representative:10")
             self.assertTrue(render[render.index("--animation-before") + 1].endswith("anim.smd"))
             self.assertTrue(render[render.index("--animation-after") + 1].endswith("anim.smd"))

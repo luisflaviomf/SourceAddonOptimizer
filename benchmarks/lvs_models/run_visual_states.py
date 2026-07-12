@@ -119,6 +119,7 @@ def main() -> int:
             "--passes", "textured,clay", "--poses", "bind:0",
             "--vtfcmd", str(args.vtfcmd.resolve(strict=True)),
             "--region-manifest", str(state_manifest),
+            "--source-root", str(source_root),
             "--configuration-manifest", str(configuration_path),
             "--texture-cache", str(short_texture_cache_root(args.out)),
         ))
