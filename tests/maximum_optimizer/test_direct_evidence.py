@@ -33,8 +33,9 @@ class DirectEvidenceTests(unittest.TestCase):
         tool = copy.deepcopy(self.valid); tool["tools"]["meshopt_bridge"]["sha256"] = "X" * 64; mutations.append(seal_evidence(tool))
         nonvisual = copy.deepcopy(self.valid); nonvisual["records"][2]["nonvisual_digest"] = "0" * 64; mutations.append(seal_evidence(nonvisual))
         nonvisual_size = copy.deepcopy(self.valid); nonvisual_size["nonvisual"]["artifacts"][0]["size_bytes"] += 1; mutations.append(seal_evidence(nonvisual_size))
-        build_hash = copy.deepcopy(self.valid); build_hash["build_attestation"]["build2_sha256"] = "0" * 64; mutations.append(seal_evidence(build_hash))
-        build_config = copy.deepcopy(self.valid); build_config["build_attestation"]["configuration"] = "Debug|x64"; mutations.append(seal_evidence(build_config))
+        build_hash = copy.deepcopy(self.valid); build_hash["build_attestation"]["records"][1]["dll"]["sha256"] = "0" * 64; mutations.append(seal_evidence(build_hash))
+        build_config = copy.deepcopy(self.valid); build_config["build_attestation"]["inputs"]["configuration"] = "Debug|x64"; mutations.append(seal_evidence(build_config))
+        duplicate = copy.deepcopy(self.valid); duplicate["build_attestation"]["records"][1] = copy.deepcopy(duplicate["build_attestation"]["records"][0]); mutations.append(seal_evidence(duplicate))
         digest = copy.deepcopy(self.valid); digest["evidence_sha256"] = "0" * 64; mutations.append(digest)
         for payload in mutations:
             with self.subTest(payload=payload), self.assertRaises(ValueError):

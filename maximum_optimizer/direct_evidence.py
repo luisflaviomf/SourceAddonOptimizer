@@ -71,12 +71,21 @@ def load_meshopt_direct_evidence(payload: object) -> dict[str, Any]:
         if type(item["version"]) is not str or not item["version"] or type(item["size_bytes"]) is not int or item["size_bytes"] <= 0:
             raise ValueError(f"tools.{name} metadata is invalid")
         _sha(item["sha256"], f"tools.{name}.sha256")
-    attestation = _exact(root["build_attestation"], {"command", "configuration", "source_sha256", "build1_sha256", "build2_sha256", "equal"}, "build_attestation")
-    if attestation["command"] != "powershell -File maximum_optimizer/native/build.ps1" or attestation["configuration"] != "Release|x64|/Brepro" or attestation["equal"] is not True:
-        raise ValueError("build attestation command/configuration is invalid")
-    for field in ("source_sha256", "build1_sha256", "build2_sha256"): _sha(attestation[field], f"build_attestation.{field}")
-    if attestation["build1_sha256"] != attestation["build2_sha256"] or attestation["build1_sha256"] != tools["meshopt_bridge"]["sha256"]:
-        raise ValueError("build attestation DLL hashes do not match")
+    attestation = _exact(root["build_attestation"], {"inputs", "records", "outputs_equal"}, "build_attestation")
+    inputs = _exact(attestation["inputs"], {"command", "generator", "configuration", "architecture", "native_source_sha256", "vendor_sha256"}, "build_attestation.inputs")
+    if inputs["command"] != "powershell -File maximum_optimizer/native/build.ps1" or inputs["generator"] != "Visual Studio 17 2022" or inputs["configuration"] != "Release|/Brepro" or inputs["architecture"] != "x64": raise ValueError("build attestation inputs are invalid")
+    _sha(inputs["native_source_sha256"], "native_source_sha256"); _sha(inputs["vendor_sha256"], "vendor_sha256")
+    records = attestation["records"]
+    if type(records) is not list or len(records) != 2 or attestation["outputs_equal"] is not True: raise ValueError("two build attestation records are required")
+    seen_records = set(); dll_hashes = set()
+    for index, record in enumerate(records):
+        record = _exact(record, {"record_id", "invocation_timestamp_utc", "invocation_nonce", "log", "dll"}, f"build record {index}")
+        if record["record_id"] != f"clean-build-{index + 1}" or type(record["invocation_timestamp_utc"]) is not str or not record["invocation_timestamp_utc"].endswith("Z") or type(record["invocation_nonce"]) is not str or not record["invocation_nonce"]: raise ValueError("build record identity is invalid")
+        log = _artifact(record["log"], ".log", "build log"); dll = _artifact(record["dll"], ".dll", "build DLL")
+        signature = (record["record_id"], record["invocation_timestamp_utc"], record["invocation_nonce"], log["path"], log["sha256"], dll["path"], dll["sha256"])
+        if signature in seen_records: raise ValueError("duplicate build attestation record")
+        seen_records.add(signature); dll_hashes.add(dll["sha256"])
+    if len(dll_hashes) != 1 or next(iter(dll_hashes)) != tools["meshopt_bridge"]["sha256"]: raise ValueError("independent build DLL hashes do not match")
     sources = root["sources"]
     if type(sources) is not list or tuple(item.get("path") for item in sources if type(item) is dict) != SOURCES:
         raise ValueError("source set/order is invalid")

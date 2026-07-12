@@ -56,7 +56,7 @@ The committed builder independently rehashes every ignored artifact and must rep
 payload byte-for-structure in the focused test.
 
 Final canonical evidence digest:
-`cdeffa260013302bef04d6711ebc60da3d01e5c4a7f7fa031cc5faf1b6c6e7da`.
+`0584ab9d6234dedc55b03fdf251014d5f525c3f766149e9e8b293ad6cda10e2e`.
 Final verification after evidence hardening: 5/5 focused delta tests and 372 full-discovery tests
 passed; 12 full-suite skips are the existing environment symlink-privilege skips.
 
@@ -66,8 +66,10 @@ collision SMD by portable path/size/SHA-256 under aggregate digest
 digest; the builder rehashes each original and work copy and cross-checks animation/collision hashes
 against optimizer provenance before making a preservation claim.
 
-The evidence also binds two clean `/Brepro` attestations to canonical native-source digest
-`037cde763cae2b14dc3b491eba90f154aa86e45306bef203257b3f28c3895b28`; both produced DLL digest
+The evidence binds two distinct clean `/Brepro` attestations, normalized portable build logs and
+independently copied DLLs. Native build-script/CMake/bridge sources hash to
+`7bc894d00ee4d0a07be9c96c909720924b50940a57bdac8ca2767a0a77fa895f`; the pinned vendor hashes to
+`e594073446ef0261b62a80abbea0e95126a250615d5b04e71f53f31ce24b0edf`. Both produced DLL digest
 `c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa` under configuration
 `Release|x64|/Brepro` with ABI unchanged.
 

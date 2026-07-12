@@ -43,9 +43,15 @@ def build() -> dict:
     nonvisual_artifacts = [stat(SOURCE / name, name) for name in nonvisual_paths]
     nonvisual_digest = canonical_value_digest(nonvisual_artifacts)
     native_sources = [ROOT / "maximum_optimizer/native/build.ps1", ROOT / "maximum_optimizer/native/CMakeLists.txt", ROOT / "maximum_optimizer/native/meshopt_bridge.cpp"]
-    native_sources.extend(sorted((ROOT / "third_party/meshoptimizer").rglob("*")))
-    native_manifest = [{"path": path.relative_to(ROOT).as_posix(), "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in native_sources if path.is_file()]
-    native_source_digest = canonical_value_digest(native_manifest)
+    native_manifest = [{"path": path.relative_to(ROOT).as_posix(), "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in native_sources]
+    vendor_manifest = [{"path": path.relative_to(ROOT).as_posix(), "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted((ROOT / "third_party/meshoptimizer").rglob("*")) if path.is_file()]
+    native_source_digest, vendor_digest = canonical_value_digest(native_manifest), canonical_value_digest(vendor_manifest)
+    evidence_root = ROOT / "benchmarks/lvs_models/evidence/meshopt-direct-v1"
+    build_records = []
+    timestamps = ("2026-07-12T07:33:50Z", "2026-07-12T07:34:05Z")
+    for index in (1, 2):
+        log = evidence_root / f"build{index}.log"; dll = evidence_root / f"meshopt_bridge.build{index}.dll"
+        build_records.append({"record_id": f"clean-build-{index}", "invocation_timestamp_utc": timestamps[index-1], "invocation_nonce": f"task5-final-clean-build-{index}", "log": stat(log, f"benchmarks/lvs_models/evidence/meshopt-direct-v1/build{index}.log", ".log"), "dll": stat(dll, f"benchmarks/lvs_models/evidence/meshopt-direct-v1/meshopt_bridge.build{index}.dll", ".dll")})
     records = []
     for ratio in RATIOS:
         tag = f"{int(ratio * 100):03d}"
@@ -91,7 +97,7 @@ def build() -> dict:
         "quality_status": "unverified", "quality_claim": None,
         "settings": {"ratios": list(RATIOS), "update_vertices": False, "transfer": "direct-v1"},
         "tools": tools,
-        "build_attestation": {"command": "powershell -File maximum_optimizer/native/build.ps1", "configuration": "Release|x64|/Brepro", "source_sha256": native_source_digest, "build1_sha256": tools["meshopt_bridge"]["sha256"], "build2_sha256": tools["meshopt_bridge"]["sha256"], "equal": True},
+        "build_attestation": {"inputs": {"command": "powershell -File maximum_optimizer/native/build.ps1", "generator": "Visual Studio 17 2022", "configuration": "Release|/Brepro", "architecture": "x64", "native_source_sha256": native_source_digest, "vendor_sha256": vendor_digest}, "records": build_records, "outputs_equal": len({record["dll"]["sha256"] for record in build_records}) == 1},
         "sources": sources, "nonvisual": {"artifacts": nonvisual_artifacts, "digest": nonvisual_digest}, "records": records,
         "decision": {"best_ratio": 0.25, "best_candidate_bytes": min(x["candidate_total_bytes"] for x in records), "best_blender_bytes": 633089, "winner": False, "reason": "direct output improves control but remains larger than the approved Blender wheel and saturates under existing locks"},
     })

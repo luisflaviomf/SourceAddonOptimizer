@@ -1,0 +1,42 @@
+-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.
+-- The CXX compiler identification is MSVC 19.44.35219.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Configuring done (2.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: C:/Users/luisf/Music/teste/.worktrees/maximum-optimizer/build/maximum-meshopt-<RUN>
+Versão do MSBuild 17.14.23+b0019275e para .NET Framework
+
+  1>Checking Build System
+  Building Custom Rule C:/Users/luisf/Music/teste/.worktrees/maximum-optimizer/maximum_optimizer/native/CMakeLists.txt
+  meshopt_bridge.cpp
+  allocator.cpp
+  clusterizer.cpp
+  indexanalyzer.cpp
+  indexcodec.cpp
+  indexgenerator.cpp
+  meshletcodec.cpp
+  meshletutils.cpp
+  opacitymap.cpp
+  overdrawoptimizer.cpp
+  partition.cpp
+  quantization.cpp
+  rasterizer.cpp
+  simplifier.cpp
+  spatialorder.cpp
+  stripifier.cpp
+  tangentspace.cpp
+  vcacheoptimizer.cpp
+  vertexcodec.cpp
+  vertexfilter.cpp
+  Gerando Código...
+  Compilando...
+  vfetchoptimizer.cpp
+  Gerando Código...
+     Criando biblioteca C:/Users/luisf/Music/teste/.worktrees/maximum-optimizer/build/maximum-meshopt-<RUN>/Release/meshopt_bridge.lib e objeto C:/Users/luisf/Music/teste/.worktrees/maximum-optimizer/build/maximum-meshopt-<RUN>/Release/meshopt_bridge.exp
+  meshopt_bridge.vcxproj -> <REPO>\build\maximum-meshopt-<RUN>\Release\meshopt_bridge.dll
+Built x64 meshopt bridge: 
+<REPO>\maximum_optimizer\native\bin\win-x64\meshopt_bridge.dll

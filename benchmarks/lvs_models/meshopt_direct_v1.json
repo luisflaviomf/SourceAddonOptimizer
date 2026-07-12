@@ -1,11 +1,50 @@
 {
   "build_attestation": {
-    "build1_sha256": "c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa",
-    "build2_sha256": "c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa",
-    "command": "powershell -File maximum_optimizer/native/build.ps1",
-    "configuration": "Release|x64|/Brepro",
-    "equal": true,
-    "source_sha256": "037cde763cae2b14dc3b491eba90f154aa86e45306bef203257b3f28c3895b28"
+    "inputs": {
+      "architecture": "x64",
+      "command": "powershell -File maximum_optimizer/native/build.ps1",
+      "configuration": "Release|/Brepro",
+      "generator": "Visual Studio 17 2022",
+      "native_source_sha256": "7bc894d00ee4d0a07be9c96c909720924b50940a57bdac8ca2767a0a77fa895f",
+      "vendor_sha256": "e594073446ef0261b62a80abbea0e95126a250615d5b04e71f53f31ce24b0edf"
+    },
+    "outputs_equal": true,
+    "records": [
+      {
+        "dll": {
+          "kind": ".dll",
+          "path": "benchmarks/lvs_models/evidence/meshopt-direct-v1/meshopt_bridge.build1.dll",
+          "sha256": "c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa",
+          "size_bytes": 203264
+        },
+        "invocation_nonce": "task5-final-clean-build-1",
+        "invocation_timestamp_utc": "2026-07-12T07:33:50Z",
+        "log": {
+          "kind": ".log",
+          "path": "benchmarks/lvs_models/evidence/meshopt-direct-v1/build1.log",
+          "sha256": "02ed7340c7f5f29b7c357316e2c66fe45b7c779f0f77f67234defdd9857dc86f",
+          "size_bytes": 1752
+        },
+        "record_id": "clean-build-1"
+      },
+      {
+        "dll": {
+          "kind": ".dll",
+          "path": "benchmarks/lvs_models/evidence/meshopt-direct-v1/meshopt_bridge.build2.dll",
+          "sha256": "c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa",
+          "size_bytes": 203264
+        },
+        "invocation_nonce": "task5-final-clean-build-2",
+        "invocation_timestamp_utc": "2026-07-12T07:34:05Z",
+        "log": {
+          "kind": ".log",
+          "path": "benchmarks/lvs_models/evidence/meshopt-direct-v1/build2.log",
+          "sha256": "6c3177b603526a9e03b23c243707495cb68bcb22a42012a210091a090c09f472",
+          "size_bytes": 1752
+        },
+        "record_id": "clean-build-2"
+      }
+    ]
   },
   "corpus_id": "lvs-models-v1",
   "decision": {
@@ -15,7 +54,7 @@
     "reason": "direct output improves control but remains larger than the approved Blender wheel and saturates under existing locks",
     "winner": false
   },
-  "evidence_sha256": "cdeffa260013302bef04d6711ebc60da3d01e5c4a7f7fa031cc5faf1b6c6e7da",
+  "evidence_sha256": "0584ab9d6234dedc55b03fdf251014d5f525c3f766149e9e8b293ad6cda10e2e",
   "nonvisual": {
     "artifacts": [
       {
