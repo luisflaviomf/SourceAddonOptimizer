@@ -633,6 +633,14 @@ def audit_smd_text(text: str) -> SmdAudit:
     )
 
 
+def audit_exported_smd_text(text: str) -> SmdAudit:
+    """Type only destination parse/value failures that permit exact-source fallback."""
+    try:
+        return audit_smd_text(text)
+    except ValueError as exc:
+        raise SmdAuditValidationError(f"exported SMD audit failed: {exc}") from exc
+
+
 def validate_smd_audits(before: SmdAudit, after: SmdAudit) -> None:
     if not set(before.materials).issubset(after.materials):
         raise SmdAuditValidationError("export lost SMD materials")
@@ -651,11 +659,16 @@ def validate_smd_audits(before: SmdAudit, after: SmdAudit) -> None:
             "export amplified SMD position-normal keys "
             f"({before.position_normal_keys}->{after.position_normal_keys})"
         )
-    before_missing_normals = before.triangle_count * 3 - before.finite_normal_count
-    after_missing_normals = after.triangle_count * 3 - after.finite_normal_count
-    if ((before.uv_bounds is not None and after.uv_bounds is None)
-            or after_missing_normals > before_missing_normals):
-        raise SmdAuditValidationError("export has incomplete UV or hard-normal evidence")
+    if before.uv_bounds is not None and after.uv_bounds is None:
+        raise SmdAuditValidationError("export has incomplete UV evidence")
+    before_corners = before.triangle_count * 3
+    after_corners = after.triangle_count * 3
+    if before.finite_normal_count > 0 and after.finite_normal_count == 0:
+        raise SmdAuditValidationError("export has zero valid normals")
+    if (before_corners > 0 and after_corners > 0
+            and after.finite_normal_count * before_corners
+            < before.finite_normal_count * after_corners):
+        raise SmdAuditValidationError("export has worse finite-normal coverage")
 
 
 def restore_smd_normal_identity(
@@ -1317,8 +1330,10 @@ def _process_source_file(
         if not direct_payloads:
             restored = restore_smd_bone_identity(original_text, restored)
         atomic_write_bytes(source.parent, destination, restored.encode("utf-8"))
-    after_audit = audit_smd_text(destination.read_text(encoding="utf-8", errors="replace"))
     try:
+        after_audit = audit_exported_smd_text(
+            destination.read_text(encoding="utf-8", errors="replace")
+        )
         validate_smd_audits(before_audit, after_audit)
     except RuntimeError as exc:
         if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"} or not allows_exact_fallback(exc):
@@ -1326,7 +1341,9 @@ def _process_source_file(
         preserve_exact = True
         fallback_reason = str(exc)
         atomic_write_bytes(source.parent, destination, exact_source_payload(source.read_bytes()))
-        after_audit = audit_smd_text(destination.read_text(encoding="utf-8", errors="replace"))
+        after_audit = audit_exported_smd_text(
+            destination.read_text(encoding="utf-8", errors="replace")
+        )
         validate_smd_audits(before_audit, after_audit)
         for item in object_metrics:
             item["attempted_achieved_ratio"] = item.get("achieved_ratio")

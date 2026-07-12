@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import batch_optimize_maximum as maximum
 
@@ -45,8 +46,46 @@ class SmdAuditFallbackTests(unittest.TestCase):
         degraded = maximum.SmdAudit(**{
             **incomplete.__dict__, "triangle_count": 3, "finite_normal_count": 3,
         })
-        with self.assertRaisesRegex(maximum.SmdAuditValidationError, "incomplete"):
+        with self.assertRaisesRegex(maximum.SmdAuditValidationError, "coverage"):
             maximum.validate_smd_audits(incomplete, degraded)
+
+    def test_triangle_reduction_cannot_mask_worse_finite_normal_coverage(self) -> None:
+        source = maximum.SmdAudit(**{
+            **self.base().__dict__, "triangle_count": 4, "finite_normal_count": 6,
+        })
+        equal_coverage = maximum.SmdAudit(**{
+            **source.__dict__, "triangle_count": 2, "finite_normal_count": 3,
+        })
+        maximum.validate_smd_audits(source, equal_coverage)
+
+        worse_coverage = maximum.SmdAudit(**{
+            **equal_coverage.__dict__, "finite_normal_count": 2,
+        })
+        with self.assertRaisesRegex(maximum.SmdAuditValidationError, "coverage"):
+            maximum.validate_smd_audits(source, worse_coverage)
+
+    def test_candidate_with_zero_valid_normals_fails_when_source_has_any(self) -> None:
+        source = maximum.SmdAudit(**{
+            **self.base().__dict__, "triangle_count": 2, "finite_normal_count": 1,
+        })
+        candidate = maximum.SmdAudit(**{
+            **source.__dict__, "triangle_count": 1, "finite_normal_count": 0,
+        })
+        with self.assertRaisesRegex(maximum.SmdAuditValidationError, "zero valid normals"):
+            maximum.validate_smd_audits(source, candidate)
+
+    def test_only_exported_smd_parse_errors_are_typed_for_exact_fallback(self) -> None:
+        malformed = "triangles\nmat\n0 0 0 0 broken 0 1 0 0\nend\n"
+        with self.assertRaises(ValueError):
+            maximum.audit_smd_text(malformed)
+        with self.assertRaises(maximum.SmdAuditValidationError) as raised:
+            maximum.audit_exported_smd_text(malformed)
+        self.assertIsInstance(raised.exception.__cause__, ValueError)
+        self.assertTrue(maximum.allows_exact_fallback(raised.exception))
+
+        with patch.object(maximum, "audit_smd_text", side_effect=RuntimeError("internal")):
+            with self.assertRaisesRegex(RuntimeError, "internal"):
+                maximum.audit_exported_smd_text("ignored")
 
 
 if __name__ == "__main__":
