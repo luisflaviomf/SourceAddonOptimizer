@@ -72,7 +72,9 @@ from maximum_optimizer.smoothing import (
 )
 from maximum_optimizer.smd_contract import (
     POSITION_SERIALIZATION_TOLERANCE,
+    DirectDegeneratePrefilter,
     map_imported_corners_to_smd,
+    prefilter_direct_degenerate_smd,
     restore_direct_smd_normals,
     restore_ordered_smd_normals,
     serialize_direct_smd,
@@ -84,6 +86,9 @@ _EXPECTED_CANDIDATE_FIELDS = {
     "candidate_id", "engine", "ratio", "target_error", "update_vertices", "region_overrides",
     "strategy", "transfer",
 }
+_DIRECT_PREFILTER_CANDIDATE_FIELDS = (
+    _EXPECTED_CANDIDATE_FIELDS | {"direct_degenerate_prefilter"}
+)
 _SEARCH_CANDIDATE_FIELDS = {
     "candidate_id", "engine", "target_ratio", "target_error", "repair_profile", "region_overrides",
     "strategy", "update_vertices", "transfer",
@@ -110,6 +115,7 @@ class CandidateConfig:
     region_overrides: tuple[tuple[str, float], ...]
     strategy: str = "meshopt-project-v1"
     transfer: str = "projection-v1"
+    direct_degenerate_prefilter: str | None = None
 
 
 @dataclass(frozen=True)
@@ -162,7 +168,9 @@ def _strict_number(name: str, value: object, *, minimum: float, maximum: float) 
 def load_candidate_payload(payload: object) -> CandidateConfig:
     fields = frozenset(payload) if type(payload) is dict else frozenset()
     if type(payload) is not dict or fields not in {
-        frozenset(_EXPECTED_CANDIDATE_FIELDS), frozenset(_SEARCH_CANDIDATE_FIELDS)
+        frozenset(_EXPECTED_CANDIDATE_FIELDS),
+        frozenset(_DIRECT_PREFILTER_CANDIDATE_FIELDS),
+        frozenset(_SEARCH_CANDIDATE_FIELDS),
     }:
         raise ValueError("candidate JSON has missing or unknown fields")
     from_search = fields == frozenset(_SEARCH_CANDIDATE_FIELDS)
@@ -184,6 +192,12 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
         raise ValueError("update_vertices must be bool")
     strategy = payload["strategy"]
     transfer = payload["transfer"]
+    direct_prefilter = payload.get("direct_degenerate_prefilter")
+    if direct_prefilter is not None and (
+        direct_prefilter != "direct-degenerate-prefilter-v1"
+        or strategy not in {"meshopt-direct-v1", "meshopt-direct-position-v1"}
+    ):
+        raise ValueError("direct prefilter requires a typed direct R&D strategy")
     contract = (payload["engine"], strategy, update_vertices, transfer)
     if contract not in {
         ("meshoptimizer", "meshopt-direct-v1", False, "direct-v1"),
@@ -220,6 +234,7 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
         region_overrides=tuple(cleaned.items()),
         strategy=strategy,
         transfer=transfer,
+        direct_degenerate_prefilter=direct_prefilter,
     )
 
 
@@ -1597,6 +1612,32 @@ def require_direct_single_object(candidate: CandidateConfig, mesh_objects: Seque
         raise RuntimeError(f"{candidate.strategy} requires at least one mapped source object")
 
 
+def direct_degenerate_prefilter(
+    candidate: CandidateConfig, original_text: str
+) -> DirectDegeneratePrefilter | None:
+    if candidate.direct_degenerate_prefilter is None:
+        return None
+    if (
+        candidate.direct_degenerate_prefilter
+        != "direct-degenerate-prefilter-v1"
+        or candidate.strategy not in {
+            "meshopt-direct-v1", "meshopt-direct-position-v1",
+        }
+    ):
+        raise ValueError("direct prefilter requires a typed direct R&D strategy")
+    return prefilter_direct_degenerate_smd(original_text)
+
+
+def bind_direct_degenerate_provenance(
+    provenance: dict[str, object], file_metrics: dict[str, object]
+) -> dict[str, object]:
+    evidence = file_metrics.get("direct_degenerate_prefilter")
+    return (
+        {**provenance, "direct_degenerate_prefilter": evidence}
+        if evidence is not None else dict(provenance)
+    )
+
+
 def _write_round_export_fallback(
     source: Path,
     destination: Path,
@@ -1624,8 +1665,24 @@ def _process_source_file(
 
     before_audit = audit_smd_text(source.read_text(encoding="utf-8", errors="replace"))
     original_text = source.read_text(encoding="utf-8", errors="strict")
+    direct_prefilter = direct_degenerate_prefilter(candidate, original_text)
     _clear_blender_scene()
-    source_tools.import_source_file(source)
+    if direct_prefilter is None:
+        source_tools.import_source_file(source)
+    else:
+        staging_dir = Path(tempfile.mkdtemp(
+            prefix=".maximum-direct-prefilter-", dir=source.parent
+        ))
+        staged_source = staging_dir / source.name
+        try:
+            atomic_write_bytes(
+                source.parent,
+                staged_source,
+                direct_prefilter.filtered_text.encode("utf-8"),
+            )
+            source_tools.import_source_file(staged_source)
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
     mesh_objects = tuple(obj for obj in bpy.context.scene.objects if obj.type == "MESH")
     if not mesh_objects:
         raise RuntimeError(f"Source Tools imported no mesh from {source}")
@@ -1645,7 +1702,11 @@ def _process_source_file(
     preserve_exact = should_preserve_exact(candidate, tuple(source_ratios.values()))
     fallback_reason: str | None = None
     if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"}:
-        used_source_triangles: set[int] = set()
+        dropped_source_triangles = frozenset(
+            direct_prefilter.dropped_source_triangles
+            if direct_prefilter is not None else ()
+        )
+        used_source_triangles: set[int] = set(dropped_source_triangles)
         for obj in mesh_objects:
             positions, triangles, loop_normals, loop_uvs, material_ids, vertex_influences = _vertex_source_attributes(obj)
             datablock_names = tuple(str(material.name) if material else "none" for material in obj.data.materials)
@@ -1660,6 +1721,7 @@ def _process_source_file(
                 original_text, positions, triangles, loop_normals, loop_uvs, material_ids,
                 material_names, vertex_influences,
                 excluded_source_triangles=frozenset(used_source_triangles),
+                dropped_source_triangles=dropped_source_triangles,
             )
             _DIRECT_SOURCE_CORNER_MAP[id(obj)] = mapping
             used_source_triangles.update(ordinal // 3 for ordinal in mapping)
@@ -1738,6 +1800,10 @@ def _process_source_file(
             original_text, payload["positions"], payload["normals"], payload["uvs"],
             payload["influences"], payload["indices"], payload["materials"],
             source_corner_ordinals=payload["source_corner_ordinals"],
+            dropped_source_triangles=(
+                frozenset(direct_prefilter.dropped_source_triangles)
+                if direct_prefilter is not None else frozenset()
+            ),
         )
         atomic_write_bytes(source.parent, destination, serialized.encode("utf-8"))
     else:
@@ -1801,7 +1867,7 @@ def _process_source_file(
             item["transfer"] = "exact-source-fallback-v1"
     if not preserve_exact and after_audit.triangle_count >= before_audit.triangle_count:
         raise RuntimeError("export did not reduce SMD triangle count")
-    return {
+    result = {
         "source": source.as_posix(),
         "output": destination.as_posix(),
         "raw_export_sha256": raw_export_sha256,
@@ -1829,6 +1895,9 @@ def _process_source_file(
         "regions": [item["region_key"] for item in object_metrics],
         "fallback_reason": fallback_reason,
     }
+    if direct_prefilter is not None:
+        result["direct_degenerate_prefilter"] = direct_prefilter.evidence
+    return result
 
 
 def _path_is_reparse_point(path: Path) -> bool:
@@ -2086,8 +2155,7 @@ def run_blender(settings: Settings) -> dict[str, object]:
                 reason = "physics-pipeline-not-enabled" if reference.role == "collision" else "animation-preserved"
                 destination = reference.source_path
                 output_hash = source_hash
-            provenance.append(
-                {
+            provenance_item: dict[str, object] = {
                     "graph_file": reference.graph_file.relative_to(settings.root).as_posix(),
                     "directive": reference.directive,
                     "line": reference.line,
@@ -2099,7 +2167,11 @@ def run_blender(settings: Settings) -> dict[str, object]:
                     "output": destination.relative_to(settings.root).as_posix(),
                     "output_sha256": output_hash,
                 }
-            )
+            if reference.role == "visual":
+                provenance_item = bind_direct_degenerate_provenance(
+                    provenance_item, _item
+                )
+            provenance.append(provenance_item)
         for output_path, text in rewritten_qc_graph_texts(graph, optimized_sources).items():
             atomic_write_bytes(settings.root, output_path, text.encode("utf-8"))
 

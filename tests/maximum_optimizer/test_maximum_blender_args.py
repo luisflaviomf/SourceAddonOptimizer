@@ -27,6 +27,96 @@ from maximum_optimizer.mesh_attributes import (
 
 
 class MaximumBlenderPureTests(unittest.TestCase):
+    @staticmethod
+    def _direct_degenerate_fixture(*, retained_normal: str = "0 0 1") -> str:
+        return (
+            'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+            '0 0 0 0 0 0 0\nend\ntriangles\nmetal\n'
+            '0 2 0 0 nan 0 0 0 0\n'
+            '0 2 0 0 0 0 0 0 0\n'
+            '0 2 0 0 0 0 0 0 0\n'
+            'metal\n'
+            f'0 0 0 0 {retained_normal} 0 0\n'
+            f'0 1 0 0 {retained_normal} 1 0\n'
+            f'0 0 1 0 {retained_normal} 0 1\n'
+            'end\n'
+        )
+
+    def test_direct_prefilter_is_opt_in_only_for_typed_direct_research_strategies(self) -> None:
+        source = self._direct_degenerate_fixture()
+        direct = maximum.CandidateConfig(
+            "direct", "meshoptimizer", 0.35, 0.01, False, (),
+            strategy="meshopt-direct-v1", transfer="direct-v1",
+        )
+        position = maximum.CandidateConfig(
+            "position", "meshoptimizer", 0.35, 0.01, False, (),
+            strategy="meshopt-direct-position-v1", transfer="direct-v1",
+            direct_degenerate_prefilter="direct-degenerate-prefilter-v1",
+        )
+        opted_direct = maximum.CandidateConfig(
+            "opted-direct", "meshoptimizer", 0.35, 0.01, False, (),
+            strategy="meshopt-direct-v1", transfer="direct-v1",
+            direct_degenerate_prefilter="direct-degenerate-prefilter-v1",
+        )
+
+        self.assertIsNone(maximum.direct_degenerate_prefilter(direct, source))
+        self.assertEqual(
+            maximum.direct_degenerate_prefilter(position, source).dropped_source_triangles,
+            (0,),
+        )
+        self.assertEqual(
+            maximum.direct_degenerate_prefilter(
+                opted_direct, source
+            ).dropped_source_triangles,
+            (0,),
+        )
+        payload = {
+            "candidate_id": "opted-direct",
+            "engine": "meshoptimizer",
+            "ratio": 0.35,
+            "target_error": 0.01,
+            "update_vertices": False,
+            "region_overrides": [],
+            "strategy": "meshopt-direct-v1",
+            "transfer": "direct-v1",
+            "direct_degenerate_prefilter": "direct-degenerate-prefilter-v1",
+        }
+        self.assertEqual(
+            maximum.load_candidate_payload(payload).direct_degenerate_prefilter,
+            "direct-degenerate-prefilter-v1",
+        )
+        with self.assertRaisesRegex(ValueError, "direct prefilter"):
+            maximum.load_candidate_payload({
+                **payload,
+                "engine": "blender",
+                "strategy": "blender-adaptive-v1",
+                "update_vertices": True,
+                "transfer": "blender-native-v1",
+                "target_error": 0.0,
+            })
+
+    def test_direct_prefilter_evidence_is_bound_into_candidate_provenance(self) -> None:
+        evidence = {
+            "schema": 1,
+            "strategy": "direct-degenerate-prefilter-v1",
+            "evidence_sha256": "a" * 64,
+        }
+        provenance = {"logical_path": "fbp.smd", "status": "optimized"}
+
+        bound = maximum.bind_direct_degenerate_provenance(
+            provenance, {"direct_degenerate_prefilter": evidence}
+        )
+
+        self.assertEqual(bound, {
+            **provenance,
+            "direct_degenerate_prefilter": evidence,
+        })
+        self.assertIsNot(bound, provenance)
+        self.assertEqual(
+            maximum.bind_direct_degenerate_provenance(provenance, {}),
+            provenance,
+        )
+
     def test_round_export_runtime_failure_writes_exact_source_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
