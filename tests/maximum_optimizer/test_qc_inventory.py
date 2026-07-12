@@ -11,11 +11,7 @@ from maximum_optimizer.qc_inventory import (
 
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "maximum"
-MONACO_QC = Path(
-    r"C:\Users\luisf\Music\teste\experiments\wpf-mainapp-validation"
-    r"\20260312_110200_models_planar\planar_on_work\src\diggercars"
-    r"\dodge_monaco\monaco_police\monaco_police.qc"
-)
+MONACO_QC = FIXTURES / "qc" / "monaco_police_inventory_excerpt.qc"
 
 
 class QcFingerprintTests(unittest.TestCase):
@@ -54,13 +50,69 @@ class QcFingerprintTests(unittest.TestCase):
             self.assertEqual(fp.sequences, ("idle sequence",))
             self.assertEqual(fp.physics_mesh, "physics mesh.smd")
 
-    @unittest.skipUnless(MONACO_QC.is_file(), f"real Monaco QC not available: {MONACO_QC}")
     def test_real_monaco_qc_inventories_all_structural_directives(self):
         fp = parse_qc_fingerprint(MONACO_QC)
 
         self.assertEqual(len(fp.skin_families), 9)
-        self.assertEqual(len(fp.attachments), 12)
-        self.assertEqual(len(fp.sequences), 22)
+        self.assertEqual(
+            fp.skin_families[0],
+            (
+                "skin",
+                "metal",
+                "grey",
+                "leather",
+                "mars_skybolt_lightbar",
+                "policestuff",
+                "skin1",
+                "skin8",
+            ),
+        )
+        self.assertEqual(fp.skin_families[-1][0], "skin8")
+        self.assertIn("mars_skybolt_lightbar", fp.materials)
+        self.assertEqual(
+            fp.attachments,
+            (
+                "bar1l1a1",
+                "bar1l1a2",
+                "bar1l2a1",
+                "bar1l2a2",
+                "bar2l1a1",
+                "bar2l1a2",
+                "bar2l2a1",
+                "bar2l2a2",
+                "bar3a1",
+                "bar3a2",
+                "spot2a",
+                "spot1a",
+            ),
+        )
+        self.assertEqual(
+            fp.sequences,
+            (
+                "turning",
+                "gearing",
+                "gas",
+                "brake",
+                "handbrake",
+                "speedo",
+                "tacho",
+                "temp",
+                "fuel",
+                "oil",
+                "alt",
+                "hood",
+                "trunk",
+                "left_door",
+                "right_door",
+                "rear_left_door",
+                "rear_right_door",
+                "digital_1",
+                "digital_2",
+                "digital_3",
+                "siren_spin",
+                "idle",
+            ),
+        )
         self.assertEqual(fp.physics_mesh, "monaco_police_physics.smd")
 
     def test_fingerprint_keeps_source_order_without_case_duplicates(self):
