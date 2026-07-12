@@ -541,6 +541,32 @@ class OrchestratorTests(unittest.TestCase):
                 build, output_models, self.family, proofs, threading.Event()
             )
 
+    def test_private_recovery_mutation_between_seal_and_semantics_is_rejected(self):
+        entry = self.root / "private-recovery-entry"
+        payload = entry / "payload"
+        payload.mkdir(parents=True)
+        (payload / "maximum_cache_record.json").write_text("{}", encoding="utf-8")
+        focused = payload / "focused.bin"
+        focused.write_bytes(b"AUTHORIZED")
+        original_seal = orchestrator_module._seal_cache_entry
+
+        def seal_then_mutate(cache_entry, cancel_event=None):
+            original_seal(cache_entry, cancel_event)
+            focused.write_bytes(b"MUTATED___")
+
+        def semantic_validator():
+            if focused.read_bytes() != b"AUTHORIZED":
+                raise ValueError("semantic focused bytes changed")
+
+        with patch.object(
+            orchestrator_module, "_seal_cache_entry",
+            side_effect=seal_then_mutate,
+        ), self.assertRaisesRegex(ValueError, "semantic focused bytes changed"):
+            orchestrator_module._seal_then_validate_private_recovery_entry(
+                entry, semantic_validator
+            )
+        self.assertFalse((entry / "complete.json").exists())
+
     def test_outer_recovery_boundary_rehashes_focused_rerun_snapshots(self):
         from tests.maximum_optimizer.test_focused_cache import (
             _cache_payload, _render_file_proofs, _target, _validation_metrics,
@@ -605,7 +631,10 @@ class OrchestratorTests(unittest.TestCase):
         first_root = adapter._materialize_recovery_focused_artifacts(
             first, 0, (record,), (), threading.Event()
         )
-        prior = SimpleNamespace(round_index=0, evidence_sha256="8" * 64)
+        prior = SimpleNamespace(
+            round_index=0, evidence_sha256="8" * 64,
+            rerun_records=(record,),
+        )
         adapter._recovery_artifact_roots[prior.evidence_sha256] = first_root
 
         second = self.root / "recovery-hit"
@@ -619,6 +648,24 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertTrue((second_root / "round-000" / identity).is_dir())
         self.assertTrue((second_root / "round-001" / identity).is_dir())
+
+        for index, status in enumerate((
+            "composition_failed", "compile_failed", "structural_failed",
+        ), start=2):
+            workspace = self.root / f"recovery-after-{status}"
+            hit_reference = workspace / "focused-snapshots" / identity / "reference"
+            hit_candidate = workspace / "focused-snapshots" / identity / "candidate"
+            _write_render_side(hit_reference)
+            _write_render_side(hit_candidate)
+            rootless = SimpleNamespace(
+                round_index=0, evidence_sha256=str(index) * 64,
+                rerun_records=(), terminal_status=status,
+            )
+            recovered = adapter._materialize_recovery_focused_artifacts(
+                workspace, 1, (record,), (rootless,), threading.Event()
+            )
+            self.assertTrue((recovered / "round-000").is_dir())
+            self.assertTrue((recovered / "round-001" / identity).is_dir())
 
     def test_outer_recovery_boundary_rejects_minimal_forged_authorization(self):
         forged = SimpleNamespace(

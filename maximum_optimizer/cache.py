@@ -7,6 +7,7 @@ import re
 import shutil
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -14,12 +15,68 @@ from typing import Any, Callable
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _VALIDATED_LOCK_GUARD = threading.Lock()
-_VALIDATED_LOCKS: dict[str, threading.RLock] = {}
+_VALIDATED_LOCKS: dict[str, tuple[threading.RLock, int]] = {}
 
 
-def _validated_lock(digest: str) -> threading.RLock:
+@contextmanager
+def _validated_key_lock(digest: str):
     with _VALIDATED_LOCK_GUARD:
-        return _VALIDATED_LOCKS.setdefault(digest, threading.RLock())
+        lock, users = _VALIDATED_LOCKS.get(digest, (threading.RLock(), 0))
+        _VALIDATED_LOCKS[digest] = (lock, users + 1)
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+        with _VALIDATED_LOCK_GUARD:
+            current_lock, users = _VALIDATED_LOCKS[digest]
+            if current_lock is lock and users == 1:
+                del _VALIDATED_LOCKS[digest]
+            else:
+                _VALIDATED_LOCKS[digest] = (current_lock, users - 1)
+
+
+@contextmanager
+def _cross_process_cache_lock(root: Path, digest: str):
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = (
+            wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR,
+        )
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.ReleaseMutex.argtypes = (wintypes.HANDLE,)
+        kernel32.ReleaseMutex.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        name = "Local\\GmodAddonOptimizer-RecoveryCache-" + digest
+        handle = kernel32.CreateMutexW(None, False, name)
+        if not handle:
+            raise OSError(ctypes.get_last_error(), "cannot create recovery cache mutex")
+        try:
+            result = kernel32.WaitForSingleObject(handle, 30_000)
+            if result not in {0x00000000, 0x00000080}:
+                raise TimeoutError("timed out acquiring recovery cache mutex")
+            yield
+        finally:
+            kernel32.ReleaseMutex(handle)
+            kernel32.CloseHandle(handle)
+        return
+    import fcntl
+
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / ".validated-cache.lock"
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 class AtomicReplaceError(RuntimeError):
@@ -74,6 +131,85 @@ def _write_json(path: Path, payload: object) -> None:
         json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def _flush_directory(path: Path) -> None:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = (
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        )
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.FlushFileBuffers.argtypes = (wintypes.HANDLE,)
+        kernel32.FlushFileBuffers.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.CreateFileW(
+            str(path), 0x80000000, 0x00000001 | 0x00000002 | 0x00000004,
+            None, 3, 0x02000000, None,
+        )
+        if handle == wintypes.HANDLE(-1).value:
+            raise OSError(ctypes.get_last_error(), "cannot open directory for flush")
+        try:
+            if not kernel32.FlushFileBuffers(handle):
+                # Windows does not support FlushFileBuffers for directory
+                # handles on all filesystems. The final MoveFileExW below uses
+                # WRITE_THROUGH, which is the durable directory-entry barrier.
+                pass
+        finally:
+            kernel32.CloseHandle(handle)
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _flush_tree(root: Path) -> None:
+    directories: list[Path] = []
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        parent = Path(directory)
+        directories.append(parent)
+        for name in directory_names:
+            if _is_symlink(parent / name):
+                raise ValueError("validated cache tree contains a symlink")
+        for name in file_names:
+            path = parent / name
+            if _is_symlink(path):
+                raise ValueError("validated cache tree contains a symlink")
+            descriptor = os.open(path, os.O_RDWR if os.name == "nt" else os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+        _flush_directory(directory)
+
+
+def _durable_replace(source: Path, destination: Path) -> None:
+    if os.name != "nt":
+        os.replace(source, destination)
+        return
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.MoveFileExW.argtypes = (
+        ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32,
+    )
+    kernel32.MoveFileExW.restype = ctypes.c_int
+    MOVEFILE_REPLACE_EXISTING = 0x1
+    MOVEFILE_WRITE_THROUGH = 0x8
+    if not kernel32.MoveFileExW(
+        str(source), str(destination),
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+    ):
+        raise OSError(ctypes.get_last_error(), "durable cache rename failed")
 
 
 def _device_id(path: Path) -> int:
@@ -265,13 +401,14 @@ class CandidateCache:
         copy_function: Callable[[str, str], str | os.PathLike[str]] = shutil.copy2,
     ) -> tuple[Path, bool]:
         """Publish a recovery entry only after private-staging semantic validation."""
-        with _validated_lock(key.digest):
-            return self._store_validated_locked(
-                key, source_dir, metadata,
-                finalize_staging=finalize_staging,
-                validate_existing=validate_existing,
-                copy_function=copy_function,
-            )
+        with _validated_key_lock(key.digest):
+            with _cross_process_cache_lock(self.root, key.digest):
+                return self._store_validated_locked(
+                    key, source_dir, metadata,
+                    finalize_staging=finalize_staging,
+                    validate_existing=validate_existing,
+                    copy_function=copy_function,
+                )
 
     def _store_validated_locked(
         self,
@@ -323,12 +460,14 @@ class CandidateCache:
                 "metadata_sha256": metadata_sha256,
                 "integrity_sha256": integrity_sha256,
             })
+            _flush_tree(staging)
             quarantine: Path | None = None
             if _lexists(final):
                 quarantine = _unique_sibling(self.root, f"{key.digest}.quarantine-")
                 os.replace(final, quarantine)
             try:
-                os.replace(staging, final)
+                _durable_replace(staging, final)
+                _flush_directory(self.root)
             except BaseException as promotion_error:
                 if quarantine is not None:
                     try:

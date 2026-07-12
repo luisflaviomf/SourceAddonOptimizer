@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -10,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from maximum_optimizer import cache as cache_module
 from maximum_optimizer.cache import (
     AtomicReplaceError,
     CacheKey,
@@ -475,6 +478,81 @@ class CandidateCacheTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(sorted(owned for _path, owned in results), [False, True])
         self.assertEqual(len({path for path, _owned in results}), 1)
+        self.assertEqual(cache_module._VALIDATED_LOCKS, {})
+
+    def test_validated_store_cross_process_same_key_has_one_winner(self):
+        gate = self.base / "cross-process-go"
+        script = f'''\
+import json, time
+from pathlib import Path
+from maximum_optimizer.cache import CacheKey, CandidateCache
+root = Path({str(self.root)!r})
+source = Path({str(self.source)!r})
+gate = Path({str(gate)!r})
+while not gate.exists():
+    time.sleep(0.01)
+cache = CandidateCache(root)
+def finalize(staging):
+    (staging / "maximum_integrity.json").write_text('{{"sealed":true}}', encoding="utf-8")
+entry, owned = cache.store_validated(
+    CacheKey({self.key.digest!r}), source, {{}},
+    finalize_staging=finalize,
+    validate_existing=lambda entry: None,
+)
+print(json.dumps({{"owned": owned, "entry": str(entry)}}))
+'''
+        processes = [subprocess.Popen(
+            [sys.executable, "-c", script], cwd=Path(__file__).parents[2],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        ) for _ in range(2)]
+        gate.write_text("go", encoding="utf-8")
+        results = []
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 0, stderr)
+            results.append(json.loads(stdout.strip()))
+
+        self.assertEqual(sorted(item["owned"] for item in results), [False, True])
+        self.assertEqual(len({item["entry"] for item in results}), 1)
+
+    def test_validated_store_flushes_tree_before_rename_and_root_after(self):
+        events = []
+        original_tree = cache_module._flush_tree
+        original_directory = cache_module._flush_directory
+        original_replace = cache_module._durable_replace
+
+        def flush_tree(path):
+            events.append(("tree", Path(path)))
+            return original_tree(path)
+
+        def replace(source, destination):
+            events.append(("rename", Path(destination)))
+            return original_replace(source, destination)
+
+        def flush_directory(path):
+            events.append(("directory", Path(path)))
+            return original_directory(path)
+
+        with mock.patch.object(cache_module, "_flush_tree", side_effect=flush_tree), \
+             mock.patch.object(cache_module, "_durable_replace", side_effect=replace), \
+             mock.patch.object(cache_module, "_flush_directory", side_effect=flush_directory):
+            self.cache.store_validated(
+                self.key, self.source, {},
+                finalize_staging=lambda staging: (
+                    staging / "maximum_integrity.json"
+                ).write_text('{"sealed":true}', encoding="utf-8"),
+                validate_existing=lambda _entry: None,
+            )
+
+        tree_index = next(i for i, event in enumerate(events) if event[0] == "tree")
+        rename_index = next(i for i, event in enumerate(events) if event[0] == "rename")
+        root_flushes = [
+            i for i, event in enumerate(events)
+            if event == ("directory", self.root)
+        ]
+        self.assertLess(tree_index, rename_index)
+        self.assertTrue(root_flushes)
+        self.assertGreater(root_flushes[-1], rename_index)
 
     def test_store_quarantines_invalid_final_and_promotes_without_merging(self):
         final = self.create_final_entry(None)

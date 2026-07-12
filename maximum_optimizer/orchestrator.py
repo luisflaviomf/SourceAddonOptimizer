@@ -619,6 +619,7 @@ def _copy_file_cancellable(
                     break
                 writer.write(block)
             writer.flush()
+            os.fsync(writer.fileno())
         _check_cancelled(cancel_event, "cancelled while copying files")
         shutil.copystat(source_path, destination_path, follow_symlinks=False)
     except BaseException:
@@ -874,6 +875,16 @@ def _verify_recovery_cache_entry(
 ) -> bool:
     if not _verify_cache_entry(cache_entry, cancel_event):
         return False
+
+
+def _seal_then_validate_private_recovery_entry(
+    entry: Path,
+    semantic_validator: Callable[[], None],
+) -> None:
+    _seal_cache_entry(entry, None)
+    semantic_validator()
+    if not _verify_cache_entry(entry, None):
+        raise ValueError("focused recovery cache integrity is invalid")
     try:
         complete = json.loads(_read_regular_no_follow(
             cache_entry / "complete.json", cancel_event,
@@ -2722,14 +2733,23 @@ def run_maximum_addon(
                                 evaluation=cached_evaluation,
                                 authorization=cached_authorization,
                             )
-                            _validate_authorized_recovery_boundary(
-                                result=cached_result, manifest=manifest, recipe=recipe,
-                                cache_key=recovery_key, cancel_event=cancel,
-                            )
+                            def authorize_current_entry() -> None:
+                                _validate_authorized_recovery_boundary(
+                                    result=cached_result, manifest=manifest,
+                                    recipe=recipe, cache_key=recovery_key,
+                                    cancel_event=cancel,
+                                )
+
                             if publish_integrity:
-                                _seal_cache_entry(entry, None)
-                            if not _verify_cache_entry(entry, None):
-                                raise ValueError("focused recovery cache integrity is invalid")
+                                _seal_then_validate_private_recovery_entry(
+                                    entry, authorize_current_entry
+                                )
+                            else:
+                                authorize_current_entry()
+                                if not _verify_cache_entry(entry, None):
+                                    raise ValueError(
+                                        "focused recovery cache integrity is invalid"
+                                    )
                             cache_state.update({
                                 "result": cached_result, "build": cached_build,
                                 "evaluation": cached_evaluation,
@@ -2919,6 +2939,11 @@ def run_maximum_addon(
                 else 0.0
             ),
         )
+        clear_recovery_artifacts = getattr(
+            adapter_set, "clear_recovery_artifacts", None
+        )
+        if callable(clear_recovery_artifacts):
+            clear_recovery_artifacts()
         if cancel.is_set():
             break
 
@@ -4001,6 +4026,9 @@ class ProductionAdapters:
         ] = {}
         self._recovery_artifact_roots: dict[str, Path] = {}
 
+    def clear_recovery_artifacts(self) -> None:
+        self._recovery_artifact_roots.clear()
+
     def _materialize_recovery_focused_artifacts(
         self,
         workspace: Path,
@@ -4016,6 +4044,9 @@ class ProductionAdapters:
             )
         destination_root.mkdir(parents=True)
         for prior in prior_recoveries:
+            if not prior.rerun_records:
+                (destination_root / f"round-{prior.round_index:03d}").mkdir()
+                continue
             prior_root = self._recovery_artifact_roots.get(prior.evidence_sha256)
             if prior_root is None or not prior_root.is_dir():
                 raise CandidateBuildError(
