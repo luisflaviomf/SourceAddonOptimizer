@@ -111,6 +111,34 @@ class FidelitySelectionTests(unittest.TestCase):
             },
         }
 
+    @staticmethod
+    def _focused_profile() -> dict:
+        return {
+            "schema": 3,
+            "version": "lvs-focused-v1",
+            "calibrated": True,
+            "corpus_hash": "c" * 64,
+            "selector": "audited-original-round-family-v1",
+            "focused_evidence_sha256": (
+                "2cc6b330ef97466f4d10986787f2ffd0d35f960c0bd47a32e0159f9559c6615c"
+            ),
+            "focused_policy": {
+                "schema": 1,
+                "selector": "surface-risk-top-k-v1",
+                "top_k": 3,
+            },
+            "profiles": {
+                "general-body-detail-v1": {
+                    "limits": _limits(0.2),
+                    "focused_limits": _limits(0.1),
+                },
+                "round-rigid-v1": {
+                    "limits": _limits(0.05),
+                    "focused_limits": _limits(0.025),
+                },
+            },
+        }
+
     def test_all_unique_rigid_round_sources_select_round_in_stable_order(self) -> None:
         from maximum_optimizer.fidelity_selection import ROUND_RIGID, classify_original_family
 
@@ -260,6 +288,75 @@ class FidelitySelectionTests(unittest.TestCase):
         self.assertEqual(profiles.profile_for(GENERAL_BODY_DETAIL).limits["edge_error"], 0.2)
         self.assertEqual(profiles.profile_for(ROUND_RIGID).limits["edge_error"], 0.05)
         self.assertIn(ROUND_RIGID, profiles.profile_for(ROUND_RIGID).version)
+
+    def test_schema3_exposes_trusted_focused_policy_and_profiles(self) -> None:
+        from maximum_optimizer.fidelity_selection import (
+            GENERAL_BODY_DETAIL, ROUND_RIGID, load_fidelity_profile_set,
+        )
+
+        profiles = load_fidelity_profile_set(
+            self._write_json("focused.json", self._focused_profile())
+        )
+
+        self.assertEqual(profiles.focused_policy.selector, "surface-risk-top-k-v1")
+        self.assertEqual(profiles.focused_policy.top_k, 3)
+        self.assertEqual(
+            profiles.focused_profile_for(GENERAL_BODY_DETAIL).limits["edge_error"],
+            0.1,
+        )
+        self.assertEqual(
+            profiles.focused_profile_for(ROUND_RIGID).version,
+            "lvs-focused-v1:round-rigid-v1:focused",
+        )
+        with self.assertRaises(TypeError):
+            profiles.focused_profiles[ROUND_RIGID] = profiles.profile_for(ROUND_RIGID)
+
+    def test_schema1_and_schema2_do_not_enable_focused_validation(self) -> None:
+        from maximum_optimizer.fidelity_selection import (
+            ROUND_RIGID, load_fidelity_profile_set,
+        )
+
+        for name, payload in (
+            ("legacy", self._legacy_profile()),
+            ("typed", self._typed_profile()),
+        ):
+            with self.subTest(name=name):
+                profiles = load_fidelity_profile_set(self._write_json(f"{name}.json", payload))
+                self.assertIsNone(profiles.focused_policy)
+                with self.assertRaisesRegex(ValueError, "focused fidelity is not enabled"):
+                    profiles.focused_profile_for(ROUND_RIGID)
+
+    def test_schema3_fails_closed_on_untrusted_or_invalid_focused_fields(self) -> None:
+        from maximum_optimizer.fidelity_selection import load_fidelity_profile_set
+
+        mutations = (
+            lambda item: item.update(focused_evidence_sha256="0" * 64),
+            lambda item: item["focused_policy"].update(top_k=0),
+            lambda item: item["focused_policy"].update(top_k=5),
+            lambda item: item["focused_policy"].update(top_k=True),
+            lambda item: item["focused_policy"].update(selector="unknown"),
+            lambda item: item["focused_policy"].update(extra=True),
+            lambda item: item["profiles"]["round-rigid-v1"]["focused_limits"].pop(
+                "rgb_mae"
+            ),
+            lambda item: item["profiles"]["round-rigid-v1"]["focused_limits"].update(
+                rgb_mae=float("inf")
+            ),
+            lambda item: item["profiles"]["round-rigid-v1"]["focused_limits"].update(
+                rgb_mae=-0.1
+            ),
+            lambda item: item["profiles"]["round-rigid-v1"]["focused_limits"].update(
+                rgb_mae=True
+            ),
+            lambda item: item.update(extra=True),
+        )
+        for index, mutate in enumerate(mutations):
+            payload = copy.deepcopy(self._focused_profile())
+            mutate(payload)
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                load_fidelity_profile_set(
+                    self._write_json(f"invalid-focused-{index}.json", payload)
+                )
 
     def test_typed_profile_schema_fails_closed(self) -> None:
         from maximum_optimizer.fidelity_selection import load_fidelity_profile_set

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import math
 import os
@@ -10,6 +10,7 @@ import re
 from types import MappingProxyType
 
 from maximum_optimizer.qc_graph import QcGraph
+from maximum_optimizer.domain import FocusedRegionPolicy
 from maximum_optimizer.round_planar_priority import classify_round_component
 from maximum_optimizer.smd_contract import parse_smd_triangles
 from maximum_optimizer.visual_validation import FidelityProfile, load_profile
@@ -19,6 +20,9 @@ ROUND_RIGID = "round-rigid-v1"
 GENERAL_BODY_DETAIL = "general-body-detail-v1"
 LEGACY_GLOBAL = "legacy-global-v1"
 TYPED_SELECTOR = "audited-original-round-family-v1"
+TRUSTED_FOCUSED_EVIDENCE_SHA256 = (
+    "2cc6b330ef97466f4d10986787f2ffd0d35f960c0bd47a32e0159f9559c6615c"
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,9 @@ class FidelityProfileSet:
     version: str
     corpus_hash: str
     profiles: Mapping[str, FidelityProfile]
+    focused_policy: FocusedRegionPolicy | None = None
+    focused_profiles: Mapping[str, FidelityProfile] = field(default_factory=dict)
+    focused_evidence_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in {LEGACY_GLOBAL, TYPED_SELECTOR}:
@@ -56,11 +63,30 @@ class FidelityProfileSet:
         ):
             raise ValueError("fidelity profile set classes are invalid")
         object.__setattr__(self, "profiles", MappingProxyType(copied))
+        focused = dict(self.focused_profiles)
+        if self.focused_policy is None:
+            if focused or self.focused_evidence_sha256 is not None:
+                raise ValueError("focused fidelity fields require a focused policy")
+        elif (
+            not isinstance(self.focused_policy, FocusedRegionPolicy)
+            or set(focused) != {GENERAL_BODY_DETAIL, ROUND_RIGID}
+            or any(not isinstance(value, FidelityProfile) for value in focused.values())
+            or self.focused_evidence_sha256 != TRUSTED_FOCUSED_EVIDENCE_SHA256
+        ):
+            raise ValueError("focused fidelity profile set is invalid")
+        object.__setattr__(self, "focused_profiles", MappingProxyType(focused))
 
     def profile_for(self, profile_class: str) -> FidelityProfile:
         if profile_class not in self.profiles:
             raise ValueError(f"unknown fidelity profile class: {profile_class}")
         return self.profiles[profile_class]
+
+    def focused_profile_for(self, profile_class: str) -> FidelityProfile:
+        if self.focused_policy is None:
+            raise ValueError("focused fidelity is not enabled")
+        if profile_class not in self.focused_profiles:
+            raise ValueError(f"unknown focused fidelity profile class: {profile_class}")
+        return self.focused_profiles[profile_class]
 
 
 def load_fidelity_profile_set(path: Path) -> FidelityProfileSet:
@@ -79,8 +105,10 @@ def load_fidelity_profile_set(path: Path) -> FidelityProfileSet:
             profile.corpus_hash,
             {GENERAL_BODY_DETAIL: profile, ROUND_RIGID: profile},
         )
+    schema = payload.get("schema")
     expected = {"schema", "version", "calibrated", "corpus_hash", "selector", "profiles"}
-    if set(payload) != expected or payload.get("schema") != 2:
+    expected_focused = expected | {"focused_evidence_sha256", "focused_policy"}
+    if schema not in {2, 3} or set(payload) != (expected if schema == 2 else expected_focused):
         raise ValueError("typed fidelity profile fields are invalid")
     if payload.get("calibrated") is not True:
         raise ValueError("typed fidelity profile must be calibrated")
@@ -96,9 +124,11 @@ def load_fidelity_profile_set(path: Path) -> FidelityProfileSet:
     if type(children) is not dict or set(children) != {GENERAL_BODY_DETAIL, ROUND_RIGID}:
         raise ValueError("typed fidelity profile classes are invalid")
     profiles = {}
+    focused_profiles = {}
     for profile_class in (GENERAL_BODY_DETAIL, ROUND_RIGID):
         child = children[profile_class]
-        if type(child) is not dict or set(child) != {"limits"}:
+        child_fields = {"limits"} if schema == 2 else {"limits", "focused_limits"}
+        if type(child) is not dict or set(child) != child_fields:
             raise ValueError(f"typed fidelity profile {profile_class} fields are invalid")
         profiles[profile_class] = FidelityProfile(
             schema=1,
@@ -107,7 +137,33 @@ def load_fidelity_profile_set(path: Path) -> FidelityProfileSet:
             corpus_hash=corpus_hash,
             limits=child["limits"],
         )
-    return FidelityProfileSet(TYPED_SELECTOR, version, corpus_hash, profiles)
+        if schema == 3:
+            focused_profiles[profile_class] = FidelityProfile(
+                schema=1,
+                version=f"{version}:{profile_class}:focused",
+                calibrated=True,
+                corpus_hash=corpus_hash,
+                limits=child["focused_limits"],
+            )
+    if schema == 2:
+        return FidelityProfileSet(TYPED_SELECTOR, version, corpus_hash, profiles)
+    if payload.get("focused_evidence_sha256") != TRUSTED_FOCUSED_EVIDENCE_SHA256:
+        raise ValueError("schema-3 profile does not reference trusted focused evidence")
+    raw_policy = payload.get("focused_policy")
+    if type(raw_policy) is not dict or set(raw_policy) != {"schema", "selector", "top_k"}:
+        raise ValueError("focused policy fields are invalid")
+    policy = FocusedRegionPolicy(
+        raw_policy["schema"], raw_policy["selector"], raw_policy["top_k"]
+    )
+    return FidelityProfileSet(
+        TYPED_SELECTOR,
+        version,
+        corpus_hash,
+        profiles,
+        policy,
+        focused_profiles,
+        TRUSTED_FOCUSED_EVIDENCE_SHA256,
+    )
 
 
 def _corner_influences(tokens: tuple[str, ...]) -> tuple[tuple[int, float], ...]:

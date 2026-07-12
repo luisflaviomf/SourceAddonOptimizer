@@ -10,6 +10,16 @@ EngineName = Literal["fidelity", "blender", "meshoptimizer"]
 FamilyStatus = Literal["optimized", "preserved", "failed", "cancelled"]
 
 
+def _deep_freeze(value):
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (tuple, list)):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_deep_freeze(item) for item in value)
+    return value
+
+
 @dataclass(frozen=True)
 class ArtifactStat:
     relative_path: str
@@ -132,6 +142,87 @@ class ValidationResult:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metrics", MappingProxyType(dict(self.metrics)))
+
+
+@dataclass(frozen=True)
+class FocusedRegionPolicy:
+    schema: int
+    selector: str
+    top_k: int
+    max_whole_states: int = 16
+    max_recovery_rounds: int = 3
+
+    def __post_init__(self) -> None:
+        if type(self.schema) is not int or self.schema != 1:
+            raise ValueError("focused policy schema must be 1")
+        if self.selector != "surface-risk-top-k-v1":
+            raise ValueError("focused policy selector is invalid")
+        if type(self.top_k) is not int or not 1 <= self.top_k <= 4:
+            raise ValueError("focused policy top_k must be an integer from 1 through 4")
+        if type(self.max_whole_states) is not int or self.max_whole_states != 16:
+            raise ValueError("focused policy whole-state bound must be 16")
+        if type(self.max_recovery_rounds) is not int or self.max_recovery_rounds != 3:
+            raise ValueError("focused policy recovery bound must be 3")
+
+
+@dataclass(frozen=True)
+class WholeStateEvidence:
+    state_index: int
+    state_name: str
+    bodygroups: tuple[tuple[str, int], ...]
+    lod_index: int
+    poses: tuple[str, ...]
+    source_pairs: tuple[tuple[str, str, str], ...]
+    reference_manifest: str
+    reference_manifest_sha256: str
+    candidate_manifest: str
+    candidate_manifest_sha256: str
+    geometry_rows: tuple[Mapping[str, object], ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "bodygroups", tuple(tuple(item) for item in self.bodygroups))
+        object.__setattr__(self, "poses", tuple(self.poses))
+        object.__setattr__(self, "source_pairs", tuple(tuple(item) for item in self.source_pairs))
+        object.__setattr__(
+            self, "geometry_rows", tuple(_deep_freeze(dict(row)) for row in self.geometry_rows)
+        )
+
+
+@dataclass(frozen=True)
+class FocusTarget:
+    rank: int
+    region_key: str
+    source_identity: str
+    state_index: int
+    state_name: str
+    bodygroups: tuple[tuple[str, int], ...]
+    lod_index: int
+    anchor_pose: str
+    surface_bidirectional_p95: float
+    surface_max: float
+    normalized_p95: float
+    normalized_max: float
+    selector_input_sha256: str
+
+
+@dataclass(frozen=True)
+class FocusRegionResult:
+    target: FocusTarget
+    validation: ValidationResult
+    evidence_sha256: str
+    cache_hit: bool
+
+
+@dataclass(frozen=True)
+class FocusedGateResult:
+    validation: ValidationResult
+    targets: tuple[FocusTarget, ...]
+    regions: Mapping[str, FocusRegionResult]
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "targets", tuple(self.targets))
+        object.__setattr__(self, "regions", _deep_freeze(dict(self.regions)))
 
 
 @dataclass(frozen=True)
