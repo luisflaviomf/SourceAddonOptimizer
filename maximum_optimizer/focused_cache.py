@@ -42,6 +42,8 @@ _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REGION_KEY = re.compile(r"^r-[0-9a-f]{64}$")
 _MAX_MATERIAL_FILES = 4096
 _MAX_MATERIAL_BYTES = 2 * 1024 ** 3
+_MAX_SELECTED_VMT_BYTES = 8 * 1024 ** 2
+_MAX_CONTROL_FILE_BYTES = 16 * 1024 ** 2
 _IO_CHUNK_SIZE = 1024 * 1024
 _TOP_FIELDS = {
     "schema", "family_input_sha256", "candidate_cache_digest", "source_pairs",
@@ -142,6 +144,8 @@ def _validate_material_proof(value: object) -> None:
             raise ValueError("material roots are not canonical")
         _text(root["root_identity"], "material root identity")
         _hash(root["inventory_sha256"], "material inventory")
+    if len({root["root_identity"].casefold() for root in roots}) != len(roots):
+        raise ValueError("material root identity is duplicated")
     for index, request in enumerate(requests):
         request = _exact(request, {"request_index", "material_identity", "search_paths"}, "material request")
         if request["request_index"] != index:
@@ -151,6 +155,8 @@ def _validate_material_proof(value: object) -> None:
             _relative(path, "material search path") != path for path in request["search_paths"]
         ):
             raise ValueError("material search paths are invalid")
+    if len({request["material_identity"].casefold() for request in requests}) != len(requests):
+        raise ValueError("material request identity is duplicated")
     file_keys = []
     byte_count = 0
     for file in files:
@@ -822,6 +828,22 @@ def _file_proof(
     return size, digest.hexdigest()
 
 
+def _read_regular_no_follow(
+    path: Path,
+    cancel_event: threading.Event | None,
+    *,
+    contained_root: Path,
+    max_bytes: int = _MAX_CONTROL_FILE_BYTES,
+) -> bytes:
+    with tempfile.SpooledTemporaryFile(max_size=max_bytes, mode="w+b") as capture:
+        _file_proof(
+            path, cancel_event, max_bytes=max_bytes,
+            contained_root=contained_root, capture_stream=capture,
+        )
+        capture.seek(0)
+        return capture.read()
+
+
 def _material_digest(payload: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
@@ -868,15 +890,21 @@ def material_resolution_proof(
         if type(raw) not in (tuple, list) or len(raw) != 2:
             raise ValueError("material root must be an identity/path pair")
         identity = _text(raw[0], "material root identity")
-        if identity in root_identities:
+        folded_identity = identity.casefold()
+        if folded_identity in root_identities:
             raise ValueError("material root identity is duplicated")
-        root_identities.add(identity)
+        root_identities.add(folded_identity)
         canonical_roots.append((identity, Path(raw[1])))
     canonical_roots_tuple = tuple(canonical_roots)
     request_proofs: list[MaterialRequestProof] = []
+    request_identities: set[str] = set()
     for index, raw in enumerate(requests):
         request = _exact(raw, {"material_identity", "search_paths"}, "material request")
         identity = _relative(request["material_identity"], "material identity")
+        folded_identity = identity.casefold()
+        if folded_identity in request_identities:
+            raise ValueError("material request identity is duplicated")
+        request_identities.add(folded_identity)
         raw_paths = request["search_paths"]
         if type(raw_paths) not in (tuple, list):
             raise ValueError("material search paths are invalid")
@@ -983,7 +1011,16 @@ def material_resolution_proof(
         try:
             capture = None
             if (root_index, relative.casefold()) in selected_vmt_keys:
-                capture = tempfile.SpooledTemporaryFile(max_size=_IO_CHUNK_SIZE, mode="w+b")
+                if stat_size > _MAX_SELECTED_VMT_BYTES:
+                    for stream in captured_vmt.values():
+                        stream.close()
+                    return _uncacheable_material_proof(
+                        "vmt-size-limit", canonical_roots_tuple, request_tuple,
+                        len(files), total_bytes,
+                    )
+                capture = tempfile.SpooledTemporaryFile(
+                    max_size=_MAX_SELECTED_VMT_BYTES, mode="w+b"
+                )
             size, digest = _file_proof(
                 path, cancel_event,
                 max_bytes=_MAX_MATERIAL_BYTES - total_bytes,
@@ -1049,8 +1086,16 @@ def material_resolution_proof(
         stream = captured_vmt[(vmt_root, vmt_relative.casefold())]
         stream.seek(0)
         vmt_text = stream.read().decode("utf-8", errors="replace")
-        parsed = render_previews._parse_vmt_root(vmt_text)
-        texture_reference = render_previews._source_texture_reference(vmt_text)
+        try:
+            _cancel(cancel_event, "cancelled before material parse")
+            parsed = render_previews._parse_vmt_root(vmt_text)
+            _cancel(cancel_event, "cancelled after material root parse")
+            texture_reference = render_previews._source_texture_reference(vmt_text)
+            _cancel(cancel_event, "cancelled after material texture parse")
+        except ProcessCancelledError:
+            for captured in captured_vmt.values():
+                captured.close()
+            raise
         if parsed is None or texture_reference is None:
             resolutions.append(MaterialRequestResolution(
                 request.request_index, request.material_identity, "missing",
@@ -1175,16 +1220,21 @@ def _render_file_manifest(
             if key in folded:
                 raise ValueError("render tree contains case-colliding paths")
             folded.add(key)
-            size, digest = _file_proof(path, cancel_event, contained_root=root)
             if relative == "render_manifest.json":
+                size, digest = _file_proof(path, cancel_event, contained_root=root)
                 kind, width, height = "manifest", None, None
             elif relative.casefold().endswith(".png"):
-                try:
-                    with Image.open(path) as image:
-                        image.load()
-                        width, height = image.size
-                except (OSError, ValueError, UnidentifiedImageError) as exc:
-                    raise ValueError("render image is corrupt") from exc
+                with tempfile.SpooledTemporaryFile(max_size=_IO_CHUNK_SIZE, mode="w+b") as capture:
+                    size, digest = _file_proof(
+                        path, cancel_event, contained_root=root, capture_stream=capture
+                    )
+                    capture.seek(0)
+                    try:
+                        with Image.open(capture) as image:
+                            image.load()
+                            width, height = image.size
+                    except (OSError, ValueError, UnidentifiedImageError) as exc:
+                        raise ValueError("render image is corrupt") from exc
                 kind = "image"
             else:
                 raise ValueError("render tree contains an unexpected file")
@@ -1326,14 +1376,19 @@ class FocusedRenderCache:
                 return None
             if set(item.name for item in (final / "payload").iterdir()) != {"reference", "candidate"}:
                 return None
-            marker = json.loads((final / "complete.json").read_text(encoding="utf-8"))
+            marker_bytes = _read_regular_no_follow(
+                final / "complete.json", cancel_event, contained_root=final
+            )
+            marker = json.loads(marker_bytes.decode("utf-8"))
             if type(marker) is not dict or set(marker) != {
                 "schema", "key_digest", "metadata_sha256", "expected_file_count", "files",
             }:
                 return None
             if marker["schema"] != 1 or marker["key_digest"] != key.digest:
                 return None
-            metadata_bytes = (final / "metadata.json").read_bytes()
+            metadata_bytes = _read_regular_no_follow(
+                final / "metadata.json", cancel_event, contained_root=final
+            )
             if hashlib.sha256(metadata_bytes).hexdigest() != marker["metadata_sha256"]:
                 return None
             raw_metadata = json.loads(metadata_bytes.decode("utf-8"))
@@ -1387,6 +1442,20 @@ class FocusedRenderCache:
         if existing is not None:
             final = self._entry(key)
             return FocusRenderDirectories(final / "payload/reference", final / "payload/candidate")
+        lock = self.root / f"{key.digest}.lock"
+        try:
+            lock.mkdir()
+        except FileExistsError as exc:
+            concurrent = self._validate_entry(key, cancel_event)
+            if concurrent is not None:
+                final = self._entry(key)
+                return FocusRenderDirectories(
+                    final / "payload/reference", final / "payload/candidate"
+                )
+            raise OSError("focused cache key is locked by another writer") from exc
+        if _is_reparse(lock) or not lock.is_dir():
+            raise OSError("focused cache key lock is unsafe")
+        lock_identity = _path_identity(lock)
         staging = self.root / f"{key.digest}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
         staging.mkdir()
         quarantine: Path | None = None
@@ -1482,6 +1551,15 @@ class FocusedRenderCache:
                 except (OSError, ValueError):
                     pass
             raise
+        finally:
+            try:
+                if (
+                    os.path.lexists(lock) and not _is_reparse(lock)
+                    and _path_identity(lock) == lock_identity
+                ):
+                    lock.rmdir()
+            except (OSError, ValueError):
+                pass
 
     def lookup(
         self,
@@ -1551,6 +1629,8 @@ def _validate_validation(value: ValidationResult, terminal_status: str) -> None:
         raise ValueError("focused validation pass/failure fields are incoherent")
     if any(not isinstance(item, GateFailure) for item in value.failures):
         raise ValueError("focused validation failure is invalid")
+    if not isinstance(value.metrics, Mapping) or set(value.metrics) != set(REQUIRED_METRICS):
+        raise ValueError("focused validation metrics are incomplete")
     for name, number in value.metrics.items():
         if type(name) is not str or isinstance(number, bool) or type(number) not in (int, float):
             raise ValueError("focused validation metric is invalid")
@@ -1722,6 +1802,12 @@ def validate_focused_target(
 ) -> tuple[FocusRegionResult, FocusedRenderEvidence]:
     if not isinstance(cache, FocusedRenderCache) or not isinstance(profile, FidelityProfile):
         raise TypeError("focused validation arguments are invalid")
+    target_payload = canonical_payload(target)
+    if (
+        target_payload != canonical_payload(metadata.context.get("target"))
+        or target_payload != canonical_payload(metadata.target)
+    ):
+        raise ValueError("focused target does not match cache metadata target")
     _cancel(cancel_event, "cancelled before focused cache lookup")
     directories = cache.lookup(key, snapshot_root, cancel_event)
     cache_hit = directories is not None

@@ -349,6 +349,36 @@ class MaterialResolutionProofTests(unittest.TestCase):
         self.assertTrue(proof.cacheable)
         self.assertEqual(proof.resolutions[0].shader, "vertexlitgeneric")
 
+    def test_selected_vmt_is_memory_bounded_and_cancellation_after_parse_propagates(self):
+        from maximum_optimizer import focused_cache
+        from maximum_optimizer.processes import ProcessCancelledError
+        import render_previews
+
+        vmt = self.first / "vehicles/body.vmt"
+        with mock.patch.object(
+            focused_cache, "_MAX_SELECTED_VMT_BYTES", vmt.stat().st_size - 1
+        ):
+            bounded = focused_cache.material_resolution_proof(
+                self.roots, self.requests, threading.Event()
+            )
+        self.assertFalse(bounded.cacheable)
+        self.assertEqual(bounded.reason, "vmt-size-limit")
+
+        cancelled = threading.Event()
+        original = render_previews._parse_vmt_root
+
+        def parse_then_cancel(text):
+            result = original(text)
+            cancelled.set()
+            return result
+
+        with mock.patch.object(
+            render_previews, "_parse_vmt_root", side_effect=parse_then_cancel
+        ), self.assertRaises(ProcessCancelledError):
+            focused_cache.material_resolution_proof(
+                self.roots, self.requests, cancelled
+            )
+
     def test_material_proof_bounds_are_inclusive_and_stop_before_excess_hash(self):
         from maximum_optimizer import focused_cache
 
@@ -448,6 +478,44 @@ class MaterialResolutionProofTests(unittest.TestCase):
         payload["material_proof"] = canonical_payload(proof)
         self.assertRegex(FocusCacheKey.build(payload).digest, r"^[0-9a-f]{64}$")
 
+    def test_cache_key_rejects_duplicate_material_root_and_request_identities(self):
+        import hashlib
+        from maximum_optimizer.focused_cache import FocusCacheKey
+        from maximum_optimizer.reporting import canonical_json
+
+        def reseal(proof):
+            unsealed = dict(proof)
+            unsealed.pop("digest", None)
+            proof["digest"] = hashlib.sha256(
+                canonical_json(unsealed).encode("utf-8")
+            ).hexdigest()
+
+        duplicate_request = _cache_payload()
+        proof = duplicate_request["material_proof"]
+        request = copy.deepcopy(proof["requests"][0])
+        request["request_index"] = 1
+        resolution = copy.deepcopy(proof["resolutions"][0])
+        resolution["request_index"] = 1
+        proof["requests"].append(request)
+        proof["resolutions"].append(resolution)
+        reseal(proof)
+        with self.assertRaisesRegex(ValueError, "identity"):
+            FocusCacheKey.build(duplicate_request)
+
+        duplicate_root = _cache_payload()
+        proof = duplicate_root["material_proof"]
+        root = copy.deepcopy(proof["roots"][0])
+        root["root_index"] = 1
+        root["inventory_sha256"] = hashlib.sha256(canonical_json({
+            "root_index": 1,
+            "root_identity": root["root_identity"],
+            "files": [],
+        }).encode("utf-8")).hexdigest()
+        proof["roots"].append(root)
+        reseal(proof)
+        with self.assertRaisesRegex(ValueError, "identity"):
+            FocusCacheKey.build(duplicate_root)
+
 
 def _write_render_side(root: Path) -> None:
     import json
@@ -537,6 +605,68 @@ class FocusedRenderCacheTests(unittest.TestCase):
             (snapshot.reference / "textured/bind/front.png").read_bytes(),
             (self.reference / "textured/bind/front.png").read_bytes(),
         )
+
+    def test_lookup_reads_control_files_through_no_follow_handles(self):
+        from maximum_optimizer import focused_cache
+
+        cache = focused_cache.FocusedRenderCache(self.base / "cache")
+        cache.store(self.key, self.directories, self.metadata, self.files, threading.Event())
+        original = focused_cache._open_regular_no_follow
+        opened = []
+
+        def recording_open(path, *args, **kwargs):
+            opened.append(Path(path).name)
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(
+            focused_cache, "_open_regular_no_follow", side_effect=recording_open
+        ):
+            snapshot = cache.lookup(
+                self.key, self.base / "snapshots/control-handles", threading.Event()
+            )
+        self.assertIsNotNone(snapshot)
+        self.assertIn("complete.json", opened)
+        self.assertIn("metadata.json", opened)
+
+    def test_render_dimensions_are_decoded_from_same_captured_bytes_as_hash(self):
+        from maximum_optimizer import focused_cache
+        from PIL import Image as PilImage
+
+        original = PilImage.open
+        opened = []
+
+        def record_open(source, *args, **kwargs):
+            opened.append(source)
+            return original(source, *args, **kwargs)
+
+        with mock.patch.object(PilImage, "open", side_effect=record_open):
+            focused_cache._render_file_manifest(self.directories, threading.Event())
+        self.assertTrue(opened)
+        self.assertTrue(all(not isinstance(source, (str, Path)) for source in opened))
+
+    def test_existing_same_key_lock_prevents_unserialized_publication(self):
+        from maximum_optimizer import focused_cache
+
+        cache = focused_cache.FocusedRenderCache(self.base / "cache")
+        cache.root.mkdir(parents=True)
+        lock = cache.root / f"{self.key.digest}.lock"
+        original_validate = cache._validate_entry
+        injected = False
+
+        def inject_lock_immediately_after_revalidation(key, cancel_event):
+            nonlocal injected
+            result = original_validate(key, cancel_event)
+            if not injected:
+                lock.mkdir()
+                injected = True
+            return result
+
+        with mock.patch.object(
+            cache, "_validate_entry", side_effect=inject_lock_immediately_after_revalidation
+        ), self.assertRaisesRegex(OSError, "locked"):
+            cache.store(self.key, self.directories, self.metadata, self.files, threading.Event())
+        self.assertFalse((cache.root / self.key.digest).exists())
+        self.assertEqual(tuple(lock.iterdir()), ())
 
     def test_lookup_rejects_extra_missing_corrupt_metadata_and_reparse(self):
         import json
@@ -874,9 +1004,11 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
 
         cache = FocusedRenderCache(self.base / "cache")
         cache.store(self.key, self.directories, self.metadata, self.files, threading.Event())
+        failed_metrics = _limits(0.0)
+        failed_metrics["edge_error"] = 0.2
         failed = ValidationResult(
             False, (GateFailure("edge_error", "scope", 0.2, 0.05, "failed"),),
-            {"edge_error": 0.2}, "scope",
+            failed_metrics, "scope",
         )
         comparator = mock.Mock(return_value=failed)
         render_fresh = mock.Mock(side_effect=AssertionError("hit must not rerender"))
@@ -917,6 +1049,36 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
         comparator.assert_called_once_with(self.reference, self.candidate, _profile())
         render_fresh.assert_called_once_with()
         self.assertTrue((self.base / "cache" / self.key.digest / "complete.json").is_file())
+
+    def test_validation_rejects_target_not_bound_to_cache_context(self):
+        from dataclasses import replace
+        from maximum_optimizer.domain import ValidationResult
+        from maximum_optimizer.focused_cache import (
+            FocusedRenderCache, validate_focused_target,
+        )
+
+        forged = replace(self.target, state_index=1, state_name="forged-state")
+        comparator = mock.Mock(return_value=ValidationResult(
+            True, metrics={name: 0.0 for name in _limits(0.0)}
+        ))
+        with self.assertRaisesRegex(ValueError, "target"):
+            validate_focused_target(
+                FocusedRenderCache(self.base / "cache"), self.key, forged, _profile(),
+                mock.Mock(return_value=self.directories), self.base / "snapshots/forged",
+                self.metadata, self.files, threading.Event(), comparator=comparator,
+            )
+        comparator.assert_not_called()
+
+    def test_validation_rejects_missing_required_metrics(self):
+        from maximum_optimizer.domain import ValidationResult
+        from maximum_optimizer.focused_cache import build_focused_render_evidence
+
+        with self.assertRaisesRegex(ValueError, "metrics"):
+            build_focused_render_evidence(
+                self.target, ValidationResult(True, metrics={}),
+                self.metadata.expected, self.files,
+                self.payload["material_proof"]["digest"], False,
+            )
 
     def test_schema1_evidence_seals_complete_selection_and_rejects_recovery(self):
         from maximum_optimizer.domain import ValidationResult
