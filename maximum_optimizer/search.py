@@ -26,6 +26,18 @@ def _trail_key(spec: CandidateSpec) -> tuple[object, ...]:
     )
 
 
+def _recovery_key(spec: CandidateSpec) -> tuple[object, ...]:
+    """Comparable optimizer contract, deliberately excluding regional overrides."""
+    return (
+        spec.engine,
+        spec.target_error,
+        spec.repair_profile,
+        spec.strategy,
+        spec.update_vertices,
+        spec.transfer,
+    )
+
+
 def _strategy_suffix(key: tuple[object, ...]) -> str:
     raw = json.dumps(key, ensure_ascii=True, separators=(",", ":"), sort_keys=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
@@ -189,6 +201,7 @@ def _trail_should_stop_for_marginal_saving(
 def _regional_recovery(
     evaluations: list[CandidateEvaluation], used_ids: set[str]
 ) -> CandidateSpec | None:
+    """Add or raise one failed region while retaining the complete recovery set."""
     failed = next(
         (evaluation for evaluation in reversed(evaluations) if not evaluation.passed),
         None,
@@ -205,17 +218,17 @@ def _regional_recovery(
         or not failed.structural.passed
         or failed.visual.passed
         or not failed.visual.worst_scope
-        or failed.spec.region_overrides
     ):
         return None
 
-    passing_ratios = [
+    contract = _recovery_key(failed.spec)
+    passing_ratios = sorted({
         evaluation.spec.target_ratio
         for evaluation in evaluations
         if evaluation.passed
-        and evaluation.spec.engine == failed.spec.engine
+        and _recovery_key(evaluation.spec) == contract
         and evaluation.spec.target_ratio > failed.spec.target_ratio
-    ]
+    })
     if not passing_ratios:
         return None
 
@@ -223,10 +236,29 @@ def _regional_recovery(
     if parsed_scope is None:
         return None
     region_key, _pose = parsed_scope
-    scope_hash = hashlib.sha256(region_key.encode("utf-8")).hexdigest()[:8]
+    existing: dict[str, float] = {}
+    for key, ratio in failed.spec.region_overrides:
+        if key in existing or ratio < failed.spec.target_ratio:
+            return None
+        existing[key] = ratio
+    current_ratio = existing.get(region_key, failed.spec.target_ratio)
+    donor_ratio = next((ratio for ratio in passing_ratios if ratio > current_ratio), None)
+    if donor_ratio is None:
+        return None
+    existing[region_key] = donor_ratio
+    overrides = tuple(sorted(existing.items(), key=lambda item: item[0]))
+    identity = {
+        "contract": contract,
+        "target_ratio": failed.spec.target_ratio,
+        "region_overrides": overrides,
+    }
+    encoded = json.dumps(
+        identity, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    override_hash = hashlib.sha256(encoded).hexdigest()
     candidate_id = (
         f"{_candidate_id(failed.spec.engine, failed.spec.target_ratio, failed.spec.strategy)}"
-        f"-region-{scope_hash}"
+        f"-regions-{override_hash}"
     )
     if candidate_id in used_ids:
         return None
@@ -236,7 +268,7 @@ def _regional_recovery(
         failed.spec.target_ratio,
         failed.spec.target_error,
         failed.spec.repair_profile,
-        ((region_key, min(passing_ratios)),),
+        overrides,
         strategy=failed.spec.strategy,
         update_vertices=failed.spec.update_vertices,
         transfer=failed.spec.transfer,
@@ -292,28 +324,22 @@ def choose_next(
         key: [item for item in evaluations if _trail_key(item.spec) == key]
         for key in ordered_keys
     }
+    recovery_specs = (*schedule, *(evaluation.spec for evaluation in evaluations))
+    recovery_keys = list(dict.fromkeys(_recovery_key(item) for item in recovery_specs))
+    recovery_trails = {
+        key: [item for item in evaluations if _recovery_key(item.spec) == key]
+        for key in recovery_keys
+    }
     retired: set[tuple[object, ...]] = set()
     engine_trails: dict[str, int] = {}
     for key in ordered_keys:
         engine_trails[str(key[0])] = engine_trails.get(str(key[0]), 0) + 1
 
     # Recovery and boundary refinement stay inside one comparable strategy trail.
-    for key in ordered_keys:
-        trail = trails[key]
+    for key in recovery_keys:
+        trail = recovery_trails[key]
         recovery = _regional_recovery(trail, used_ids)
         if recovery is not None:
-            if engine_trails[recovery.engine] > 1:
-                recovery = CandidateSpec(
-                    recovery.candidate_id + "-s" + _strategy_suffix(key),
-                    recovery.engine,
-                    recovery.target_ratio,
-                    recovery.target_error,
-                    recovery.repair_profile,
-                    recovery.region_overrides,
-                    strategy=recovery.strategy,
-                    update_vertices=recovery.update_vertices,
-                    transfer=recovery.transfer,
-                )
             return recovery
     for key in ordered_keys:
         trail = trails[key]

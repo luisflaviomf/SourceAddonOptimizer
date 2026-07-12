@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import unittest
 from pathlib import Path
 
@@ -38,6 +37,7 @@ def evaluation_at(
     repair_profile: str = "transfer-v1",
     transfer: str = "projection-v1",
     target_error: float = 0.01,
+    update_vertices: bool = True,
 ) -> CandidateEvaluation:
     visual_metrics = {} if fidelity_score is None else {"fidelity_score": fidelity_score}
     spec = CandidateSpec(
@@ -48,6 +48,7 @@ def evaluation_at(
         repair_profile,
         region_overrides,
         strategy=strategy,
+        update_vertices=update_vertices,
         transfer=transfer,
     )
     artifact = ArtifactStat("model.mdl", "mdl", total_bytes)
@@ -413,10 +414,9 @@ class SearchTests(unittest.TestCase):
 
         nxt = choose_next(evaluations, SearchBudget.experimental_default())
 
-        scope_hash = hashlib.sha256(region.encode("utf-8")).hexdigest()[:8]
         self.assertEqual(nxt.target_ratio, 0.25)
         self.assertEqual(nxt.region_overrides, ((region, 0.50),))
-        self.assertIn(scope_hash, nxt.candidate_id)
+        self.assertIn("-regions-", nxt.candidate_id)
 
     def test_pending_regional_recovery_precedes_marginal_stop(self):
         region = "r-" + "2" * 64
@@ -439,26 +439,155 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(nxt.target_ratio, 0.25)
         self.assertEqual(nxt.region_overrides, ((region, 0.50),))
 
-    def test_regional_recovery_requires_no_existing_overrides_and_never_duplicates(self):
-        region = "r-" + "3" * 64
-        scope = f"{region}/bind"
-        recovery_id = f"meshopt-r025-region-{hashlib.sha256(region.encode('utf-8')).hexdigest()[:8]}"
+    def test_regional_recovery_accumulates_second_and_third_failed_regions(self):
+        grille = "r-" + "1" * 64
+        headlight = "r-" + "2" * 64
+        mirror = "r-" + "3" * 64
+        common = {
+            "engine": "blender", "strategy": "blender-adaptive-v1",
+            "repair_profile": "blender-adaptive-v1", "transfer": "blender-native-v1",
+            "target_error": 0.0,
+        }
         evaluations = [
-            evaluation_at(0.50, True, candidate_id="pass"),
-            evaluation_at(0.25, False, candidate_id=recovery_id, worst_scope=scope),
-            evaluation_at(
-                0.25,
-                False,
-                candidate_id="already-repaired",
-                worst_scope=scope,
-                region_overrides=((region, 0.50),),
-            ),
+            evaluation_at(0.35, True, candidate_id="donor", **common),
+            evaluation_at(0.30, False, candidate_id="global-fail", worst_scope=f"{grille}/bind", **common),
         ]
 
-        nxt = choose_next(evaluations, SearchBudget.experimental_default())
+        first = choose_next(evaluations, SearchBudget.experimental_default(), initial=())
+        self.assertEqual(first.region_overrides, ((grille, 0.35),))
+        evaluations.append(evaluation_at(
+            0.30, False, candidate_id=first.candidate_id,
+            worst_scope=f"{headlight}/bind", region_overrides=first.region_overrides, **common,
+        ))
+        second = choose_next(evaluations, SearchBudget.experimental_default(), initial=())
+        self.assertEqual(second.region_overrides, ((grille, 0.35), (headlight, 0.35)))
+        evaluations.append(evaluation_at(
+            0.30, False, candidate_id=second.candidate_id,
+            worst_scope=f"{mirror}/bind", region_overrides=second.region_overrides, **common,
+        ))
+        third = choose_next(evaluations, SearchBudget.experimental_default(), initial=())
+        self.assertEqual(
+            third.region_overrides,
+            ((grille, 0.35), (headlight, 0.35), (mirror, 0.35)),
+        )
+        self.assertEqual(len({first.candidate_id, second.candidate_id, third.candidate_id}), 3)
 
-        self.assertNotEqual(nxt.candidate_id, recovery_id)
-        self.assertEqual(nxt.region_overrides, ())
+    def test_regional_recovery_raises_existing_region_without_duplicate_and_stops_at_largest_donor(self):
+        region = "r-" + "4" * 64
+        evaluations = [
+            evaluation_at(0.35, True, candidate_id="near-donor"),
+            evaluation_at(0.50, True, candidate_id="far-donor"),
+            evaluation_at(
+                0.25, False, candidate_id="repaired-near", worst_scope=f"{region}/bind",
+                region_overrides=((region, 0.35),),
+            ),
+        ]
+        raised = choose_next(evaluations, SearchBudget.experimental_default(), initial=())
+        self.assertEqual(raised.region_overrides, ((region, 0.50),))
+        evaluations.append(evaluation_at(
+            0.25, False, candidate_id=raised.candidate_id, worst_scope=f"{region}/bind",
+            region_overrides=raised.region_overrides,
+        ))
+        self.assertIsNone(choose_next(evaluations, SearchBudget.experimental_default(), initial=()))
+
+    def test_regional_recovery_donor_must_match_complete_strategy_contract(self):
+        region = "r-" + "5" * 64
+        evaluations = [
+            evaluation_at(
+                0.35, True, candidate_id="wrong-transfer", strategy="strategy-a",
+                repair_profile="repair-a", transfer="other-transfer",
+            ),
+            evaluation_at(
+                0.40, True, candidate_id="compatible", strategy="strategy-a",
+                repair_profile="repair-a", transfer="transfer-a",
+            ),
+            evaluation_at(
+                0.25, False, candidate_id="failure", worst_scope=f"{region}/bind",
+                strategy="strategy-a", repair_profile="repair-a", transfer="transfer-a",
+            ),
+        ]
+        recovered = choose_next(evaluations, SearchBudget.experimental_default(), initial=())
+        self.assertEqual(recovered.region_overrides, ((region, 0.40),))
+
+    def test_regional_recovery_donor_matching_ignores_donor_region_overrides(self):
+        donor_region = "r-" + "a" * 64
+        failed_region = "r-" + "b" * 64
+        evaluations = [
+            evaluation_at(
+                0.35, True, candidate_id="regional-donor",
+                region_overrides=((donor_region, 0.50),),
+            ),
+            evaluation_at(
+                0.30, False, candidate_id="failure", worst_scope=f"{failed_region}/bind",
+            ),
+        ]
+        recovered = choose_next(evaluations, SearchBudget.experimental_default(), initial=())
+        self.assertEqual(recovered.region_overrides, ((failed_region, 0.35),))
+
+    def test_bracket_and_recovery_never_mix_strategies(self):
+        region = "r-" + "c" * 64
+        evaluations = [
+            evaluation_at(
+                0.50, True, candidate_id="strategy-a-pass", strategy="strategy-a",
+                repair_profile="repair", transfer="transfer",
+            ),
+            evaluation_at(
+                0.25, False, candidate_id="strategy-b-fail", strategy="strategy-b",
+                repair_profile="repair", transfer="transfer", worst_scope=f"{region}/bind",
+            ),
+        ]
+        self.assertIsNone(choose_next(
+            evaluations, SearchBudget.experimental_default(), initial=(),
+        ))
+
+    def test_regional_recovery_ids_are_deterministic_for_full_set_and_strategy_isolated(self):
+        first = "r-" + "6" * 64
+        second = "r-" + "7" * 64
+        third = "r-" + "9" * 64
+
+        def recover(strategy, overrides):
+            return choose_next([
+                evaluation_at(
+                    0.50, True, candidate_id=f"{strategy}-pass", strategy=strategy,
+                    repair_profile="repair", transfer="transfer",
+                ),
+                evaluation_at(
+                    0.25, False, candidate_id=f"{strategy}-fail",
+                    worst_scope=f"{second}/bind", region_overrides=overrides,
+                    strategy=strategy, repair_profile="repair", transfer="transfer",
+                ),
+            ], SearchBudget.experimental_default(), initial=())
+
+        ordered = recover("strategy-a", ((first, 0.50), (third, 0.50)))
+        reordered = recover("strategy-a", ((third, 0.50), (first, 0.50)))
+        other_strategy = recover("strategy-b", ((first, 0.50), (third, 0.50)))
+        self.assertEqual(ordered.candidate_id, reordered.candidate_id)
+        self.assertNotEqual(ordered.candidate_id, other_strategy.candidate_id)
+        self.assertEqual(
+            ordered.region_overrides,
+            ((first, 0.50), (second, 0.50), (third, 0.50)),
+        )
+
+    def test_regional_recovery_fails_closed_for_scope_structure_budget_and_attempted_loop(self):
+        region = "r-" + "8" * 64
+        donor = evaluation_at(0.50, True, candidate_id="donor")
+        malformed = evaluation_at(0.49, False, candidate_id="malformed", worst_scope="not-a-region/bind")
+        structural = evaluation_at(
+            0.49, False, candidate_id="structural", worst_scope=f"{region}/bind",
+            structural_passed=False,
+        )
+        self.assertIsNone(choose_next([donor, malformed], SearchBudget.experimental_default(), initial=()))
+        self.assertIsNone(choose_next([donor, structural], SearchBudget.experimental_default(), initial=()))
+        valid = evaluation_at(0.49, False, candidate_id="valid", worst_scope=f"{region}/bind")
+        generated = choose_next([donor, valid], SearchBudget.experimental_default(), initial=())
+        self.assertIsNone(choose_next(
+            [donor, valid], SearchBudget.experimental_default(), initial=(),
+            attempted_ids={generated.candidate_id},
+        ))
+        self.assertIsNone(choose_next(
+            [donor, valid], SearchBudget(max_candidates=2, min_ratio_step=0.025, min_marginal_saving=0.0),
+            initial=(),
+        ))
 
     def test_without_bracket_or_recovery_returns_first_untried_initial_candidate(self):
         self.assertEqual(
