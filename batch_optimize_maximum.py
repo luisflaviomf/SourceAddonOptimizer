@@ -87,6 +87,10 @@ _BLENDER_STRATEGIES = frozenset({
     "blender-importance-map-v1",
     "round-planar-priority-v1",
 })
+_PRESERVE_EXACT_BLENDER_STRATEGIES = frozenset({
+    "blender-adaptive-v1",
+    "blender-importance-map-v1",
+})
 
 
 @dataclass(frozen=True)
@@ -242,6 +246,15 @@ def make_simplify_options(
         update_vertices=candidate.update_vertices,
         meshopt_options=policy.meshopt_options,
         position_remap=candidate.strategy == "meshopt-direct-position-v1",
+    )
+
+
+def should_preserve_exact(
+    candidate: CandidateConfig, region_ratios: Sequence[float]
+) -> bool:
+    return (
+        candidate.strategy in _PRESERVE_EXACT_BLENDER_STRATEGIES
+        and preserve_whole_source(region_ratios)
     )
 
 
@@ -1271,10 +1284,7 @@ def _process_source_file(
     source_ratios = resolve_region_ratios(
         source_manifest, source_observations, source_overrides, candidate.ratio
     )
-    preserve_exact = (
-        candidate.strategy in _BLENDER_STRATEGIES
-        and preserve_whole_source(source_ratios.values())
-    )
+    preserve_exact = should_preserve_exact(candidate, tuple(source_ratios.values()))
     fallback_reason: str | None = None
     if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"}:
         used_source_triangles: set[int] = set()
