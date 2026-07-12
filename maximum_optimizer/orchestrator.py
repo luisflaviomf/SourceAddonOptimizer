@@ -2018,8 +2018,6 @@ def _graph_visual_configurations(
         for reference in fixed_references
     )
     groups = graph.bodygroups
-    if len({group.name.casefold() for group in groups}) != len(groups):
-        raise ValueError("duplicate bodygroup names are ambiguous for visual validation")
     defaults = tuple(group.choices[0] for group in groups)
     base = fixed + tuple(choice.source_path for choice in defaults if choice is not None)
     base_identities = fixed_identities + tuple(
@@ -2028,7 +2026,9 @@ def _graph_visual_configurations(
     )
     if not base:
         raise ValueError("QC graph has no base visual sources")
-    default_indices = tuple((group.name, 0) for group in groups)
+    default_indices = tuple(
+        (f"{index:03d}:{group.name}", 0) for index, group in enumerate(groups)
+    )
     states: list[VisualConfiguration] = [
         VisualConfiguration("engine-default", base, base_identities, default_indices)
     ]
@@ -2050,7 +2050,10 @@ def _graph_visual_configurations(
                 if selected_choice is not None
             )
             indices = tuple(
-                (item.name, choice_index if index == group_index else 0)
+                (
+                    f"{index:03d}:{item.name}",
+                    choice_index if index == group_index else 0,
+                )
                 for index, item in enumerate(groups)
             )
             safe_name = re.sub(r"[^a-z0-9_.-]+", "-", group.name.casefold()).strip("-")

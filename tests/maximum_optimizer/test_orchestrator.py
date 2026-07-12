@@ -1285,8 +1285,42 @@ class OrchestratorTests(unittest.TestCase):
                 ["body.smd", "hood_closed.smd", "wheel_a.smd"],
             ],
         )
-        self.assertEqual(states[0].bodygroup_indices, (("hood", 0), ("wheel", 0)))
-        self.assertEqual(states[2].bodygroup_indices, (("hood", 0), ("wheel", 1)))
+        self.assertEqual(states[0].bodygroup_indices, (("000:hood", 0), ("001:wheel", 0)))
+        self.assertEqual(states[2].bodygroup_indices, (("000:hood", 0), ("001:wheel", 1)))
+
+    def test_duplicate_bodygroup_names_remain_distinct_by_source_index(self):
+        source = self.root / "duplicate-bodygroup-names"
+        source.mkdir()
+        for name in ("base.smd", "first.smd", "second.smd"):
+            (source / name).write_text("mesh", encoding="utf-8")
+        qc = source / "car.qc"
+        qc.write_text(
+            '$body body "base.smd"\n'
+            '$bodygroup part { blank studio "first.smd" }\n'
+            '$bodygroup part { blank studio "second.smd" }\n', encoding="utf-8"
+        )
+        states = orchestrator_module._graph_visual_configurations(
+            parse_qc_graph(qc, source), max_alternatives=2
+        )
+        self.assertEqual(states[0].bodygroup_indices, (("000:part", 0), ("001:part", 0)))
+        self.assertEqual(states[1].bodygroup_indices, (("000:part", 1), ("001:part", 0)))
+        self.assertEqual(states[2].bodygroup_indices, (("000:part", 0), ("001:part", 1)))
+
+        candidate = self.root / "duplicate-bodygroup-candidate"
+        (candidate / "output").mkdir(parents=True)
+        for name in ("base", "first", "second"):
+            (candidate / "output" / f"{name}_OPT.smd").write_text("mesh", encoding="utf-8")
+        candidate_qc = candidate / "car_OPT.qc"
+        candidate_qc.write_text(
+            '$body body "output/base_OPT.smd"\n'
+            '$bodygroup part { blank studio "output/second_OPT.smd" }\n'
+            '$bodygroup part { blank studio "output/first_OPT.smd" }\n', encoding="utf-8"
+        )
+        reordered = orchestrator_module._graph_visual_configurations(
+            parse_qc_graph(candidate_qc, candidate), max_alternatives=2
+        )
+        with self.assertRaisesRegex(ValueError, "logical source identities"):
+            orchestrator_module._validate_visual_configuration_pairing(states, reordered)
 
     def test_visual_state_names_disambiguate_sanitized_bodygroup_collisions(self):
         source = self.root / "colliding-bodygroup-states"
