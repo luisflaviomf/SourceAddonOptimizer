@@ -40,7 +40,89 @@ def _as_split_wedges(positions, triangles, *, displacement=5e-7):
     return tuple(split_positions), tuple(split_triangles)
 
 
+def _open_cylinder(sides=16):
+    positions, triangles = _closed_cylinder(sides)
+    first_sides = tuple(triangles[index] for index in range(0, sides * 4, 4))
+    second_sides = tuple(triangles[index] for index in range(1, sides * 4, 4))
+    return positions[:-2], first_sides + second_sides
+
+
 class RoundPlanarPriorityTests(unittest.TestCase):
+    def test_regular_open_axial_boundary_loops_are_admitted_and_fully_prioritized(self):
+        from maximum_optimizer.round_planar_priority import classify_round_component
+
+        positions, triangles = _open_cylinder()
+        influences = ((('wheel', 1.0),),) * len(positions)
+
+        result = classify_round_component(positions, triangles, influences)
+
+        self.assertTrue(result.eligible)
+        self.assertEqual(len(result.boundary_edges), 32)
+        self.assertEqual(set(result.priority_vertices), set(range(len(positions))))
+        audit = result.components[0]
+        self.assertEqual(audit.boundary_edges, 32)
+        self.assertEqual(len(audit.boundary_loops), 2)
+        for loop in audit.boundary_loops:
+            self.assertEqual(loop.vertices, 16)
+            self.assertGreaterEqual(loop.angular_bins_occupied, 12)
+            self.assertLessEqual(loop.axial_span, 8e-6)
+            self.assertLess(loop.radial_cv, 0.005)
+
+    def test_branched_or_open_boundary_graph_fails_closed(self):
+        from maximum_optimizer.round_planar_priority import classify_round_component
+
+        positions, triangles = _open_cylinder()
+        influences = ((('wheel', 1.0),),) * len(positions)
+
+        result = classify_round_component(positions, triangles[:-1], influences)
+
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.reason, "irregular-boundary-topology")
+
+    def test_boundary_loop_below_minimum_vertex_count_fails_closed(self):
+        from maximum_optimizer.round_planar_priority import classify_round_component
+
+        positions, triangles = _open_cylinder(sides=8)
+        influences = ((('wheel', 1.0),),) * len(positions)
+
+        result = classify_round_component(positions, triangles, influences)
+
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.reason, "irregular-boundary-loop")
+
+    def test_self_intersecting_boundary_loop_fails_closed(self):
+        from maximum_optimizer.round_planar_priority import classify_round_component
+
+        sides = 16
+        positions, _ = _open_cylinder(sides=sides)
+        order = tuple((index * 5) % sides for index in range(sides))
+        triangles = []
+        for position, current in enumerate(order):
+            following = order[(position + 1) % sides]
+            triangles.extend((
+                (current, following, sides + following),
+                (current, sides + following, sides + current),
+            ))
+        influences = ((('wheel', 1.0),),) * len(positions)
+
+        result = classify_round_component(positions, tuple(triangles), influences)
+
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.reason, "irregular-boundary-loop")
+
+    def test_nonmanifold_edge_fails_closed(self):
+        from maximum_optimizer.round_planar_priority import classify_round_component
+
+        positions, triangles = _closed_cylinder()
+        influences = ((('wheel', 1.0),),) * len(positions)
+
+        result = classify_round_component(
+            positions, triangles + (triangles[0],), influences
+        )
+
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.reason, "non-manifold-edge")
+
     def test_closed_rigid_round_component_reports_axis_and_priority_rings(self):
         from maximum_optimizer.round_planar_priority import classify_round_component
 
@@ -77,7 +159,7 @@ class RoundPlanarPriorityTests(unittest.TestCase):
         result = classify_round_component(positions, triangles[:-1], influences)
 
         self.assertFalse(result.eligible)
-        self.assertEqual(result.reason, "not-closed-manifold")
+        self.assertEqual(result.reason, "irregular-boundary-loop")
 
     def test_box_fails_angular_coverage(self):
         from maximum_optimizer.round_planar_priority import classify_round_component

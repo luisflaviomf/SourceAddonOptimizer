@@ -42,7 +42,10 @@ from maximum_optimizer.compiler_aware import (
     move_modifier_first, preserve_whole_source, provenance_status, require_triangular_mesh,
 )
 from maximum_optimizer.importance_map import MeshImportanceInput, build_importance_weights
-from maximum_optimizer.round_planar_priority import classify_round_component
+from maximum_optimizer.round_planar_priority import (
+    _canonicalize_positions,
+    classify_round_component,
+)
 from maximum_optimizer.regions import (
     RegionManifest,
     build_region_manifest,
@@ -68,7 +71,10 @@ from maximum_optimizer.smoothing import (
     canonicalize_normals_by_identity,
 )
 from maximum_optimizer.smd_contract import (
-    map_imported_corners_to_smd, restore_direct_smd_normals, restore_ordered_smd_normals,
+    POSITION_SERIALIZATION_TOLERANCE,
+    map_imported_corners_to_smd,
+    restore_direct_smd_normals,
+    restore_ordered_smd_normals,
     serialize_direct_smd,
 )
 
@@ -332,6 +338,69 @@ def _surviving_priority_vertices(obj: object, group: object) -> tuple[int, ...]:
     return surviving
 
 
+def _verify_round_boundary_survival(
+    expected_positions: Sequence[Sequence[float]],
+    expected_edges: Sequence[tuple[int, int]],
+    actual_positions: Sequence[Sequence[float]],
+    actual_triangles: Sequence[Sequence[int]],
+) -> dict[str, int]:
+    """Require every protected geometric boundary vertex and edge to remain exact."""
+    if not expected_edges:
+        return {"boundary_vertices": 0, "boundary_edges": 0}
+    expected_vertices = sorted({index for edge in expected_edges for index in edge})
+    if any(index < 0 or index >= len(expected_positions) for index in expected_vertices):
+        raise ValueError("round boundary edge contains an invalid source vertex")
+    actual_ids, _ = _canonicalize_positions(
+        actual_positions, POSITION_SERIALIZATION_TOLERANCE
+    )
+    actual_representatives = tuple(sorted(set(actual_ids)))
+    matched: dict[int, int] = {}
+    for expected_index in expected_vertices:
+        expected = expected_positions[expected_index]
+        candidates = [
+            actual_index
+            for actual_index in actual_representatives
+            if all(
+                abs(float(expected[axis]) - float(actual_positions[actual_index][axis]))
+                <= POSITION_SERIALIZATION_TOLERANCE
+                for axis in range(3)
+            )
+        ]
+        if not candidates:
+            raise SmdAuditValidationError(
+                f"round boundary vertex did not survive: {expected_index}"
+            )
+        matched[expected_index] = min(candidates)
+
+    owners: dict[tuple[int, int], int] = defaultdict(int)
+    for triangle in actual_triangles:
+        if len(triangle) != 3 or any(
+            type(index) is not int or index < 0 or index >= len(actual_positions)
+            for index in triangle
+        ):
+            raise ValueError("actual round triangles must contain valid index triples")
+        canonical = tuple(actual_ids[index] for index in triangle)
+        if len(set(canonical)) != 3:
+            raise SmdAuditValidationError("round boundary audit found degenerate topology")
+        for first, second in (
+            (canonical[0], canonical[1]),
+            (canonical[1], canonical[2]),
+            (canonical[2], canonical[0]),
+        ):
+            owners[(min(first, second), max(first, second))] += 1
+    for expected_first, expected_second in expected_edges:
+        first, second = matched[expected_first], matched[expected_second]
+        edge = (min(first, second), max(first, second))
+        if first == second or owners.get(edge) != 1:
+            raise SmdAuditValidationError(
+                f"round boundary edge did not survive: {expected_first}-{expected_second}"
+            )
+    return {
+        "boundary_vertices": len(expected_vertices),
+        "boundary_edges": len(expected_edges),
+    }
+
+
 def _round_evidence_payload(
     decision: object, modifier_evidence: dict[str, object]
 ) -> dict[str, object]:
@@ -348,6 +417,19 @@ def _round_evidence_payload(
             "reason": component.reason,
             "axis": component.axis,
             "priority_vertices": component.priority_vertices,
+            "boundary_edges": component.boundary_edges,
+            "boundary_loops": [
+                {
+                    "vertices": loop.vertices,
+                    "axial_span": loop.axial_span,
+                    "angular_bins_occupied": loop.angular_bins_occupied,
+                    "radial_cv": loop.radial_cv,
+                    "center_offset_fraction": loop.center_offset_fraction,
+                    "edge_length_cv": loop.edge_length_cv,
+                    "outer_radius_fraction": loop.outer_radius_fraction,
+                }
+                for loop in component.boundary_loops
+            ],
         }
         for component in decision.components
     ]
@@ -360,7 +442,33 @@ def _round_evidence_payload(
         "round_planar_triangles_after": modifier_evidence["planar_triangles_after"],
         "round_priority_vertices_requested": modifier_evidence["priority_vertices_requested"],
         "round_priority_vertices_survived": modifier_evidence["priority_vertices_survived"],
+        "round_boundary_vertices_requested": modifier_evidence["boundary_vertices_requested"],
+        "round_boundary_edges_requested": modifier_evidence["boundary_edges_requested"],
+        "round_boundary_vertices_survived_planar": modifier_evidence[
+            "boundary_vertices_survived_planar"
+        ],
+        "round_boundary_edges_survived_planar": modifier_evidence[
+            "boundary_edges_survived_planar"
+        ],
+        "round_boundary_vertices_survived_collapse": modifier_evidence[
+            "boundary_vertices_survived_collapse"
+        ],
+        "round_boundary_edges_survived_collapse": modifier_evidence[
+            "boundary_edges_survived_collapse"
+        ],
     }
+
+
+def _round_object_geometry(
+    obj: object,
+) -> tuple[tuple[tuple[float, float, float], ...], tuple[tuple[int, int, int], ...]]:
+    obj.data.calc_loop_triangles()
+    positions = tuple(tuple(float(value) for value in vertex.co) for vertex in obj.data.vertices)
+    triangles = tuple(
+        tuple(int(index) for index in triangle.vertices)
+        for triangle in obj.data.loop_triangles
+    )
+    return positions, triangles
 
 
 def _apply_round_planar_modifiers(
@@ -368,6 +476,7 @@ def _apply_round_planar_modifiers(
     *,
     ratio: float,
     priority_vertices: Sequence[int],
+    boundary_edges: Sequence[tuple[int, int]] = (),
     planar_angle_degrees: float = 1.0,
 ) -> dict[str, object]:
     if bpy is None:
@@ -378,6 +487,7 @@ def _apply_round_planar_modifiers(
         raise RuntimeError("reserved round priority vertex group already exists")
     group = obj.vertex_groups.new(name="__maximum_round_priority_v1__")
     group.add(list(priority_vertices), 1.0, "REPLACE")
+    expected_positions = _round_object_geometry(obj)[0] if boundary_edges else ()
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     try:
@@ -397,6 +507,13 @@ def _apply_round_planar_modifiers(
         surviving_vertices = _surviving_priority_vertices(obj, surviving_group)
         obj.data.calc_loop_triangles()
         planar_triangles_after = len(obj.data.loop_triangles)
+        if boundary_edges:
+            planar_positions, planar_triangles = _round_object_geometry(obj)
+            planar_boundary = _verify_round_boundary_survival(
+                expected_positions, boundary_edges, planar_positions, planar_triangles
+            )
+        else:
+            planar_boundary = {"boundary_vertices": 0, "boundary_edges": 0}
 
         collapse = obj.modifiers.new(name="MaximumRoundPriority", type="DECIMATE")
         move_modifier_first(obj.modifiers, collapse)
@@ -407,11 +524,26 @@ def _apply_round_planar_modifiers(
         collapse.invert_vertex_group = True
         collapse.vertex_group_factor = 1.0
         bpy.ops.object.modifier_apply(modifier=collapse.name)
+        if boundary_edges:
+            collapse_positions, collapse_triangles = _round_object_geometry(obj)
+            collapse_boundary = _verify_round_boundary_survival(
+                expected_positions, boundary_edges, collapse_positions, collapse_triangles
+            )
+        else:
+            collapse_boundary = {"boundary_vertices": 0, "boundary_edges": 0}
         return {
             "planar_angle_degrees": float(planar_angle_degrees),
             "planar_triangles_after": planar_triangles_after,
             "priority_vertices_requested": len(tuple(priority_vertices)),
             "priority_vertices_survived": len(surviving_vertices),
+            "boundary_vertices_requested": len({
+                index for edge in boundary_edges for index in edge
+            }),
+            "boundary_edges_requested": len(tuple(boundary_edges)),
+            "boundary_vertices_survived_planar": planar_boundary["boundary_vertices"],
+            "boundary_edges_survived_planar": planar_boundary["boundary_edges"],
+            "boundary_vertices_survived_collapse": collapse_boundary["boundary_vertices"],
+            "boundary_edges_survived_collapse": collapse_boundary["boundary_edges"],
         }
     finally:
         remaining = obj.vertex_groups.get("__maximum_round_priority_v1__")
@@ -452,7 +584,10 @@ def _optimize_blender_object(
         if not decision.eligible:
             raise SmdAuditValidationError(f"round-planar-priority rejected: {decision.reason}")
         modifier_evidence = _apply_round_planar_modifiers(
-            obj, ratio=ratio, priority_vertices=decision.priority_vertices
+            obj,
+            ratio=ratio,
+            priority_vertices=decision.priority_vertices,
+            boundary_edges=decision.boundary_edges,
         )
         round_evidence = _round_evidence_payload(decision, modifier_evidence)
         modifier = None

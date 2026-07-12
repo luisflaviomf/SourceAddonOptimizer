@@ -160,6 +160,12 @@ class MaximumBlenderPureTests(unittest.TestCase):
             "planar_triangles_after": 8,
             "priority_vertices_requested": 3,
             "priority_vertices_survived": 3,
+            "boundary_vertices_requested": 0,
+            "boundary_edges_requested": 0,
+            "boundary_vertices_survived_planar": 0,
+            "boundary_edges_survived_planar": 0,
+            "boundary_vertices_survived_collapse": 0,
+            "boundary_edges_survived_collapse": 0,
         })
 
     def test_round_priority_group_must_survive_planar_with_nonempty_assignments(self) -> None:
@@ -177,8 +183,30 @@ class MaximumBlenderPureTests(unittest.TestCase):
         with self.assertRaisesRegex(maximum.SmdAuditValidationError, "did not survive"):
             maximum._surviving_priority_vertices(obj, group)
 
+    def test_round_boundary_survival_requires_every_position_and_boundary_edge(self) -> None:
+        positions = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                     (1.0, 1.0, 0.0), (0.0, 1.0, 0.0))
+        triangles = ((0, 1, 2), (0, 2, 3))
+        boundary_edges = ((0, 1), (1, 2), (2, 3), (0, 3))
+
+        evidence = maximum._verify_round_boundary_survival(
+            positions, boundary_edges, positions, triangles
+        )
+
+        self.assertEqual(evidence, {"boundary_vertices": 4, "boundary_edges": 4})
+        with self.assertRaisesRegex(maximum.SmdAuditValidationError, "boundary edge"):
+            maximum._verify_round_boundary_survival(
+                positions, boundary_edges, positions, triangles[:1]
+            )
+        moved = positions[:-1] + ((0.01, 1.0, 0.0),)
+        with self.assertRaisesRegex(maximum.SmdAuditValidationError, "boundary vertex"):
+            maximum._verify_round_boundary_survival(
+                positions, boundary_edges, moved, triangles
+            )
+
     def test_round_evidence_records_admission_planar_and_priority_counts(self) -> None:
         from maximum_optimizer.round_planar_priority import (
+            RoundBoundaryLoopAudit,
             RoundComponentAudit,
             RoundComponentDecision,
         )
@@ -201,6 +229,16 @@ class MaximumBlenderPureTests(unittest.TestCase):
                     reason="eligible",
                     axis=2,
                     priority_vertices=3,
+                    boundary_edges=24,
+                    boundary_loops=(RoundBoundaryLoopAudit(
+                        vertices=24,
+                        axial_span=1e-6,
+                        angular_bins_occupied=16,
+                        radial_cv=0.001,
+                        center_offset_fraction=0.001,
+                        edge_length_cv=0.002,
+                        outer_radius_fraction=0.99,
+                    ),),
                 ),),
             ),
             {
@@ -208,6 +246,12 @@ class MaximumBlenderPureTests(unittest.TestCase):
                 "planar_triangles_after": 40,
                 "priority_vertices_requested": 3,
                 "priority_vertices_survived": 2,
+                "boundary_vertices_requested": 24,
+                "boundary_edges_requested": 24,
+                "boundary_vertices_survived_planar": 24,
+                "boundary_edges_survived_planar": 24,
+                "boundary_vertices_survived_collapse": 24,
+                "boundary_edges_survived_collapse": 24,
             },
         )
 
@@ -227,11 +271,27 @@ class MaximumBlenderPureTests(unittest.TestCase):
                 "reason": "eligible",
                 "axis": 2,
                 "priority_vertices": 3,
+                "boundary_edges": 24,
+                "boundary_loops": [{
+                    "vertices": 24,
+                    "axial_span": 1e-6,
+                    "angular_bins_occupied": 16,
+                    "radial_cv": 0.001,
+                    "center_offset_fraction": 0.001,
+                    "edge_length_cv": 0.002,
+                    "outer_radius_fraction": 0.99,
+                }],
             }],
             "round_planar_angle_degrees": 1.0,
             "round_planar_triangles_after": 40,
             "round_priority_vertices_requested": 3,
             "round_priority_vertices_survived": 2,
+            "round_boundary_vertices_requested": 24,
+            "round_boundary_edges_requested": 24,
+            "round_boundary_vertices_survived_planar": 24,
+            "round_boundary_edges_survived_planar": 24,
+            "round_boundary_vertices_survived_collapse": 24,
+            "round_boundary_edges_survived_collapse": 24,
         })
 
     def test_atomic_output_is_exclusive_cleans_failure_and_rejects_escape(self) -> None:
