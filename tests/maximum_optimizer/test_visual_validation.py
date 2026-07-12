@@ -137,6 +137,7 @@ def _entry(root: Path, render_pass: str, pose: str, angle: str, **image_kwargs) 
             "shader": "vertexlitgeneric",
             "texture_directive": "$basetexture",
             "uses_texture_alpha": False,
+            "duplicate_root_directives": [],
         }]
     return entry
 
@@ -206,6 +207,10 @@ class VisualValidationTests(unittest.TestCase):
             "negative root": lambda evidence: evidence.__setitem__("root_index", -1),
             "wrong rule": lambda evidence: evidence.__setitem__("resolution_rule", "unordered"),
             "extra field": lambda evidence: evidence.__setitem__("unsealed", True),
+            "bad duplicate audit": lambda evidence: evidence.__setitem__(
+                "duplicate_root_directives",
+                [{"directive": "$alphatest", "ignored_values": []}],
+            ),
         }
         for label, mutate in mutations.items():
             payload = json.loads(json.dumps(original))
@@ -1205,7 +1210,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             ("vertexlitgeneric", "$basetexture", "cars/body", False),
         )
 
-    def test_vmt_parser_uses_last_duplicate_root_directive_like_source_materials(self):
+    def test_vmt_parser_uses_first_duplicate_root_directive_like_source_materials(self):
         import render_previews
 
         duplicated = (
@@ -1214,8 +1219,27 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         )
         self.assertEqual(
             render_previews._source_texture_reference(duplicated),
-            ("vertexlitgeneric", "$basetexture", "cars/body", False),
+            ("vertexlitgeneric", "$basetexture", "cars/body", True),
         )
+
+    def test_vmt_duplicate_root_directives_are_recorded_as_ignored_evidence(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            material = root / "cars"
+            material.mkdir()
+            (material / "body.vmt").write_text(
+                'VertexLitGeneric { "$basetexture" "cars/body" '
+                '"$alphatest" "1" "$alphatest" "0" }',
+                encoding="utf-8",
+            )
+            (material / "body.vtf").write_bytes(b"vtf")
+            evidence = render_previews._source_material_evidence("cars/body", root)
+
+        self.assertEqual(evidence["duplicate_root_directives"], [
+            {"directive": "$alphatest", "ignored_values": ["0"]},
+        ])
 
     def test_vmt_parser_rejects_nested_or_trailing_directive_and_unknown_shader(self):
         import render_previews

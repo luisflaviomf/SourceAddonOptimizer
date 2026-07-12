@@ -486,7 +486,9 @@ def _vmt_tokens(vmt_text: str) -> tuple[str, ...] | None:
     return tuple(tokens)
 
 
-def _parse_vmt_root(vmt_text: str) -> tuple[str, dict[str, str]] | None:
+def _parse_vmt_root(
+    vmt_text: str,
+) -> tuple[str, dict[str, str], dict[str, tuple[str, ...]]] | None:
     tokens = _vmt_tokens(vmt_text)
     if tokens is None or len(tokens) < 3 or tokens[1] != "{":
         return None
@@ -494,6 +496,7 @@ def _parse_vmt_root(vmt_text: str) -> tuple[str, dict[str, str]] | None:
     if shader not in _SUPPORTED_VMT_SHADERS:
         return None
     directives: dict[str, str] = {}
+    duplicates: dict[str, list[str]] = {}
     depth = 1
     index = 2
     while index < len(tokens):
@@ -506,7 +509,11 @@ def _parse_vmt_root(vmt_text: str) -> tuple[str, dict[str, str]] | None:
             depth -= 1
             index += 1
             if depth == 0:
-                return (shader, directives) if index == len(tokens) else None
+                return (
+                    shader,
+                    directives,
+                    {key: tuple(values) for key, values in duplicates.items()},
+                ) if index == len(tokens) else None
             if depth < 0:
                 return None
             continue
@@ -517,7 +524,10 @@ def _parse_vmt_root(vmt_text: str) -> tuple[str, dict[str, str]] | None:
                 index += 1
                 continue
             key = token.casefold()
-            directives[key] = tokens[index + 1]
+            if key in directives:
+                duplicates.setdefault(key, []).append(tokens[index + 1])
+            else:
+                directives[key] = tokens[index + 1]
             index += 2
             continue
         index += 1
@@ -538,7 +548,7 @@ def _source_texture_reference(
     parsed = _parse_vmt_root(vmt_text)
     if parsed is None:
         return None
-    shader, directives = parsed
+    shader, directives, _duplicates = parsed
     directive = "$refracttinttexture" if shader == "refract" else "$basetexture"
     raw_texture = directives.get(directive)
     if raw_texture is None:
@@ -950,9 +960,14 @@ def _source_material_files(
     except OSError:
         return None
     texture_reference = _source_texture_reference(vmt_text)
-    if texture_reference is None:
+    parsed_vmt = _parse_vmt_root(vmt_text)
+    if texture_reference is None or parsed_vmt is None:
         return None
     shader, texture_directive, base_texture, uses_texture_alpha = texture_reference
+    duplicate_root_directives = [
+        {"directive": directive, "ignored_values": list(values)}
+        for directive, values in sorted(parsed_vmt[2].items(), key=lambda item: item[0])
+    ]
     vtf_path = None
     vtf_root_index = -1
     for root_index, root in enumerate(roots):
@@ -972,6 +987,7 @@ def _source_material_files(
         "shader": shader,
         "texture_directive": texture_directive,
         "uses_texture_alpha": uses_texture_alpha,
+        "duplicate_root_directives": duplicate_root_directives,
     }
 
 
@@ -998,6 +1014,7 @@ def _source_material_evidence(
         "shader": resolved["shader"],
         "texture_directive": resolved["texture_directive"],
         "uses_texture_alpha": resolved["uses_texture_alpha"],
+        "duplicate_root_directives": resolved["duplicate_root_directives"],
     }
 
 

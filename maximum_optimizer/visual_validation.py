@@ -38,6 +38,7 @@ MATERIAL_EVIDENCE_FIELDS = frozenset({
     "material_identity", "resolution_rule", "root_index", "search_path_index",
     "vtf_root_index", "vmt_sha256", "vtf_sha256", "shader",
     "texture_directive", "uses_texture_alpha",
+    "duplicate_root_directives",
 })
 
 
@@ -256,6 +257,25 @@ def _validate_resolved_materials(
                     "$refracttinttexture" if shader == "refract" else "$basetexture"
                 )
                 identity = evidence["material_identity"]
+                duplicate_audit = evidence["duplicate_root_directives"]
+                duplicate_valid = (
+                    type(duplicate_audit) is list
+                    and all(
+                        type(item) is dict
+                        and set(item) == {"directive", "ignored_values"}
+                        and type(item["directive"]) is str
+                        and bool(item["directive"])
+                        and type(item["ignored_values"]) is list
+                        and bool(item["ignored_values"])
+                        and all(type(value) is str for value in item["ignored_values"])
+                        for item in duplicate_audit
+                    )
+                    and [item["directive"] for item in duplicate_audit]
+                    == sorted(
+                        {item["directive"] for item in duplicate_audit},
+                        key=str.casefold,
+                    )
+                )
                 valid = (
                     type(identity) is str and bool(identity)
                     and identity not in identities
@@ -273,6 +293,7 @@ def _validate_resolved_materials(
                     and directive == expected_directive
                     and type(evidence["uses_texture_alpha"]) is bool
                     and (shader != "refract" or evidence["uses_texture_alpha"] is True)
+                    and duplicate_valid
                 )
             if not valid:
                 failures.append(_failure(
