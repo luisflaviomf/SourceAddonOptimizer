@@ -389,6 +389,16 @@ class OrchestratorTests(unittest.TestCase):
             ["run_started", "run_cancelled"],
         )
         self.assertTrue(report.report_path.is_file())
+        audit = json.loads(
+            (self.config.work_dir / "logs/fidelity-profile-selection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(audit, {
+            "schema": 1,
+            "selector": "legacy-global-v1",
+            "families": [],
+        })
         self.assertFalse(self.config.output_dir.exists())
 
     def test_pre_set_cancel_persists_journal_before_sink_and_skips_model_scan(self):

@@ -1335,6 +1335,10 @@ def run_maximum_addon(
             {}, (), report_path, events, True,
         )
         atomic_write_json(report_path, report)
+        atomic_write_json(
+            config.work_dir / "logs" / "fidelity-profile-selection.json",
+            {"schema": 1, "selector": profile_set.mode, "families": []},
+        )
         for event in events:
             try:
                 sink(dict(event))
