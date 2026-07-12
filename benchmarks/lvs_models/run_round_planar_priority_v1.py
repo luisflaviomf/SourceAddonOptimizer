@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
+import msvcrt
 import os
 from pathlib import Path
 import secrets
@@ -116,22 +117,27 @@ def exclusive_blender_lock(path: Path) -> Iterator[None]:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = f"pid={os.getpid()} token={secrets.token_hex(16)}\n".encode("ascii")
+    stream = path.open("a+b", buffering=0)
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError as exc:
-        raise RuntimeError(f"Blender experiment lock is busy: {path}") from exc
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
+        if path.stat().st_size == 0:
+            stream.write(b"\0")
+        stream.seek(0)
+        try:
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            raise RuntimeError(f"Blender experiment lock is busy: {path}") from exc
+        stream.seek(0)
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
         yield
     finally:
         try:
-            if path.read_bytes() == payload:
-                path.unlink()
-        except (FileNotFoundError, OSError):
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
             pass
+        stream.close()
 
 
 def _stage_arm(arm: ExperimentArm) -> None:

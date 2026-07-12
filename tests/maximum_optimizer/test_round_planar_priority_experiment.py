@@ -123,7 +123,7 @@ class RoundPlanarPriorityExperimentTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "busy"):
                     with exclusive_blender_lock(lock):
                         pass
-            self.assertFalse(lock.exists())
+            self.assertTrue(lock.exists())
 
             execute_experiment((arm,), lock_path=lock, runner=lambda command: calls.append(command))
 
@@ -133,20 +133,23 @@ class RoundPlanarPriorityExperimentTests(unittest.TestCase):
                 json.loads((workspace / "candidate.json").read_text(encoding="utf-8")),
                 payload,
             )
-            self.assertFalse(lock.exists())
+            self.assertTrue(lock.exists())
 
             with self.assertRaisesRegex(FileExistsError, "workspace"):
                 execute_experiment((arm,), lock_path=lock, runner=lambda command: None)
 
-    def test_lock_cleanup_never_removes_replaced_foreign_lock(self):
+    def test_lock_release_never_unlinks_persistent_lock_file(self):
         from benchmarks.lvs_models.run_round_planar_priority_v1 import exclusive_blender_lock
 
         with tempfile.TemporaryDirectory() as raw:
             lock = Path(raw) / "blender.lock"
             with exclusive_blender_lock(lock):
-                lock.write_text("foreign-owner\n", encoding="ascii")
+                self.assertTrue(lock.exists())
 
-            self.assertEqual(lock.read_text(encoding="ascii"), "foreign-owner\n")
+            self.assertTrue(lock.exists())
+            with exclusive_blender_lock(lock):
+                self.assertTrue(lock.exists())
+            self.assertTrue(lock.exists())
 
 
 if __name__ == "__main__":
