@@ -441,6 +441,25 @@ def _extract_base_texture(vmt_text: str) -> str | None:
     return value or None
 
 
+def _source_texture_reference(
+    vmt_text: str,
+) -> tuple[str, str, str, bool] | None:
+    uncommented = "\n".join(line.split("//", 1)[0] for line in vmt_text.splitlines())
+    shader_match = re.search(r'^\s*"?([^"\s{]+)"?\s*\{', uncommented)
+    if shader_match is None:
+        return None
+    shader = shader_match.group(1).casefold()
+    directive = "$refracttinttexture" if shader == "refract" else "$basetexture"
+    match = re.search(
+        rf'(?im)^\s*"?{re.escape(directive)}"?\s+"?([^"\s}}]+)',
+        uncommented,
+    )
+    if match is None:
+        return None
+    texture = match.group(1).replace("\\", "/").strip()
+    return shader, directive, texture, shader == "refract" or _vmt_uses_texture_alpha(uncommented)
+
+
 def _vmt_uses_texture_alpha(vmt_text: str) -> bool:
     uncommented = "\n".join(line.split("//", 1)[0] for line in vmt_text.splitlines())
     for directive in ("translucent", "alphatest"):
@@ -753,11 +772,13 @@ def _source_material_files(
     if vmt_path is None:
         return None
     try:
-        base_texture = _extract_base_texture(vmt_path.read_text(encoding="utf-8", errors="replace"))
+        vmt_text = vmt_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    if base_texture is None:
+    texture_reference = _source_texture_reference(vmt_text)
+    if texture_reference is None:
         return None
+    shader, texture_directive, base_texture, uses_texture_alpha = texture_reference
     vtf_path = None
     vtf_root_index = -1
     for root_index, root in enumerate(roots):
@@ -774,6 +795,9 @@ def _source_material_files(
         "search_path_index": search_path_index,
         "vtf_path": vtf_path,
         "vtf_root_index": vtf_root_index,
+        "shader": shader,
+        "texture_directive": texture_directive,
+        "uses_texture_alpha": uses_texture_alpha,
     }
 
 
@@ -797,9 +821,9 @@ def _source_material_evidence(
         "vtf_root_index": resolved["vtf_root_index"],
         "vmt_sha256": hashlib.sha256(vmt_path.read_bytes()).hexdigest(),
         "vtf_sha256": hashlib.sha256(vtf_path.read_bytes()).hexdigest(),
-        "uses_texture_alpha": _vmt_uses_texture_alpha(
-            vmt_path.read_text(encoding="utf-8", errors="replace")
-        ),
+        "shader": resolved["shader"],
+        "texture_directive": resolved["texture_directive"],
+        "uses_texture_alpha": resolved["uses_texture_alpha"],
     }
 
 

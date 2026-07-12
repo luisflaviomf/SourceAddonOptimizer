@@ -1136,6 +1136,26 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertTrue(render_previews._vmt_uses_texture_alpha(translucent))
         self.assertTrue(render_previews._vmt_uses_texture_alpha(alpha_tested))
 
+    def test_refract_shader_uses_tint_texture_and_explicit_alpha_semantics(self):
+        import render_previews
+
+        refract = (
+            'Refract\n{\n "$refracttinttexture" '
+            '"models/diggercars/skyline/lights_glass"\n}\n'
+        )
+        self.assertEqual(
+            render_previews._source_texture_reference(refract),
+            (
+                "refract",
+                "$refracttinttexture",
+                "models/diggercars/skyline/lights_glass",
+                True,
+            ),
+        )
+        self.assertIsNone(render_previews._source_texture_reference(
+            'VertexLitGeneric { "$refracttinttexture" "wrong" }'
+        ))
+
     def test_material_roots_are_ordered_overlays_and_resolution_is_audited(self):
         import render_previews
 
