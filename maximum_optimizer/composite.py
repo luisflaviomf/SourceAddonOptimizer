@@ -352,6 +352,10 @@ def select_recovery_overlays(
 ) -> tuple[SourceOverlay, ...]:
     if not isinstance(failed, CandidateEvaluation):
         raise TypeError("failed recovery evaluation is invalid")
+    if not failed.structural.passed or not failed.whole_visual.passed:
+        raise ValueError(
+            "focused recovery base must pass structural and whole-visual gates"
+        )
     if type(round_index) is not int or not 0 <= round_index < 3:
         raise ValueError("recovery round index is invalid")
     selected = tuple(getattr(selection, "selected", ()))

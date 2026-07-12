@@ -484,6 +484,48 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(result.evidence.terminal_status, "composition_failed")
         self.assertIsNone(result.authorization)
 
+    def test_outer_recovery_boundary_rehashes_exact_compiled_membership(self):
+        workspace = self.root / "current-compile-boundary"
+        compiled = workspace / "compiled/models"
+        compiled.mkdir(parents=True)
+        mdl = compiled / "test.mdl"
+        mdl.write_bytes(b"first-model-bytes")
+        build = CandidateBuild(
+            CandidateSpec("candidate", "blender", 1.0, 0.01, "transfer-v1"),
+            workspace, workspace / "src/main.qc", compiled, {},
+            {"test.mdl": "candidate-compile"}, (), None,
+        )
+        first = orchestrator_module._current_recovery_compile_files(
+            self.family, build, threading.Event()
+        )
+        mdl.write_bytes(b"second-model-byte")
+        second = orchestrator_module._current_recovery_compile_files(
+            self.family, build, threading.Event()
+        )
+        self.assertNotEqual(first, second)
+
+        (compiled / "test.vvd").write_bytes(b"unreported-family-member")
+        with self.assertRaisesRegex(ValueError, "membership"):
+            orchestrator_module._current_recovery_compile_files(
+                self.family, build, threading.Event()
+            )
+
+    def test_outer_recovery_boundary_rejects_minimal_forged_authorization(self):
+        forged = SimpleNamespace(
+            evidence=SimpleNamespace(terminal_status="authorized"),
+            build=None, evaluation=None, authorization={
+                "schema": 2, "candidate_id": "forged"
+            }, recovery_context=None, selection=None, initial_records=(),
+            recoveries=(),
+        )
+        with self.assertRaisesRegex(ValueError, "invalid"):
+            orchestrator_module._validate_authorized_recovery_boundary(
+                result=forged, manifest=self.family, recipe=SimpleNamespace(
+                    recipe_sha256="1" * 64,
+                ), cache_key=orchestrator_module.CacheKey("2" * 64),
+                cancel_event=threading.Event(),
+            )
+
     def test_production_recovery_adapter_reaches_authorized_terminal_path(self):
         from tests.maximum_optimizer.test_composite import H, recipe, snapshot
         from tests.maximum_optimizer.test_focused_cache import (
@@ -545,7 +587,7 @@ class OrchestratorTests(unittest.TestCase):
             (compiled / "test.mdl").write_bytes(b"compiled-model")
             compiled_build = CandidateBuild(
                 composite_spec, recovery_workspace, source / "main_OPT.qc",
-                compiled, {}, {}, (), None,
+                compiled, {}, {"test.mdl": "candidate-compile"}, (), None,
             )
             composed = SimpleNamespace(
                 workspace=recovery_workspace,
@@ -620,7 +662,7 @@ class OrchestratorTests(unittest.TestCase):
                 orchestrator_module, "validate_focused_gate_evidence_payload",
             ), patch.object(
                 orchestrator_module, "FocusedRecoveryAdapterResult",
-                side_effect=lambda build, evaluation, evidence, auth: SimpleNamespace(
+                side_effect=lambda build, evaluation, evidence, auth, *extra: SimpleNamespace(
                     build=build, evaluation=evaluation, evidence=evidence,
                     authorization=auth,
                 ),

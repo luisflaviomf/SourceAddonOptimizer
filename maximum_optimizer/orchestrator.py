@@ -80,6 +80,7 @@ from .focused_cache import (
     FocusedEvidenceContext,
     FocusedRecoveryContext,
     FocusedRecoveryEvidence,
+    FocusedRenderEvidence,
     FocusedRenderCache,
     UncachedFocusMetadata,
     _copy_file_no_follow as _focused_copy_file_no_follow,
@@ -214,6 +215,10 @@ class FocusedRecoveryAdapterResult:
     evaluation: CandidateEvaluation | None
     evidence: FocusedRecoveryEvidence
     authorization: Mapping[str, object] | None
+    recovery_context: FocusedRecoveryContext | None = None
+    initial_records: tuple[FocusedRenderEvidence, ...] = ()
+    selection: FocusSelection | None = None
+    recoveries: tuple[FocusedRecoveryEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.evidence, FocusedRecoveryEvidence):
@@ -222,10 +227,22 @@ class FocusedRecoveryAdapterResult:
         if authorized != (
             self.build is not None and self.evaluation is not None
             and self.authorization is not None
+            and isinstance(self.recovery_context, FocusedRecoveryContext)
+            and bool(self.initial_records)
+            and isinstance(self.selection, FocusSelection)
+            and bool(self.recoveries)
         ):
             raise ValueError("focused recovery adapter result matrix is invalid")
         if not authorized and (self.build is not None or self.authorization is not None):
             raise ValueError("failed recovery cannot expose an authorizable build")
+        if authorized and (
+            self.recoveries[-1] != self.evidence
+            or tuple(item.round_index for item in self.recoveries)
+            != tuple(range(len(self.recoveries)))
+            or len(self.recoveries)
+            > self.recovery_context.base_context.policy.max_recovery_rounds
+        ):
+            raise ValueError("authorized recovery cumulative history is invalid")
         if self.evaluation is not None and not isinstance(
             self.evaluation, CandidateEvaluation
         ):
@@ -1170,6 +1187,143 @@ def _is_exact_family_artifact(logical: str, model_rel: str) -> bool:
         variant = normalized[len(prefix):-len(suffix)]
         return bool(variant) and all(char.isalnum() or char in "_-" for char in variant)
     return False
+
+
+def _current_recovery_compile_files(
+    manifest: FamilyManifest,
+    build: CandidateBuild,
+    cancel_event: threading.Event | None,
+) -> tuple[CompileFileProof, ...]:
+    """Rebuild the exact compiled-family manifest from current contained bytes."""
+    root = build.compiled_models_dir.resolve(strict=True)
+    paths: list[tuple[str, Path]] = []
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        parent = Path(directory)
+        for name in tuple(directory_names):
+            if _is_reparse(parent / name):
+                raise ValueError("recovery compiled tree contains a reparse directory")
+        for name in file_names:
+            path = parent / name
+            if _is_reparse(path):
+                raise ValueError("recovery compiled tree contains a reparse file")
+            relative = path.relative_to(root).as_posix()
+            if _is_exact_family_artifact(relative, manifest.model_rel):
+                paths.append((relative, path))
+                if len(paths) > 64:
+                    raise ValueError("compiled recovery artifact count exceeds 64")
+    paths.sort(key=lambda item: (item[0].casefold(), item[0]))
+    folded = [relative.casefold() for relative, _path in paths]
+    if len(folded) != len(set(folded)):
+        raise ValueError("compiled recovery artifacts case-collide")
+    provenance = tuple(sorted(
+        (relative for relative in build.provenance if _is_exact_family_artifact(
+            relative, manifest.model_rel
+        )),
+        key=lambda item: (item.casefold(), item),
+    ))
+    if tuple(relative for relative, _path in paths) != provenance:
+        raise ValueError("compiled recovery membership differs from build provenance")
+    values: list[CompileFileProof] = []
+    total = 0
+    for relative, path in paths:
+        size, digest = _focused_file_proof(
+            path, cancel_event, contained_root=root,
+            max_bytes=2 * 1024 ** 3 - total,
+        )
+        total += size
+        values.append(CompileFileProof(relative, path.suffix.casefold(), size, digest))
+    if not values:
+        raise ValueError("compiled recovery family is empty")
+    return tuple(values)
+
+
+def _validate_authorized_recovery_boundary(
+    *,
+    result: FocusedRecoveryAdapterResult,
+    manifest: FamilyManifest,
+    recipe,
+    cache_key: CacheKey,
+    cancel_event: threading.Event | None,
+) -> Mapping[str, object]:
+    """Authorize from current bytes at the outer orchestration boundary."""
+    if not isinstance(result, FocusedRecoveryAdapterResult):
+        raise ValueError("recovery boundary adapter result is invalid")
+    if result.evidence.terminal_status != "authorized":
+        raise ValueError("recovery boundary requires an authorized typed round")
+    build = result.build
+    evaluation = result.evaluation
+    final = result.evidence.final_whole
+    structural = result.evidence.structural
+    if (
+        build is None or evaluation is None or final is None or structural is None
+        or result.authorization is None
+        or result.recovery_context is None or result.selection is None
+        or not result.initial_records
+    ):
+        raise ValueError("authorized recovery boundary inputs are incomplete")
+    if not evaluation.structural.passed or not evaluation.visual.passed:
+        raise ValueError("authorized recovery evaluation does not pass all gates")
+    if build.source_snapshot is None:
+        raise ValueError("authorized recovery source snapshot is missing")
+    snapshot = build.source_snapshot
+    if (
+        snapshot.candidate_id != build.spec.candidate_id
+        or snapshot.candidate_cache_digest != cache_key.digest
+        or final.candidate_cache_digest != cache_key.digest
+        or structural.candidate_cache_digest != cache_key.digest
+        or final.recipe_sha256 != recipe.recipe_sha256
+        or final.composition_evidence_sha256
+        != result.evidence.composition.evidence_sha256
+        or snapshot.source_manifest.digest
+        != result.evidence.composition.composed_manifest_sha256
+    ):
+        raise ValueError("authorized recovery byte contracts differ")
+    revalidate_recovery_snapshot(snapshot, cancel_event)
+    current_compile = _current_recovery_compile_files(
+        manifest, build, cancel_event
+    )
+    if current_compile != result.evidence.compile_files:
+        raise ValueError("authorized recovery compiled bytes changed")
+    compile_sha = compile_manifest_sha256(current_compile)
+    if (
+        structural.compile_manifest_sha256 != compile_sha
+        or final.compile_manifest_sha256 != compile_sha
+    ):
+        raise ValueError("authorized recovery compile manifest differs")
+    if final.whole_index_path != "logs/whole-visual-index.json":
+        raise ValueError("authorized recovery whole index path is invalid")
+    whole_path = build.workspace / PurePosixPath(final.whole_index_path)
+    index = _load_whole_visual_index(
+        whole_path, build.workspace, final.whole_index_sha256, cancel_event
+    )
+    if (
+        index["family"]["family_id"] != manifest.family_id
+        or index["family"]["input_sha256"] != manifest.input_hash
+        or index["candidate"]["candidate_id"] != build.spec.candidate_id
+        or index["candidate"]["cache_digest"] != cache_key.digest
+        or canonical_json(index["candidate"]["spec"])
+        != canonical_json(build.spec.cache_payload())
+        or index["dependency"]["digest"] != recipe.dependency_proof_sha256
+    ):
+        raise ValueError("authorized recovery whole index bindings differ")
+    expected_render = hashlib.sha256(canonical_json({
+        "whole_index_sha256": final.whole_index_sha256,
+        "validation": validation_result_payload(final.validation),
+    }).encode("utf-8")).hexdigest()
+    if final.whole_render_evidence_sha256 != expected_render:
+        raise ValueError("authorized recovery whole render binding differs")
+    validated = validate_focused_gate_evidence_payload(
+        result.authorization,
+        family_id=manifest.family_id,
+        candidate_id=build.spec.candidate_id,
+        eligible_targets=result.selection.eligible_ranking,
+        targets=result.selection.selected,
+        regions=evaluation.focused_by_region,
+        recovery_context=result.recovery_context,
+        initial_records=result.initial_records,
+        recoveries=result.recoveries,
+    )
+    return validated
 
 
 def _tree_manifest(
@@ -2376,6 +2530,10 @@ def run_maximum_addon(
                             or result.authorization["candidate_id"] != recovery_spec.candidate_id
                         ):
                             raise ValueError("authorized focused recovery identity mismatch")
+                        validated_authorization = _validate_authorized_recovery_boundary(
+                            result=result, manifest=manifest, recipe=recipe,
+                            cache_key=recovery_key, cancel_event=cancel,
+                        )
                         _check_cancelled(
                             cancel, "cancelled before focused recovery evidence publication"
                         )
@@ -2385,7 +2543,7 @@ def run_maximum_addon(
                         _safe_workspace_atomic_json(
                             build.workspace,
                             recovery_evidence_path,
-                            result.authorization,
+                            validated_authorization,
                             "focused recovery authoritative evidence",
                         )
                         _check_cancelled(
@@ -2399,12 +2557,54 @@ def run_maximum_addon(
                         _check_cancelled(
                             cancel, "cancelled before focused recovery cache store"
                         )
+                        validated_authorization = _validate_authorized_recovery_boundary(
+                            result=result, manifest=manifest, recipe=recipe,
+                            cache_key=recovery_key, cancel_event=cancel,
+                        )
+                        _safe_workspace_atomic_json(
+                            build.workspace, recovery_evidence_path,
+                            validated_authorization,
+                            "focused recovery authoritative evidence",
+                        )
                         stored, recovery_cache_owned = cache.store_with_ownership(
                             recovery_key, build.workspace,
                             {"candidate": recovery_spec.candidate_id, "profile": profile.version},
                             copy_function=lambda source, destination: _copy_file_cancellable(
                                 source, destination, cancel
                             ),
+                        )
+                        cached_workspace = stored / "payload"
+                        cached_build = _load_cached_build(
+                            stored, recovery_spec, key=recovery_key,
+                            manifest=manifest,
+                            dependency_digest=str(dependency["digest"]),
+                            materialized_workspace=cached_workspace,
+                            cancel_event=cancel,
+                            optimizer_contract_digest=recipe.optimizer_contract_sha256,
+                            whole_profile_digest=recipe.whole_profile_sha256,
+                            focused_profile_digest=recipe.focused_profile_sha256,
+                        )
+                        cached_evidence_path = (
+                            cached_workspace / "logs/focused-region-gate.json"
+                        )
+                        cached_authorization = json.loads(
+                            _read_regular_no_follow(
+                                cached_evidence_path, cancel,
+                                contained_root=cached_workspace,
+                            ).decode("utf-8")
+                        )
+                        cached_result = replace(
+                            result,
+                            build=cached_build,
+                            evaluation=replace(
+                                evaluation,
+                                compiled_models_dir=cached_build.compiled_models_dir,
+                            ),
+                            authorization=cached_authorization,
+                        )
+                        _validate_authorized_recovery_boundary(
+                            result=cached_result, manifest=manifest, recipe=recipe,
+                            cache_key=recovery_key, cancel_event=cancel,
                         )
                         # Cache publication is a marker-last transaction. Once
                         # store returns, finish its integrity seal without an
@@ -2414,6 +2614,10 @@ def run_maximum_addon(
                         recovery_cache_sealed = True
                         _check_cancelled(
                             cancel, "cancelled before focused recovery promotion"
+                        )
+                        _validate_authorized_recovery_boundary(
+                            result=result, manifest=manifest, recipe=recipe,
+                            cache_key=recovery_key, cancel_event=cancel,
                         )
                         evaluations.append(evaluation)
                         candidate_builds[recovery_spec.candidate_id] = build
@@ -4556,25 +4760,11 @@ class ProductionAdapters:
 
     @staticmethod
     def _compile_file_proofs(
-        build: CandidateBuild, cancel_event: threading.Event
+        manifest: FamilyManifest,
+        build: CandidateBuild,
+        cancel_event: threading.Event,
     ) -> tuple[CompileFileProof, ...]:
-        root = build.compiled_models_dir.resolve(strict=True)
-        ordered = tuple(sorted(
-            build.provenance, key=lambda item: (item.casefold(), item)
-        ))
-        if len(ordered) > 64:
-            raise ValueError("compiled recovery artifact count exceeds 64")
-        values = []
-        total = 0
-        for relative in ordered:
-            path = root / PurePosixPath(relative)
-            size, digest = _focused_file_proof(
-                path, cancel_event, contained_root=root,
-                max_bytes=2 * 1024 ** 3 - total,
-            )
-            total += size
-            values.append(CompileFileProof(relative, path.suffix.casefold(), size, digest))
-        return tuple(values)
+        return _current_recovery_compile_files(manifest, build, cancel_event)
 
     @staticmethod
     def _structural_recovery_evidence(
@@ -4672,7 +4862,7 @@ class ProductionAdapters:
             return FocusedRecoveryAdapterResult(None, None, evidence, None)
 
         try:
-            compile_files = self._compile_file_proofs(build, cancel_event)
+            compile_files = self._compile_file_proofs(manifest, build, cancel_event)
             compile_sha = compile_manifest_sha256(compile_files)
             structural = structural_validator(manifest, build)
             structural_evidence = self._structural_recovery_evidence(
@@ -4858,7 +5048,10 @@ class ProductionAdapters:
             recovery_context=context, initial_records=base_records,
             recoveries=all_recoveries,
         )
-        return FocusedRecoveryAdapterResult(build, evaluation, current, authorization)
+        return FocusedRecoveryAdapterResult(
+            build, evaluation, current, authorization,
+            context, tuple(base_records), base_selection, tuple(all_recoveries),
+        )
 
     def tool_versions(self) -> Mapping[str, str]:
         def digest(path: Path) -> str:

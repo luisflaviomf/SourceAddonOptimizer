@@ -352,6 +352,26 @@ class SourceSnapshotTests(unittest.TestCase):
 
 
 class DonorSelectionTests(unittest.TestCase):
+    def test_selector_rejects_base_without_structural_or_whole_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            base, base_snapshot = self._candidate(
+                root / "base", "base", 0.4, b"base", focused_pass=False
+            )
+            target = base.focused_by_region["r-" + H["1"]].target
+            selection = FocusSelection(H["2"], (target,), (target,))
+            for unsafe in (
+                replace(base, structural=ValidationResult(False)),
+                replace(base, whole_visual=ValidationResult(False)),
+            ):
+                with self.subTest(gate=unsafe), self.assertRaisesRegex(
+                    ValueError, "structural and whole-visual"
+                ):
+                    select_recovery_overlays(
+                        unsafe, selection, (unsafe,), {"base": base_snapshot},
+                        base_snapshot, None, frozenset(), 0,
+                    )
+
     def test_recipe_factory_seals_complete_base_and_cumulative_overlay_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
