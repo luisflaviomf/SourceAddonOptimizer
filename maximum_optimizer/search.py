@@ -225,9 +225,9 @@ def _regional_recovery(
     passing_donors = [
         evaluation
         for evaluation in evaluations
-        if evaluation.passed
+        if evaluation is not failed
+        and evaluation.passed
         and _recovery_key(evaluation.spec) == contract
-        and evaluation.spec.target_ratio > failed.spec.target_ratio
     ]
     if not passing_donors:
         return None

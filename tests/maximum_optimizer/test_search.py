@@ -550,6 +550,23 @@ class SearchTests(unittest.TestCase):
         self.assertNotIn("-regions-", after_maximum.candidate_id)
         self.assertEqual(after_maximum.region_overrides, ((region, 0.50),))
 
+    def test_regional_recovery_accepts_same_target_pass_with_higher_effective_region(self):
+        region = "r-" + "e" * 64
+        donor = evaluation_at(
+            0.30, True, candidate_id="same-target-pass",
+            region_overrides=((region, 0.50),),
+        )
+        failed = evaluation_at(
+            0.30, False, candidate_id="same-target-fail",
+            worst_scope=f"{region}/bind", region_overrides=((region, 0.35),),
+        )
+
+        recovered = choose_next(
+            [donor, failed], SearchBudget.experimental_default(), initial=(),
+        )
+
+        self.assertEqual(recovered.region_overrides, ((region, 0.50),))
+
     def test_bracket_and_recovery_never_mix_strategies(self):
         region = "r-" + "c" * 64
         evaluations = [
