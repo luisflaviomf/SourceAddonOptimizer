@@ -1071,8 +1071,28 @@ def main(argv: list[str]) -> int:
     if _looks_like_addon_root(addon_path):
         addon_name = addon_path.name
         out_addon_base = addon_path.parent / f"{addon_name}{args.suffix}"
+        maximum_recovered = False
+        if maximum_mode:
+            try:
+                from maximum_optimizer.orchestrator import (
+                    _recover_output_transaction,
+                    validate_path_triplet,
+                )
+                validate_path_triplet(
+                    addon_path, out_addon_base, work_dir,
+                    overwrite=True,
+                )
+                maximum_recovered = _recover_output_transaction(out_addon_base)
+                if maximum_recovered:
+                    args.overwrite = True
+            except Exception as exc:
+                print(f"[ERROR] Maximum canonical output recovery failed: {exc}")
+                return 2
         out_addon_dir = (
-            _choose_maximum_dest_dir(out_addon_base, overwrite=bool(args.overwrite))
+            _choose_maximum_dest_dir(
+                out_addon_base,
+                overwrite=bool(args.overwrite) or maximum_recovered,
+            )
             if maximum_mode
             else _choose_dest_dir(out_addon_base, overwrite=bool(args.overwrite))
         )
@@ -1125,12 +1145,7 @@ def main(argv: list[str]) -> int:
     batch_units: list[tuple[Path, Path, Path]] = []
     for unit_addon_path in addon_units:
         unit_out_base = unit_addon_path.parent / f"{unit_addon_path.name}{args.suffix}"
-        unit_out_dir = (
-            _choose_maximum_dest_dir(unit_out_base, overwrite=bool(args.overwrite))
-            if maximum_mode
-            else unit_out_base
-        )
-        batch_units.append((unit_addon_path, unit_out_dir, work_dir / "units" / unit_addon_path.name))
+        batch_units.append((unit_addon_path, unit_out_base, work_dir / "units" / unit_addon_path.name))
     if maximum_mode:
         try:
             from maximum_optimizer.orchestrator import validate_path_triplet
@@ -1185,6 +1200,26 @@ def main(argv: list[str]) -> int:
                         raise ValueError(
                             f"batch output {output_index} overlaps work {work_index}"
                         )
+            from maximum_optimizer.orchestrator import _recover_output_transaction
+            requested_overwrite = bool(args.overwrite)
+            recovered = tuple(
+                _recover_output_transaction(unit_out_base)
+                for _, unit_out_base, _ in batch_units
+            )
+            batch_units = [
+                (
+                    unit_addon_path,
+                    _choose_maximum_dest_dir(
+                        unit_out_base,
+                        overwrite=requested_overwrite or was_recovered,
+                    ),
+                    unit_work_dir,
+                )
+                for (unit_addon_path, unit_out_base, unit_work_dir), was_recovered
+                in zip(batch_units, recovered)
+            ]
+            if any(recovered):
+                args.overwrite = True
         except Exception as exc:
             print(f"[ERROR] Maximum batch path preflight failed: {exc}")
             return 2

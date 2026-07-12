@@ -958,6 +958,9 @@ class OrchestratorTests(unittest.TestCase):
             "negative": "0 0 0 0 0 0 1 0 0 1 0 -0.1",
             "nonfinite": "0 0 0 0 0 0 1 0 0 1 0 nan",
             "malformed": "0 0 0 0 0 0 1 0 0 2 0 1",
+            "over_one": "0 0 0 0 0 0 1 0 0 1 0 2.0",
+            "duplicate_bone": "0 0 0 0 0 0 1 0 0 2 0 0.5 0 0.5",
+            "sum_over_one": "0 0 0 0 0 0 1 0 0 1 0 1.1",
         }
         for name, vertex in cases.items():
             with self.subTest(name=name):
@@ -970,6 +973,17 @@ class OrchestratorTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 self.assertTrue(helper((path,)))
+
+        remainder = self.root / "valid-parent-remainder.smd"
+        remainder.write_text(
+            "version 1\nnodes\n0 \"root\" -1\nend\n"
+            "skeleton\ntime 0\n0 0 0 0 0 0 0\nend\n"
+            "triangles\nmaterial/base\n"
+            "0 0 0 0 0 0 1 0 0 1 0 0.25\n"
+            "0 1 0 0 0 0 1 1 0\n0 0 1 0 0 0 1 0 1\nend\n",
+            encoding="utf-8",
+        )
+        self.assertFalse(helper((remainder,)))
 
     def test_production_visual_uses_nested_paths_real_animation_and_separate_lods(self):
         source = self.root / "production-source"

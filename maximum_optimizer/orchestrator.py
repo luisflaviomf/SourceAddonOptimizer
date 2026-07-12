@@ -1033,7 +1033,7 @@ def _remove_owned_tree(path: Path) -> None:
     _fsync_directory(path.parent)
 
 
-def _recover_output_transaction(destination: Path) -> None:
+def _recover_output_transaction(destination: Path) -> bool:
     destination = Path(os.path.abspath(os.fspath(destination)))
     parent = destination.parent
     if _is_reparse(parent) or not parent.is_dir():
@@ -1044,7 +1044,7 @@ def _recover_output_transaction(destination: Path) -> None:
     if not os.path.lexists(marker):
         if backups or stagings:
             raise MaximumConfigError("legacy output transaction orphan exists without a valid marker")
-        return
+        return False
     payload, staging, backup = _validated_transaction_marker(destination)
     owned = {staging}
     if backup is not None:
@@ -1069,6 +1069,7 @@ def _recover_output_transaction(destination: Path) -> None:
         _remove_owned_tree(staging)
     marker.unlink()
     _fsync_directory(parent)
+    return True
 
 
 def _promote_verified_tree(
@@ -2076,22 +2077,31 @@ def _smd_controlling_bones(path: Path) -> frozenset[int] | None:
             link_count = int(fields[9])
         except ValueError:
             return None
-        if link_count < 0 or len(fields) != 10 + (link_count * 2):
+        if link_count <= 0 or len(fields) != 10 + (link_count * 2):
             return None
-        positive = False
+        explicit_sum = 0.0
+        linked_bones: set[int] = set()
         for index in range(link_count):
             try:
                 bone_id = int(fields[10 + (index * 2)])
                 weight = float(fields[11 + (index * 2)])
             except ValueError:
                 return None
-            if bone_id < 0 or bone_id not in nodes or not math.isfinite(weight) or weight < 0:
+            if (
+                bone_id < 0 or bone_id not in nodes or bone_id in linked_bones
+                or not math.isfinite(weight) or weight < 0 or weight > 1
+            ):
                 return None
+            linked_bones.add(bone_id)
+            explicit_sum += weight
             if weight > 0:
-                positive = True
                 controlling.add(bone_id)
-        if not positive:
+        tolerance = 1e-6
+        if explicit_sum <= tolerance or explicit_sum > 1.0 + tolerance:
             return None
+        # SMD v1 assigns any unlisted remainder to the vertex parent bone.
+        if explicit_sum < 1.0 - tolerance:
+            controlling.add(parent)
     return frozenset(controlling) if controlling else None
 
 
