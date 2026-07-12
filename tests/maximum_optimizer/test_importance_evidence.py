@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from maximum_optimizer.importance_evidence import (
     canonical_importance_evidence_hash,
@@ -84,15 +84,17 @@ class ImportanceEvidenceTests(unittest.TestCase):
         reparsed["evidence_sha256"] = "f" * 64
         self.assertEqual(first, canonical_importance_evidence_hash(reparsed))
 
-    def test_archived_execution_snapshot_is_not_a_current_worktree_claim(self) -> None:
+    def test_archived_execution_snapshot_does_not_read_current_worktree_files(self) -> None:
         execution = self.payload["implementation"]
-        current = {
-            relative: hashlib.sha256(Path(relative).read_bytes()).hexdigest()
-            for relative in execution["files"]
-        }
-        self.assertNotEqual(current, execution["files"])
         self.assertEqual(execution["scope"], "archived-execution-snapshot")
-        parse_importance_evidence(self.payload)
+        self.assertEqual(
+            execution["snapshot_sha256"],
+            canonical_implementation_snapshot_hash(execution["files"]),
+        )
+        with patch.object(
+            Path, "read_bytes", side_effect=AssertionError("current worktree read")
+        ):
+            parse_importance_evidence(self.payload)
 
     def test_resealed_snapshot_with_wrong_snapshot_digest_is_rejected(self) -> None:
         mutation = copy.deepcopy(self.payload)
