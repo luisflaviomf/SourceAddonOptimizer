@@ -1,0 +1,1158 @@
+{
+  "evidence_sha256": "85f21ba7ea57a74406960dbd5ee1f2075c4b582a4e7e8abff7b9e75854bb13eb",
+  "families": [
+    {
+      "attempts": [
+        {
+          "candidate": {
+            "artifacts": [
+              {
+                "path": "charger.dx80.vtx",
+                "sha256": "e10e310935b3a0f70cfea44c43541c8877157dd511215fdb2204aff056f6c3eb",
+                "size_bytes": 1881098
+              },
+              {
+                "path": "charger.dx90.vtx",
+                "sha256": "db1fffb96b7d4db3ca5d1fc1e7f658a63b50920e918f76b073364e8076970d5c",
+                "size_bytes": 1881098
+              },
+              {
+                "path": "charger.mdl",
+                "sha256": "e83e1f9225a5ec48dd428821de9e560006f9af438b77fa8546ad9311bab7d510",
+                "size_bytes": 107944
+              },
+              {
+                "path": "charger.phy",
+                "sha256": "6088237aba46ac30b5b5e5a1099dd207622942d0c4c00709950b49ae8d1b60c1",
+                "size_bytes": 18023
+              },
+              {
+                "path": "charger.vvd",
+                "sha256": "a1663364ff74acd1bb6fa7bbf9ffa00cd3430bc820d91eac085af55494bde84a",
+                "size_bytes": 8255808
+              }
+            ],
+            "total_bytes": 12143971
+          },
+          "candidate_metrics_sha256": "040c9dc4c5baa6db4813315612f335e0b8fb2b516203aa0e580233bfc984574c",
+          "candidate_payload_sha256": "5b4d59d9778b0695715a803bb07e60f4d9c6a0a58676618491b27d2868f2e1f0",
+          "compile_log_sha256": "b80ec04dea07fa03590b5c3132dc2d17fadf21c53257ac1abe18feafb70d39e4",
+          "compile_summary_sha256": "01dcce358102d7044d03c55a8d92a5cd5e3fbec0446fcf2114069bbbe596a576",
+          "fallback_summary": {
+            "bytes": 6535670,
+            "count": 2
+          },
+          "fallbacks": [
+            {
+              "output_sha256": "d725cb4fa415c6999d05a41cc07caa834a2d0b4bd49929251e331d403e3485bf",
+              "reason": "normal must be non-zero",
+              "size_bytes": 5465361,
+              "source": "body29_model0.smd",
+              "source_sha256": "d725cb4fa415c6999d05a41cc07caa834a2d0b4bd49929251e331d403e3485bf"
+            },
+            {
+              "output_sha256": "0643d472e4b275e9d742fa9ea7846a3c7e0d306956dd36c12040402758570cc0",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 1070309,
+              "source": "roof_paint.smd",
+              "source_sha256": "0643d472e4b275e9d742fa9ea7846a3c7e0d306956dd36c12040402758570cc0"
+            }
+          ],
+          "qc": {
+            "differing_fields": [
+              "mesh_files"
+            ],
+            "status": "pass"
+          },
+          "ratio": 0.35,
+          "triangles": {
+            "after": 118013,
+            "before": 295861
+          }
+        },
+        {
+          "candidate": {
+            "artifacts": [
+              {
+                "path": "charger.dx80.vtx",
+                "sha256": "1ffa5e2bf72c22bef979b7ebebd869128a5f410725d36c3c06792f8c7c6d6b06",
+                "size_bytes": 1680182
+              },
+              {
+                "path": "charger.dx90.vtx",
+                "sha256": "1cb1c2370e048a31ea706a13d5378fef68f357534c6b407ecda18a5f4622b83a",
+                "size_bytes": 1680182
+              },
+              {
+                "path": "charger.mdl",
+                "sha256": "225d06fbb5d87c969b6c5b52dfdfabd4670d4d6177679b838623c4ad6362c664",
+                "size_bytes": 107944
+              },
+              {
+                "path": "charger.phy",
+                "sha256": "73086fa9a6ebdfacb864c06ebeb58b54727413732c27d55d3bc261205ac7facb",
+                "size_bytes": 18023
+              },
+              {
+                "path": "charger.vvd",
+                "sha256": "a7401f84952acf61bcb66a0f1cbb97cbcdfc9ca9d7d89f6195e88e7e0724c820",
+                "size_bytes": 7410624
+              }
+            ],
+            "total_bytes": 10896955
+          },
+          "candidate_metrics_sha256": "1ec8c34e695828ffc8fb0e452f6dd43010a2d08274eb22adfe06b4437039b33b",
+          "candidate_payload_sha256": "59c60f66924a466df61d371106288c33372e6e53ef746fc59da9175e9f4e9ca2",
+          "compile_log_sha256": "ea77768dd321549dda7b8a53b4344dd591a26b9ab489bf4ea58eb8aec85db3c2",
+          "compile_summary_sha256": "13c3a30bba6ff61f4a0a0d279213b26830cbafba1daf6267c3c043e852499a1c",
+          "fallback_summary": {
+            "bytes": 6535670,
+            "count": 2
+          },
+          "fallbacks": [
+            {
+              "output_sha256": "d725cb4fa415c6999d05a41cc07caa834a2d0b4bd49929251e331d403e3485bf",
+              "reason": "normal must be non-zero",
+              "size_bytes": 5465361,
+              "source": "body29_model0.smd",
+              "source_sha256": "d725cb4fa415c6999d05a41cc07caa834a2d0b4bd49929251e331d403e3485bf"
+            },
+            {
+              "output_sha256": "0643d472e4b275e9d742fa9ea7846a3c7e0d306956dd36c12040402758570cc0",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 1070309,
+              "source": "roof_paint.smd",
+              "source_sha256": "0643d472e4b275e9d742fa9ea7846a3c7e0d306956dd36c12040402758570cc0"
+            }
+          ],
+          "qc": {
+            "differing_fields": [
+              "mesh_files"
+            ],
+            "status": "pass"
+          },
+          "ratio": 0.3,
+          "triangles": {
+            "after": 104336,
+            "before": 295861
+          }
+        },
+        {
+          "candidate": {
+            "artifacts": [
+              {
+                "path": "charger.dx80.vtx",
+                "sha256": "4a3abbcb12394583c86e919df463aef892d48de3f77851c1fd2764ef7e5ec13e",
+                "size_bytes": 1720853
+              },
+              {
+                "path": "charger.dx90.vtx",
+                "sha256": "4b8e52b031da251fcd8162612ab409443b6eadcd62063287d072e537ef194d11",
+                "size_bytes": 1720853
+              },
+              {
+                "path": "charger.mdl",
+                "sha256": "45335f4b941af46d96886cec6332874ddd94ba3c10433667c15d98c538a41717",
+                "size_bytes": 107944
+              },
+              {
+                "path": "charger.phy",
+                "sha256": "7577f1f2283e3ae11aa0f78749e8ad9874ff0c15900477f44c2889b2fbb101e5",
+                "size_bytes": 18023
+              },
+              {
+                "path": "charger.vvd",
+                "sha256": "6b99884e274e84c2d9ac49e0c811280b787f433a6e1c8b8a316f95c7c9ef94e0",
+                "size_bytes": 7503872
+              }
+            ],
+            "total_bytes": 11071545
+          },
+          "candidate_metrics_sha256": "8f4da7c0dd963892522c5a852decc87d38e083d40f726026d371aba210bbc752",
+          "candidate_payload_sha256": "1652dc29ebcdce57b4a487009baf7f5b02a5be2fdce58c5b4eb981d22cfd59b5",
+          "compile_log_sha256": "393de19a2ab333f1fa9bd8ed6f5e0dc9c04a261b78b9d7c03f52835aead5cae5",
+          "compile_summary_sha256": "d566b9cd811af3b31e0adf7b48f0ba0a17b48c157d59d6d6f794fa079b932a8e",
+          "fallback_summary": {
+            "bytes": 13615356,
+            "count": 3
+          },
+          "fallbacks": [
+            {
+              "output_sha256": "bce8bbe204e338a1f7d37434051d1a825871fb25bc03f8eb11b88c4e5241192c",
+              "reason": "normal must be non-zero",
+              "size_bytes": 7079686,
+              "source": "body27_model0.smd",
+              "source_sha256": "bce8bbe204e338a1f7d37434051d1a825871fb25bc03f8eb11b88c4e5241192c"
+            },
+            {
+              "output_sha256": "d725cb4fa415c6999d05a41cc07caa834a2d0b4bd49929251e331d403e3485bf",
+              "reason": "normal must be non-zero",
+              "size_bytes": 5465361,
+              "source": "body29_model0.smd",
+              "source_sha256": "d725cb4fa415c6999d05a41cc07caa834a2d0b4bd49929251e331d403e3485bf"
+            },
+            {
+              "output_sha256": "0643d472e4b275e9d742fa9ea7846a3c7e0d306956dd36c12040402758570cc0",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 1070309,
+              "source": "roof_paint.smd",
+              "source_sha256": "0643d472e4b275e9d742fa9ea7846a3c7e0d306956dd36c12040402758570cc0"
+            }
+          ],
+          "qc": {
+            "differing_fields": [
+              "mesh_files"
+            ],
+            "status": "pass"
+          },
+          "ratio": 0.25,
+          "triangles": {
+            "after": 108929,
+            "before": 295861
+          }
+        }
+      ],
+      "baselines": {
+        "b050": {
+          "artifacts": [
+            {
+              "path": "charger.dx80.vtx",
+              "sha256": "5e5b05efac662cd9faaa95a1d3b761fb87648df14f676377b1c6a7fc01b0d435",
+              "size_bytes": 2307218
+            },
+            {
+              "path": "charger.dx90.vtx",
+              "sha256": "450600dbbf86a5c982fe47e89d938471c4c1c2f8eb797ac11f69dece0cdf548d",
+              "size_bytes": 2307218
+            },
+            {
+              "path": "charger.mdl",
+              "sha256": "9a736054923aa9566c791c9e764d7804ec5475e5f2dcedf0013afcb6e48206e9",
+              "size_bytes": 111256
+            },
+            {
+              "path": "charger.phy",
+              "sha256": "674e8f1e4917ffb5e08b31c5d18886dc88f61cd7c70a03ace524b180b2cb5f71",
+              "size_bytes": 17964
+            },
+            {
+              "path": "charger.vvd",
+              "sha256": "7fd44d78659c7c6f23299152ef7240e66f8d015ab84a37a8ffd77fdc16bf1a98",
+              "size_bytes": 9995328
+            }
+          ],
+          "total_bytes": 14738984
+        },
+        "original": {
+          "artifacts": [
+            {
+              "path": "charger.dx80.vtx",
+              "sha256": "8bbdc9f799e84accd1a7fff75f9147015d4e50747698bf67ec9c291e81dcb8a1",
+              "size_bytes": 4220437
+            },
+            {
+              "path": "charger.dx90.vtx",
+              "sha256": "121e3f3a4ad0bde732e4d0eb780bf9656ca5d309de5bf81a600bf09557c845fd",
+              "size_bytes": 4220437
+            },
+            {
+              "path": "charger.mdl",
+              "sha256": "17fcadaeacd617588ebea26726a1969e674ccdf27c2c990ea0f5908f5b9c801d",
+              "size_bytes": 73588
+            },
+            {
+              "path": "charger.phy",
+              "sha256": "674e8f1e4917ffb5e08b31c5d18886dc88f61cd7c70a03ace524b180b2cb5f71",
+              "size_bytes": 17964
+            },
+            {
+              "path": "charger.vvd",
+              "sha256": "434d6100285939d84292cb01be9ae6f2b5e6e5653afd0a5bfbc0e9b7704c929d",
+              "size_bytes": 17278912
+            }
+          ],
+          "total_bytes": 25811338
+        },
+        "r040": {
+          "artifacts": [
+            {
+              "path": "charger.dx80.vtx",
+              "sha256": "141cfd27b5e2ad928b5502fe485869d203e2796728d6acb990e876dae863e283",
+              "size_bytes": 2074937
+            },
+            {
+              "path": "charger.dx90.vtx",
+              "sha256": "a1977f0f96fd631501e3ae746330bd5f37c9ce3bf8b44cde4c05f5f68c5f9105",
+              "size_bytes": 2074937
+            },
+            {
+              "path": "charger.mdl",
+              "sha256": "b3cb398bc6a5175419bca12f12694822421570247fe802bea3f3443db036e39c",
+              "size_bytes": 107944
+            },
+            {
+              "path": "charger.phy",
+              "sha256": "804418aa9d8bbdedbf5d7d41012d0f17217741b51b719cb20f89a5fc467d4421",
+              "size_bytes": 18023
+            },
+            {
+              "path": "charger.vvd",
+              "sha256": "28584ca50717708ea12f1260680e8184de1bac0871e3c5648067230dc231c8df",
+              "size_bytes": 9050368
+            }
+          ],
+          "total_bytes": 13326209
+        }
+      },
+      "decision": {
+        "ratio": 0.3,
+        "reason": "minimum actual StudioMDL family bytes among structurally passing planned ratios; visual quality is a separate pending gate",
+        "total_bytes": 10896955
+      },
+      "family_id": "dodge_charger"
+    },
+    {
+      "attempts": [
+        {
+          "candidate": {
+            "artifacts": [
+              {
+                "path": "supra.dx80.vtx",
+                "sha256": "896636486e3a62022ab5877f02aaf1144c1e0c24f2adac4370fc27e065ecb545",
+                "size_bytes": 1661304
+              },
+              {
+                "path": "supra.dx90.vtx",
+                "sha256": "975687179917284f1c960bd09aaed4699765cfe441c38c4e86bdf6a51f0271be",
+                "size_bytes": 1661304
+              },
+              {
+                "path": "supra.mdl",
+                "sha256": "7451d5077259e1041aecb3e90e35211ac260728c2cc27cadf3985d867cdbc326",
+                "size_bytes": 63808
+              },
+              {
+                "path": "supra.phy",
+                "sha256": "6df32c04425c57d1851204888b2bc94ad10ce358174a8fc9d629405d9d135b24",
+                "size_bytes": 18973
+              },
+              {
+                "path": "supra.vvd",
+                "sha256": "41a58f258470bc61441ff61774c696f5636333131428b2ae178cb0ecab565825",
+                "size_bytes": 6172160
+              }
+            ],
+            "total_bytes": 9577549
+          },
+          "candidate_metrics_sha256": "c12e65f41b7ee426e5d425f9a5619264c60e8d4f75bdc468d4b911ad921f032a",
+          "candidate_payload_sha256": "5b4d59d9778b0695715a803bb07e60f4d9c6a0a58676618491b27d2868f2e1f0",
+          "compile_log_sha256": "c6bebaf3342fa0a6810682dcca84be3a12b09296c248164ceb0269a129a60c96",
+          "compile_summary_sha256": "116259a56fba0f736bde2187dadd6116a6f335ff0244c49a899dd2fd9ff3b208",
+          "fallback_summary": {
+            "bytes": 8249544,
+            "count": 3
+          },
+          "fallbacks": [
+            {
+              "output_sha256": "5e3be7bb80b0ea3395be46b722e1e31979d4ca9edeb6a3f2bac7eed30a9ee5ca",
+              "reason": "normal must be non-zero",
+              "size_bytes": 4151568,
+              "source": "body_stock.smd",
+              "source_sha256": "5e3be7bb80b0ea3395be46b722e1e31979d4ca9edeb6a3f2bac7eed30a9ee5ca"
+            },
+            {
+              "output_sha256": "6a146fe14b8a7e2cde93d2de199785bab75ed0540aa9d56cc7b80f8a753a02e1",
+              "reason": "normal must be non-zero",
+              "size_bytes": 2369546,
+              "source": "engine_bay.smd",
+              "source_sha256": "6a146fe14b8a7e2cde93d2de199785bab75ed0540aa9d56cc7b80f8a753a02e1"
+            },
+            {
+              "output_sha256": "06fbcef2fb4e405f42d8905e25beef46c12aaa155c2c504e57c0ff2c4ae49f11",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 1728430,
+              "source": "wing_stock.smd",
+              "source_sha256": "06fbcef2fb4e405f42d8905e25beef46c12aaa155c2c504e57c0ff2c4ae49f11"
+            }
+          ],
+          "qc": {
+            "differing_fields": [
+              "mesh_files"
+            ],
+            "status": "pass"
+          },
+          "ratio": 0.35,
+          "triangles": {
+            "after": 130593,
+            "before": 321715
+          }
+        },
+        {
+          "candidate": {
+            "artifacts": [
+              {
+                "path": "supra.dx80.vtx",
+                "sha256": "ea60fd4e7a76ec26ad9e11da2931f3be4fd8b7e0db6f57f4f2d651a6a917491d",
+                "size_bytes": 1535085
+              },
+              {
+                "path": "supra.dx90.vtx",
+                "sha256": "7d893b6e06fff680f5bcce35e1c2774d44cba0c7663ca928c4ee8fff4b9bbdb6",
+                "size_bytes": 1535085
+              },
+              {
+                "path": "supra.mdl",
+                "sha256": "f60909755702bee382d56f21806a569a7afa529dc5f48829821457bfa0bdf3a1",
+                "size_bytes": 63808
+              },
+              {
+                "path": "supra.phy",
+                "sha256": "69b9271e75f37b9368f61a8d98eaaf72d66ee3b4ee8eee8a1f5aae9d747aa2e5",
+                "size_bytes": 18973
+              },
+              {
+                "path": "supra.vvd",
+                "sha256": "182803380910cd6d35d2090ea5c771157bab352f15826016a420ac235b4f8142",
+                "size_bytes": 5709248
+              }
+            ],
+            "total_bytes": 8862199
+          },
+          "candidate_metrics_sha256": "4c76d9db9cdca2b882c16a157884c4665fba3f6db8aff77c80bc99f2ab814073",
+          "candidate_payload_sha256": "59c60f66924a466df61d371106288c33372e6e53ef746fc59da9175e9f4e9ca2",
+          "compile_log_sha256": "69a341d61ab50147e11e621f866e1766ee2b87b5e3c687a2d0bda61c1e305036",
+          "compile_summary_sha256": "e34dd5ae82083dc3156214140aabc5fd838adf25a455ba16de3d182ad482586f",
+          "fallback_summary": {
+            "bytes": 10175468,
+            "count": 5
+          },
+          "fallbacks": [
+            {
+              "output_sha256": "5e3be7bb80b0ea3395be46b722e1e31979d4ca9edeb6a3f2bac7eed30a9ee5ca",
+              "reason": "normal must be non-zero",
+              "size_bytes": 4151568,
+              "source": "body_stock.smd",
+              "source_sha256": "5e3be7bb80b0ea3395be46b722e1e31979d4ca9edeb6a3f2bac7eed30a9ee5ca"
+            },
+            {
+              "output_sha256": "6a146fe14b8a7e2cde93d2de199785bab75ed0540aa9d56cc7b80f8a753a02e1",
+              "reason": "normal must be non-zero",
+              "size_bytes": 2369546,
+              "source": "engine_bay.smd",
+              "source_sha256": "6a146fe14b8a7e2cde93d2de199785bab75ed0540aa9d56cc7b80f8a753a02e1"
+            },
+            {
+              "output_sha256": "7029aa80c43967936d941d53c15cf33521706409ff64e0c869f7eb4f1277dc55",
+              "reason": "export lost all UV seam evidence",
+              "size_bytes": 957509,
+              "source": "hood3.smd",
+              "source_sha256": "7029aa80c43967936d941d53c15cf33521706409ff64e0c869f7eb4f1277dc55"
+            },
+            {
+              "output_sha256": "503d62ba47a866c06c143e00154a6f257c05259e4371ce0be04c1aae4ee7ff8a",
+              "reason": "export lost all UV seam evidence",
+              "size_bytes": 968415,
+              "source": "hood3c.smd",
+              "source_sha256": "503d62ba47a866c06c143e00154a6f257c05259e4371ce0be04c1aae4ee7ff8a"
+            },
+            {
+              "output_sha256": "06fbcef2fb4e405f42d8905e25beef46c12aaa155c2c504e57c0ff2c4ae49f11",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 1728430,
+              "source": "wing_stock.smd",
+              "source_sha256": "06fbcef2fb4e405f42d8905e25beef46c12aaa155c2c504e57c0ff2c4ae49f11"
+            }
+          ],
+          "qc": {
+            "differing_fields": [
+              "mesh_files"
+            ],
+            "status": "pass"
+          },
+          "ratio": 0.3,
+          "triangles": {
+            "after": 120406,
+            "before": 321715
+          }
+        },
+        {
+          "candidate": {
+            "artifacts": [
+              {
+                "path": "supra.dx80.vtx",
+                "sha256": "e584ed8638e4c13d1f89244478240e9a330eecb905789783f1e003bc3174359f",
+                "size_bytes": 1364007
+              },
+              {
+                "path": "supra.dx90.vtx",
+                "sha256": "a7193d8733b407decd73256ef6013e574c7705fe75913ce2b67aa9bd28952edb",
+                "size_bytes": 1364007
+              },
+              {
+                "path": "supra.mdl",
+                "sha256": "352801afa50846177ce4fd0f1212242d41660f67c5e5192e290306ee3f819216",
+                "size_bytes": 63808
+              },
+              {
+                "path": "supra.phy",
+                "sha256": "e4fdef27ee448f3dea37b7242feba03b930d89ec40d670b6c60b41a26aa99160",
+                "size_bytes": 18973
+              },
+              {
+                "path": "supra.vvd",
+                "sha256": "d877e4e2556d1683851e9338150088aa7c315993c562a9c717108046c065636c",
+                "size_bytes": 5105728
+              }
+            ],
+            "total_bytes": 7916523
+          },
+          "candidate_metrics_sha256": "174ba3d45f87f447d05efc84bffe052b9005bf8da2a76f41fc2c228bf681e68e",
+          "candidate_payload_sha256": "1652dc29ebcdce57b4a487009baf7f5b02a5be2fdce58c5b4eb981d22cfd59b5",
+          "compile_log_sha256": "c0ddf80d1df95e977f1dffef251e1f6eec19bf4dab479f9f71f69b6bbbbcf126",
+          "compile_summary_sha256": "d0124bb102d7f23d12babeb7803fa48e1df788729e33f7e55f950cdc12cfb89a",
+          "fallback_summary": {
+            "bytes": 10175468,
+            "count": 5
+          },
+          "fallbacks": [
+            {
+              "output_sha256": "5e3be7bb80b0ea3395be46b722e1e31979d4ca9edeb6a3f2bac7eed30a9ee5ca",
+              "reason": "normal must be non-zero",
+              "size_bytes": 4151568,
+              "source": "body_stock.smd",
+              "source_sha256": "5e3be7bb80b0ea3395be46b722e1e31979d4ca9edeb6a3f2bac7eed30a9ee5ca"
+            },
+            {
+              "output_sha256": "6a146fe14b8a7e2cde93d2de199785bab75ed0540aa9d56cc7b80f8a753a02e1",
+              "reason": "normal must be non-zero",
+              "size_bytes": 2369546,
+              "source": "engine_bay.smd",
+              "source_sha256": "6a146fe14b8a7e2cde93d2de199785bab75ed0540aa9d56cc7b80f8a753a02e1"
+            },
+            {
+              "output_sha256": "7029aa80c43967936d941d53c15cf33521706409ff64e0c869f7eb4f1277dc55",
+              "reason": "export lost all UV seam evidence",
+              "size_bytes": 957509,
+              "source": "hood3.smd",
+              "source_sha256": "7029aa80c43967936d941d53c15cf33521706409ff64e0c869f7eb4f1277dc55"
+            },
+            {
+              "output_sha256": "503d62ba47a866c06c143e00154a6f257c05259e4371ce0be04c1aae4ee7ff8a",
+              "reason": "export lost all UV seam evidence",
+              "size_bytes": 968415,
+              "source": "hood3c.smd",
+              "source_sha256": "503d62ba47a866c06c143e00154a6f257c05259e4371ce0be04c1aae4ee7ff8a"
+            },
+            {
+              "output_sha256": "06fbcef2fb4e405f42d8905e25beef46c12aaa155c2c504e57c0ff2c4ae49f11",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 1728430,
+              "source": "wing_stock.smd",
+              "source_sha256": "06fbcef2fb4e405f42d8905e25beef46c12aaa155c2c504e57c0ff2c4ae49f11"
+            }
+          ],
+          "qc": {
+            "differing_fields": [
+              "mesh_files"
+            ],
+            "status": "pass"
+          },
+          "ratio": 0.25,
+          "triangles": {
+            "after": 106038,
+            "before": 321715
+          }
+        }
+      ],
+      "baselines": {
+        "b050": {
+          "artifacts": [
+            {
+              "path": "supra.dx80.vtx",
+              "sha256": "ead85a138fde08bf81532d2d0a8f8d935339657513824db5af25f750482f4788",
+              "size_bytes": 2023890
+            },
+            {
+              "path": "supra.dx90.vtx",
+              "sha256": "ea633e2abc85be3c755c71ed805890b9bdedc168bf5dcfae989b5613e899e515",
+              "size_bytes": 2023890
+            },
+            {
+              "path": "supra.mdl",
+              "sha256": "035c2ca7dfa7c2985d429f622df40565b24554710883197229d9ce990e9900d0",
+              "size_bytes": 66940
+            },
+            {
+              "path": "supra.phy",
+              "sha256": "a0a75de3b0417b10fdc750838e05a5e184cf44408c9d51f5f78708347c9d5d03",
+              "size_bytes": 19124
+            },
+            {
+              "path": "supra.vvd",
+              "sha256": "5066a89b10cb6d8c57bb87de9c853db85ffcd9b0a4a1b7804a5e117a6ff98cfe",
+              "size_bytes": 7445440
+            }
+          ],
+          "total_bytes": 11579284
+        },
+        "original": {
+          "artifacts": [
+            {
+              "path": "supra.dx80.vtx",
+              "sha256": "c11be14c34915d50228df362640a26cbf945db0278f6b47b445179d044679822",
+              "size_bytes": 3858649
+            },
+            {
+              "path": "supra.dx90.vtx",
+              "sha256": "62598cb70fa54c4074451f1633459c1916194c333448035138289f83fa6f419a",
+              "size_bytes": 3858649
+            },
+            {
+              "path": "supra.mdl",
+              "sha256": "fc6e3759ae563b2d9c2d6f3bc71d52562ef29df706a6f3474a49bea5443f55ff",
+              "size_bytes": 59164
+            },
+            {
+              "path": "supra.phy",
+              "sha256": "a0a75de3b0417b10fdc750838e05a5e184cf44408c9d51f5f78708347c9d5d03",
+              "size_bytes": 19124
+            },
+            {
+              "path": "supra.vvd",
+              "sha256": "3cb23fb88918f278e2fc6f3e400c497be47e07dc861f8ca471929165cf7361a1",
+              "size_bytes": 13620544
+            }
+          ],
+          "total_bytes": 21416130
+        },
+        "r040": {
+          "artifacts": [
+            {
+              "path": "supra.dx80.vtx",
+              "sha256": "e5cf4c17e6fb2080614fdf4765879d78bee69101f94da52e6da11d5202a0d5b5",
+              "size_bytes": 1833615
+            },
+            {
+              "path": "supra.dx90.vtx",
+              "sha256": "29c963fb186e11c1bb919223dd516069dc0ed6d2c36725bcb199717812198f96",
+              "size_bytes": 1833615
+            },
+            {
+              "path": "supra.mdl",
+              "sha256": "78c7a60c98516f360cd78fdf7eee3dff560306674762d03593f038584040f97e",
+              "size_bytes": 63808
+            },
+            {
+              "path": "supra.phy",
+              "sha256": "226128599fc1cbda7a5c790ccbcd0a9f5087167a1591e4252abb70038f14031d",
+              "size_bytes": 18973
+            },
+            {
+              "path": "supra.vvd",
+              "sha256": "1c9435a35af89e80123fc0c908182c79af1dd614ae87d71c3574d9e3f3ba3ea4",
+              "size_bytes": 6770240
+            }
+          ],
+          "total_bytes": 10520251
+        }
+      },
+      "decision": {
+        "ratio": 0.25,
+        "reason": "minimum actual StudioMDL family bytes among structurally passing planned ratios; visual quality is a separate pending gate",
+        "total_bytes": 7916523
+      },
+      "family_id": "toyota_supra"
+    },
+    {
+      "attempts": [
+        {
+          "candidate": {
+            "artifacts": [
+              {
+                "path": "bnr32.dx80.vtx",
+                "sha256": "269d1ac6d8c0a57379ae339d336070de229b7fb78076c38f292e75290f66f22f",
+                "size_bytes": 1041363
+              },
+              {
+                "path": "bnr32.dx90.vtx",
+                "sha256": "9b1ae1db9bce6c13986e51b7873ba1fea6abbae49c04024d28c95e6382837538",
+                "size_bytes": 1041309
+              },
+              {
+                "path": "bnr32.mdl",
+                "sha256": "38a3b1ac49892f9c2d04288322d739dd8ddf83a233ca2c7da6031f95c190a405",
+                "size_bytes": 164764
+              },
+              {
+                "path": "bnr32.phy",
+                "sha256": "70a4a911db22dc97f0023d733a9360f21d8f93a91266ab3e47a7c54ea643e3c5",
+                "size_bytes": 15629
+              },
+              {
+                "path": "bnr32.vvd",
+                "sha256": "2c82bb951274bfc5b627b0897a83b1f7b591aa2c032a2b5e5d33d714b0aa4510",
+                "size_bytes": 4085952
+              }
+            ],
+            "total_bytes": 6349017
+          },
+          "candidate_metrics_sha256": "c8f4691c3260c5454d274687bb94dea1dac6e8a481c3873185205a3209987289",
+          "candidate_payload_sha256": "5b4d59d9778b0695715a803bb07e60f4d9c6a0a58676618491b27d2868f2e1f0",
+          "compile_log_sha256": "6db59c8c3ee17c7014aad4b9a7bf1e248977004fe663005fd1153866490e2453",
+          "compile_summary_sha256": "dae6fbe0aa1155b46744603f4c49486c53d4d44f145447d5b76b8d6d26ce01a1",
+          "fallback_summary": {
+            "bytes": 9131661,
+            "count": 9
+          },
+          "fallbacks": [
+            {
+              "output_sha256": "3a2ccd6efcc3bd304e3569838a3df32d38e232355805e05e00452432c1a233be",
+              "reason": "normal must be non-zero",
+              "size_bytes": 5967484,
+              "source": "body.smd",
+              "source_sha256": "3a2ccd6efcc3bd304e3569838a3df32d38e232355805e05e00452432c1a233be"
+            },
+            {
+              "output_sha256": "c818540947ab5ae85ee7ce9f38d9065f7dc0a24605cce489e5a6f66d252d1e52",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 184421,
+              "source": "canards_d.smd",
+              "source_sha256": "c818540947ab5ae85ee7ce9f38d9065f7dc0a24605cce489e5a6f66d252d1e52"
+            },
+            {
+              "output_sha256": "fb24a904423bb29cf8d52dc11ecf391cf091e5380e5dad90f4c3c50fde3454d8",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 345200,
+              "source": "diffuser_mid_a.smd",
+              "source_sha256": "fb24a904423bb29cf8d52dc11ecf391cf091e5380e5dad90f4c3c50fde3454d8"
+            },
+            {
+              "output_sha256": "f62b69b28da0119a2c58147d7d8d4439de293930b095601ec74b378d5208704c",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 212907,
+              "source": "diffuser_mid_b.smd",
+              "source_sha256": "f62b69b28da0119a2c58147d7d8d4439de293930b095601ec74b378d5208704c"
+            },
+            {
+              "output_sha256": "c3ab5ceaa4fd80412939df7102c98040a9d527eb6d437bc0e85ff6c704a2d8a4",
+              "reason": "normal must be non-zero",
+              "size_bytes": 55078,
+              "source": "roofspoiler.smd",
+              "source_sha256": "c3ab5ceaa4fd80412939df7102c98040a9d527eb6d437bc0e85ff6c704a2d8a4"
+            },
+            {
+              "output_sha256": "8f7952b2c769c0741254c78df73c35d3e142bdbaaa6efcc81c6b83daad9135bc",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 375315,
+              "source": "splitter2_a.smd",
+              "source_sha256": "8f7952b2c769c0741254c78df73c35d3e142bdbaaa6efcc81c6b83daad9135bc"
+            },
+            {
+              "output_sha256": "7d50d593f6dfbbca9e3ea6609cbdd2d5b91de78783baa018c93a7bb7b5a28631",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 146959,
+              "source": "splitter2_c.smd",
+              "source_sha256": "7d50d593f6dfbbca9e3ea6609cbdd2d5b91de78783baa018c93a7bb7b5a28631"
+            },
+            {
+              "output_sha256": "b31d33b70304374b5ff8c105c12eb63e3c0e69e7ef7bfb13efba7bbd35ce26cb",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 1451423,
+              "source": "wing_b.smd",
+              "source_sha256": "b31d33b70304374b5ff8c105c12eb63e3c0e69e7ef7bfb13efba7bbd35ce26cb"
+            },
+            {
+              "output_sha256": "06a26d80c0ef1b05ad402e0018898fddb252b73a6d9449f4a0e5c4963d798008",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 392874,
+              "source": "wing_c.smd",
+              "source_sha256": "06a26d80c0ef1b05ad402e0018898fddb252b73a6d9449f4a0e5c4963d798008"
+            }
+          ],
+          "qc": {
+            "differing_fields": [
+              "mesh_files"
+            ],
+            "status": "pass"
+          },
+          "ratio": 0.35,
+          "triangles": {
+            "after": 75456,
+            "before": 158734
+          }
+        },
+        {
+          "candidate": {
+            "artifacts": [
+              {
+                "path": "bnr32.dx80.vtx",
+                "sha256": "5e74ab867a7d1218305ff4a9d65cc8c4b2c784f3adbeca9eafa71bcb7877c6cb",
+                "size_bytes": 991887
+              },
+              {
+                "path": "bnr32.dx90.vtx",
+                "sha256": "860ae7788317a6d404e8116760dd210f9551ad42b5ce9e358c37b9af21c1cf2e",
+                "size_bytes": 991833
+              },
+              {
+                "path": "bnr32.mdl",
+                "sha256": "95b04169994703e5c858964ec15b87a4f9738591207ea5db21453e856f97ba00",
+                "size_bytes": 164764
+              },
+              {
+                "path": "bnr32.phy",
+                "sha256": "338efa31793e9ab33fa41f50ad072c161e255401bacc596e5628d6dbae84d8c0",
+                "size_bytes": 15629
+              },
+              {
+                "path": "bnr32.vvd",
+                "sha256": "de7421efd66cb6b758fbf72da8532d0dc29bf2ebd7e7c8fa1d6291dbaef994c9",
+                "size_bytes": 3916480
+              }
+            ],
+            "total_bytes": 6080593
+          },
+          "candidate_metrics_sha256": "01c6f59655d229f93dc0cd60f5bba4373893f5d0ecd5c9e7509445a3d7c8ff26",
+          "candidate_payload_sha256": "59c60f66924a466df61d371106288c33372e6e53ef746fc59da9175e9f4e9ca2",
+          "compile_log_sha256": "c7281eaf31d95fbb163b073c013a6d5d6ea6744250b7027dc85fd5ed514abc8c",
+          "compile_summary_sha256": "c8c104f09b739a3c76f541a1a04a91ea58f956474b7e612cbf105d4906cee0e2",
+          "fallback_summary": {
+            "bytes": 10049865,
+            "count": 10
+          },
+          "fallbacks": [
+            {
+              "output_sha256": "3a2ccd6efcc3bd304e3569838a3df32d38e232355805e05e00452432c1a233be",
+              "reason": "normal must be non-zero",
+              "size_bytes": 5967484,
+              "source": "body.smd",
+              "source_sha256": "3a2ccd6efcc3bd304e3569838a3df32d38e232355805e05e00452432c1a233be"
+            },
+            {
+              "output_sha256": "c818540947ab5ae85ee7ce9f38d9065f7dc0a24605cce489e5a6f66d252d1e52",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 184421,
+              "source": "canards_d.smd",
+              "source_sha256": "c818540947ab5ae85ee7ce9f38d9065f7dc0a24605cce489e5a6f66d252d1e52"
+            },
+            {
+              "output_sha256": "fb24a904423bb29cf8d52dc11ecf391cf091e5380e5dad90f4c3c50fde3454d8",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 345200,
+              "source": "diffuser_mid_a.smd",
+              "source_sha256": "fb24a904423bb29cf8d52dc11ecf391cf091e5380e5dad90f4c3c50fde3454d8"
+            },
+            {
+              "output_sha256": "f62b69b28da0119a2c58147d7d8d4439de293930b095601ec74b378d5208704c",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 212907,
+              "source": "diffuser_mid_b.smd",
+              "source_sha256": "f62b69b28da0119a2c58147d7d8d4439de293930b095601ec74b378d5208704c"
+            },
+            {
+              "output_sha256": "8f7952b2c769c0741254c78df73c35d3e142bdbaaa6efcc81c6b83daad9135bc",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 375315,
+              "source": "splitter2_a.smd",
+              "source_sha256": "8f7952b2c769c0741254c78df73c35d3e142bdbaaa6efcc81c6b83daad9135bc"
+            },
+            {
+              "output_sha256": "7d50d593f6dfbbca9e3ea6609cbdd2d5b91de78783baa018c93a7bb7b5a28631",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 146959,
+              "source": "splitter2_c.smd",
+              "source_sha256": "7d50d593f6dfbbca9e3ea6609cbdd2d5b91de78783baa018c93a7bb7b5a28631"
+            },
+            {
+              "output_sha256": "187842defc5aafb771049d5f84b6096db4c25d33ae2ba02cd729ed0f2bb9d17f",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 631066,
+              "source": "steeringwheel_b.smd",
+              "source_sha256": "187842defc5aafb771049d5f84b6096db4c25d33ae2ba02cd729ed0f2bb9d17f"
+            },
+            {
+              "output_sha256": "09c33161a8e4f0a54f81a39fc211945e3caa1b4cc131718feced6acadf63facf",
+              "reason": "export lost SMD materials",
+              "size_bytes": 342216,
+              "source": "taillights_a.smd",
+              "source_sha256": "09c33161a8e4f0a54f81a39fc211945e3caa1b4cc131718feced6acadf63facf"
+            },
+            {
+              "output_sha256": "b31d33b70304374b5ff8c105c12eb63e3c0e69e7ef7bfb13efba7bbd35ce26cb",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 1451423,
+              "source": "wing_b.smd",
+              "source_sha256": "b31d33b70304374b5ff8c105c12eb63e3c0e69e7ef7bfb13efba7bbd35ce26cb"
+            },
+            {
+              "output_sha256": "06a26d80c0ef1b05ad402e0018898fddb252b73a6d9449f4a0e5c4963d798008",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 392874,
+              "source": "wing_c.smd",
+              "source_sha256": "06a26d80c0ef1b05ad402e0018898fddb252b73a6d9449f4a0e5c4963d798008"
+            }
+          ],
+          "qc": {
+            "differing_fields": [
+              "mesh_files"
+            ],
+            "status": "pass"
+          },
+          "ratio": 0.3,
+          "triangles": {
+            "after": 71182,
+            "before": 158734
+          }
+        },
+        {
+          "candidate": {
+            "artifacts": [
+              {
+                "path": "bnr32.dx80.vtx",
+                "sha256": "59b4b083a91281075f4a29d1ceade1ac5a919ceeb6997b9bc809c1dbfe5964d0",
+                "size_bytes": 913083
+              },
+              {
+                "path": "bnr32.dx90.vtx",
+                "sha256": "e01d7e01a372a65afaca5b45f3aee634502297485544b77173f851bb18a54088",
+                "size_bytes": 913029
+              },
+              {
+                "path": "bnr32.mdl",
+                "sha256": "504ed8527968bee1a8af4b66fe4ad9ca5f84ce5efa51f6d8e4be1a42f8be6493",
+                "size_bytes": 164764
+              },
+              {
+                "path": "bnr32.phy",
+                "sha256": "80ebfec8e3516b31a49e631884c1fab882a5b09bc410a1ebd3978ee82248c1ab",
+                "size_bytes": 15629
+              },
+              {
+                "path": "bnr32.vvd",
+                "sha256": "5039368c4ab3c6d03114ec76df25fb6963f68ec700b9cba8f9b1a496cb9617ec",
+                "size_bytes": 3622592
+              }
+            ],
+            "total_bytes": 5629097
+          },
+          "candidate_metrics_sha256": "5f93434a118e2617f207ef0c149c2f14ed71e7c7708d524fec03ab17b17422c6",
+          "candidate_payload_sha256": "1652dc29ebcdce57b4a487009baf7f5b02a5be2fdce58c5b4eb981d22cfd59b5",
+          "compile_log_sha256": "610201753cbc46f32b029b1ad5b5edf4a88ab37085b073752eb7cae57de92009",
+          "compile_summary_sha256": "a6cade61dd9f674cbdd3cb80ab896714c4c1a7782f36c2d39a9f0b180be8d042",
+          "fallback_summary": {
+            "bytes": 10049865,
+            "count": 10
+          },
+          "fallbacks": [
+            {
+              "output_sha256": "3a2ccd6efcc3bd304e3569838a3df32d38e232355805e05e00452432c1a233be",
+              "reason": "normal must be non-zero",
+              "size_bytes": 5967484,
+              "source": "body.smd",
+              "source_sha256": "3a2ccd6efcc3bd304e3569838a3df32d38e232355805e05e00452432c1a233be"
+            },
+            {
+              "output_sha256": "c818540947ab5ae85ee7ce9f38d9065f7dc0a24605cce489e5a6f66d252d1e52",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 184421,
+              "source": "canards_d.smd",
+              "source_sha256": "c818540947ab5ae85ee7ce9f38d9065f7dc0a24605cce489e5a6f66d252d1e52"
+            },
+            {
+              "output_sha256": "fb24a904423bb29cf8d52dc11ecf391cf091e5380e5dad90f4c3c50fde3454d8",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 345200,
+              "source": "diffuser_mid_a.smd",
+              "source_sha256": "fb24a904423bb29cf8d52dc11ecf391cf091e5380e5dad90f4c3c50fde3454d8"
+            },
+            {
+              "output_sha256": "f62b69b28da0119a2c58147d7d8d4439de293930b095601ec74b378d5208704c",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 212907,
+              "source": "diffuser_mid_b.smd",
+              "source_sha256": "f62b69b28da0119a2c58147d7d8d4439de293930b095601ec74b378d5208704c"
+            },
+            {
+              "output_sha256": "8f7952b2c769c0741254c78df73c35d3e142bdbaaa6efcc81c6b83daad9135bc",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 375315,
+              "source": "splitter2_a.smd",
+              "source_sha256": "8f7952b2c769c0741254c78df73c35d3e142bdbaaa6efcc81c6b83daad9135bc"
+            },
+            {
+              "output_sha256": "7d50d593f6dfbbca9e3ea6609cbdd2d5b91de78783baa018c93a7bb7b5a28631",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 146959,
+              "source": "splitter2_c.smd",
+              "source_sha256": "7d50d593f6dfbbca9e3ea6609cbdd2d5b91de78783baa018c93a7bb7b5a28631"
+            },
+            {
+              "output_sha256": "187842defc5aafb771049d5f84b6096db4c25d33ae2ba02cd729ed0f2bb9d17f",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 631066,
+              "source": "steeringwheel_b.smd",
+              "source_sha256": "187842defc5aafb771049d5f84b6096db4c25d33ae2ba02cd729ed0f2bb9d17f"
+            },
+            {
+              "output_sha256": "09c33161a8e4f0a54f81a39fc211945e3caa1b4cc131718feced6acadf63facf",
+              "reason": "export lost SMD materials",
+              "size_bytes": 342216,
+              "source": "taillights_a.smd",
+              "source_sha256": "09c33161a8e4f0a54f81a39fc211945e3caa1b4cc131718feced6acadf63facf"
+            },
+            {
+              "output_sha256": "b31d33b70304374b5ff8c105c12eb63e3c0e69e7ef7bfb13efba7bbd35ce26cb",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 1451423,
+              "source": "wing_b.smd",
+              "source_sha256": "b31d33b70304374b5ff8c105c12eb63e3c0e69e7ef7bfb13efba7bbd35ce26cb"
+            },
+            {
+              "output_sha256": "06a26d80c0ef1b05ad402e0018898fddb252b73a6d9449f4a0e5c4963d798008",
+              "reason": "export lost all hard-normal seam evidence",
+              "size_bytes": 392874,
+              "source": "wing_c.smd",
+              "source_sha256": "06a26d80c0ef1b05ad402e0018898fddb252b73a6d9449f4a0e5c4963d798008"
+            }
+          ],
+          "qc": {
+            "differing_fields": [
+              "mesh_files"
+            ],
+            "status": "pass"
+          },
+          "ratio": 0.25,
+          "triangles": {
+            "after": 64936,
+            "before": 158734
+          }
+        }
+      ],
+      "baselines": {
+        "b050": {
+          "artifacts": [
+            {
+              "path": "bnr32.dx80.vtx",
+              "sha256": "530908a707be1186e3ed1fc36d7ca83f42407970b1c0b683d686264bc8183ecb",
+              "size_bytes": 1091577
+            },
+            {
+              "path": "bnr32.dx90.vtx",
+              "sha256": "8ddc598d2cdd024514ec6a45f103f3a2197a109ab6341ddd4d9962df8268a8c4",
+              "size_bytes": 1091523
+            },
+            {
+              "path": "bnr32.mdl",
+              "sha256": "785804b6ab85d8b3593f5be075193dcf3381b501c012d1701a6becff99495097",
+              "size_bytes": 167664
+            },
+            {
+              "path": "bnr32.phy",
+              "sha256": "e49e524c3ef915c43034ce2a2d42936826f74ca448be7b6d01f96a610285cf4f",
+              "size_bytes": 15716
+            },
+            {
+              "path": "bnr32.vvd",
+              "sha256": "eb969f93a78d55572500808cbff6b159ba1b2540255b167060e13c04601b5d69",
+              "size_bytes": 4263808
+            }
+          ],
+          "total_bytes": 6630288
+        },
+        "original": {
+          "artifacts": [
+            {
+              "path": "bnr32.dx80.vtx",
+              "sha256": "70cbcd4bd0f67e62090a05d00f9a609c61464c68cc35e73e106d77151065a1b6",
+              "size_bytes": 2028281
+            },
+            {
+              "path": "bnr32.dx90.vtx",
+              "sha256": "ca79e834ad15171999ee841370b5c751c8f04ddfb714e8e1dfa01baf33f6a83b",
+              "size_bytes": 2028211
+            },
+            {
+              "path": "bnr32.mdl",
+              "sha256": "ef34863769bd17eb9d0dc3e194ff4f0a36214689e4eb7b88cac5a0698443470b",
+              "size_bytes": 83604
+            },
+            {
+              "path": "bnr32.phy",
+              "sha256": "e49e524c3ef915c43034ce2a2d42936826f74ca448be7b6d01f96a610285cf4f",
+              "size_bytes": 15716
+            },
+            {
+              "path": "bnr32.vvd",
+              "sha256": "bd9640a78737dbd87b4153ef9750acfb4bc0df3dc2b8bfd2d597dfd7df774fbc",
+              "size_bytes": 7531328
+            }
+          ],
+          "total_bytes": 11687140
+        },
+        "r040": {
+          "artifacts": [
+            {
+              "path": "bnr32.dx80.vtx",
+              "sha256": "cbdd7265fc42492897744f6cd9d3056e798095b309c737097fba18a981d690a4",
+              "size_bytes": 1121106
+            },
+            {
+              "path": "bnr32.dx90.vtx",
+              "sha256": "decf4e02171b3264cd91f810eb8e07881412955aac951e1444e8c4f022bbad2c",
+              "size_bytes": 1121052
+            },
+            {
+              "path": "bnr32.mdl",
+              "sha256": "596dac81f128d84a4cb25f3bce2e7af34b9a7eab0a2b21b1f799c5dba3fb33f7",
+              "size_bytes": 164764
+            },
+            {
+              "path": "bnr32.phy",
+              "sha256": "513b4d5e624265cefaa8154365f267927462529bda5614673b10d31f0bec0be7",
+              "size_bytes": 15629
+            },
+            {
+              "path": "bnr32.vvd",
+              "sha256": "e5dbafc0b8309dd8745a7b36f8db44ca920c949cb68e45ddf6926e6c98fb149b",
+              "size_bytes": 4379648
+            }
+          ],
+          "total_bytes": 6802199
+        }
+      },
+      "decision": {
+        "ratio": 0.25,
+        "reason": "minimum actual StudioMDL family bytes among structurally passing planned ratios; visual quality is a separate pending gate",
+        "total_bytes": 5629097
+      },
+      "family_id": "nissan_skyline_gtr32"
+    }
+  ],
+  "implementation": {
+    "scripts": {
+      "batch_compile_opt_qc.py": "9ae7a78878fd281de99cd3476ce8d1fc8e073b20e8f4897a9df36dc97c3215cc",
+      "batch_optimize_maximum.py": "76cd2f9ca769d92e49fd66b1f8e383adb4492208a50a231147cf9a5fbb5e8098",
+      "maximum_optimizer/compiler_aware.py": "186c4d7cd49f8085dd3741c9d4221cc5daa7e8b80ca7c83d7d4d0ee0d6c45b13",
+      "maximum_optimizer/qc_graph.py": "625d64ef8b78f49ce1ab42a979b9faa781b2feefcc9722c8665d074a094b8260",
+      "maximum_optimizer/qc_inventory.py": "ca4cb526add762bb7b6b56a308f5aee37b06ec045b9a2e5b1be028d32952b057"
+    },
+    "source_commit": "b9bf711c5706d057d895defb4d967cfdd91d53e2"
+  },
+  "quality": {
+    "reason": "this sweep ranks actual compiled bytes only; it does not promote a visual winner or production default",
+    "status": "unverified",
+    "visual_gate": "separate-pending"
+  },
+  "schema_version": 1,
+  "strategy": "blender-adaptive-ratio-sweep-v1",
+  "toolchain": {
+    "blender": {
+      "sha256": "f81d3bca0af0d917e03fdf09255981b2ed0750d3a2815da991ea5425a87f8f7c",
+      "version": "5.0.1"
+    },
+    "studiomdl": {
+      "sha256": "9e40454499890d0de941068f2b47db4d3be69ab7213f95e4d9c09f255a7230cf",
+      "version": "Jun 29 2026 Garry's Mod Edition"
+    }
+  }
+}
