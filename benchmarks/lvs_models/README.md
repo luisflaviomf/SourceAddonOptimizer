@@ -67,3 +67,17 @@ Task 8 renders and runtime validation were not available/run, so this record mak
 claim and the strategy is not a winner. The wheel record embeds every candidate/control artifact
 path, size and SHA-256 plus a recomputable canonical bundle digest; its strict parser rejects any
 path, size, hash, digest, membership, ordering or equality drift.
+
+## Meshoptimizer direct evidence
+
+`meshopt_direct_v1.json` is schema v2 evidence for all five direct ratios. It contains all three
+visual SMD source/raw/restored hashes and locked/achieved metrics per ratio, plus portable
+candidate/control compiled sidecar path, size and SHA-256 manifests. Regenerate and verify it with:
+
+```text
+python benchmarks/lvs_models/build_meshopt_direct_v1.py
+python -m unittest tests.maximum_optimizer.test_direct_evidence -v
+```
+
+The builder rehashes every ignored artifact. The parser recomputes the canonical digest and keeps
+quality `unverified`; this lane does not authorize a winner.

@@ -1,30 +1,682 @@
 {
   "corpus_id": "lvs-models-v1",
+  "decision": {
+    "best_blender_bytes": 633089,
+    "best_candidate_bytes": 1034283,
+    "best_ratio": 0.25,
+    "reason": "direct output improves control but remains larger than the approved Blender wheel and saturates under existing locks",
+    "winner": false
+  },
+  "evidence_sha256": "3d8854e868ad7cbbb53eb880089f7929c9530cb6fde589a0219f0e5c216cd0dd",
   "quality_claim": null,
   "quality_status": "unverified",
-  "schema_version": 1,
-  "strategy": "meshopt-direct-v1",
-  "strategy_result": "compiled_improvement_but_not_blender_winner",
-  "settings": {"ratios": [0.85, 0.7, 0.55, 0.4, 0.25], "staged_order": ["wheel", "one_car", "pressure_five"], "transfer": "direct-v1", "update_vertices": false},
-  "tools": {
-    "blender": {"sha256": "f81d3bca0af0d917e03fdf09255981b2ed0750d3a2815da991ea5425a87f8f7c", "version": "5.0.1"},
-    "meshopt_bridge": {"meshoptimizer_version": "v1.2", "sha256": "c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa"}
-  },
-  "records": [{
-    "family_id": "pontiac_transam_wheel", "ratio": 0.85, "stage": "wheel", "status": "compiled_structural_pass_visual_unverified",
-    "compiled": {"candidate_bytes": 1070535, "control_bytes": 1187559, "delta_bytes": -117024, "best_blender_bytes": 633089, "beats_control": true, "beats_best_blender": false},
-    "gate": {"name": "direct_provenance_bijection", "message": "all retained normals restored by exact nonvisual tuple provenance", "position_normal_keys_before": 1137, "position_normal_keys_after": 1137},
-    "mesh": {"achieved_ratio": 0.8663967611336032, "locked_percentage": 0.5256317689530686, "locked_vertices": 728, "output_vertices": 1253, "requested_ratio": 0.85, "source_vertices": 1041, "triangles_after": 1712, "triangles_before": 1976, "wedge_vertices": 1385},
-    "nonvisual_sources": [
-      {"path": "wheel.qc", "sha256": "6066206afe1c7084c0250e0acdfd7f52883e44980e47245eeec1cd265e956e62", "size_bytes": 930},
-      {"path": "wheel_anims/idle.smd", "sha256": "4ef9631312c0e17b2ecf37569b47adaba7e84f8752a8576940c4468f2e8c962a", "size_bytes": 153},
-      {"path": "wheel_anims/neutral.smd", "sha256": "4ef9631312c0e17b2ecf37569b47adaba7e84f8752a8576940c4468f2e8c962a", "size_bytes": 153},
-      {"path": "wheel_physics.smd", "sha256": "b085c7108b6335c5490dfb56cf3fd7ae8f980cc2fa6c1f50623a620bbd90f00f", "size_bytes": 26663}
+  "records": [
+    {
+      "candidate_id": "meshopt-direct-r085",
+      "candidate_total_bytes": 1070535,
+      "compiled": {
+        "candidate": [
+          {
+            "kind": ".mdl",
+            "path": "candidate-r085/models/diggercars/pontiac_transam3/wheel.mdl",
+            "sha256": "8049ca23b774a0f2ba537ae482de064f07491d8019a326f9277902ed78a55827",
+            "size_bytes": 2768
+          },
+          {
+            "kind": ".vvd",
+            "path": "candidate-r085/models/diggercars/pontiac_transam3/wheel.vvd",
+            "sha256": "15893abe9eff8ed5707eb822d91c7bbc4b8b09ba356c73e7367e076fb34b3b95",
+            "size_bytes": 699264
+          },
+          {
+            "kind": ".dx80.vtx",
+            "path": "candidate-r085/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+            "sha256": "8918bd815aa04f3f3491e7b29cb97e268461131f7ad71b80ce47934b78e16440",
+            "size_bytes": 182553
+          },
+          {
+            "kind": ".dx90.vtx",
+            "path": "candidate-r085/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+            "sha256": "9f9112b0418ba6363141edf6a307f7b81419ba53d05a061886e97b4d9f170ddc",
+            "size_bytes": 182553
+          },
+          {
+            "kind": ".phy",
+            "path": "candidate-r085/models/diggercars/pontiac_transam3/wheel.phy",
+            "sha256": "5f7c86d4e9407937b5f0974c7c06c599e1e7be3aca4a9ff31baeed6568118fa4",
+            "size_bytes": 3397
+          }
+        ],
+        "control": [
+          {
+            "kind": ".mdl",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.mdl",
+            "sha256": "ed14f39e518a148fd9b9977aded6613269bcec840c23b4a7ae3a49dfee1f9081",
+            "size_bytes": 2768
+          },
+          {
+            "kind": ".vvd",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.vvd",
+            "sha256": "eee6d88c0715c16ec3ac785522b23ec7246aa65f75a8f4ed7899ef4fdf7f7819",
+            "size_bytes": 769920
+          },
+          {
+            "kind": ".dx80.vtx",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+            "sha256": "60ecff78c6b83298a306c2780158f95898a9ad391b5db96df09a142cae8b988c",
+            "size_bytes": 205737
+          },
+          {
+            "kind": ".dx90.vtx",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+            "sha256": "5db270e614a4c26f8ce4661eda822df68ac209a054e4c0b3382592ab68fbddeb",
+            "size_bytes": 205737
+          },
+          {
+            "kind": ".phy",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.phy",
+            "sha256": "6589355722447d7c45bab21ea12f99344d9142b2b621ccfa350be82cf7929099",
+            "size_bytes": 3397
+          }
+        ]
+      },
+      "control_total_bytes": 1187559,
+      "delta_bytes": -117024,
+      "ratio": 0.85,
+      "smd": [
+        {
+          "achieved_ratio": 0.8663967611336032,
+          "locked_percentage": 0.5256317689530686,
+          "locked_vertices": 728,
+          "output_vertices": 1253,
+          "raw_path": "candidate-r085/maximum_direct_raw/wh_opt.smd",
+          "raw_sha256": "8edf57230a1c85f4783fbc5a51b0452232704e2695a323127b24119561796b2c",
+          "restored_path": "candidate-r085/output/wh_opt.smd",
+          "restored_sha256": "192edd54b5d94904e228ca8f60def783f2595f4651029a16c56633aac7086fbe",
+          "source": "wh.smd",
+          "source_sha256": "e3e53b8a66a72d4263d5ec19708ffdeed95455fb9159830b5e7e42b2a2f078e5",
+          "source_vertices": 1041,
+          "triangles_after": 1712,
+          "triangles_before": 1976,
+          "wedge_vertices": 1385
+        },
+        {
+          "achieved_ratio": 0.866390041493776,
+          "locked_percentage": 0.764930356802137,
+          "locked_vertices": 4009,
+          "output_vertices": 4758,
+          "raw_path": "candidate-r085/maximum_direct_raw/wh1_opt.smd",
+          "raw_sha256": "bb9f7ede3fca57b2c9b4b1468221c0aab61a8ee897c08a705e7935ba6e81d519",
+          "restored_path": "candidate-r085/output/wh1_opt.smd",
+          "restored_sha256": "bbd33fa08acd116ce2f2da88b0d765ca763df2ff95ccd1f69db5836e1fca109a",
+          "source": "wh1.smd",
+          "source_sha256": "fcda64b3b26af521eefd6490508609d3c18409dfa2213df45753993be45ac38f",
+          "source_vertices": 3691,
+          "triangles_after": 6264,
+          "triangles_before": 7230,
+          "wedge_vertices": 5241
+        },
+        {
+          "achieved_ratio": 0.859764840837396,
+          "locked_percentage": 0.8235724743777453,
+          "locked_vertices": 4500,
+          "output_vertices": 4975,
+          "raw_path": "candidate-r085/maximum_direct_raw/wh2_opt.smd",
+          "raw_sha256": "c4424f0bbda41e2f2a9075ad2226d7168a01d132e0739edb0fa092da9276ad27",
+          "restored_path": "candidate-r085/output/wh2_opt.smd",
+          "restored_sha256": "f97bf80c31e7b24faa5797a07fc32d0f243b48557cf2b06b890be17de6fc2832",
+          "source": "wh2.smd",
+          "source_sha256": "a9a2a10b6803218c9238302bf250dde343d6bf3948a02dff8a11f5b329b30076",
+          "source_vertices": 3524,
+          "triangles_after": 5996,
+          "triangles_before": 6974,
+          "wedge_vertices": 5464
+        }
+      ]
+    },
+    {
+      "candidate_id": "meshopt-direct-r070",
+      "candidate_total_bytes": 1056967,
+      "compiled": {
+        "candidate": [
+          {
+            "kind": ".mdl",
+            "path": "candidate-r070/models/diggercars/pontiac_transam3/wheel.mdl",
+            "sha256": "71c12813e48ea5dd2895dac8153ae6baaab276979b29e51ec89b05b0b90c7425",
+            "size_bytes": 2768
+          },
+          {
+            "kind": ".vvd",
+            "path": "candidate-r070/models/diggercars/pontiac_transam3/wheel.vvd",
+            "sha256": "df85f014b202ff2ace6ab9929754a564420129529ef7e4139e9f4354b731785d",
+            "size_bytes": 691072
+          },
+          {
+            "kind": ".dx80.vtx",
+            "path": "candidate-r070/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+            "sha256": "2869a91606396c8f9b9d2755cb3234d45887452b7cc5ab8dcbec95b95580d84d",
+            "size_bytes": 179865
+          },
+          {
+            "kind": ".dx90.vtx",
+            "path": "candidate-r070/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+            "sha256": "069b206c825f8ef000023e5f778460667cd484e14421615196e322e863c33d23",
+            "size_bytes": 179865
+          },
+          {
+            "kind": ".phy",
+            "path": "candidate-r070/models/diggercars/pontiac_transam3/wheel.phy",
+            "sha256": "27237a4bb30625aa1447c8700c98db28605246b1a707007263113e2e9f0152da",
+            "size_bytes": 3397
+          }
+        ],
+        "control": [
+          {
+            "kind": ".mdl",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.mdl",
+            "sha256": "ed14f39e518a148fd9b9977aded6613269bcec840c23b4a7ae3a49dfee1f9081",
+            "size_bytes": 2768
+          },
+          {
+            "kind": ".vvd",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.vvd",
+            "sha256": "eee6d88c0715c16ec3ac785522b23ec7246aa65f75a8f4ed7899ef4fdf7f7819",
+            "size_bytes": 769920
+          },
+          {
+            "kind": ".dx80.vtx",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+            "sha256": "60ecff78c6b83298a306c2780158f95898a9ad391b5db96df09a142cae8b988c",
+            "size_bytes": 205737
+          },
+          {
+            "kind": ".dx90.vtx",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+            "sha256": "5db270e614a4c26f8ce4661eda822df68ac209a054e4c0b3382592ab68fbddeb",
+            "size_bytes": 205737
+          },
+          {
+            "kind": ".phy",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.phy",
+            "sha256": "6589355722447d7c45bab21ea12f99344d9142b2b621ccfa350be82cf7929099",
+            "size_bytes": 3397
+          }
+        ]
+      },
+      "control_total_bytes": 1187559,
+      "delta_bytes": -130592,
+      "ratio": 0.7,
+      "smd": [
+        {
+          "achieved_ratio": 0.7317813765182186,
+          "locked_percentage": 0.5256317689530686,
+          "locked_vertices": 728,
+          "output_vertices": 1120,
+          "raw_path": "candidate-r070/maximum_direct_raw/wh_opt.smd",
+          "raw_sha256": "8ca296897d1a6faa11bab0f9028d2241ebde65a5bf4d377ed2ee01466414956d",
+          "restored_path": "candidate-r070/output/wh_opt.smd",
+          "restored_sha256": "29496be85da6d4bad367ae20b52c794c0a2004b34a5edf6525e2e32637733eb6",
+          "source": "wh.smd",
+          "source_sha256": "e3e53b8a66a72d4263d5ec19708ffdeed95455fb9159830b5e7e42b2a2f078e5",
+          "source_vertices": 1041,
+          "triangles_after": 1446,
+          "triangles_before": 1976,
+          "wedge_vertices": 1385
+        },
+        {
+          "achieved_ratio": 0.8674965421853389,
+          "locked_percentage": 0.764930356802137,
+          "locked_vertices": 4009,
+          "output_vertices": 4762,
+          "raw_path": "candidate-r070/maximum_direct_raw/wh1_opt.smd",
+          "raw_sha256": "22b9fbdb51cbfd160857c0a8a6736eeea1b40839c5813c73254c61add60f9613",
+          "restored_path": "candidate-r070/output/wh1_opt.smd",
+          "restored_sha256": "9980332e4b3cf3e16633ec2a3c7d36556181f66e0db6251a85e0cdb92ad807c1",
+          "source": "wh1.smd",
+          "source_sha256": "fcda64b3b26af521eefd6490508609d3c18409dfa2213df45753993be45ac38f",
+          "source_vertices": 3691,
+          "triangles_after": 6272,
+          "triangles_before": 7230,
+          "wedge_vertices": 5241
+        },
+        {
+          "achieved_ratio": 0.8600516203039862,
+          "locked_percentage": 0.8235724743777453,
+          "locked_vertices": 4500,
+          "output_vertices": 4976,
+          "raw_path": "candidate-r070/maximum_direct_raw/wh2_opt.smd",
+          "raw_sha256": "f7ea0c2f32d66b39fe32823e189994938a5b76bb13f4550fdf42fd158e29f3b3",
+          "restored_path": "candidate-r070/output/wh2_opt.smd",
+          "restored_sha256": "116f7360a1d16490693b3d2830e584d7ba6ae2d4b52fb8475273bea78ad4573f",
+          "source": "wh2.smd",
+          "source_sha256": "a9a2a10b6803218c9238302bf250dde343d6bf3948a02dff8a11f5b329b30076",
+          "source_vertices": 3524,
+          "triangles_after": 5998,
+          "triangles_before": 6974,
+          "wedge_vertices": 5464
+        }
+      ]
+    },
+    {
+      "candidate_id": "meshopt-direct-r055",
+      "candidate_total_bytes": 1043081,
+      "compiled": {
+        "candidate": [
+          {
+            "kind": ".mdl",
+            "path": "candidate-r055/models/diggercars/pontiac_transam3/wheel.mdl",
+            "sha256": "72f57c921d601826623a15e86ff428e331c54f4ec042097900a6c13bccf62955",
+            "size_bytes": 2768
+          },
+          {
+            "kind": ".vvd",
+            "path": "candidate-r055/models/diggercars/pontiac_transam3/wheel.vvd",
+            "sha256": "c46712038c3b502ba6e8584f0238e847a7c1121039338e282549cd7b9bb6563b",
+            "size_bytes": 682688
+          },
+          {
+            "kind": ".dx80.vtx",
+            "path": "candidate-r055/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+            "sha256": "4d65733ff9ce836f7ab35cace9cfc13ca75d26dc906769d72025fe2012a4f0ba",
+            "size_bytes": 177114
+          },
+          {
+            "kind": ".dx90.vtx",
+            "path": "candidate-r055/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+            "sha256": "2541a52b6c84d04f9891b5f6cb0f3005cf2c5f1b07069c27823f7798289ff8c0",
+            "size_bytes": 177114
+          },
+          {
+            "kind": ".phy",
+            "path": "candidate-r055/models/diggercars/pontiac_transam3/wheel.phy",
+            "sha256": "ceeb5231b130170919d48e45a87e9d7cf1959d945e6839eb5a7fdde1226be1b0",
+            "size_bytes": 3397
+          }
+        ],
+        "control": [
+          {
+            "kind": ".mdl",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.mdl",
+            "sha256": "ed14f39e518a148fd9b9977aded6613269bcec840c23b4a7ae3a49dfee1f9081",
+            "size_bytes": 2768
+          },
+          {
+            "kind": ".vvd",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.vvd",
+            "sha256": "eee6d88c0715c16ec3ac785522b23ec7246aa65f75a8f4ed7899ef4fdf7f7819",
+            "size_bytes": 769920
+          },
+          {
+            "kind": ".dx80.vtx",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+            "sha256": "60ecff78c6b83298a306c2780158f95898a9ad391b5db96df09a142cae8b988c",
+            "size_bytes": 205737
+          },
+          {
+            "kind": ".dx90.vtx",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+            "sha256": "5db270e614a4c26f8ce4661eda822df68ac209a054e4c0b3382592ab68fbddeb",
+            "size_bytes": 205737
+          },
+          {
+            "kind": ".phy",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.phy",
+            "sha256": "6589355722447d7c45bab21ea12f99344d9142b2b621ccfa350be82cf7929099",
+            "size_bytes": 3397
+          }
+        ]
+      },
+      "control_total_bytes": 1187559,
+      "delta_bytes": -144478,
+      "ratio": 0.55,
+      "smd": [
+        {
+          "achieved_ratio": 0.5991902834008097,
+          "locked_percentage": 0.5256317689530686,
+          "locked_vertices": 728,
+          "output_vertices": 989,
+          "raw_path": "candidate-r055/maximum_direct_raw/wh_opt.smd",
+          "raw_sha256": "29c63f7c247355101b20b88a601772af4e63c389c112efd5538e1e36a9ecfe4a",
+          "restored_path": "candidate-r055/output/wh_opt.smd",
+          "restored_sha256": "386366c59dd9847be2f922fb654f12809bd1e78d394b8b050143f0c61f02f2f7",
+          "source": "wh.smd",
+          "source_sha256": "e3e53b8a66a72d4263d5ec19708ffdeed95455fb9159830b5e7e42b2a2f078e5",
+          "source_vertices": 1041,
+          "triangles_after": 1184,
+          "triangles_before": 1976,
+          "wedge_vertices": 1385
+        },
+        {
+          "achieved_ratio": 0.8674965421853389,
+          "locked_percentage": 0.764930356802137,
+          "locked_vertices": 4009,
+          "output_vertices": 4762,
+          "raw_path": "candidate-r055/maximum_direct_raw/wh1_opt.smd",
+          "raw_sha256": "22b9fbdb51cbfd160857c0a8a6736eeea1b40839c5813c73254c61add60f9613",
+          "restored_path": "candidate-r055/output/wh1_opt.smd",
+          "restored_sha256": "9980332e4b3cf3e16633ec2a3c7d36556181f66e0db6251a85e0cdb92ad807c1",
+          "source": "wh1.smd",
+          "source_sha256": "fcda64b3b26af521eefd6490508609d3c18409dfa2213df45753993be45ac38f",
+          "source_vertices": 3691,
+          "triangles_after": 6272,
+          "triangles_before": 7230,
+          "wedge_vertices": 5241
+        },
+        {
+          "achieved_ratio": 0.8600516203039862,
+          "locked_percentage": 0.8235724743777453,
+          "locked_vertices": 4500,
+          "output_vertices": 4976,
+          "raw_path": "candidate-r055/maximum_direct_raw/wh2_opt.smd",
+          "raw_sha256": "f7ea0c2f32d66b39fe32823e189994938a5b76bb13f4550fdf42fd158e29f3b3",
+          "restored_path": "candidate-r055/output/wh2_opt.smd",
+          "restored_sha256": "116f7360a1d16490693b3d2830e584d7ba6ae2d4b52fb8475273bea78ad4573f",
+          "source": "wh2.smd",
+          "source_sha256": "a9a2a10b6803218c9238302bf250dde343d6bf3948a02dff8a11f5b329b30076",
+          "source_vertices": 3524,
+          "triangles_after": 5998,
+          "triangles_before": 6974,
+          "wedge_vertices": 5464
+        }
+      ]
+    },
+    {
+      "candidate_id": "meshopt-direct-r040",
+      "candidate_total_bytes": 1034389,
+      "compiled": {
+        "candidate": [
+          {
+            "kind": ".mdl",
+            "path": "candidate-r040/models/diggercars/pontiac_transam3/wheel.mdl",
+            "sha256": "eb840e78ebd7bc96a5513b0bfe8cfa7bf52eed8586667e6e5f34cb659477e917",
+            "size_bytes": 2768
+          },
+          {
+            "kind": ".vvd",
+            "path": "candidate-r040/models/diggercars/pontiac_transam3/wheel.vvd",
+            "sha256": "2bb870fcca7b520f6feab685f1cff901f5346ec3c2485200e837fbf7949adb21",
+            "size_bytes": 677440
+          },
+          {
+            "kind": ".dx80.vtx",
+            "path": "candidate-r040/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+            "sha256": "dbb3043087e296f250c2e7434f11e6a99e956b565c875e36c3aea284795ef584",
+            "size_bytes": 175392
+          },
+          {
+            "kind": ".dx90.vtx",
+            "path": "candidate-r040/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+            "sha256": "581aa61a37f0f0796d017f605ffe4f1789dc5c83fb40716717d7a46b05459e16",
+            "size_bytes": 175392
+          },
+          {
+            "kind": ".phy",
+            "path": "candidate-r040/models/diggercars/pontiac_transam3/wheel.phy",
+            "sha256": "96801c564dbf17aeacde87e3ff2326163a7ca549a7b54f4f42338f508d813980",
+            "size_bytes": 3397
+          }
+        ],
+        "control": [
+          {
+            "kind": ".mdl",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.mdl",
+            "sha256": "ed14f39e518a148fd9b9977aded6613269bcec840c23b4a7ae3a49dfee1f9081",
+            "size_bytes": 2768
+          },
+          {
+            "kind": ".vvd",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.vvd",
+            "sha256": "eee6d88c0715c16ec3ac785522b23ec7246aa65f75a8f4ed7899ef4fdf7f7819",
+            "size_bytes": 769920
+          },
+          {
+            "kind": ".dx80.vtx",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+            "sha256": "60ecff78c6b83298a306c2780158f95898a9ad391b5db96df09a142cae8b988c",
+            "size_bytes": 205737
+          },
+          {
+            "kind": ".dx90.vtx",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+            "sha256": "5db270e614a4c26f8ce4661eda822df68ac209a054e4c0b3382592ab68fbddeb",
+            "size_bytes": 205737
+          },
+          {
+            "kind": ".phy",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.phy",
+            "sha256": "6589355722447d7c45bab21ea12f99344d9142b2b621ccfa350be82cf7929099",
+            "size_bytes": 3397
+          }
+        ]
+      },
+      "control_total_bytes": 1187559,
+      "delta_bytes": -153170,
+      "ratio": 0.4,
+      "smd": [
+        {
+          "achieved_ratio": 0.5161943319838057,
+          "locked_percentage": 0.5256317689530686,
+          "locked_vertices": 728,
+          "output_vertices": 907,
+          "raw_path": "candidate-r040/maximum_direct_raw/wh_opt.smd",
+          "raw_sha256": "510955c87065ee81854064013a0f3517c22922c618056c2e4c6c6d91f7d7b700",
+          "restored_path": "candidate-r040/output/wh_opt.smd",
+          "restored_sha256": "6e98122b959aae080879568e38138236f7ebc473317b3e4663e406cd167e1122",
+          "source": "wh.smd",
+          "source_sha256": "e3e53b8a66a72d4263d5ec19708ffdeed95455fb9159830b5e7e42b2a2f078e5",
+          "source_vertices": 1041,
+          "triangles_after": 1020,
+          "triangles_before": 1976,
+          "wedge_vertices": 1385
+        },
+        {
+          "achieved_ratio": 0.8674965421853389,
+          "locked_percentage": 0.764930356802137,
+          "locked_vertices": 4009,
+          "output_vertices": 4762,
+          "raw_path": "candidate-r040/maximum_direct_raw/wh1_opt.smd",
+          "raw_sha256": "22b9fbdb51cbfd160857c0a8a6736eeea1b40839c5813c73254c61add60f9613",
+          "restored_path": "candidate-r040/output/wh1_opt.smd",
+          "restored_sha256": "9980332e4b3cf3e16633ec2a3c7d36556181f66e0db6251a85e0cdb92ad807c1",
+          "source": "wh1.smd",
+          "source_sha256": "fcda64b3b26af521eefd6490508609d3c18409dfa2213df45753993be45ac38f",
+          "source_vertices": 3691,
+          "triangles_after": 6272,
+          "triangles_before": 7230,
+          "wedge_vertices": 5241
+        },
+        {
+          "achieved_ratio": 0.8600516203039862,
+          "locked_percentage": 0.8235724743777453,
+          "locked_vertices": 4500,
+          "output_vertices": 4976,
+          "raw_path": "candidate-r040/maximum_direct_raw/wh2_opt.smd",
+          "raw_sha256": "f7ea0c2f32d66b39fe32823e189994938a5b76bb13f4550fdf42fd158e29f3b3",
+          "restored_path": "candidate-r040/output/wh2_opt.smd",
+          "restored_sha256": "116f7360a1d16490693b3d2830e584d7ba6ae2d4b52fb8475273bea78ad4573f",
+          "source": "wh2.smd",
+          "source_sha256": "a9a2a10b6803218c9238302bf250dde343d6bf3948a02dff8a11f5b329b30076",
+          "source_vertices": 3524,
+          "triangles_after": 5998,
+          "triangles_before": 6974,
+          "wedge_vertices": 5464
+        }
+      ]
+    },
+    {
+      "candidate_id": "meshopt-direct-r025",
+      "candidate_total_bytes": 1034283,
+      "compiled": {
+        "candidate": [
+          {
+            "kind": ".mdl",
+            "path": "candidate-r025/models/diggercars/pontiac_transam3/wheel.mdl",
+            "sha256": "34bad94084791670cc06a5c76eb9f7625fd8c7e06687e58cfe321d7118afc7e2",
+            "size_bytes": 2768
+          },
+          {
+            "kind": ".vvd",
+            "path": "candidate-r025/models/diggercars/pontiac_transam3/wheel.vvd",
+            "sha256": "9cda40e38ac63b76e279f99890f79bf127f1e1eb3a9a924c6b8191876a48e86f",
+            "size_bytes": 677376
+          },
+          {
+            "kind": ".dx80.vtx",
+            "path": "candidate-r025/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+            "sha256": "b95a04af2ebd44cf041097bf9719aa9519b5652d0ebce087ea399f98942a46c6",
+            "size_bytes": 175371
+          },
+          {
+            "kind": ".dx90.vtx",
+            "path": "candidate-r025/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+            "sha256": "d599f35d01da1127f77b340bcdbf52489100db22276cd56a53f7b83f974fa0fb",
+            "size_bytes": 175371
+          },
+          {
+            "kind": ".phy",
+            "path": "candidate-r025/models/diggercars/pontiac_transam3/wheel.phy",
+            "sha256": "4300216f3b2ff7d27008be7be551422799aef89b8f77a2e4e9e03cd1b57f671c",
+            "size_bytes": 3397
+          }
+        ],
+        "control": [
+          {
+            "kind": ".mdl",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.mdl",
+            "sha256": "ed14f39e518a148fd9b9977aded6613269bcec840c23b4a7ae3a49dfee1f9081",
+            "size_bytes": 2768
+          },
+          {
+            "kind": ".vvd",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.vvd",
+            "sha256": "eee6d88c0715c16ec3ac785522b23ec7246aa65f75a8f4ed7899ef4fdf7f7819",
+            "size_bytes": 769920
+          },
+          {
+            "kind": ".dx80.vtx",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+            "sha256": "60ecff78c6b83298a306c2780158f95898a9ad391b5db96df09a142cae8b988c",
+            "size_bytes": 205737
+          },
+          {
+            "kind": ".dx90.vtx",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+            "sha256": "5db270e614a4c26f8ce4661eda822df68ac209a054e4c0b3382592ab68fbddeb",
+            "size_bytes": 205737
+          },
+          {
+            "kind": ".phy",
+            "path": "control/models/diggercars/pontiac_transam3/wheel.phy",
+            "sha256": "6589355722447d7c45bab21ea12f99344d9142b2b621ccfa350be82cf7929099",
+            "size_bytes": 3397
+          }
+        ]
+      },
+      "control_total_bytes": 1187559,
+      "delta_bytes": -153276,
+      "ratio": 0.25,
+      "smd": [
+        {
+          "achieved_ratio": 0.5151821862348178,
+          "locked_percentage": 0.5256317689530686,
+          "locked_vertices": 728,
+          "output_vertices": 906,
+          "raw_path": "candidate-r025/maximum_direct_raw/wh_opt.smd",
+          "raw_sha256": "b90beb6fa2aef6aacfac4043722581e88cccaa069dadbb8b7c2e3bfe1c8d78ab",
+          "restored_path": "candidate-r025/output/wh_opt.smd",
+          "restored_sha256": "930a74c37610e5e4a4e336c59cad2d643f7fc86f9ee15bb10402176362316740",
+          "source": "wh.smd",
+          "source_sha256": "e3e53b8a66a72d4263d5ec19708ffdeed95455fb9159830b5e7e42b2a2f078e5",
+          "source_vertices": 1041,
+          "triangles_after": 1018,
+          "triangles_before": 1976,
+          "wedge_vertices": 1385
+        },
+        {
+          "achieved_ratio": 0.8674965421853389,
+          "locked_percentage": 0.764930356802137,
+          "locked_vertices": 4009,
+          "output_vertices": 4762,
+          "raw_path": "candidate-r025/maximum_direct_raw/wh1_opt.smd",
+          "raw_sha256": "22b9fbdb51cbfd160857c0a8a6736eeea1b40839c5813c73254c61add60f9613",
+          "restored_path": "candidate-r025/output/wh1_opt.smd",
+          "restored_sha256": "9980332e4b3cf3e16633ec2a3c7d36556181f66e0db6251a85e0cdb92ad807c1",
+          "source": "wh1.smd",
+          "source_sha256": "fcda64b3b26af521eefd6490508609d3c18409dfa2213df45753993be45ac38f",
+          "source_vertices": 3691,
+          "triangles_after": 6272,
+          "triangles_before": 7230,
+          "wedge_vertices": 5241
+        },
+        {
+          "achieved_ratio": 0.8600516203039862,
+          "locked_percentage": 0.8235724743777453,
+          "locked_vertices": 4500,
+          "output_vertices": 4976,
+          "raw_path": "candidate-r025/maximum_direct_raw/wh2_opt.smd",
+          "raw_sha256": "f7ea0c2f32d66b39fe32823e189994938a5b76bb13f4550fdf42fd158e29f3b3",
+          "restored_path": "candidate-r025/output/wh2_opt.smd",
+          "restored_sha256": "116f7360a1d16490693b3d2830e584d7ba6ae2d4b52fb8475273bea78ad4573f",
+          "source": "wh2.smd",
+          "source_sha256": "a9a2a10b6803218c9238302bf250dde343d6bf3948a02dff8a11f5b329b30076",
+          "source_vertices": 3524,
+          "triangles_after": 5998,
+          "triangles_before": 6974,
+          "wedge_vertices": 5464
+        }
+      ]
+    }
+  ],
+  "schema_version": 2,
+  "settings": {
+    "ratios": [
+      0.85,
+      0.7,
+      0.55,
+      0.4,
+      0.25
     ],
-    "restored_export_sha256": "192edd54b5d94904e228ca8f60def783f2595f4651029a16c56633aac7086fbe"
-  }],
-  "skipped": [
-    {"stage": "one_car", "reason": "best direct wheel was 1034283 bytes versus 633089 best Blender and saturated by r0.40"},
-    {"stage": "pressure_five", "reason": "direct strategy did not beat Blender on the wheel"}
-  ]
+    "transfer": "direct-v1",
+    "update_vertices": false
+  },
+  "sources": [
+    {
+      "path": "wh.smd",
+      "sha256": "e3e53b8a66a72d4263d5ec19708ffdeed95455fb9159830b5e7e42b2a2f078e5",
+      "size_bytes": 579499
+    },
+    {
+      "path": "wh1.smd",
+      "sha256": "fcda64b3b26af521eefd6490508609d3c18409dfa2213df45753993be45ac38f",
+      "size_bytes": 2075553
+    },
+    {
+      "path": "wh2.smd",
+      "sha256": "a9a2a10b6803218c9238302bf250dde343d6bf3948a02dff8a11f5b329b30076",
+      "size_bytes": 2005279
+    }
+  ],
+  "strategy": "meshopt-direct-v1",
+  "tools": {
+    "blender": {
+      "sha256": "f81d3bca0af0d917e03fdf09255981b2ed0750d3a2815da991ea5425a87f8f7c",
+      "size_bytes": 93353104,
+      "version": "5.0.1"
+    },
+    "meshopt_bridge": {
+      "sha256": "c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa",
+      "size_bytes": 203264,
+      "version": "meshoptimizer-v1.2-abi2"
+    },
+    "runner": {
+      "sha256": "e6c0cfa6360103c9864ee0fc8556edeffb94e7103409efbc67e147012aec2005",
+      "size_bytes": 61498,
+      "version": "meshopt-direct-v1"
+    },
+    "studiomdl": {
+      "sha256": "9e40454499890d0de941068f2b47db4d3be69ab7213f95e4d9c09f255a7230cf",
+      "size_bytes": 2255696,
+      "version": "2026.04.29"
+    }
+  }
 }

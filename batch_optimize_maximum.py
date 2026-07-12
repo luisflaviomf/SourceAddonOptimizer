@@ -1042,6 +1042,9 @@ def _process_source_file(
     if not destination.is_file():
         raise RuntimeError(f"Source Tools did not export {destination}")
     raw_export_sha256 = hashlib.sha256(destination.read_bytes()).hexdigest()
+    raw_export_path = safe_output_path(source.parent, source.parent / "maximum_direct_raw" / destination.name)
+    raw_export_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(source.parent, raw_export_path, destination.read_bytes())
     restored = restore_smd_bone_identity(
         original_text, destination.read_text(encoding="utf-8", errors="strict")
     )
@@ -1056,6 +1059,7 @@ def _process_source_file(
         "source": source.as_posix(),
         "output": destination.as_posix(),
         "raw_export_sha256": raw_export_sha256,
+        "raw_export_path": raw_export_path.relative_to(source.parent).as_posix(),
         "restored_export_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
         "triangles_before": before_audit.triangle_count,
         "triangles_after": after_audit.triangle_count,

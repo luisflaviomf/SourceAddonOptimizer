@@ -46,6 +46,20 @@ Texture-missing and uncalibrated visual quality remain unverified; no winner cla
 Two clean `/Brepro` x64 native rebuilds matched at SHA-256
 `c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa`; ABI remains v2.
 
+The final schema-v2 evidence was regenerated only from five fresh hardened-provenance Blender runs
+and five fresh StudioMDL compiles. It binds all 15 visual SMD source/raw/restored hashes and per-mesh
+locked/achieved metrics, all 25 candidate and repeated verified control sidecars by portable
+path/size/SHA-256, exact tool/runner/source hashes, byte accounting, decision and a canonical
+top-level digest. The strict parser rejects incomplete sets, ordering/path drift, invalid or
+cross-ratio control hashes, metric non-monotonicity, byte-accounting changes and digest tampering.
+The committed builder independently rehashes every ignored artifact and must reproduce the committed
+payload byte-for-structure in the focused test.
+
+Final canonical evidence digest:
+`3d8854e868ad7cbbb53eb880089f7929c9530cb6fde589a0219f0e5c216cd0dd`.
+Final verification after evidence hardening: 2/2 focused evidence tests and 370 full-discovery tests
+passed; 12 full-suite skips are the existing environment symlink-privilege skips.
+
 ## TDD
 
 Observed REDs covered absent strategy fields, implicit `from_search => true`, missing direct
