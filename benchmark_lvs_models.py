@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable
 
 from maximum_optimizer.benchmarking import (
+    ArtifactDeclaration,
     CORPUS_ID,
     FULL_FAMILY_IDS,
     PRESSURE_FAMILY_IDS,
@@ -16,9 +17,13 @@ from maximum_optimizer.benchmarking import (
     canonical_json_bytes,
     import_compiled_baseline,
     load_corpus,
+    parse_control_results,
     portable_compiler_error,
     sha256_file,
+    safe_existing_file,
+    safe_existing_root,
     summarize_records,
+    verify_declared_sidecars,
 )
 
 
@@ -147,7 +152,11 @@ def generate_control(args: argparse.Namespace) -> int:
             result = adapter.compile(source_root=corpus.roots["source"], source_files=family.source_files,
                                      source_qc=family.source_qc, run_root=family_root / "workspace", family_id=family.id)
         except Exception as exc:
-            result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "autofixes": False, "source_mutated": False}
+            failure_log = family_root / "workspace" / family.id / "studiomdl.log"
+            failure_log.parent.mkdir(parents=True, exist_ok=True)
+            failure_log.write_text(f"ERROR: {type(exc).__name__}: {exc}\n", encoding="utf-8")
+            result = {"status": "failed", "returncode": -1, "elapsed_seconds": 0.0,
+                      "log": f"{family.id}/studiomdl.log", "autofixes": False, "source_mutated": False}
         results.append({"family_id": family.id, **result})
     (run_root / "control_results.json").write_bytes(canonical_json_bytes({"schema_version": 1, "corpus_id": corpus.corpus_id, "results": results}))
     return 0 if all(result["status"] == "compiled" for result in results) else 1
@@ -155,14 +164,20 @@ def generate_control(args: argparse.Namespace) -> int:
 
 def record_control(args: argparse.Namespace) -> int:
     corpus = load_corpus(args.corpus)
-    run_root = args.run_root.resolve(strict=True)
-    raw = json.loads((run_root / "control_results.json").read_text(encoding="utf-8"))
-    by_id = {item["family_id"]: item for item in raw["results"]}
-    if tuple(by_id) != FULL_FAMILY_IDS:
-        raise ValueError("control results must contain the fixed ten families in order")
+    if not isinstance(args.tool_version, str) or not args.tool_version.strip() or len(args.tool_version) > 128:
+        raise ValueError("tool_version must be a non-empty bounded string")
+    run_root = safe_existing_root(args.run_root.resolve(strict=True), "control run root")
+    studiomdl = safe_existing_file(args.studiomdl.resolve(strict=True), "StudioMDL")
+    output = args.output.resolve()
+    safe_existing_root(output.parent.resolve(strict=True), "control metadata output root")
+    if os.path.lexists(output):
+        safe_existing_file(output, "control metadata output")
+    evidence_path = run_root / "control_results.json"
+    safe_existing_file(evidence_path, "control_results.json")
+    raw = json.loads(evidence_path.read_text(encoding="utf-8"))
+    results = parse_control_results(raw, expected_family_ids=corpus.full_ids)
     evidence = []
-    for family in corpus.families:
-        result = by_id[family.id]
+    for family, result in zip(corpus.families, results, strict=True):
         item = {
             "family_id": family.id,
             "status": result["status"],
@@ -173,12 +188,29 @@ def record_control(args: argparse.Namespace) -> int:
             "artifacts": [],
             "failure": None,
         }
-        log = run_root / family.id / "workspace" / family.id / "studiomdl.log"
+        workspace = safe_existing_root(run_root / family.id / "workspace", f"{family.id} control workspace")
+        expected_log = f"{family.id}/studiomdl.log"
+        if result["log"] != expected_log:
+            raise ValueError(f"stale/tampered control log path for {family.id}")
+        log = workspace / expected_log
+        safe_existing_file(log, f"{family.id} control log")
+        log_text = log.read_text(encoding="utf-8", errors="replace")
+        completed = any(line.startswith("Completed ") for line in log_text.splitlines())
+        if (result["status"] == "compiled") != completed:
+            raise ValueError(f"stale/tampered control status for {family.id}")
         if result["status"] == "compiled":
-            models = run_root / family.id / "game" / "models"
-            item["artifacts"] = _sidecars(models, family.compiled_stem)
+            models = safe_existing_root(run_root / family.id / "game" / "models", f"{family.id} compiled models")
+            artifact_payloads = _sidecars(models, family.compiled_stem)
+            declarations = tuple(ArtifactDeclaration.parse(value, f"{family.id} control artifact") for value in artifact_payloads)
+            verify_declared_sidecars(models, family.compiled_stem, declarations, f"{family.id} control")
+            item["artifacts"] = artifact_payloads
         else:
-            errors = [line.strip() for line in log.read_text(encoding="utf-8", errors="replace").splitlines() if line.startswith("ERROR:")]
+            models = run_root / family.id / "game" / "models"
+            if models.exists():
+                base = models / family.compiled_stem
+                if any(Path(str(base) + suffix).exists() for suffix in (".mdl", ".vvd", ".dx80.vtx", ".dx90.vtx", ".ani", ".phy")):
+                    raise ValueError(f"failed control contains stale/partial sidecars for {family.id}")
+            errors = [line.strip() for line in log_text.splitlines() if line.startswith("ERROR:")]
             item["failure"] = " | ".join(portable_compiler_error(line) for line in errors[-2:]) or f"StudioMDL return code {result.get('returncode')}"
         evidence.append(item)
     payload = {
@@ -188,16 +220,15 @@ def record_control(args: argparse.Namespace) -> int:
         "tool": {
             "name": "Garry's Mod StudioMDL",
             "version": args.tool_version,
-            "size_bytes": args.studiomdl.stat().st_size,
-            "sha256": sha256_file(args.studiomdl),
+            "size_bytes": studiomdl.stat().st_size,
+            "sha256": sha256_file(studiomdl),
             "path_env": "STUDIOMDL_EXE",
         },
         "records": evidence,
         "quality_status": "unverified",
         "quality_claim": None,
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_bytes(canonical_json_bytes(payload))
+    output.write_bytes(canonical_json_bytes(payload))
     return 0
 
 

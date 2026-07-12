@@ -34,6 +34,9 @@ BASELINE_LANES = ("original", "control", "blender", "fidelity", "experiment")
 COMPILED_KINDS = (".mdl", ".vvd", ".vtx", ".dx80.vtx", ".dx90.vtx", ".ani", ".phy")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+_LOGICAL_ID = re.compile(r"[a-z][a-z0-9_]*")
+_CORPUS_ID_RE = re.compile(r"[a-z][a-z0-9_-]*")
+_STRATEGY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _REPARSE_POINT = 0x400
 
 
@@ -47,12 +50,33 @@ def _exact_keys(value: Mapping[str, Any], expected: set[str], context: str) -> N
         raise CorpusError(f"{context} keys must be exactly {sorted(expected)}; got {sorted(actual)}")
 
 
+def _exact_int(value: object, context: str, *, nonnegative: bool = False) -> int:
+    if type(value) is not int or (nonnegative and value < 0):
+        qualifier = "non-negative " if nonnegative else ""
+        raise ValueError(f"{context} must be an exact {qualifier}integer")
+    return value
+
+
+def _finite_nonnegative(value: object, context: str, *, allow_none: bool = False) -> float | None:
+    if value is None and allow_none:
+        return None
+    if type(value) not in (int, float) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{context} must be a finite non-negative number")
+    return float(value)
+
+
+def _logical_id(value: object, context: str, pattern: re.Pattern[str] = _LOGICAL_ID) -> str:
+    if not isinstance(value, str) or pattern.fullmatch(value) is None:
+        raise ValueError(f"{context} must be a non-empty logical identifier")
+    return value
+
+
 def _relative_path(raw: object, context: str) -> PurePosixPath:
-    if not isinstance(raw, str) or not raw or "\\" in raw:
-        raise CorpusError(f"{context} must be a non-empty POSIX relative path")
+    if not isinstance(raw, str) or not raw or "\\" in raw or re.match(r"^[A-Za-z]:", raw):
+        raise CorpusError(f"{context} must be a non-empty POSIX logical relative path")
     path = PurePosixPath(raw)
     if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
-        raise CorpusError(f"{context} must be a contained relative path")
+        raise CorpusError(f"{context} must be a contained logical relative path")
     return path
 
 
@@ -75,6 +99,20 @@ def _safe_root(path: Path, context: str) -> Path:
             break
         current = current.parent
     return path.resolve(strict=True)
+
+
+def safe_existing_root(path: Path, context: str) -> Path:
+    return _safe_root(path, context)
+
+
+def safe_existing_file(path: Path, context: str) -> Path:
+    if not path.is_absolute() or not path.is_file() or _is_reparse(path):
+        raise CorpusError(f"{context} must be an absolute regular non-reparse file")
+    parent = _safe_root(path.parent, f"{context} parent")
+    result = parent / path.name
+    if _is_reparse(result):
+        raise CorpusError(f"{context} must not be a symlink or reparse point")
+    return result
 
 
 def safe_join(root: Path, relative: str | PurePosixPath, *, must_exist: bool = True) -> Path:
@@ -182,6 +220,14 @@ def _verify_exact_sidecars(root: Path, stem: str, declarations: Sequence[Artifac
         raise CorpusError(f"{context} lacks required .mdl/.vvd/.dx90.vtx sidecars")
 
 
+def verify_declared_sidecars(
+    root: Path, stem: str, declarations: Sequence[ArtifactDeclaration], context: str
+) -> None:
+    safe = _safe_root(root, f"{context} root")
+    _verify_declarations(safe, declarations, context)
+    _verify_exact_sidecars(safe, stem, declarations, context)
+
+
 @dataclass(frozen=True)
 class FamilySpec:
     id: str
@@ -218,7 +264,9 @@ def load_corpus(
     if not isinstance(raw, dict):
         raise CorpusError("corpus must be an object")
     _exact_keys(raw, {"schema_version", "corpus_id", "roots", "partitions", "families"}, "corpus")
-    if raw["schema_version"] != SCHEMA_VERSION or raw["corpus_id"] != CORPUS_ID:
+    if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
+        raise CorpusError("unsupported corpus schema_version")
+    if not isinstance(raw["corpus_id"], str) or raw["corpus_id"] != CORPUS_ID:
         raise CorpusError("unsupported corpus schema or id")
     env = os.environ if environ is None else environ
     if not isinstance(raw["roots"], dict) or not raw["roots"]:
@@ -245,6 +293,8 @@ def load_corpus(
     _exact_keys(partitions, {"pressure", "full"}, "partitions")
     pressure = tuple(partitions["pressure"]) if isinstance(partitions["pressure"], list) else ()
     full = tuple(partitions["full"]) if isinstance(partitions["full"], list) else ()
+    if any(not isinstance(item, str) or _LOGICAL_ID.fullmatch(item) is None for item in pressure + full):
+        raise CorpusError("partition family IDs must be logical identifiers")
     expected = tuple(expected_family_ids)
     expected_pressure = expected[:5] if expected == FULL_FAMILY_IDS else expected
     if pressure != expected_pressure:
@@ -261,6 +311,8 @@ def load_corpus(
         _exact_keys(item, {"id", "display_name", "source_qc", "source_files", "compiled_stem", "baselines"}, context)
         if not all(isinstance(item[key], str) and item[key] for key in ("id", "display_name", "source_qc", "compiled_stem")):
             raise CorpusError(f"{context} string fields must be non-empty")
+        if _LOGICAL_ID.fullmatch(item["id"]) is None:
+            raise CorpusError(f"{context}.id must be a logical identifier")
         source_qc = _relative_path(item["source_qc"], f"{context}.source_qc").as_posix()
         compiled_stem = _relative_path(item["compiled_stem"], f"{context}.compiled_stem").as_posix()
         if not isinstance(item["source_files"], list) or not item["source_files"]:
@@ -304,18 +356,57 @@ def canonical_json_bytes(value: object) -> bytes:
 
 
 def build_cache_key(*, source: str, tools: Mapping[str, str], scripts: Mapping[str, str], settings: Mapping[str, Any]) -> str:
-    if _SHA256.fullmatch(source) is None:
+    if not isinstance(source, str) or _SHA256.fullmatch(source) is None:
         raise ValueError("source must be a SHA-256 digest")
-    payload = {"schema_version": SCHEMA_VERSION, "source": source, "tools": dict(tools), "scripts": dict(scripts), "settings": dict(settings)}
+    for context, values in (("tools", tools), ("scripts", scripts)):
+        if not isinstance(values, Mapping) or any(
+            not isinstance(name, str) or not name or not isinstance(digest, str) or _SHA256.fullmatch(digest) is None
+            for name, digest in values.items()
+        ):
+            raise ValueError(f"{context} values must be SHA-256 digests")
+    if not isinstance(settings, Mapping):
+        raise TypeError("settings must be a JSON object")
+    frozen_settings = _deep_freeze_json(settings, "settings")
+    payload = {"schema_version": SCHEMA_VERSION, "source": source, "tools": dict(tools), "scripts": dict(scripts), "settings": _thaw(frozen_settings)}
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
-def _deep_freeze(value: Any) -> Any:
+def _deep_freeze_json(value: Any, context: str, *, key_name: str = "") -> Any:
     if isinstance(value, Mapping):
-        return MappingProxyType({str(key): _deep_freeze(item) for key, item in value.items()})
+        frozen: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise TypeError(f"{context} JSON object keys must be non-empty strings")
+            frozen[key] = _deep_freeze_json(item, f"{context}.{key}", key_name=key)
+        return MappingProxyType(frozen)
     if isinstance(value, (list, tuple)):
-        return tuple(_deep_freeze(item) for item in value)
-    return value
+        return tuple(_deep_freeze_json(item, f"{context}[]") for item in value)
+    if value is None or isinstance(value, (str, bool)) or type(value) is int:
+        if isinstance(value, str):
+            lowered = key_name.lower()
+            if "sha256" in lowered or lowered.endswith("digest"):
+                if _SHA256.fullmatch(value) is None:
+                    raise ValueError(f"{context} digest must be lowercase SHA-256")
+            if lowered.endswith("_path") or lowered == "path":
+                _relative_path(value, context)
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError(f"{context} must be finite")
+        return value
+    raise TypeError(f"{context} contains a non-JSON value")
+
+
+def _freeze_provenance(provenance: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not isinstance(provenance, Mapping) or set(provenance) != {"tool", "scripts", "settings"} or not all(
+        isinstance(provenance[key], Mapping) for key in ("tool", "scripts", "settings")
+    ):
+        raise ValueError("provenance must contain exactly tool/scripts/settings objects")
+    scripts = provenance["scripts"]
+    for name, digest in scripts.items():
+        if not isinstance(name, str) or not name or not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+            raise ValueError("provenance scripts values must be SHA-256 digests")
+    return _deep_freeze_json(provenance, "provenance")
 
 
 def _thaw(value: Any) -> Any:
@@ -347,27 +438,34 @@ class BenchmarkRecord:
     def create(cls, *, corpus_id: str, family_id: str, lane: str, strategy: str, cache_key: str,
                artifacts: Mapping[str, int], provenance: Mapping[str, Any], gates: Mapping[str, str],
                elapsed_seconds: float | None = None, failure: str | None = None) -> "BenchmarkRecord":
+        _logical_id(corpus_id, "corpus_id", _CORPUS_ID_RE)
+        _logical_id(family_id, "family_id")
+        _logical_id(strategy, "strategy", _STRATEGY_RE)
         if lane not in BASELINE_LANES:
             raise ValueError(f"unknown benchmark lane: {lane}")
-        if _SHA256.fullmatch(cache_key) is None:
+        if not isinstance(cache_key, str) or _SHA256.fullmatch(cache_key) is None:
             raise ValueError("cache_key must be a SHA-256 digest")
-        if set(provenance) != {"tool", "scripts", "settings"} or not all(
-            isinstance(provenance[key], Mapping) for key in ("tool", "scripts", "settings")
-        ):
-            raise ValueError("provenance must contain exactly tool/scripts/settings objects")
+        frozen_provenance = _freeze_provenance(provenance)
+        elapsed = _finite_nonnegative(elapsed_seconds, "elapsed_seconds", allow_none=True)
+        if failure is not None and not isinstance(failure, str):
+            raise ValueError("failure must be null or a string")
+        if not isinstance(artifacts, Mapping):
+            raise TypeError("artifacts must be an object")
         clean: dict[str, int] = {}
         for kind, size in artifacts.items():
             if kind not in COMPILED_KINDS or not isinstance(size, int) or isinstance(size, bool) or size < 0:
                 raise ValueError(f"invalid artifact byte decomposition: {kind}={size}")
             clean[kind] = size
         required_gates = {"structural", "visual", "runtime"}
-        if set(gates) != required_gates or any(value not in {"pass", "fail", "not_run"} for value in gates.values()):
+        if not isinstance(gates, Mapping) or set(gates) != required_gates or any(
+            not isinstance(value, str) or value not in {"pass", "fail", "not_run"} for value in gates.values()
+        ):
             raise ValueError("gates must contain structural/visual/runtime with pass/fail/not_run")
         dx80 = clean.get(".dx80.vtx", 0)
         total = sum(clean.values())
         return cls(SCHEMA_VERSION, corpus_id, family_id, lane, strategy, cache_key,
-                   _deep_freeze(dict(sorted(clean.items()))), total, total - dx80, dx80,
-                   _deep_freeze(provenance), _deep_freeze(gates), elapsed_seconds, failure)
+                   _deep_freeze_json(dict(sorted(clean.items())), "artifacts"), total, total - dx80, dx80,
+                   frozen_provenance, _deep_freeze_json(gates, "gates"), elapsed, failure)
 
     @classmethod
     def from_dict(cls, raw: object) -> "BenchmarkRecord":
@@ -380,7 +478,7 @@ class BenchmarkRecord:
         }
         if set(raw) != expected:
             raise ValueError(f"record keys must be exactly {sorted(expected)}")
-        if raw["schema_version"] != SCHEMA_VERSION:
+        if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
             raise ValueError("unsupported record schema_version")
         record = cls.create(
             corpus_id=raw["corpus_id"], family_id=raw["family_id"], lane=raw["lane"],
@@ -431,8 +529,33 @@ def import_compiled_baseline(*, corpus_id: str, family_id: str, lane: str, root:
                                   gates={"structural": "not_run", "visual": "not_run", "runtime": "not_run"})
 
 
-def summarize_records(records: Iterable[BenchmarkRecord]) -> dict[str, Any]:
+def summarize_records(
+    records: Iterable[BenchmarkRecord], *, expected_family_ids: Sequence[str] | None = None,
+    required_lanes: Sequence[str] | None = None,
+) -> dict[str, Any]:
     records = tuple(records)
+    if not records:
+        lanes_to_report = tuple(required_lanes or BASELINE_LANES)
+        families = tuple(expected_family_ids or ())
+    else:
+        corpus_ids = {record.corpus_id for record in records}
+        if len(corpus_ids) != 1:
+            raise ValueError("all summary records must share one corpus")
+        lanes_to_report = tuple(required_lanes or dict.fromkeys(record.lane for record in records))
+        families = tuple(expected_family_ids or dict.fromkeys(record.family_id for record in records))
+        seen: set[tuple[str, str]] = set()
+        for record in records:
+            key = (record.lane, record.family_id)
+            if key in seen:
+                raise ValueError(f"duplicate summary record for {record.lane}/{record.family_id}")
+            seen.add(key)
+        expected_pairs = {(lane, family) for lane in lanes_to_report for family in families}
+        missing = expected_pairs - seen
+        extra = seen - expected_pairs
+        if missing:
+            raise ValueError(f"missing summary records: {sorted(missing)}")
+        if extra:
+            raise ValueError(f"unexpected summary records: {sorted(extra)}")
     lanes: dict[str, Any] = {}
     per_extension: dict[str, dict[str, int]] = {}
     for lane in BASELINE_LANES:
@@ -440,20 +563,70 @@ def summarize_records(records: Iterable[BenchmarkRecord]) -> dict[str, Any]:
         geometry = [record.geometry_comparable_bytes for record in lane_records if record.failure is None]
         extension_totals: dict[str, int] = {}
         for record in lane_records:
+            if record.failure is not None:
+                continue
             for kind, size in record.artifacts.items():
                 extension_totals[kind] = extension_totals.get(kind, 0) + size
         per_extension[lane] = dict(sorted(extension_totals.items()))
         lanes[lane] = {
             "record_count": len(lane_records),
+            "failure_count": sum(record.failure is not None for record in lane_records),
+            "failures": [{"family_id": record.family_id, "failure": record.failure} for record in lane_records if record.failure is not None],
             "median_geometry_comparable_bytes": statistics.median(geometry) if geometry else None,
             "worst_geometry_comparable_bytes": max(geometry) if geometry else None,
-            "total_dx80_optional_bytes": sum(record.dx80_optional_bytes for record in lane_records),
+            "total_dx80_optional_bytes": sum(record.dx80_optional_bytes for record in lane_records if record.failure is None),
             "per_extension_bytes": per_extension[lane],
         }
-    quality = "verified" if records and all(all(value == "pass" for value in record.gates.values()) for record in records) else "unverified"
+    quality = "verified" if records and all(
+        record.failure is None
+        and {".mdl", ".vvd", ".dx90.vtx"}.issubset(record.artifacts)
+        and all(value == "pass" for value in record.gates.values())
+        for record in records
+    ) else "unverified"
     return {"schema_version": SCHEMA_VERSION, "corpus_id": records[0].corpus_id if records else CORPUS_ID,
             "quality_status": quality, "quality_claim": None,
             "lanes": lanes, "dx80_optional": {lane: values["total_dx80_optional_bytes"] for lane, values in lanes.items()}}
+
+
+def parse_control_results(raw: object, *, expected_family_ids: Sequence[str] = FULL_FAMILY_IDS) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(raw, dict):
+        raise ValueError("control evidence must be an object")
+    if set(raw) != {"schema_version", "corpus_id", "results"}:
+        raise ValueError("control evidence keys must be exactly schema_version/corpus_id/results")
+    if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
+        raise ValueError("invalid control schema_version")
+    if raw["corpus_id"] != CORPUS_ID or not isinstance(raw["corpus_id"], str):
+        raise ValueError("invalid control corpus_id")
+    if not isinstance(raw["results"], list):
+        raise ValueError("control results must be an array")
+    expected = tuple(expected_family_ids)
+    ids: list[str] = []
+    parsed: list[Mapping[str, Any]] = []
+    required = {"family_id", "status", "returncode", "elapsed_seconds", "log", "autofixes", "source_mutated"}
+    for index, item in enumerate(raw["results"]):
+        if not isinstance(item, dict) or set(item) != required:
+            raise ValueError(f"control result {index} keys must be exactly {sorted(required)}")
+        family_id = _logical_id(item["family_id"], f"control result {index} family_id")
+        ids.append(family_id)
+        if not isinstance(item["status"], str) or item["status"] not in {"compiled", "failed"}:
+            raise ValueError(f"control result {index} status is invalid")
+        returncode = _exact_int(item["returncode"], f"control result {index} returncode")
+        if (item["status"] == "compiled") != (returncode == 0):
+            raise ValueError(f"control result {index} status/returncode mismatch")
+        _finite_nonnegative(item["elapsed_seconds"], f"control result {index} elapsed_seconds")
+        _relative_path(item["log"], f"control result {index} log logical relative path")
+        if item["autofixes"] is not False:
+            raise ValueError(f"control result {index} autofixes must be exactly false")
+        if item["source_mutated"] is not False:
+            raise ValueError(f"control result {index} source_mutated must be exactly false")
+        parsed.append(_deep_freeze_json(item, f"control result {index}"))
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate control family IDs")
+    if set(ids) != set(expected):
+        raise ValueError("control evidence must be complete for the expected families")
+    if tuple(ids) != expected:
+        raise ValueError("control family order must match the fixed corpus")
+    return tuple(parsed)
 
 
 class StrictControlRoundtripAdapter:

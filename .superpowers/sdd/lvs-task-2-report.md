@@ -78,3 +78,25 @@ Final verification: `python -m unittest tests.maximum_optimizer.test_benchmarkin
 successfully with the one environment symlink skip. `python -m unittest discover -s tests -t .`
 ran the full 321-test suite successfully with 11 environment skips. Python byte-compilation of the
 harness and benchmarking module also passed.
+
+## Review hardening
+
+A follow-up review hardened every public boundary. Corpus, immutable result and strict-control
+evidence now require exact keys and scalar types (booleans are never accepted as integers), finite
+non-negative elapsed time, logical identifiers/strategies, null-or-string failures, digest formats
+and logical relative paths. Provenance accepts only recursively valid JSON and is deeply frozen;
+mutating the caller's original nested lists/maps cannot alter a record or cache key.
+
+The control recorder parses the ordered list before building any lookup, so duplicates, omissions,
+reordering, extra keys, invalid status/return-code pairs, non-finite time, path leaks, or either
+safety flag differing from exact `false` fail closed. Tool, run, evidence, log, compiled and output
+paths are checked for containment and reparse points. Successful controls require their exact
+hashed sidecars with no extra variant; failed controls reject stale/partial sidecars. Existing real
+control evidence was re-imported through these checks.
+
+Summaries now require one corpus and a complete unique lane/family matrix. Failed records are
+reported separately and contribute no bytes, DX80, median or worst value. A failure can never yield
+`quality_status: verified`; success also requires complete artifacts and every mandatory gate.
+
+Review-fix verification ran 17 focused tests successfully with one Windows symlink privilege skip,
+then ran all 327 tests successfully with 11 environment skips.
