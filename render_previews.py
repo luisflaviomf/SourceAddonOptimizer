@@ -20,6 +20,7 @@ from maximum_optimizer.regions import (
     load_region_manifest_payload,
     normalized_source_identity as _normalized_source_identity,
     resolve_region_assignments as _resolve_region_assignments,
+    source_material_slot_identities as _source_material_slot_identities,
 )
 
 try:
@@ -159,6 +160,38 @@ def _load_region_manifest(path: Path) -> RegionManifest:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read region manifest: {path}") from exc
     return load_region_manifest_payload(payload)
+
+
+def _smd_material_names(path: Path) -> tuple[str, ...]:
+    path = Path(path)
+    if path.suffix.casefold() != ".smd":
+        raise ValueError(f"Maximum material identity requires SMD source evidence: {path}")
+    try:
+        lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"cannot read Source material evidence: {path}") from exc
+    in_triangles = False
+    materials: list[str] = []
+    vertex_rows_remaining = 0
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not in_triangles:
+            if line.casefold() == "triangles":
+                in_triangles = True
+            continue
+        if line.casefold() == "end":
+            break
+        if vertex_rows_remaining:
+            vertex_rows_remaining -= 1
+            continue
+        if not line:
+            continue
+        if line not in materials:
+            materials.append(line)
+        vertex_rows_remaining = 3
+    if not materials or vertex_rows_remaining:
+        raise ValueError(f"SMD material evidence is missing or truncated: {path}")
+    return tuple(materials)
 
 
 def _required_region_manifest(args) -> Path:
@@ -648,7 +681,10 @@ def _region_source_identity(obj) -> str:
 
 
 def _capture_regions(
-    objs, frame: int, region_manifest: RegionManifest
+    objs,
+    frame: int,
+    region_manifest: RegionManifest,
+    source_material_evidence: dict[str, tuple[str, ...]],
 ) -> dict[str, dict]:
     bpy.context.scene.frame_set(frame)
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -656,10 +692,14 @@ def _capture_regions(
         (
             _region_source_identity(obj),
             obj.name,
-            tuple(
-                material.name if material else "none"
-                for material in getattr(obj.data, "materials", ())
-            ) or ("none",),
+            _source_material_slot_identities(
+                _region_source_identity(obj),
+                source_material_evidence[_region_source_identity(obj)],
+                tuple(
+                    material.name if material else "none"
+                    for material in getattr(obj.data, "materials", ())
+                ),
+            ),
         )
         for obj in objs
     )
@@ -1037,6 +1077,7 @@ def _render_extended_set(
     texture_cache: Path,
     region_manifest: RegionManifest,
     source_identities: tuple[str, ...],
+    source_material_evidence: dict[str, tuple[str, ...]],
     *,
     fit=None,
 ) -> tuple[list[dict], dict[str, dict[str, dict]], tuple, dict]:
@@ -1062,7 +1103,7 @@ def _render_extended_set(
     objs = _get_mesh_objects()
     if not objs:
         raise RuntimeError(f"No mesh objects found for {label}: {src_paths}")
-    source_materials = {
+    blender_source_materials = {
         (obj.name, index): material.name if material else ""
         for obj in objs
         if hasattr(obj.data, "materials")
@@ -1072,7 +1113,7 @@ def _render_extended_set(
         objs,
         poses,
         capture=lambda captured_objects, frame: _capture_regions(
-            captured_objects, frame, region_manifest
+            captured_objects, frame, region_manifest, source_material_evidence
         ),
     )
     bbox, evaluated_fit = _framing_from_snapshots(snapshots)
@@ -1087,7 +1128,7 @@ def _render_extended_set(
             texture_missing = False
         else:
             texture_missing = _apply_textured_materials(
-                objs, source_materials, materials_root, vtfcmd, texture_cache
+                objs, blender_source_materials, materials_root, vtfcmd, texture_cache
             )
         for pose_name, frame in poses:
             bpy.context.scene.frame_set(frame)
@@ -1129,6 +1170,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         entry.descriptor.source_identity for entry in region_manifest.entries
     }
     source_identities = []
+    source_materials: dict[str, tuple[str, ...]] = {}
     for source in before:
         try:
             relative = source.resolve(strict=True).relative_to(region_manifest_path.parent.resolve(strict=True))
@@ -1138,6 +1180,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         if identity not in manifest_sources:
             raise ValueError(f"render source is missing from region manifest: {identity}")
         source_identities.append(identity)
+        source_materials[identity] = _smd_material_names(source)
     source_identities_tuple = tuple(source_identities)
     original_dir = out_dir / "original"
     candidate_dir = out_dir / "optimized"
@@ -1154,6 +1197,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         texture_cache,
         region_manifest,
         source_identities_tuple,
+        source_materials,
     )
     candidate_entries, candidate_snapshots, _, candidate_bbox = _render_extended_set(
         "after",
@@ -1168,6 +1212,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         texture_cache,
         region_manifest,
         source_identities_tuple,
+        source_materials,
         fit=fit,
     )
     stride = 7

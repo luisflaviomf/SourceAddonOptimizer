@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -112,21 +113,28 @@ std::condition_variable g_test_hook_condition;
 std::uint32_t g_test_pause_point = 0;
 std::uint32_t g_test_reached_point = 0;
 bool g_test_hook_released = false;
+std::atomic<std::uint32_t> g_test_failure{0};
 
-void test_pause(std::uint32_t point)
+void test_pause(std::uint32_t point) noexcept
 {
-    std::unique_lock<std::mutex> lock(g_test_hook_mutex);
-    if (g_test_pause_point != point)
-        return;
-    g_test_reached_point = point;
-    g_test_hook_condition.notify_all();
-    g_test_hook_condition.wait(lock, [point]() {
-        return g_test_hook_released || g_test_pause_point != point;
-    });
-    g_test_pause_point = 0;
-    g_test_reached_point = 0;
-    g_test_hook_released = false;
-    g_test_hook_condition.notify_all();
+    try
+    {
+        std::unique_lock<std::mutex> lock(g_test_hook_mutex);
+        if (g_test_pause_point != point)
+            return;
+        g_test_reached_point = point;
+        g_test_hook_condition.notify_all();
+        g_test_hook_condition.wait(lock, [point]() {
+            return g_test_hook_released || g_test_pause_point != point;
+        });
+        g_test_pause_point = 0;
+        g_test_reached_point = 0;
+        g_test_hook_released = false;
+        g_test_hook_condition.notify_all();
+    }
+    catch (...)
+    {
+    }
 }
 
 bool can_multiply(std::size_t a, std::size_t b)
@@ -197,20 +205,34 @@ void reset_output(MaximumMeshOutput* output)
 class OutputBuildReservation
 {
 public:
-    explicit OutputBuildReservation(MaximumMeshOutput* output) : output_(output) {}
+    explicit OutputBuildReservation(MaximumMeshOutput* output) noexcept : output_(output) {}
     OutputBuildReservation(const OutputBuildReservation&) = delete;
     OutputBuildReservation& operator=(const OutputBuildReservation&) = delete;
 
-    ~OutputBuildReservation()
+    ~OutputBuildReservation() noexcept
     {
-        if (!active_)
-            return;
-        std::lock_guard<std::mutex> lock(g_output_mutex);
-        const auto found = g_output_states.find(output_);
-        if (found != g_output_states.end() && found->second.state == OutputState::Building)
+        rollback();
+    }
+
+    void activate() noexcept { active_ = true; }
+
+    void rollback() noexcept
+    {
+        try
         {
-            reset_output(output_);
-            g_output_states.erase(found);
+            if (!active_)
+                return;
+            std::lock_guard<std::mutex> lock(g_output_mutex);
+            const auto found = g_output_states.find(output_);
+            if (found != g_output_states.end() && found->second.state == OutputState::Building)
+            {
+                reset_output(output_);
+                g_output_states.erase(found);
+            }
+            active_ = false;
+        }
+        catch (...)
+        {
         }
     }
 
@@ -260,113 +282,161 @@ public:
 
 private:
     MaximumMeshOutput* output_;
-    bool active_ = true;
+    bool active_ = false;
 };
 } // namespace
 
-extern "C" __declspec(dllexport) int maximum_meshopt_version()
+extern "C" __declspec(dllexport) int maximum_meshopt_version() noexcept
 {
     return 10200;
 }
 
-extern "C" __declspec(dllexport) int maximum_meshopt_abi_version()
+extern "C" __declspec(dllexport) int maximum_meshopt_abi_version() noexcept
 {
     return 2;
 }
 
-extern "C" __declspec(dllexport) int maximum_meshopt_test_pause_at(std::uint32_t point)
+extern "C" __declspec(dllexport) int maximum_meshopt_test_pause_at(std::uint32_t point) noexcept
 {
-    if (point != 1 && point != 2)
+    try
+    {
+        if (point != 1 && point != 2)
+            return 0;
+        std::lock_guard<std::mutex> lock(g_test_hook_mutex);
+        if (g_test_pause_point != 0 || g_test_reached_point != 0)
+            return 0;
+        g_test_pause_point = point;
+        g_test_hook_released = false;
+        return 1;
+    }
+    catch (...)
+    {
         return 0;
-    std::lock_guard<std::mutex> lock(g_test_hook_mutex);
-    if (g_test_pause_point != 0 || g_test_reached_point != 0)
-        return 0;
-    g_test_pause_point = point;
-    g_test_hook_released = false;
-    return 1;
+    }
 }
 
 extern "C" __declspec(dllexport) int maximum_meshopt_test_wait_paused(
-    std::uint32_t point, std::uint32_t timeout_ms)
+    std::uint32_t point, std::uint32_t timeout_ms) noexcept
 {
-    std::unique_lock<std::mutex> lock(g_test_hook_mutex);
-    return g_test_hook_condition.wait_for(
-               lock, std::chrono::milliseconds(timeout_ms),
-               [point]() { return g_test_reached_point == point; })
-        ? 1
-        : 0;
-}
-
-extern "C" __declspec(dllexport) int maximum_meshopt_test_release(std::uint32_t point)
-{
-    std::lock_guard<std::mutex> lock(g_test_hook_mutex);
-    if (g_test_reached_point != point)
-        return 0;
-    g_test_hook_released = true;
-    g_test_hook_condition.notify_all();
-    return 1;
-}
-
-extern "C" __declspec(dllexport) std::size_t maximum_meshopt_test_registry_count()
-{
-    std::lock_guard<std::mutex> lock(g_output_mutex);
-    return g_output_states.size();
-}
-
-extern "C" __declspec(dllexport) void maximum_meshopt_destroy(MaximumMeshOutput* output)
-{
-    if (output == nullptr || output->struct_size != sizeof(MaximumMeshOutput))
-        return;
-    OutputRecord detached;
+    try
     {
-        std::lock_guard<std::mutex> lock(g_output_mutex);
-        const auto owned = g_output_states.find(output);
-        if (owned == g_output_states.end() || owned->second.state != OutputState::Owned ||
-            owned->second.cookie != output->ownership_cookie)
-            return;
-        owned->second.state = OutputState::Destroying;
-        detached = owned->second;
-        reset_output(output);
+        std::unique_lock<std::mutex> lock(g_test_hook_mutex);
+        return g_test_hook_condition.wait_for(
+                   lock, std::chrono::milliseconds(timeout_ms),
+                   [point]() { return g_test_reached_point == point; })
+            ? 1
+            : 0;
     }
-    test_pause(2);
-    delete[] detached.positions;
-    delete[] detached.normals;
-    delete[] detached.uvs;
-    delete[] detached.weights;
-    delete[] detached.bone_indices;
-    delete[] detached.indices;
-    delete[] detached.material_ids;
+    catch (...)
+    {
+        return 0;
+    }
+}
+
+extern "C" __declspec(dllexport) int maximum_meshopt_test_release(std::uint32_t point) noexcept
+{
+    try
+    {
+        std::lock_guard<std::mutex> lock(g_test_hook_mutex);
+        if (g_test_reached_point != point)
+            return 0;
+        g_test_hook_released = true;
+        g_test_hook_condition.notify_all();
+        return 1;
+    }
+    catch (...)
+    {
+        return 0;
+    }
+}
+
+extern "C" __declspec(dllexport) std::size_t maximum_meshopt_test_registry_count() noexcept
+{
+    try
     {
         std::lock_guard<std::mutex> lock(g_output_mutex);
-        const auto found = g_output_states.find(output);
-        if (found != g_output_states.end() && found->second.state == OutputState::Destroying)
-            g_output_states.erase(found);
+        return g_output_states.size();
+    }
+    catch (...)
+    {
+        return 0;
+    }
+}
+
+extern "C" __declspec(dllexport) int maximum_meshopt_test_fail_next(std::uint32_t failure) noexcept
+{
+    if (failure != 1 && failure != 2)
+        return 0;
+    std::uint32_t expected = 0;
+    return g_test_failure.compare_exchange_strong(expected, failure, std::memory_order_relaxed) ? 1 : 0;
+}
+
+extern "C" __declspec(dllexport) void maximum_meshopt_destroy(MaximumMeshOutput* output) noexcept
+{
+    try
+    {
+        if (output == nullptr || output->struct_size != sizeof(MaximumMeshOutput))
+            return;
+        OutputRecord detached;
+        {
+            std::lock_guard<std::mutex> lock(g_output_mutex);
+            const auto owned = g_output_states.find(output);
+            if (owned == g_output_states.end() || owned->second.state != OutputState::Owned ||
+                owned->second.cookie != output->ownership_cookie)
+                return;
+            owned->second.state = OutputState::Destroying;
+            detached = owned->second;
+            reset_output(output);
+        }
+        test_pause(2);
+        delete[] detached.positions;
+        delete[] detached.normals;
+        delete[] detached.uvs;
+        delete[] detached.weights;
+        delete[] detached.bone_indices;
+        delete[] detached.indices;
+        delete[] detached.material_ids;
+        {
+            std::lock_guard<std::mutex> lock(g_output_mutex);
+            const auto found = g_output_states.find(output);
+            if (found != g_output_states.end() && found->second.state == OutputState::Destroying)
+                g_output_states.erase(found);
+        }
+    }
+    catch (...)
+    {
     }
 }
 
 extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
     const MaximumMeshInput* input,
     const MaximumMeshOptions* options,
-    MaximumMeshOutput* output)
+    MaximumMeshOutput* output) noexcept
 {
-    if (input == nullptr || options == nullptr || output == nullptr)
-        return ErrorNullPointer;
-    if (input->struct_size != sizeof(MaximumMeshInput) ||
-        options->struct_size != sizeof(MaximumMeshOptions) ||
-        output->struct_size != sizeof(MaximumMeshOutput))
-        return ErrorStructSize;
-    {
-        std::lock_guard<std::mutex> lock(g_output_mutex);
-        if (g_output_states.find(output) != g_output_states.end())
-            return ErrorBusy;
-        reset_output(output);
-        g_output_states.emplace(output, OutputRecord{});
-    }
     OutputBuildReservation reservation(output);
-    test_pause(1);
-
     try
     {
+        if (input == nullptr || options == nullptr || output == nullptr)
+            return ErrorNullPointer;
+        if (input->struct_size != sizeof(MaximumMeshInput) ||
+            options->struct_size != sizeof(MaximumMeshOptions) ||
+            output->struct_size != sizeof(MaximumMeshOutput))
+            return ErrorStructSize;
+        {
+            std::lock_guard<std::mutex> lock(g_output_mutex);
+            if (g_output_states.find(output) != g_output_states.end())
+                return ErrorBusy;
+            reset_output(output);
+            const std::uint32_t injected = g_test_failure.exchange(0, std::memory_order_relaxed);
+            if (injected == 1)
+                throw std::bad_alloc();
+            if (injected == 2)
+                throw std::runtime_error("injected registry failure");
+            g_output_states.emplace(output, OutputRecord{});
+            reservation.activate();
+        }
+        test_pause(1);
+
         constexpr std::size_t kMeshoptCountLimit = std::size_t(1) << 28;
         if (input->vertex_count == 0 || input->vertex_count >= kMeshoptCountLimit ||
             input->index_count < 3 || input->index_count >= kMeshoptCountLimit || input->index_count % 3 != 0 ||

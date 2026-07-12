@@ -687,6 +687,19 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate"):
             build_region_manifest((observations[0], observations[0]))
 
+    def test_renderer_reads_legitimate_source_material_suffix_without_blender_renaming(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "body.smd"
+            source.write_text(
+                "version 1\nnodes\n0 \"root\" -1\nend\nskeleton\ntime 0\n"
+                "0 0 0 0 0 0 0\nend\ntriangles\nPaint.001\n"
+                "0 0 0 0 0 0 1 0 0\n0 1 0 0 0 0 1 1 0\n0 0 1 0 0 0 1 0 1\nend\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(render_previews._smd_material_names(source), ("Paint.001",))
+
     def test_barycentric_loop_attributes_preserve_seams_and_smooth_normals(self):
         import render_previews
 

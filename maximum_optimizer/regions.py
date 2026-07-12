@@ -53,6 +53,38 @@ def normalized_source_identity(value: str) -> str:
     return PurePosixPath(*(unicodedata.normalize("NFC", part).casefold() for part in parts)).as_posix()
 
 
+def source_material_slot_identities(
+    source_identity: str,
+    source_materials: Sequence[str],
+    blender_datablock_names: Sequence[str],
+) -> tuple[str, ...]:
+    normalized_source_identity(source_identity)
+    canonical_source = tuple(normalized_region_material(name) for name in source_materials)
+    datablock_names = tuple(normalized_region_material(name) for name in blender_datablock_names)
+    if not canonical_source:
+        if datablock_names:
+            raise ValueError("ambiguous material slots without Source material evidence")
+        return ()
+    if len(canonical_source) == len(datablock_names):
+        slot_indices = tuple(range(len(canonical_source)))
+    else:
+        slot_indices_list: list[int] = []
+        used: set[int] = set()
+        for datablock_name in datablock_names:
+            matches = tuple(
+                index for index, source_name in enumerate(canonical_source)
+                if source_name == datablock_name and index not in used
+            )
+            if len(matches) != 1:
+                raise ValueError("ambiguous material slot mapping for Source occurrence")
+            used.add(matches[0])
+            slot_indices_list.append(matches[0])
+        slot_indices = tuple(slot_indices_list)
+    return tuple(
+        f"slot:{index}:{canonical_source[index]}" for index in slot_indices
+    )
+
+
 def blender_suffix_number(name: str) -> int:
     match = re.search(r"\.(\d{3})$", unicodedata.normalize("NFC", str(name)).strip())
     return int(match.group(1)) if match else 0

@@ -216,6 +216,50 @@ class MeshoptBridgeTests(unittest.TestCase):
         dll.maximum_meshopt_destroy(ctypes.byref(output))
         self.assertEqual(dll.maximum_meshopt_test_registry_count(), 0)
 
+    def test_registry_emplace_failures_never_cross_abi_or_leave_state(self) -> None:
+        dll = load_library()
+        fail_next = dll.maximum_meshopt_test_fail_next
+        fail_next.argtypes = [ctypes.c_uint32]
+        fail_next.restype = ctypes.c_int
+        registry_count = dll.maximum_meshopt_test_registry_count
+        registry_count.argtypes = []
+        registry_count.restype = ctypes.c_size_t
+
+        positions = (ctypes.c_float * 9)(0, 0, 0, 1, 0, 0, 0, 1, 0)
+        normals = (ctypes.c_float * 9)(*(0, 0, 1) * 3)
+        uvs = (ctypes.c_float * 6)(0, 0, 1, 0, 0, 1)
+        weights = (ctypes.c_float * 12)(*(1, 0, 0, 0) * 3)
+        bones = (ctypes.c_uint32 * 12)(*(0, 0, 0, 0) * 3)
+        indices = (ctypes.c_uint32 * 3)(0, 1, 2)
+        materials = (ctypes.c_uint32 * 1)(0)
+        flags = (ctypes.c_ubyte * 3)(0, 0, 0)
+        native_input = _MaximumMeshInput(
+            ctypes.sizeof(_MaximumMeshInput), positions, normals, uvs, weights, bones, 1,
+            3, indices, 3, materials, 1, flags,
+        )
+        options = _MaximumMeshOptions(ctypes.sizeof(_MaximumMeshOptions), 0.5, 1.0, 0, 0)
+
+        for failure, expected in ((1, -6), (2, -8)):
+            with self.subTest(failure=failure):
+                output = _MaximumMeshOutput(
+                    struct_size=ctypes.sizeof(_MaximumMeshOutput),
+                    vertex_count=99,
+                    index_count=99,
+                    triangle_count=99,
+                )
+                self.assertEqual(fail_next(failure), 1)
+                code = dll.maximum_meshopt_simplify(
+                    ctypes.byref(native_input), ctypes.byref(options), ctypes.byref(output)
+                )
+                self.assertEqual(code, expected)
+                self.assertFalse(output.positions)
+                self.assertFalse(output.indices)
+                self.assertEqual(
+                    (output.vertex_count, output.index_count, output.triangle_count),
+                    (0, 0, 0),
+                )
+                self.assertEqual(registry_count(), 0)
+
     def test_skin_slots_are_canonical_by_bone_id_after_weight_selection(self) -> None:
         weights, bones = _canonicalize_skin_slots(
             (0.9, 0.1, 0.0, 0.0), (7, 2, 999999, 4000000)

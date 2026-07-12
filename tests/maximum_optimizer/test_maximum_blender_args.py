@@ -16,6 +16,7 @@ from maximum_optimizer.regions import (
     load_region_manifest_payload,
     parse_region_scope,
     resolve_region_assignments,
+    source_material_slot_identities,
 )
 from maximum_optimizer.mesh_attributes import (
     build_wedge_mesh, interpolate_influences, recombine_full_attribute_vertices,
@@ -85,6 +86,83 @@ class MaximumBlenderPureTests(unittest.TestCase):
             finally:
                 if junction.exists():
                     os.rmdir(junction)
+
+    def test_parse_args_rejects_lexical_root_before_resolve(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "candidate.json"
+            candidate.write_text(json.dumps({
+                "candidate_id": "root-guard", "engine": "meshoptimizer", "ratio": 0.5,
+                "target_error": 0.1, "update_vertices": True, "region_overrides": [],
+            }), encoding="utf-8")
+            with mock.patch(
+                "batch_optimize_maximum._path_is_reparse_point",
+                side_effect=lambda path: Path(path) == root,
+            ):
+                with self.assertRaisesRegex(ValueError, "reparse"):
+                    maximum.parse_args([
+                        str(root), "--candidate-json", str(candidate),
+                        "--meshopt-dll", str(root / "bridge.dll"),
+                    ])
+
+    @unittest.skipUnless(os.name == "nt", "Windows root junction semantics")
+    def test_parse_args_rejects_real_root_junction_without_external_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            outside = base / "outside"
+            outside.mkdir()
+            candidate = base / "candidate.json"
+            candidate.write_text(json.dumps({
+                "candidate_id": "root-junction", "engine": "meshoptimizer", "ratio": 0.5,
+                "target_error": 0.1, "update_vertices": True, "region_overrides": [],
+            }), encoding="utf-8")
+            junction = base / "root-junction"
+            created = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+                capture_output=True, text=True, shell=False,
+            )
+            if created.returncode != 0:
+                self.skipTest(f"junction creation unavailable: {created.stderr or created.stdout}")
+            try:
+                with self.assertRaisesRegex(ValueError, "reparse"):
+                    maximum.parse_args([
+                        str(junction), "--candidate-json", str(candidate),
+                        "--meshopt-dll", str(base / "bridge.dll"),
+                    ])
+                self.assertFalse((outside / "candidate_metrics.json").exists())
+            finally:
+                if junction.exists():
+                    os.rmdir(junction)
+
+    def test_material_slot_identity_preserves_legitimate_suffix_and_ignores_datablock_rename(self) -> None:
+        identities = source_material_slot_identities(
+            "cars/body.smd",
+            ("Paint.001", "glass/Ç"),
+            ("Paint.042", "glass.009"),
+        )
+        self.assertEqual(identities, ("slot:0:paint.001", "slot:1:glass/ç"))
+
+        class Material:
+            def __init__(self, name):
+                self.name = name
+
+        class Data:
+            materials = (Material("Paint.999"), Material("glass.999"))
+
+        class Obj:
+            name = "Body"
+            data = Data()
+
+        observation = maximum._object_region_observations(
+            "cars/body.smd", (Obj(),), ("Paint.001", "glass/Ç")
+        )
+        self.assertEqual(observation[0][2], identities)
+
+    def test_material_slot_identity_rejects_ambiguous_partial_mapping(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            source_material_slot_identities(
+                "cars/body.smd", ("paint", "paint.001"), ("paint.999",)
+            )
     def test_wedges_preserve_uv_hard_normal_material_and_bone_identity(self) -> None:
         positions = ((0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0))
         triangles = ((0, 1, 2), (0, 2, 3))

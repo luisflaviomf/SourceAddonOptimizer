@@ -42,6 +42,7 @@ from maximum_optimizer.regions import (
     manifest_for_source,
     normalized_source_identity,
     resolve_region_assignments,
+    source_material_slot_identities,
 )
 from maximum_optimizer.qc_graph import QcGraph, parse_qc_graph, rewritten_qc_graph_texts
 from maximum_optimizer.mesh_attributes import (
@@ -75,6 +76,7 @@ class CandidateConfig:
 
 @dataclass(frozen=True)
 class Settings:
+    raw_root: Path
     root: Path
     candidate_json: Path
     meshopt_dll: Path
@@ -197,16 +199,22 @@ def make_simplify_options(
 
 
 def _object_region_observations(
-    source_identity: str, objects: Sequence[object]
+    source_identity: str,
+    objects: Sequence[object],
+    source_materials: Sequence[str] | None = None,
 ) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
-    return tuple(
-        (
-            source_identity,
-            str(obj.name),
-            tuple(str(material.name) if material else "none" for material in obj.data.materials),
+    result = []
+    for obj in objects:
+        datablock_names = tuple(
+            str(material.name) if material else "none" for material in obj.data.materials
         )
-        for obj in objects
-    )
+        materials = (
+            source_material_slot_identities(source_identity, source_materials, datablock_names)
+            if source_materials is not None
+            else datablock_names
+        )
+        result.append((source_identity, str(obj.name), materials))
+    return tuple(result)
 
 
 def optimize_region_objects(
@@ -214,12 +222,13 @@ def optimize_region_objects(
     objects: Sequence[object],
     candidate: CandidateConfig,
     manifest: RegionManifest,
+    source_materials: Sequence[str] | None = None,
     *,
     optimizer=None,
 ) -> list[dict[str, object]]:
     if optimizer is None:
         optimizer = _optimize_mesh_object
-    observations = _object_region_observations(source_identity, objects)
+    observations = _object_region_observations(source_identity, objects, source_materials)
     source_manifest = manifest_for_source(manifest, source_identity)
     assignments = resolve_region_assignments(source_manifest, observations)
     source_overrides = tuple(
@@ -257,7 +266,12 @@ def parse_args(argv: Sequence[str]) -> Settings:
     parser.add_argument("--candidate-json", required=True)
     parser.add_argument("--meshopt-dll", required=True)
     parsed = parser.parse_args(argv)
-    root = Path(parsed.root).expanduser().resolve()
+    raw_root = _raw_absolute(Path(parsed.root).expanduser())
+    _reject_lexical_reparse_components(raw_root)
+    try:
+        root = raw_root.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ValueError(f"root does not exist: {raw_root}") from exc
     candidate_json = Path(parsed.candidate_json).expanduser().resolve()
     meshopt_dll = Path(parsed.meshopt_dll).expanduser().resolve()
     if not root.is_dir():
@@ -266,7 +280,7 @@ def parse_args(argv: Sequence[str]) -> Settings:
         payload = json.loads(candidate_json.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read candidate JSON: {candidate_json}") from exc
-    return Settings(root, candidate_json, meshopt_dll, load_candidate_payload(payload))
+    return Settings(raw_root, root, candidate_json, meshopt_dll, load_candidate_payload(payload))
 
 
 def _triangle_edges(triangle: Sequence[int]) -> tuple[tuple[int, int], ...]:
@@ -836,7 +850,10 @@ def _describe_source_file(
     mesh_objects = tuple(obj for obj in bpy.context.scene.objects if obj.type == "MESH")
     if not mesh_objects:
         raise RuntimeError(f"Source Tools imported no mesh from {source}")
-    return _object_region_observations(source_identity, mesh_objects)
+    source_materials = audit_smd_text(
+        source.read_text(encoding="utf-8", errors="replace")
+    ).materials
+    return _object_region_observations(source_identity, mesh_objects, source_materials)
 
 
 def _process_source_file(
@@ -857,7 +874,11 @@ def _process_source_file(
     if not mesh_objects:
         raise RuntimeError(f"Source Tools imported no mesh from {source}")
     object_metrics = optimize_region_objects(
-        source_identity, mesh_objects, candidate, region_manifest
+        source_identity,
+        mesh_objects,
+        candidate,
+        region_manifest,
+        before_audit.materials,
     )
     destination = safe_output_path(source.parent, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -918,6 +939,17 @@ def _path_is_reparse_point(path: Path) -> bool:
     attributes = int(getattr(info, "st_file_attributes", 0))
     reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
     return path.is_symlink() or bool(attributes & reparse_flag)
+
+
+def _reject_lexical_reparse_components(path: Path) -> None:
+    raw = _raw_absolute(Path(path))
+    anchor = Path(raw.anchor)
+    current = anchor
+    components = raw.relative_to(anchor).parts
+    for component in components:
+        current = current / component
+        if os.path.lexists(current) and _path_is_reparse_point(current):
+            raise ValueError(f"lexical path traverses reparse point: {current}")
 
 
 def _raw_absolute(path: Path) -> Path:
