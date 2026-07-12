@@ -1,0 +1,348 @@
+# Focused Region Gate and Composite Recovery Design
+
+## Status and execution gate
+
+This design is approved for planning only. Implementation must not start until the
+committed LVS calibration evidence v3 has passed independent review and the root
+agent explicitly approves execution. Evidence v3, production profiles, and runtime
+defaults are outside this design commit.
+
+The feature is opt-in through a calibrated schema-3 fidelity profile. Schema-1 and
+schema-2 profiles retain their current behavior byte-for-byte: no focused renders,
+no composite recovery, and no new candidate schedule.
+
+## Objective
+
+Add a second, isolated visual gate after the existing whole-model structural and
+visual gates. The gate deterministically selects the visually riskiest model
+regions, renders each selected region alone, and rejects detail loss that a full-car
+view can hide. A rejected focus may recover from a proven, less-aggressive donor or
+the exact original source without regenerating unrelated model sources.
+
+For families such as the Dodge Monaco, add a typed composite path that starts from a
+Blender-adaptive base and applies meshoptimizer direct-position compression only to
+visual SMD files that the base preserved exactly. StudioMDL compiled bytes and both
+visual gates decide the winner.
+
+## Chosen architecture
+
+The focused gate is a separate validation stage rather than an extension hidden
+inside `ProductionAdapters.visual`. The existing whole visual call remains the
+first visual authority and writes a sealed index of its state manifests. A new
+focused adapter consumes that index, selects targets, performs isolated renders,
+and returns a structured focused result.
+
+Recovery is source-artifact composition. It never reruns an optimizer over a whole
+candidate merely to raise one region. The system overlays byte-exact SMD outputs
+from a proven donor, or the original SMD, on the already-authorized base candidate,
+proves that every unrelated source hash is unchanged, and recompiles the complete
+QC. This boundary is necessary to rerender only affected focuses honestly.
+
+The alternatives rejected by this design are:
+
+- Putting focus logic inside `ProductionAdapters.visual`. This is smaller but makes
+  target selection, recovery provenance, and cache authorization opaque.
+- Running the focused gate only after choosing the smallest whole-model winner.
+  This is cheaper but can select the wrong search trail and delays recovery until
+  the search evidence has already been discarded.
+
+## Profile schema and activation
+
+Schema 3 has the exact top-level fields:
+
+```json
+{
+  "schema": 3,
+  "version": "lvs-focused-v1",
+  "calibrated": true,
+  "corpus_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "selector": "audited-original-round-family-v1",
+  "focused_evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "focused_policy": {
+    "schema": 1,
+    "selector": "surface-risk-top-k-v1",
+    "top_k": 3
+  },
+  "profiles": {
+    "general-body-detail-v1": {
+      "limits": {"silhouette_iou": 0.0, "rgb_mae": 0.0, "edge_error": 0.0, "surface_bidirectional_p95": 0.0, "surface_max": 0.0, "normal_angle_p95": 0.0, "uv_error_p95": 0.0, "skinning_error_p95": 0.0},
+      "focused_limits": {"silhouette_iou": 0.0, "rgb_mae": 0.0, "edge_error": 0.0, "surface_bidirectional_p95": 0.0, "surface_max": 0.0, "normal_angle_p95": 0.0, "uv_error_p95": 0.0, "skinning_error_p95": 0.0}
+    },
+    "round-rigid-v1": {
+      "limits": {"silhouette_iou": 0.0, "rgb_mae": 0.0, "edge_error": 0.0, "surface_bidirectional_p95": 0.0, "surface_max": 0.0, "normal_angle_p95": 0.0, "uv_error_p95": 0.0, "skinning_error_p95": 0.0},
+      "focused_limits": {"silhouette_iou": 0.0, "rgb_mae": 0.0, "edge_error": 0.0, "surface_bidirectional_p95": 0.0, "surface_max": 0.0, "normal_angle_p95": 0.0, "uv_error_p95": 0.0, "skinning_error_p95": 0.0}
+    }
+  }
+}
+```
+
+The real limits come only from approved evidence v3. The loader requires exact
+fields, finite non-negative values for every required metric, `top_k` from 1 through
+4, and an evidence seal equal to the independently trusted v3 seal. Merely writing
+`schema: 3` or copying an unreviewed evidence hash cannot enable the feature.
+
+`FidelityProfileSet.profile_for()` remains the whole-model interface.
+`FidelityProfileSet.focused_profile_for()` returns the focused profile only in
+schema-3 mode. Calling it in legacy or schema-2 mode is an error.
+
+## Whole visual evidence index
+
+Every successful whole visual validation writes
+`logs/whole-visual-index.json` inside the candidate workspace. It contains:
+
+- schema and selector versions;
+- family and candidate identities;
+- selected whole and focused profile versions;
+- ordered state identity, bodygroup indices, and LOD index;
+- relative original and candidate manifest paths plus SHA-256 hashes;
+- canonical source-pair identities and hashes;
+- animation classification and pose list;
+- canonical region-manifest path and hash;
+- every geometry row needed for focus ranking;
+- a canonical `evidence_sha256` over the complete index.
+
+The focused gate does not glob render directories. It accepts only an exact,
+sealed index whose files are contained by the candidate workspace and whose hashes
+match current bytes.
+
+## Deterministic focus selection
+
+The selector groups whole-render geometry rows by region key. It rejects non-finite
+metrics, duplicate `(state, region, pose)` rows, missing canonical descriptors, and
+rows whose source identity is not present in the paired configuration.
+
+For each region, its anchor is the occurrence with the greatest tuple:
+
+1. `max(surface_bidirectional_p95 / p95_limit, surface_max / max_limit)`;
+2. normalized `surface_bidirectional_p95`;
+3. normalized `surface_max`;
+4. the earliest state index;
+5. pose name in canonical lexical order.
+
+When a limit is zero, a measured zero has normalized value zero and a positive
+measurement is invalid because the whole gate could not have passed it. Regions are
+ranked by the first three values descending, then region key ascending. The selector
+returns exactly `min(top_k, eligible_unique_regions)` targets. A successful whole
+gate with no eligible region is a focused-gate failure, not a silent pass.
+
+Each target records rank, region key, canonical descriptor, source identity, state,
+bodygroups, LOD, anchor pose, raw metrics, normalized metrics, and the hashes of all
+selector inputs.
+
+## Isolated renderer contract
+
+`render_previews.py --focus-region REGION_KEY` uses the existing eight camera
+directions and `textured,clay` passes. It imports only the selected region's source
+identity for the selected state. The full canonical manifest for that source is
+used to resolve object assignments before non-selected mesh objects are hidden from
+rendering and excluded from geometry capture.
+
+Camera fit, bounding box, lights, geometry snapshots, and material application use
+only the focused object. Unknown, duplicated, zero-triangle, or ambiguously assigned
+regions fail closed. The output manifest contains exactly one region and preserves
+the existing source-pair, material-resolution, animation, triangle-audit, and image
+hash contracts.
+
+For each target the expected image cardinality per side is:
+
+`8 angles * 2 passes * pose_count`, where `pose_count` is one for bind-only and at
+most two when the existing representative animation contract succeeds. Both
+original and candidate sides must have the same exact matrix. No additional image,
+pose, pass, angle, or region is accepted.
+
+## Focused validation and aggregation
+
+Each focused pair is compared with the selected class's schema-3 focused profile by
+the existing `compare_render_sets`. Every selected focus is a hard gate. The
+candidate passes only when structural, whole visual, and all focused validations
+pass.
+
+The aggregate result preserves the whole result and adds per-region results. Its
+worst scope is `REGION_KEY/POSE`, allowing deterministic recovery. A focused
+metric never replaces or weakens a worse whole-model metric in reporting.
+
+## Recovery donors and exact fallback
+
+Recovery operates on source identities because exact preservation is a source-file
+operation. A failed region is mapped through its canonical descriptor to one source.
+If several selected focuses share that source, all of them are affected and must be
+rerun.
+
+The recovery order is:
+
+1. A byte-exact output from an already built candidate with the same optimizer
+   contract, a less aggressive effective ratio, and a passing focused result for the
+   failed region. The donor may fail another focused region globally.
+2. The exact original source bytes when no eligible donor remains.
+
+Donor output hashes, candidate ID, optimizer contract, effective ratio, and focused
+evidence hash are part of the recipe. Exact fallback records the original source
+hash and reason. A donor cannot donate to itself, repeat an existing overlay, reduce
+the effective ratio, or cross family/strategy/profile boundaries.
+
+The compositor copies the base candidate source tree, replaces only declared source
+outputs, rewrites no unrelated QC directive, and emits a source manifest proving:
+
+- every base source and resulting source has a canonical identity and hash;
+- a changed source has exactly one declared overlay;
+- every undeclared source hash is identical to the base;
+- every donor/exact hash equals the bytes copied;
+- the complete optimized QC graph still pairs with the original graph.
+
+The complete QC is recompiled and structurally validated after every composition.
+Only focuses whose source hash changed are rerendered during recovery; unchanged
+focus evidence is reused after its source, profile, selector, and material proofs are
+revalidated. After all focused regions pass, one final whole visual validation is
+mandatory because the composed candidate differs from the initially authorized
+whole render.
+
+## Monaco adaptive-direct composite
+
+The Monaco path is typed, not filename-based:
+
+1. Build a normal `blender-adaptive-v1` base.
+2. Read its sealed candidate metrics and QC graph.
+3. Select only visual `.smd` sources explicitly marked `preserved_exact` or carrying
+   the approved exact-fallback reason.
+4. Reject ambiguous provenance, unsupported formats, missing outputs, duplicate
+   identities, or more than eight selected sources.
+5. For the global direct ratios `0.50`, `0.45`, `0.40`, and `0.35`, optimize every
+   selected source in isolation with `meshopt-direct-position-v1` and exactly
+   `direct-degenerate-prefilter-v1`.
+6. Assemble one complete candidate per global ratio. Ratios are not combined per
+   source, so the search creates at most four variants rather than a Cartesian
+   product.
+7. Compile the full QC and run structural, whole, and focused gates.
+
+The Blender base remains eligible. Among candidates that pass every gate and have a
+strictly positive compiled saving, the winner is the minimum actual StudioMDL bytes,
+then the stronger fidelity score, then candidate ID. A composite never wins merely
+because its intermediate SMD files are smaller.
+
+## Cache design
+
+The existing candidate cache continues to cache compiled candidate workspaces, but
+cached diagnostics never authorize structural, whole visual, or focused gates.
+
+A separate focused-render cache may reuse expensive Blender image generation. Its
+key contains:
+
+- family input hash and candidate cache digest;
+- original and candidate contributing SMD hashes;
+- canonical region descriptor and focus target payload;
+- state/bodygroup/LOD and pose/animation source hashes;
+- region and configuration manifest hashes;
+- whole and focused profile versions plus profile-file hash;
+- focus selector, renderer, and evidence schema versions;
+- dependency proof for Blender, Source tools, renderer, VTFCmd, and meshoptimizer;
+- a deterministic material-resolution proof for the selected source.
+
+Cache publication is atomic and rejects reparse points. The marker contains an exact
+file manifest and expected cardinality. Missing, extra, corrupt, duplicate, or
+non-contained files make the entry a miss. On a hit, manifests and hashes are
+validated and `compare_render_sets` runs again from cached images. If a bounded
+material proof cannot be computed safely, focus caching is disabled for that target
+and a fresh render is used; validation never fails merely because the optimization
+cache is unavailable.
+
+## Durable evidence
+
+Each candidate writes `logs/focused-region-gate.json` atomically. Schema 1 contains:
+
+- policy, profile, evidence-v3, dependency, and material proof hashes;
+- the complete ordered eligible ranking and the exact selected prefix;
+- every focused target and expected image cardinality;
+- original/candidate manifest and image hashes;
+- per-focus validation results;
+- cache hit/miss status that never changes authorization semantics;
+- every recovery round, donor or exact overlay, source hash proof, compile artifact
+  manifest, structural result, focused reruns, and final whole reauthorization;
+- a canonical evidence hash.
+
+There must be one terminal record for every selected focus. Recovery rounds have an
+exact contiguous index starting at zero. Every changed source appears exactly once
+per round and every reused focus names the prior evidence hash it depends on.
+
+## Resource and denial-of-service bounds
+
+The following are hard validation limits, not tunable environment variables:
+
+- focused `top_k`: default 3, maximum 4;
+- camera directions: exactly 8;
+- passes: exactly `textured,clay`;
+- poses: maximum 2;
+- whole visual configurations: maximum 16 including LOD states;
+- focused renders per candidate: maximum 4;
+- recovery rounds per base candidate: maximum 3;
+- changed sources per recovery composition: maximum 4;
+- donor candidates inspected per changed source: maximum 8;
+- Monaco exact-fallback visual sources: maximum 8;
+- Monaco direct ratios: exactly 4 and no Cartesian expansion;
+- focus-cache material proof: maximum 4,096 files and 2 GiB of hashed content; over
+  the bound disables the cache and renders fresh;
+- all copy, hash, render, compile, cache, and round boundaries observe cancellation.
+
+The existing `SearchBudget.max_candidates` remains the outer bound. Composite and
+recovery candidates consume it exactly like ordinary candidates.
+
+## Failure behavior
+
+Any ambiguity in selector inputs, source/region mapping, pose pairing, provenance,
+composition, cache integrity, focused cardinality, or trusted evidence fails the
+candidate closed. It does not select a more aggressive profile, skip a focus, or
+promote partial output. Exhausted recovery preserves the original family through the
+existing outcome path.
+
+Cancellation never promotes output. Partial reports and focused evidence remain
+atomic and explicitly mark unattempted focuses and rounds cancelled.
+
+## Planned files
+
+Create:
+
+- `maximum_optimizer/focused_regions.py`: policy, whole-evidence parsing, target
+  selection, focused aggregation, and evidence payloads.
+- `maximum_optimizer/focused_cache.py`: atomic focused-render cache and material
+  proof validation.
+- `maximum_optimizer/composite.py`: donor selection, overlay recipes, composition
+  proofs, and Monaco adaptive-direct assembly.
+- `tests/maximum_optimizer/test_focused_regions.py`
+- `tests/maximum_optimizer/test_focused_cache.py`
+- `tests/maximum_optimizer/test_composite.py`
+
+Modify:
+
+- `maximum_optimizer/domain.py`
+- `maximum_optimizer/fidelity_selection.py`
+- `maximum_optimizer/regions.py`
+- `render_previews.py`
+- `maximum_optimizer/candidates.py`
+- `maximum_optimizer/search.py`
+- `maximum_optimizer/orchestrator.py`
+- `batch_optimize_maximum.py`
+- `tests/maximum_optimizer/test_fidelity_selection.py`
+- `tests/maximum_optimizer/test_regions.py`
+- `tests/maximum_optimizer/test_visual_validation.py`
+- `tests/maximum_optimizer/test_search.py`
+- `tests/maximum_optimizer/test_orchestrator.py`
+- `tests/maximum_optimizer/test_cache.py`
+
+No WPF or CLI field is required. The trusted schema-3 profile is the sole activation
+mechanism.
+
+## Acceptance criteria
+
+- Schema 1 and 2 retain current behavior and test outputs.
+- Schema 3 cannot load without independently approved evidence v3.
+- Target selection is deterministic under shuffled input.
+- Every selected focus is rendered alone with exact matrix cardinality.
+- A candidate cannot pass with a missing, corrupt, or skipped focus.
+- Recovery changes only declared source hashes and rerenders every affected focus.
+- Donors may be region-passing/global-failing but cannot cross contracts.
+- Exact fallback is explicit and auditable.
+- Monaco creates no more than four direct composite variants and touches only
+  approved exact-fallback visual SMDs.
+- Winner selection uses compiled bytes only after structural, whole, and focused
+  gates pass.
+- Cache hits and misses produce the same authorization result.
+- Cancellation and every hard resource bound fail safely without output promotion.
