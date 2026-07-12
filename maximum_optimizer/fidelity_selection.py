@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import math
+import os
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -114,6 +115,8 @@ def _corner_influences(tokens: tuple[str, ...]) -> tuple[tuple[int, float], ...]
         parent = int(tokens[0])
     except (IndexError, ValueError) as exc:
         raise ValueError("invalid parent bone") from exc
+    if parent < 0:
+        raise ValueError("invalid parent bone")
     if len(tokens) == 9:
         return ((parent, 1.0),)
     try:
@@ -125,15 +128,21 @@ def _corner_influences(tokens: tuple[str, ...]) -> tuple[tuple[int, float], ...]
     if count == 0:
         return ((parent, 1.0),)
     result = []
+    total = 0.0
     for index in range(count):
         try:
             bone = int(tokens[10 + index * 2])
             weight = float(tokens[11 + index * 2])
         except (IndexError, ValueError) as exc:
             raise ValueError("invalid influence payload") from exc
-        if not math.isfinite(weight):
+        if bone < 0 or not math.isfinite(weight) or weight < 0:
             raise ValueError("non-finite influence weight")
         result.append((bone, weight))
+        total += weight
+    if total > 1.0 + 1e-6:
+        raise ValueError("invalid influence total")
+    if total < 1.0:
+        result.append((parent, 1.0 - total))
     return tuple(result)
 
 
@@ -158,35 +167,53 @@ def classify_original_family(graph: QcGraph) -> FamilyFidelitySelection:
     if not isinstance(graph, QcGraph):
         raise TypeError("graph must be a QcGraph")
     root = graph.family_root.resolve(strict=True)
-    unique = {reference.source_path.resolve(strict=True) for reference in graph.references
-              if reference.role == "visual"}
-    sources = tuple(sorted(unique, key=lambda path: path.relative_to(root).as_posix().casefold()))
-    if not sources:
+    unique: dict[str, Path] = {}
+    for reference in graph.references:
+        if reference.role != "visual":
+            continue
+        source = Path(os.path.abspath(os.fspath(reference.source_path)))
+        unique.setdefault(os.path.normcase(os.fspath(source)), source)
+    if not unique:
         return FamilyFidelitySelection(GENERAL_BODY_DETAIL, "no-visual-sources", ())
 
-    audits = []
-    for source in sources:
+    identified = []
+    for source in unique.values():
         try:
             relative = source.relative_to(root).as_posix()
         except ValueError:
             relative = source.name
-            audit = SourceFidelityAudit(relative, False, "source-outside-family", None)
+        identified.append((relative, source))
+
+    audits = []
+    for relative, source in sorted(
+        identified, key=lambda item: (item[0].casefold(), os.path.normcase(os.fspath(item[1])))
+    ):
+        try:
+            resolved = source.resolve(strict=True)
+        except OSError:
+            audit = SourceFidelityAudit(relative, False, "missing-source", None)
         else:
-            if source.suffix.casefold() != ".smd":
-                audit = SourceFidelityAudit(
-                    relative, False, f"unsupported-source-format:{source.suffix.casefold()}", None
-                )
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                audit = SourceFidelityAudit(relative, False, "source-outside-family", None)
             else:
-                try:
-                    decision = classify_round_component(*_round_input(source))
-                except (OSError, UnicodeError, ValueError) as exc:
+                if resolved.suffix.casefold() != ".smd":
                     audit = SourceFidelityAudit(
-                        relative, False, f"invalid-smd:{type(exc).__name__}", None
+                        relative, False,
+                        f"unsupported-source-format:{resolved.suffix.casefold()}", None
                     )
                 else:
-                    audit = SourceFidelityAudit(
-                        relative, decision.eligible, decision.reason, decision.axis
-                    )
+                    try:
+                        decision = classify_round_component(*_round_input(resolved))
+                    except (OSError, UnicodeError, ValueError) as exc:
+                        audit = SourceFidelityAudit(
+                            relative, False, f"invalid-smd:{type(exc).__name__}", None
+                        )
+                    else:
+                        audit = SourceFidelityAudit(
+                            relative, decision.eligible, decision.reason, decision.axis
+                        )
         audits.append(audit)
 
     rows = tuple(audits)

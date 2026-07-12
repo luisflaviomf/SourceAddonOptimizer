@@ -153,6 +153,60 @@ class FidelitySelectionTests(unittest.TestCase):
         self.assertEqual(result.profile_class, GENERAL_BODY_DETAIL)
         self.assertIn("not-rigid", result.reason)
 
+    def test_negative_weight_is_malformed_and_forces_general(self) -> None:
+        from maximum_optimizer.fidelity_selection import (
+            GENERAL_BODY_DETAIL, classify_original_family,
+        )
+
+        positions, triangles = _open_cylinder()
+        malformed = _smd(positions, triangles).replace(
+            "0 0 1 0 0", "0 0 1 0 0 2 0 1.0 1 -0.5", 1
+        )
+        source = self._write("negative-weight.smd", malformed)
+
+        result = classify_original_family(_graph(self.root, (source,)))
+
+        self.assertEqual(result.profile_class, GENERAL_BODY_DETAIL)
+        self.assertIn("invalid-smd", result.reason)
+
+    def test_overfull_weight_total_is_malformed_and_forces_general(self) -> None:
+        from maximum_optimizer.fidelity_selection import (
+            GENERAL_BODY_DETAIL, classify_original_family,
+        )
+
+        positions, triangles = _open_cylinder()
+        malformed = _smd(positions, triangles).replace(
+            "0 0 1 0 0", "0 0 1 0 0 2 0 0.8 1 0.8", 1
+        )
+        source = self._write("overfull-weight.smd", malformed)
+
+        result = classify_original_family(_graph(self.root, (source,)))
+
+        self.assertEqual(result.profile_class, GENERAL_BODY_DETAIL)
+        self.assertIn("invalid-smd", result.reason)
+
+    def test_missing_or_outside_source_is_audited_and_forces_general(self) -> None:
+        from maximum_optimizer.fidelity_selection import (
+            GENERAL_BODY_DETAIL, classify_original_family,
+        )
+
+        family = self.root / "family"
+        family.mkdir()
+        outside = self._write("outside.smd", _smd(*_open_cylinder()))
+        missing = family / "missing.smd"
+
+        result = classify_original_family(_graph(family, (missing, outside)))
+
+        self.assertEqual(result.profile_class, GENERAL_BODY_DETAIL)
+        self.assertEqual(
+            tuple(item.source for item in result.sources),
+            ("missing.smd", "outside.smd"),
+        )
+        self.assertEqual(
+            tuple(item.reason for item in result.sources),
+            ("missing-source", "source-outside-family"),
+        )
+
     def test_unsupported_or_malformed_source_falls_back_to_general(self) -> None:
         from maximum_optimizer.fidelity_selection import (
             GENERAL_BODY_DETAIL, classify_original_family,

@@ -590,11 +590,22 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(resumed.final_size.total_bytes, first.final_size.total_bytes)
 
     def test_cancellation_during_visual_validation_is_terminal_and_unpromoted(self):
+        second = _family(self.root, "other")
+        (self.addon / "models" / "other.mdl").write_bytes(b"z" * 90)
+        self.adapters._families = (self.family, second)
         self.adapters.cancel_during_visual = True
         report = self.run_optimizer(cancel_event=threading.Event())
         self.assertTrue(report.cancelled)
         self.assertFalse(self.config.output_dir.exists())
         self.assertEqual([event["kind"] for event in self.events][-1], "run_cancelled")
+        audit = json.loads(
+            (self.config.work_dir / "logs/fidelity-profile-selection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(len(audit["families"]), 2)
+        self.assertEqual(audit["families"][1]["model_rel"], "other.mdl")
+        self.assertEqual(audit["families"][1]["status"], "cancelled")
 
     def test_structural_failure_cannot_be_rescued_by_visual_pass(self):
         self.adapters.visual = lambda *args: ValidationResult(True, metrics={"fidelity_score": 1.0})

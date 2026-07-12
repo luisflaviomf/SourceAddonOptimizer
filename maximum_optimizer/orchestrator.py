@@ -1899,6 +1899,20 @@ def run_maximum_addon(
     if cancel.is_set() and len(outcomes) < len(manifests):
         for manifest in manifests[len(outcomes):]:
             original_family = _family_snapshot(original, manifest.model_rel)
+            if not any(
+                item["family_id"] == manifest.family_id for item in selection_records
+            ):
+                selection_records.append({
+                    "family_id": manifest.family_id,
+                    "model_rel": manifest.model_rel,
+                    "status": "cancelled",
+                    "profile_class": None,
+                    "reason": "run-cancelled-before-selection",
+                    "version": None,
+                    "corpus_hash": profile_set.corpus_hash,
+                    "sources": [],
+                })
+                write_selection_audit()
             outcomes.append(FamilyRunOutcome(
                 manifest.family_id, manifest.model_rel, "cancelled", None,
                 original_family, None, original_family, {}, (),
