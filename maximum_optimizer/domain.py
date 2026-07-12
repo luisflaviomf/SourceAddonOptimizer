@@ -20,6 +20,18 @@ _SOURCE_FILE_LIMIT = 4096
 _SOURCE_BYTE_LIMIT = 2 * 1024 ** 3
 _COMPILE_FILE_LIMIT = 64
 _COMPILE_BYTE_LIMIT = 2 * 1024 ** 3
+_ADAPTIVE_SOURCE_LIMIT = 8
+_ADAPTIVE_OCCURRENCE_LIMIT = 4096
+_ADAPTIVE_COMPONENT_LIMIT = 256
+_ADAPTIVE_MATERIAL_LIMIT = 256
+_ADAPTIVE_STATE_LIMIT = 16
+_ADAPTIVE_POSE_LIMIT = 2
+_COVERAGE_OCCURRENCE_FIELDS = {
+    "occurrence_key", "source_identity", "graph_relative_path", "directive", "line",
+    "state_key", "bodygroup_key", "lod_key", "skin_key", "source_size", "source_sha256",
+    "component_manifest_sha256", "material_contract_sha256", "skeleton_contract_sha256",
+    "pose_contract_sha256", "equivalence_class_sha256", "status", "evidence_sha256",
+}
 
 
 def _require_sha256(value: object, label: str) -> str:
@@ -68,6 +80,28 @@ def _canonical_json(value: object) -> str:
 
 def _seal(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _unsealed(cls, **values):
+    result = object.__new__(cls)
+    for name, value in values.items():
+        object.__setattr__(result, name, value)
+    return result
+
+
+def _canonical_text_tuple(
+    values: object, label: str, *, limit: int | None = None, required: bool = True
+) -> tuple[str, ...]:
+    result = tuple(values) if isinstance(values, (tuple, list)) else ()
+    if (required and not result) or any(type(item) is not str or not item for item in result):
+        raise ValueError(f"{label} is invalid")
+    if result != tuple(sorted(result, key=lambda item: (item.casefold(), item))):
+        raise ValueError(f"{label} is not canonical")
+    if len({item.casefold() for item in result}) != len(result):
+        raise ValueError(f"{label} is not unique")
+    if limit is not None and len(result) > limit:
+        raise ValueError(f"{label} exceeds bound")
+    return result
 
 
 def _focused_ref_payload(value: "FocusedEvidenceRef") -> dict[str, object]:
@@ -365,7 +399,8 @@ class CompositeRecipe:
             raise ValueError("recipe round index is invalid")
         overlays = tuple(self.overlays)
         keys = [(item.source_identity.casefold(), item.source_identity) for item in overlays]
-        if not overlays or len(overlays) > 4 or any(not isinstance(item, SourceOverlay) for item in overlays) or keys != sorted(keys) or len({key[0] for key in keys}) != len(keys):
+        overlay_limit = 4 if self.kind == "focused-recovery-v1" else 8
+        if not overlays or len(overlays) > overlay_limit or any(not isinstance(item, SourceOverlay) for item in overlays) or keys != sorted(keys) or len({key[0] for key in keys}) != len(keys):
             raise ValueError("recipe overlays are not canonical or exceed bound")
         if self.kind == "focused-recovery-v1":
             if self.direct_ratio is not None or self.prefilter_version is not None or any(item.mode == "direct-position" for item in overlays):
@@ -430,6 +465,597 @@ def composite_recipe_from_payload(value: object) -> CompositeRecipe:
     copied = dict(value)
     del copied["overlays"]
     return CompositeRecipe(**copied, overlays=tuple(overlays))
+
+
+@dataclass(frozen=True)
+class AdaptiveGraphOccurrenceProof:
+    graph_relative_path: str
+    directive: str
+    line: int
+    logical_path: str
+    role: Literal["visual"]
+
+    def __post_init__(self) -> None:
+        _require_relative(self.graph_relative_path, "adaptive graph path")
+        _require_text(self.directive, "adaptive directive")
+        if type(self.line) is not int or self.line < 1:
+            raise ValueError("adaptive graph line is invalid")
+        _require_relative(self.logical_path, "adaptive logical path")
+        if self.role != "visual":
+            raise ValueError("adaptive graph role is invalid")
+
+
+def adaptive_graph_occurrence_payload(value: AdaptiveGraphOccurrenceProof) -> dict[str, object]:
+    return {
+        "graph_relative_path": value.graph_relative_path, "directive": value.directive,
+        "line": value.line, "logical_path": value.logical_path, "role": value.role,
+    }
+
+
+def _validate_adaptive_occurrences(
+    values: object, source_identity: str
+) -> tuple[AdaptiveGraphOccurrenceProof, ...]:
+    result = tuple(values) if isinstance(values, (tuple, list)) else ()
+    keys = [(item.graph_relative_path.casefold(), item.directive, item.line, item.logical_path.casefold()) for item in result if isinstance(item, AdaptiveGraphOccurrenceProof)]
+    if not result or len(result) > _ADAPTIVE_OCCURRENCE_LIMIT or len(keys) != len(result):
+        raise ValueError("adaptive occurrences are invalid or exceed bound")
+    if keys != sorted(keys) or len(set(keys)) != len(keys):
+        raise ValueError("adaptive occurrences are not canonical and unique")
+    if any(item.logical_path.casefold() != source_identity.casefold() for item in result):
+        raise ValueError("adaptive occurrence source mismatch")
+    return result
+
+
+def _adaptive_source_payload(value: object, *, include_seal: bool = True) -> dict[str, object]:
+    payload = {
+        "kind": value.kind, "source_identity": value.source_identity,
+        "source_relative_path": value.source_relative_path, "source_size": value.source_size,
+        "source_sha256": value.source_sha256, "output_relative_path": value.output_relative_path,
+        "output_size": value.output_size, "output_sha256": value.output_sha256,
+        "preserved_exact": value.preserved_exact,
+        "occurrences": [adaptive_graph_occurrence_payload(item) for item in value.occurrences],
+    }
+    if value.kind == "eligible-exact-v1":
+        payload["eligibility_reason"] = value.eligibility_reason
+    else:
+        payload["ineligibility_reason"] = value.ineligibility_reason
+    if include_seal:
+        payload["metrics_sha256"] = value.metrics_sha256
+    return payload
+
+
+@dataclass(frozen=True)
+class EligibleAdaptiveSourceProof:
+    kind: Literal["eligible-exact-v1"]
+    source_identity: str
+    source_relative_path: str
+    source_size: int
+    source_sha256: str
+    output_relative_path: str
+    output_size: int
+    output_sha256: str
+    preserved_exact: Literal[True]
+    eligibility_reason: Literal["ratio-preserved-exact-v1", "approved-exact-source-fallback-v1"]
+    occurrences: tuple[AdaptiveGraphOccurrenceProof, ...]
+    metrics_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.kind != "eligible-exact-v1" or self.preserved_exact is not True:
+            raise ValueError("eligible adaptive source discriminator is invalid")
+        _require_relative(self.source_identity, "adaptive source identity")
+        _require_relative(self.source_relative_path, "adaptive source path")
+        _require_relative(self.output_relative_path, "adaptive output path")
+        _require_size(self.source_size, "adaptive source size")
+        _require_size(self.output_size, "adaptive output size")
+        _require_sha256(self.source_sha256, "adaptive source hash")
+        _require_sha256(self.output_sha256, "adaptive output hash")
+        if self.source_size != self.output_size or self.source_sha256 != self.output_sha256:
+            raise ValueError("eligible adaptive source is not byte exact")
+        if self.eligibility_reason not in {"ratio-preserved-exact-v1", "approved-exact-source-fallback-v1"}:
+            raise ValueError("adaptive eligibility reason is invalid")
+        occurrences = _validate_adaptive_occurrences(self.occurrences, self.source_identity)
+        if _require_sha256(self.metrics_sha256, "adaptive metrics hash") != _seal(_adaptive_source_payload(self, include_seal=False)):
+            raise ValueError("adaptive source metrics seal mismatch")
+        object.__setattr__(self, "occurrences", occurrences)
+
+    @classmethod
+    def create(cls, **values) -> "EligibleAdaptiveSourceProof":
+        raw = dict(kind="eligible-exact-v1", preserved_exact=True, metrics_sha256=H_EMPTY, **values)
+        provisional = _unsealed(cls, **raw)
+        raw["metrics_sha256"] = _seal(_adaptive_source_payload(provisional, include_seal=False))
+        return cls(**raw)
+
+
+@dataclass(frozen=True)
+class IneligibleAdaptiveSourceProof:
+    kind: Literal["ineligible-changed-v1"]
+    source_identity: str
+    source_relative_path: str
+    source_size: int
+    source_sha256: str
+    output_relative_path: str
+    output_size: int
+    output_sha256: str
+    preserved_exact: Literal[False]
+    ineligibility_reason: Literal["adaptive-output-changed-v1"]
+    occurrences: tuple[AdaptiveGraphOccurrenceProof, ...]
+    metrics_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.kind != "ineligible-changed-v1" or self.preserved_exact is not False or self.ineligibility_reason != "adaptive-output-changed-v1":
+            raise ValueError("ineligible adaptive source discriminator is invalid")
+        _require_relative(self.source_identity, "adaptive source identity")
+        _require_relative(self.source_relative_path, "adaptive source path")
+        _require_relative(self.output_relative_path, "adaptive output path")
+        _require_size(self.source_size, "adaptive source size")
+        _require_size(self.output_size, "adaptive output size")
+        _require_sha256(self.source_sha256, "adaptive source hash")
+        _require_sha256(self.output_sha256, "adaptive output hash")
+        if self.source_size == self.output_size and self.source_sha256 == self.output_sha256:
+            raise ValueError("ineligible adaptive source did not change")
+        occurrences = _validate_adaptive_occurrences(self.occurrences, self.source_identity)
+        if _require_sha256(self.metrics_sha256, "adaptive metrics hash") != _seal(_adaptive_source_payload(self, include_seal=False)):
+            raise ValueError("adaptive source metrics seal mismatch")
+        object.__setattr__(self, "occurrences", occurrences)
+
+    @classmethod
+    def create(cls, **values) -> "IneligibleAdaptiveSourceProof":
+        raw = dict(kind="ineligible-changed-v1", preserved_exact=False, metrics_sha256=H_EMPTY, **values)
+        provisional = _unsealed(cls, **raw)
+        raw["metrics_sha256"] = _seal(_adaptive_source_payload(provisional, include_seal=False))
+        return cls(**raw)
+
+
+AdaptiveSourceMetricsProof = EligibleAdaptiveSourceProof | IneligibleAdaptiveSourceProof
+H_EMPTY = "0" * 64
+
+
+@dataclass(frozen=True)
+class AdaptiveCandidateMetricsProof:
+    schema: Literal[1]
+    family_id: str
+    family_input_sha256: str
+    candidate_id: str
+    candidate_cache_digest: str
+    strategy: Literal["blender-adaptive-v1"]
+    base_spec_sha256: str
+    source_manifest_sha256: str
+    source_snapshot_sha256: str
+    original_graph_sha256: str
+    candidate_graph_sha256: str
+    raw_metrics_sha256: str
+    sources: tuple[AdaptiveSourceMetricsProof, ...]
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema != 1 or self.strategy != "blender-adaptive-v1":
+            raise ValueError("adaptive candidate metrics identity is invalid")
+        for label, value in (("family id", self.family_id), ("family input", self.family_input_sha256), ("candidate cache", self.candidate_cache_digest), ("base spec", self.base_spec_sha256), ("source manifest", self.source_manifest_sha256), ("source snapshot", self.source_snapshot_sha256), ("original graph", self.original_graph_sha256), ("candidate graph", self.candidate_graph_sha256), ("raw metrics", self.raw_metrics_sha256)):
+            _require_sha256(value, label)
+        _require_text(self.candidate_id, "adaptive candidate id")
+        sources = tuple(self.sources)
+        keys = [(item.source_identity.casefold(), item.source_identity) for item in sources if isinstance(item, (EligibleAdaptiveSourceProof, IneligibleAdaptiveSourceProof))]
+        if not sources or len(keys) != len(sources) or keys != sorted(keys) or len({key[0] for key in keys}) != len(keys):
+            raise ValueError("adaptive metrics sources are not complete canonical union")
+        if _require_sha256(self.evidence_sha256, "adaptive metrics evidence") != _seal(adaptive_candidate_metrics_payload(self, include_seal=False)):
+            raise ValueError("adaptive candidate metrics seal mismatch")
+        object.__setattr__(self, "sources", sources)
+
+
+def adaptive_candidate_metrics_payload(value: AdaptiveCandidateMetricsProof, *, include_seal: bool = True) -> dict[str, object]:
+    payload = {
+        "schema": value.schema, "family_id": value.family_id,
+        "family_input_sha256": value.family_input_sha256, "candidate_id": value.candidate_id,
+        "candidate_cache_digest": value.candidate_cache_digest, "strategy": value.strategy,
+        "base_spec_sha256": value.base_spec_sha256,
+        "source_manifest_sha256": value.source_manifest_sha256,
+        "source_snapshot_sha256": value.source_snapshot_sha256,
+        "original_graph_sha256": value.original_graph_sha256,
+        "candidate_graph_sha256": value.candidate_graph_sha256,
+        "raw_metrics_sha256": value.raw_metrics_sha256,
+        "sources": [_adaptive_source_payload(item) for item in value.sources],
+    }
+    if include_seal:
+        payload["evidence_sha256"] = value.evidence_sha256
+    return payload
+
+
+def _adaptive_source_from_payload(raw: object) -> AdaptiveSourceMetricsProof:
+    if type(raw) is not dict or raw.get("kind") not in {"eligible-exact-v1", "ineligible-changed-v1"} or type(raw.get("occurrences")) is not list:
+        raise ValueError("adaptive source metrics payload is invalid")
+    eligible = raw["kind"] == "eligible-exact-v1"
+    fields = {"kind", "source_identity", "source_relative_path", "source_size", "source_sha256", "output_relative_path", "output_size", "output_sha256", "preserved_exact", "occurrences", "metrics_sha256", "eligibility_reason" if eligible else "ineligibility_reason"}
+    if set(raw) != fields:
+        raise ValueError("adaptive source metrics fields are invalid")
+    occurrences = []
+    for item in raw["occurrences"]:
+        if type(item) is not dict or set(item) != {"graph_relative_path", "directive", "line", "logical_path", "role"}:
+            raise ValueError("adaptive occurrence payload is invalid")
+        occurrences.append(AdaptiveGraphOccurrenceProof(**item))
+    copied = dict(raw); copied["occurrences"] = tuple(occurrences)
+    return (EligibleAdaptiveSourceProof if eligible else IneligibleAdaptiveSourceProof)(**copied)
+
+
+def adaptive_candidate_metrics_from_payload(value: object) -> AdaptiveCandidateMetricsProof:
+    fields = {"schema", "family_id", "family_input_sha256", "candidate_id", "candidate_cache_digest", "strategy", "base_spec_sha256", "source_manifest_sha256", "source_snapshot_sha256", "original_graph_sha256", "candidate_graph_sha256", "raw_metrics_sha256", "sources", "evidence_sha256"}
+    if type(value) is not dict or set(value) != fields or type(value["sources"]) is not list:
+        raise ValueError("adaptive candidate metrics payload fields are invalid")
+    copied = dict(value); copied["sources"] = tuple(_adaptive_source_from_payload(item) for item in value["sources"])
+    return AdaptiveCandidateMetricsProof(**copied)
+
+
+@dataclass(frozen=True)
+class AdaptiveDirectCoverageOccurrenceProof:
+    occurrence_key: str
+    source_identity: str
+    graph_relative_path: str
+    directive: str
+    line: int
+    state_key: str
+    bodygroup_key: str
+    lod_key: str
+    skin_key: str
+    source_size: int
+    source_sha256: str
+    component_manifest_sha256: str
+    material_contract_sha256: str
+    skeleton_contract_sha256: str
+    pose_contract_sha256: str
+    equivalence_class_sha256: str
+    status: Literal["covered-by-source-union-v1"]
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        for label, value in (("occurrence key", self.occurrence_key), ("directive", self.directive), ("state key", self.state_key), ("bodygroup key", self.bodygroup_key), ("lod key", self.lod_key), ("skin key", self.skin_key)):
+            _require_text(value, label)
+        _require_relative(self.source_identity, "coverage source identity")
+        _require_relative(self.graph_relative_path, "coverage graph path")
+        if type(self.line) is not int or self.line < 1:
+            raise ValueError("coverage line is invalid")
+        _require_size(self.source_size, "coverage source size")
+        for label, value in (("source hash", self.source_sha256), ("component manifest", self.component_manifest_sha256), ("material contract", self.material_contract_sha256), ("skeleton contract", self.skeleton_contract_sha256), ("pose contract", self.pose_contract_sha256), ("equivalence class", self.equivalence_class_sha256)):
+            _require_sha256(value, label)
+        if self.status != "covered-by-source-union-v1":
+            raise ValueError("coverage occurrence status is invalid")
+        if _require_sha256(self.evidence_sha256, "coverage occurrence evidence") != _seal(adaptive_direct_coverage_occurrence_payload(self, include_seal=False)):
+            raise ValueError("coverage occurrence seal mismatch")
+
+    @classmethod
+    def create(cls, **values) -> "AdaptiveDirectCoverageOccurrenceProof":
+        raw = dict(status="covered-by-source-union-v1", evidence_sha256=H_EMPTY, **values)
+        provisional = _unsealed(cls, **raw)
+        raw["evidence_sha256"] = _seal(adaptive_direct_coverage_occurrence_payload(provisional, include_seal=False))
+        return cls(**raw)
+
+
+AdaptiveDirectCoverageOccurrenceWitness = AdaptiveDirectCoverageOccurrenceProof
+
+
+def adaptive_direct_coverage_occurrence_payload(value: AdaptiveDirectCoverageOccurrenceProof, *, include_seal: bool = True) -> dict[str, object]:
+    payload = {name: getattr(value, name) for name in (
+        "occurrence_key", "source_identity", "graph_relative_path", "directive", "line",
+        "state_key", "bodygroup_key", "lod_key", "skin_key", "source_size", "source_sha256",
+        "component_manifest_sha256", "material_contract_sha256", "skeleton_contract_sha256",
+        "pose_contract_sha256", "equivalence_class_sha256", "status",
+    )}
+    if include_seal: payload["evidence_sha256"] = value.evidence_sha256
+    return payload
+
+
+@dataclass(frozen=True)
+class AdaptiveDirectCoverageSourceProof:
+    source_identity: str
+    eligibility_kind: Literal["eligible-exact-v1", "ineligible-changed-v1"]
+    source_size: int
+    source_sha256: str
+    occurrence_keys: tuple[str, ...]
+    state_keys: tuple[str, ...]
+    component_keys: tuple[str, ...]
+    material_region_keys: tuple[str, ...]
+    skeleton_contract_sha256: str
+    pose_keys: tuple[str, ...]
+    equivalence_class_sha256: str
+    witnesses: tuple[AdaptiveDirectCoverageOccurrenceProof, ...]
+    source_coverage_sha256: str
+
+    def __post_init__(self) -> None:
+        _require_relative(self.source_identity, "coverage source identity")
+        if self.eligibility_kind not in {"eligible-exact-v1", "ineligible-changed-v1"}:
+            raise ValueError("coverage eligibility kind is invalid")
+        _require_size(self.source_size, "coverage source size")
+        _require_sha256(self.source_sha256, "coverage source hash")
+        occurrence_keys = _canonical_text_tuple(self.occurrence_keys, "coverage occurrence keys", limit=_ADAPTIVE_OCCURRENCE_LIMIT)
+        states = _canonical_text_tuple(self.state_keys, "coverage states", limit=_ADAPTIVE_STATE_LIMIT)
+        components = _canonical_text_tuple(self.component_keys, "coverage components", limit=_ADAPTIVE_COMPONENT_LIMIT)
+        materials = _canonical_text_tuple(self.material_region_keys, "coverage materials", limit=_ADAPTIVE_MATERIAL_LIMIT)
+        poses = tuple(self.pose_keys)
+        if not 1 <= len(poses) <= _ADAPTIVE_POSE_LIMIT or poses[0] != "bind" or len(set(poses)) != len(poses) or any(type(item) is not str or not item for item in poses):
+            raise ValueError("coverage poses are invalid")
+        _require_sha256(self.skeleton_contract_sha256, "coverage skeleton contract")
+        _require_sha256(self.equivalence_class_sha256, "coverage equivalence class")
+        witnesses = tuple(self.witnesses)
+        if not witnesses or len(witnesses) > _ADAPTIVE_OCCURRENCE_LIMIT or any(not isinstance(item, AdaptiveDirectCoverageOccurrenceProof) for item in witnesses):
+            raise ValueError("coverage witnesses are invalid or exceed bound")
+        witness_keys = tuple(item.occurrence_key for item in witnesses)
+        if witness_keys != occurrence_keys or tuple(sorted(witnesses, key=lambda item: (item.occurrence_key.casefold(), item.occurrence_key))) != witnesses:
+            raise ValueError("coverage witness inventory mismatch")
+        if {item.state_key for item in witnesses} != set(states):
+            raise ValueError("coverage state inventory mismatch")
+        if any(item.source_identity != self.source_identity or item.source_size != self.source_size or item.source_sha256 != self.source_sha256 or item.skeleton_contract_sha256 != self.skeleton_contract_sha256 or item.equivalence_class_sha256 != self.equivalence_class_sha256 for item in witnesses):
+            raise ValueError("coverage equivalence witness mismatch")
+        for field_name in ("component_manifest_sha256", "material_contract_sha256", "pose_contract_sha256"):
+            if len({getattr(item, field_name) for item in witnesses}) != 1:
+                raise ValueError("coverage dependency difference splits equivalence class")
+        if _require_sha256(self.source_coverage_sha256, "source coverage hash") != _seal(adaptive_direct_coverage_source_payload(self, include_seal=False)):
+            raise ValueError("source coverage seal mismatch")
+        for name, value in (("occurrence_keys", occurrence_keys), ("state_keys", states), ("component_keys", components), ("material_region_keys", materials), ("pose_keys", poses), ("witnesses", witnesses)):
+            object.__setattr__(self, name, value)
+
+    @classmethod
+    def create(cls, **values) -> "AdaptiveDirectCoverageSourceProof":
+        raw = dict(source_coverage_sha256=H_EMPTY, **values)
+        provisional = _unsealed(cls, **raw)
+        raw["source_coverage_sha256"] = _seal(adaptive_direct_coverage_source_payload(provisional, include_seal=False))
+        return cls(**raw)
+
+
+def adaptive_direct_coverage_source_payload(value: AdaptiveDirectCoverageSourceProof, *, include_seal: bool = True) -> dict[str, object]:
+    payload = {
+        "source_identity": value.source_identity, "eligibility_kind": value.eligibility_kind,
+        "source_size": value.source_size, "source_sha256": value.source_sha256,
+        "occurrence_keys": list(value.occurrence_keys), "state_keys": list(value.state_keys),
+        "component_keys": list(value.component_keys), "material_region_keys": list(value.material_region_keys),
+        "skeleton_contract_sha256": value.skeleton_contract_sha256, "pose_keys": list(value.pose_keys),
+        "equivalence_class_sha256": value.equivalence_class_sha256,
+        "witnesses": [adaptive_direct_coverage_occurrence_payload(item) for item in value.witnesses],
+    }
+    if include_seal: payload["source_coverage_sha256"] = value.source_coverage_sha256
+    return payload
+
+
+@dataclass(frozen=True)
+class AdaptiveDirectCoverageManifest:
+    schema: Literal[1]
+    family_id: str
+    family_input_sha256: str
+    base_candidate_id: str
+    base_spec_sha256: str
+    base_cache_digest: str
+    base_source_manifest_sha256: str
+    base_source_snapshot_sha256: str
+    complete_source_identities: tuple[str, ...]
+    sources: tuple[AdaptiveDirectCoverageSourceProof, ...]
+    occurrence_count: int
+    component_count: int
+    state_count: int
+    maximum_candidate_images: int
+    coverage_manifest_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema != 1: raise ValueError("coverage manifest schema is invalid")
+        for label, value in (("family id", self.family_id), ("family input", self.family_input_sha256), ("base spec", self.base_spec_sha256), ("base cache", self.base_cache_digest), ("base source manifest", self.base_source_manifest_sha256), ("base source snapshot", self.base_source_snapshot_sha256)):
+            _require_sha256(value, label)
+        _require_text(self.base_candidate_id, "coverage base candidate")
+        identities = _canonical_text_tuple(self.complete_source_identities, "complete source identities")
+        sources = tuple(self.sources)
+        if any(not isinstance(item, AdaptiveDirectCoverageSourceProof) for item in sources) or tuple(item.source_identity for item in sources) != identities:
+            raise ValueError("coverage source inventory mismatch")
+        eligible = tuple(item for item in sources if item.eligibility_kind == "eligible-exact-v1")
+        if not 1 <= len(eligible) <= _ADAPTIVE_SOURCE_LIMIT:
+            raise ValueError("coverage eligible source count is outside 1..8")
+        occurrence_count = sum(len(item.witnesses) for item in sources)
+        component_count = sum(len(item.component_keys) for item in sources)
+        state_count = sum(len(item.state_keys) for item in sources)
+        maximum_images = sum(32 * len(item.pose_keys) for item in eligible)
+        if (self.occurrence_count, self.component_count, self.state_count, self.maximum_candidate_images) != (occurrence_count, component_count, state_count, maximum_images) or maximum_images > 512:
+            raise ValueError("coverage manifest totals mismatch or exceed bound")
+        if _require_sha256(self.coverage_manifest_sha256, "coverage manifest hash") != _seal(adaptive_direct_coverage_manifest_payload(self, include_seal=False)):
+            raise ValueError("coverage manifest seal mismatch")
+        object.__setattr__(self, "complete_source_identities", identities); object.__setattr__(self, "sources", sources)
+
+
+def adaptive_direct_coverage_manifest_payload(value: AdaptiveDirectCoverageManifest, *, include_seal: bool = True) -> dict[str, object]:
+    payload = {
+        "schema": value.schema, "family_id": value.family_id, "family_input_sha256": value.family_input_sha256,
+        "base_candidate_id": value.base_candidate_id, "base_spec_sha256": value.base_spec_sha256,
+        "base_cache_digest": value.base_cache_digest, "base_source_manifest_sha256": value.base_source_manifest_sha256,
+        "base_source_snapshot_sha256": value.base_source_snapshot_sha256,
+        "complete_source_identities": list(value.complete_source_identities),
+        "sources": [adaptive_direct_coverage_source_payload(item) for item in value.sources],
+        "occurrence_count": value.occurrence_count, "component_count": value.component_count,
+        "state_count": value.state_count, "maximum_candidate_images": value.maximum_candidate_images,
+    }
+    if include_seal: payload["coverage_manifest_sha256"] = value.coverage_manifest_sha256
+    return payload
+
+
+def _coverage_occurrence_from_payload(raw: object) -> AdaptiveDirectCoverageOccurrenceProof:
+    if type(raw) is not dict or set(raw) != _COVERAGE_OCCURRENCE_FIELDS: raise ValueError("coverage occurrence payload fields are invalid")
+    return AdaptiveDirectCoverageOccurrenceProof(**raw)
+
+
+def _coverage_source_from_payload(raw: object) -> AdaptiveDirectCoverageSourceProof:
+    fields = {"source_identity", "eligibility_kind", "source_size", "source_sha256", "occurrence_keys", "state_keys", "component_keys", "material_region_keys", "skeleton_contract_sha256", "pose_keys", "equivalence_class_sha256", "witnesses", "source_coverage_sha256"}
+    if type(raw) is not dict or set(raw) != fields or any(type(raw[name]) is not list for name in ("occurrence_keys", "state_keys", "component_keys", "material_region_keys", "pose_keys", "witnesses")): raise ValueError("coverage source payload fields are invalid")
+    copied = dict(raw)
+    for name in ("occurrence_keys", "state_keys", "component_keys", "material_region_keys", "pose_keys"): copied[name] = tuple(copied[name])
+    copied["witnesses"] = tuple(_coverage_occurrence_from_payload(item) for item in copied["witnesses"])
+    return AdaptiveDirectCoverageSourceProof(**copied)
+
+
+def adaptive_direct_coverage_manifest_from_payload(value: object) -> AdaptiveDirectCoverageManifest:
+    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "complete_source_identities", "sources", "occurrence_count", "component_count", "state_count", "maximum_candidate_images", "coverage_manifest_sha256"}
+    if type(value) is not dict or set(value) != fields or type(value["complete_source_identities"]) is not list or type(value["sources"]) is not list: raise ValueError("coverage manifest payload fields are invalid")
+    copied = dict(value); copied["complete_source_identities"] = tuple(copied["complete_source_identities"]); copied["sources"] = tuple(_coverage_source_from_payload(item) for item in copied["sources"])
+    return AdaptiveDirectCoverageManifest(**copied)
+
+
+@dataclass(frozen=True)
+class DirectDroppedTriangleProof:
+    ordinal: int
+    material: str
+    primary_bones: tuple[str, ...]
+    reason: Literal["cross-squared-at-most-1e-30"]
+    source_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.ordinal) is not int or self.ordinal < 0: raise ValueError("direct triangle ordinal is invalid")
+        _require_text(self.material, "direct triangle material")
+        bones = _canonical_text_tuple(self.primary_bones, "direct triangle bones")
+        if self.reason != "cross-squared-at-most-1e-30": raise ValueError("direct triangle reason is invalid")
+        _require_sha256(self.source_sha256, "direct triangle source hash")
+        object.__setattr__(self, "primary_bones", bones)
+
+
+def direct_dropped_triangle_payload(value: DirectDroppedTriangleProof) -> dict[str, object]:
+    return {"ordinal": value.ordinal, "material": value.material, "primary_bones": list(value.primary_bones), "reason": value.reason, "source_sha256": value.source_sha256}
+
+
+@dataclass(frozen=True)
+class DirectPrefilterProof:
+    schema: Literal[1]
+    strategy: Literal["direct-degenerate-prefilter-v1"]
+    cross_squared_threshold: float
+    source_triangle_count: int
+    dropped_count: int
+    dropped_fraction: float
+    triangles: tuple[DirectDroppedTriangleProof, ...]
+    applied: Literal[True]
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema != 1 or self.strategy != "direct-degenerate-prefilter-v1" or self.cross_squared_threshold != 1e-30 or self.applied is not True: raise ValueError("direct prefilter identity is invalid")
+        if type(self.source_triangle_count) is not int or self.source_triangle_count < 1: raise ValueError("direct source triangle count is invalid")
+        triangles = tuple(self.triangles)
+        ordinals = tuple(item.ordinal for item in triangles if isinstance(item, DirectDroppedTriangleProof))
+        if len(ordinals) != len(triangles) or ordinals != tuple(sorted(ordinals)) or len(set(ordinals)) != len(ordinals) or any(item >= self.source_triangle_count for item in ordinals): raise ValueError("direct dropped triangles are not canonical")
+        expected_fraction = len(triangles) / self.source_triangle_count
+        if type(self.dropped_count) is not int or self.dropped_count != len(triangles) or len(triangles) > self.source_triangle_count or type(self.dropped_fraction) is not float or self.dropped_fraction != expected_fraction: raise ValueError("direct prefilter totals mismatch")
+        if _require_sha256(self.evidence_sha256, "direct prefilter evidence") != _seal(direct_prefilter_payload(self, include_seal=False)): raise ValueError("direct prefilter seal mismatch")
+        object.__setattr__(self, "triangles", triangles)
+
+
+def direct_prefilter_payload(value: DirectPrefilterProof, *, include_seal: bool = True) -> dict[str, object]:
+    payload = {"schema": value.schema, "strategy": value.strategy, "cross_squared_threshold": value.cross_squared_threshold, "source_triangle_count": value.source_triangle_count, "dropped_count": value.dropped_count, "dropped_fraction": value.dropped_fraction, "triangles": [direct_dropped_triangle_payload(item) for item in value.triangles], "applied": value.applied}
+    if include_seal: payload["evidence_sha256"] = value.evidence_sha256
+    return payload
+
+
+def direct_prefilter_from_payload(value: object) -> DirectPrefilterProof:
+    fields = {"schema", "strategy", "cross_squared_threshold", "source_triangle_count", "dropped_count", "dropped_fraction", "triangles", "applied", "evidence_sha256"}
+    if type(value) is not dict or set(value) != fields or type(value["triangles"]) is not list: raise ValueError("direct prefilter payload fields are invalid")
+    triangles = []
+    for raw in value["triangles"]:
+        if type(raw) is not dict or set(raw) != {"ordinal", "material", "primary_bones", "reason", "source_sha256"} or type(raw["primary_bones"]) is not list: raise ValueError("direct dropped triangle payload is invalid")
+        copied = dict(raw); copied["primary_bones"] = tuple(copied["primary_bones"]); triangles.append(DirectDroppedTriangleProof(**copied))
+    copied = dict(value); copied["triangles"] = tuple(triangles); return DirectPrefilterProof(**copied)
+
+
+@dataclass(frozen=True)
+class DirectSourceBuildRequest:
+    schema: Literal[1]
+    family_id: str
+    family_input_sha256: str
+    base_candidate_id: str
+    base_spec_sha256: str
+    base_cache_digest: str
+    base_source_manifest_sha256: str
+    base_source_snapshot_sha256: str
+    base_strategy: Literal["blender-adaptive-v1"]
+    coverage_manifest_sha256: str
+    source_coverage_sha256: str
+    optimizer_contract_sha256: str
+    whole_profile_sha256: str
+    focused_profile_sha256: str
+    dependency_proof_sha256: str
+    source_identity: str
+    source_relative_path: str
+    source_size: int
+    source_sha256: str
+    direct_ratio: float
+    strategy: Literal["meshopt-direct-position-v1"]
+    transfer: Literal["direct-position-v1"]
+    prefilter_version: Literal["direct-degenerate-prefilter-v1"]
+    expected_prefilter: DirectPrefilterProof
+    request_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema != 1 or self.base_strategy != "blender-adaptive-v1" or self.strategy != "meshopt-direct-position-v1" or self.transfer != "direct-position-v1" or self.prefilter_version != "direct-degenerate-prefilter-v1": raise ValueError("direct request identity is invalid")
+        for label, value in (("family id", self.family_id), ("family input", self.family_input_sha256), ("base spec", self.base_spec_sha256), ("base cache", self.base_cache_digest), ("base source manifest", self.base_source_manifest_sha256), ("base source snapshot", self.base_source_snapshot_sha256), ("coverage manifest", self.coverage_manifest_sha256), ("source coverage", self.source_coverage_sha256), ("optimizer contract", self.optimizer_contract_sha256), ("whole profile", self.whole_profile_sha256), ("focused profile", self.focused_profile_sha256), ("dependency proof", self.dependency_proof_sha256), ("source hash", self.source_sha256)): _require_sha256(value, label)
+        _require_text(self.base_candidate_id, "direct base candidate")
+        _require_relative(self.source_identity, "direct source identity"); _require_relative(self.source_relative_path, "direct source path"); _require_size(self.source_size, "direct source size"); _require_ratio(self.direct_ratio, "direct ratio")
+        if not isinstance(self.expected_prefilter, DirectPrefilterProof): raise TypeError("direct expected prefilter is invalid")
+        if any(item.source_sha256 != self.source_sha256 for item in self.expected_prefilter.triangles):
+            raise ValueError("direct prefilter triangle source mismatch")
+        if _require_sha256(self.request_sha256, "direct request hash") != _seal(direct_source_request_payload(self, include_seal=False)): raise ValueError("direct request seal mismatch")
+
+
+def direct_source_request_payload(value: DirectSourceBuildRequest, *, include_seal: bool = True) -> dict[str, object]:
+    payload = {name: getattr(value, name) for name in ("schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "base_strategy", "coverage_manifest_sha256", "source_coverage_sha256", "optimizer_contract_sha256", "whole_profile_sha256", "focused_profile_sha256", "dependency_proof_sha256", "source_identity", "source_relative_path", "source_size", "source_sha256", "direct_ratio", "strategy", "transfer", "prefilter_version")}
+    payload["expected_prefilter"] = direct_prefilter_payload(value.expected_prefilter)
+    if include_seal: payload["request_sha256"] = value.request_sha256
+    return payload
+
+
+def direct_source_request_from_payload(value: object) -> DirectSourceBuildRequest:
+    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "base_strategy", "coverage_manifest_sha256", "source_coverage_sha256", "optimizer_contract_sha256", "whole_profile_sha256", "focused_profile_sha256", "dependency_proof_sha256", "source_identity", "source_relative_path", "source_size", "source_sha256", "direct_ratio", "strategy", "transfer", "prefilter_version", "expected_prefilter", "request_sha256"}
+    if type(value) is not dict or set(value) != fields: raise ValueError("direct request payload fields are invalid")
+    copied = dict(value); copied["expected_prefilter"] = direct_prefilter_from_payload(copied["expected_prefilter"]); return DirectSourceBuildRequest(**copied)
+
+
+@dataclass(frozen=True)
+class DirectSourceSnapshot:
+    schema: Literal[1]
+    request: DirectSourceBuildRequest
+    direct_candidate_id: str
+    direct_cache_digest: str
+    source_root: Path
+    output_relative_path: str
+    output_size: int
+    output_sha256: str
+    triangles_before: int
+    triangles_after: int
+    prefilter: DirectPrefilterProof
+    fallback_reason: None
+    preserved_exact: Literal[False]
+    reason: Literal["approved-direct-position-v1"]
+    snapshot_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema != 1 or not isinstance(self.request, DirectSourceBuildRequest): raise ValueError("direct snapshot identity is invalid")
+        if self.direct_candidate_id != direct_candidate_id(self.request) or self.direct_cache_digest != direct_cache_digest(self.request):
+            raise ValueError("direct snapshot derived identity mismatch")
+        root = Path(self.source_root)
+        if not root.is_absolute(): raise ValueError("direct snapshot root must be absolute")
+        _require_relative(self.output_relative_path, "direct output path"); _require_size(self.output_size, "direct output size"); _require_sha256(self.output_sha256, "direct output hash")
+        if not self.output_relative_path.casefold().endswith(".smd"): raise ValueError("direct output must be an SMD")
+        post_prefilter_count = self.request.expected_prefilter.source_triangle_count - self.request.expected_prefilter.dropped_count
+        if self.output_sha256 == self.request.source_sha256 or type(self.triangles_before) is not int or type(self.triangles_after) is not int or self.triangles_before != post_prefilter_count or not 0 < self.triangles_after < self.triangles_before: raise ValueError("direct snapshot did not prove strict post-prefilter reduction")
+        if self.prefilter != self.request.expected_prefilter or self.fallback_reason is not None or self.preserved_exact is not False or self.reason != "approved-direct-position-v1": raise ValueError("direct snapshot result matrix is invalid")
+        if _require_sha256(self.snapshot_sha256, "direct snapshot hash") != _seal(direct_source_snapshot_payload(self, include_seal=False)): raise ValueError("direct snapshot seal mismatch")
+        object.__setattr__(self, "source_root", root)
+
+
+def direct_candidate_id(request: DirectSourceBuildRequest) -> str:
+    if not isinstance(request, DirectSourceBuildRequest): raise TypeError("direct request is invalid")
+    return f"direct-source-{request.request_sha256[:32]}"
+
+
+def direct_cache_digest(request: DirectSourceBuildRequest) -> str:
+    if not isinstance(request, DirectSourceBuildRequest): raise TypeError("direct request is invalid")
+    return _seal({"schema": 1, "kind": "direct-source-v1", "request_sha256": request.request_sha256})
+
+
+def direct_source_snapshot_payload(value: DirectSourceSnapshot, *, include_seal: bool = True) -> dict[str, object]:
+    payload = {"schema": value.schema, "request": direct_source_request_payload(value.request), "direct_candidate_id": value.direct_candidate_id, "direct_cache_digest": value.direct_cache_digest, "output_relative_path": value.output_relative_path, "output_size": value.output_size, "output_sha256": value.output_sha256, "triangles_before": value.triangles_before, "triangles_after": value.triangles_after, "prefilter": direct_prefilter_payload(value.prefilter), "fallback_reason": value.fallback_reason, "preserved_exact": value.preserved_exact, "reason": value.reason}
+    if include_seal: payload["snapshot_sha256"] = value.snapshot_sha256
+    return payload
+
+
+def direct_source_snapshot_from_payload(value: object, *, source_root: Path) -> DirectSourceSnapshot:
+    fields = {"schema", "request", "direct_candidate_id", "direct_cache_digest", "output_relative_path", "output_size", "output_sha256", "triangles_before", "triangles_after", "prefilter", "fallback_reason", "preserved_exact", "reason", "snapshot_sha256"}
+    if type(value) is not dict or set(value) != fields: raise ValueError("direct snapshot payload fields are invalid")
+    copied = dict(value); copied["request"] = direct_source_request_from_payload(copied["request"]); copied["prefilter"] = direct_prefilter_from_payload(copied["prefilter"]); return DirectSourceSnapshot(source_root=source_root, **copied)
 
 
 @dataclass(frozen=True)
@@ -507,6 +1133,7 @@ class CompositionProof:
     composed_manifest_sha256: str
     changed_sources: tuple[ChangedSourceProof, ...]
     evidence_sha256: str
+    kind: Literal["focused-recovery-v1", "adaptive-direct-fallback-v1"] = "focused-recovery-v1"
 
     def __post_init__(self) -> None:
         if type(self.schema) is not int or self.schema != 1:
@@ -516,18 +1143,31 @@ class CompositionProof:
             ("composed manifest", self.composed_manifest_sha256),
         ):
             _require_sha256(value, label)
+        if self.kind not in {"focused-recovery-v1", "adaptive-direct-fallback-v1"}:
+            raise ValueError("composition proof kind is invalid")
         changed = tuple(self.changed_sources)
         keys = [(item.source_identity.casefold(), item.source_identity) for item in changed]
-        if not changed or len(changed) > 4 or any(not isinstance(item, ChangedSourceProof) for item in changed) or keys != sorted(keys) or len({key[0] for key in keys}) != len(keys):
+        changed_limit = 4 if self.kind == "focused-recovery-v1" else 8
+        if not changed or len(changed) > changed_limit or any(not isinstance(item, ChangedSourceProof) for item in changed) or keys != sorted(keys) or len({key[0] for key in keys}) != len(keys):
             raise ValueError("composition changed sources are not canonical")
         if _require_sha256(self.evidence_sha256, "composition evidence") != _seal(composition_proof_payload(self, include_seal=False)):
             raise ValueError("composition proof seal mismatch")
         object.__setattr__(self, "changed_sources", changed)
 
+    @classmethod
+    def create(cls, kind: str, recipe_sha256: str, base_manifest_sha256: str, composed_manifest_sha256: str, changed_sources: tuple[ChangedSourceProof, ...]) -> "CompositionProof":
+        raw = dict(schema=1, kind=kind, recipe_sha256=recipe_sha256,
+                   base_manifest_sha256=base_manifest_sha256,
+                   composed_manifest_sha256=composed_manifest_sha256,
+                   changed_sources=tuple(changed_sources), evidence_sha256=H_EMPTY)
+        provisional = _unsealed(cls, **raw)
+        raw["evidence_sha256"] = _seal(composition_proof_payload(provisional, include_seal=False))
+        return cls(**raw)
+
 
 def composition_proof_payload(value: CompositionProof, *, include_seal: bool = True) -> dict[str, object]:
     payload = {
-        "schema": value.schema, "recipe_sha256": value.recipe_sha256,
+        "schema": value.schema, "kind": value.kind, "recipe_sha256": value.recipe_sha256,
         "base_manifest_sha256": value.base_manifest_sha256,
         "composed_manifest_sha256": value.composed_manifest_sha256,
         "changed_sources": [changed_source_proof_payload(item) for item in value.changed_sources],
@@ -535,6 +1175,19 @@ def composition_proof_payload(value: CompositionProof, *, include_seal: bool = T
     if include_seal:
         payload["evidence_sha256"] = value.evidence_sha256
     return payload
+
+
+def composition_proof_from_payload(value: object) -> CompositionProof:
+    fields = {"schema", "kind", "recipe_sha256", "base_manifest_sha256", "composed_manifest_sha256", "changed_sources", "evidence_sha256"}
+    if type(value) is not dict or set(value) != fields or type(value["changed_sources"]) is not list:
+        raise ValueError("composition proof payload fields are invalid")
+    changed = []
+    for raw in value["changed_sources"]:
+        if type(raw) is not dict or set(raw) != {"source_identity", "relative_path", "before_size", "before_sha256", "after_size", "after_sha256", "overlay_sha256", "replacement_snapshot_sha256"}:
+            raise ValueError("changed source proof payload fields are invalid")
+        changed.append(ChangedSourceProof(**raw))
+    copied = dict(value); copied["changed_sources"] = tuple(changed)
+    return CompositionProof(**copied)
 
 
 @dataclass(frozen=True)

@@ -185,7 +185,7 @@ class CompositeTypedContractTests(unittest.TestCase):
             "body.smd", "body.smd", 4, H["a"], 5, H["c"], H["d"], H["e"]
         )
         payload = {
-            "schema": 1, "recipe_sha256": H["1"], "base_manifest_sha256": H["2"],
+            "schema": 1, "kind": "focused-recovery-v1", "recipe_sha256": H["1"], "base_manifest_sha256": H["2"],
             "composed_manifest_sha256": H["3"],
             "changed_sources": [{
                 "source_identity": "body.smd", "relative_path": "body.smd",

@@ -712,7 +712,7 @@ class OrchestratorTests(unittest.TestCase):
             original_snapshot.snapshot_sha256,
         )
         composition_raw = {
-            "schema": 1, "recipe_sha256": recipe.recipe_sha256,
+            "schema": 1, "kind": "focused-recovery-v1", "recipe_sha256": recipe.recipe_sha256,
             "base_manifest_sha256": base_manifest.digest,
             "composed_manifest_sha256": source_manifest.digest,
             "changed_sources": [changed_source_proof_payload(changed)],

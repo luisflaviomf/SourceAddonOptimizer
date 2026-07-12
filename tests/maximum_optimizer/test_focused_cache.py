@@ -1547,7 +1547,7 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
             digest(source_overlay_payload(overlay)), HASHES["4"],
         )
         composition_raw = {
-            "schema": 1, "recipe_sha256": recipe_value.recipe_sha256,
+            "schema": 1, "kind": "focused-recovery-v1", "recipe_sha256": recipe_value.recipe_sha256,
             "base_manifest_sha256": HASHES["2"],
             "composed_manifest_sha256": HASHES["7"],
             "changed_sources": [changed_source_proof_payload(changed)],

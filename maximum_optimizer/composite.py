@@ -6,29 +6,46 @@ import shutil
 import stat
 import threading
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
 from .domain import (
+    AdaptiveCandidateMetricsProof,
+    AdaptiveDirectCoverageManifest,
     CandidateEvaluation,
     ChangedSourceProof,
     CandidateSpec,
     CompositeRecipe,
     ComposedSourceTree,
     CompositionProof,
+    DirectPrefilterProof,
+    DirectSourceBuildRequest,
+    DirectSourceSnapshot,
     FocusedEvidenceRef,
+    GateFailure,
     RecoverySourceSnapshot,
     SourceFileProof,
     SourceOverlay,
     SourceTreeManifest,
+    ValidationResult,
     composite_recipe_payload,
     changed_source_proof_payload,
     composition_proof_payload,
+    adaptive_candidate_metrics_payload,
+    adaptive_direct_coverage_manifest_payload,
+    direct_prefilter_payload,
+    direct_candidate_id,
+    direct_cache_digest,
+    direct_source_request_payload,
+    direct_source_snapshot_payload,
+    validation_result_payload,
     source_overlay_payload,
     source_tree_manifest_payload,
 )
 from .processes import ProcessCancelledError
 from .focused_cache import (
+    RenderFileProof,
     _copy_file_no_follow,
     _file_proof,
     _has_reparse_ancestor,
@@ -42,6 +59,222 @@ _MAX_SOURCE_FILES = 4096
 _MAX_SOURCE_BYTES = 2 * 1024 ** 3
 _CHUNK = 1024 * 1024
 _REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_ZERO_HASH = "0" * 64
+
+
+def _pure_seal(payload: object) -> str:
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _unsealed(cls, **values):
+    result = object.__new__(cls)
+    for name, value in values.items(): object.__setattr__(result, name, value)
+    return result
+
+
+def build_adaptive_candidate_metrics_proof(**values) -> AdaptiveCandidateMetricsProof:
+    sources = tuple(values.pop("sources"))
+    raw = dict(
+        schema=1, strategy="blender-adaptive-v1", sources=sources,
+        evidence_sha256=_ZERO_HASH, **values,
+    )
+    provisional = _unsealed(AdaptiveCandidateMetricsProof, **raw); raw["evidence_sha256"] = _pure_seal(adaptive_candidate_metrics_payload(provisional, include_seal=False)); return AdaptiveCandidateMetricsProof(**raw)
+
+
+def build_adaptive_direct_coverage_manifest(**values) -> AdaptiveDirectCoverageManifest:
+    sources = tuple(values.pop("sources"))
+    identities = tuple(values.pop("complete_source_identities"))
+    eligible = tuple(item for item in sources if item.eligibility_kind == "eligible-exact-v1")
+    raw = dict(
+        schema=1, complete_source_identities=identities, sources=sources,
+        occurrence_count=sum(len(item.witnesses) for item in sources),
+        component_count=sum(len(item.component_keys) for item in sources),
+        state_count=sum(len(item.state_keys) for item in sources),
+        maximum_candidate_images=sum(32 * len(item.pose_keys) for item in eligible),
+        coverage_manifest_sha256=_ZERO_HASH, **values,
+    )
+    provisional = _unsealed(AdaptiveDirectCoverageManifest, **raw); raw["coverage_manifest_sha256"] = _pure_seal(adaptive_direct_coverage_manifest_payload(provisional, include_seal=False)); return AdaptiveDirectCoverageManifest(**raw)
+
+
+def build_direct_prefilter_proof(*, source_triangle_count: int, triangles: tuple) -> DirectPrefilterProof:
+    triangles = tuple(triangles)
+    raw = dict(
+        schema=1, strategy="direct-degenerate-prefilter-v1", cross_squared_threshold=1e-30,
+        source_triangle_count=source_triangle_count, dropped_count=len(triangles),
+        dropped_fraction=len(triangles) / source_triangle_count, triangles=triangles,
+        applied=True, evidence_sha256=_ZERO_HASH,
+    )
+    provisional = _unsealed(DirectPrefilterProof, **raw); raw["evidence_sha256"] = _pure_seal(direct_prefilter_payload(provisional, include_seal=False)); return DirectPrefilterProof(**raw)
+
+
+def build_direct_source_request(**values) -> DirectSourceBuildRequest:
+    raw = dict(
+        schema=1, base_strategy="blender-adaptive-v1",
+        strategy="meshopt-direct-position-v1", transfer="direct-position-v1",
+        prefilter_version="direct-degenerate-prefilter-v1", request_sha256=_ZERO_HASH,
+        **values,
+    )
+    provisional = _unsealed(DirectSourceBuildRequest, **raw); raw["request_sha256"] = _pure_seal(direct_source_request_payload(provisional, include_seal=False)); return DirectSourceBuildRequest(**raw)
+
+
+def build_direct_source_snapshot(**values) -> DirectSourceSnapshot:
+    request = values["request"]
+    raw = dict(
+        schema=1, fallback_reason=None, preserved_exact=False,
+        reason="approved-direct-position-v1", snapshot_sha256=_ZERO_HASH,
+        direct_candidate_id=direct_candidate_id(request),
+        direct_cache_digest=direct_cache_digest(request), **values,
+    )
+    provisional = _unsealed(DirectSourceSnapshot, **raw); raw["snapshot_sha256"] = _pure_seal(direct_source_snapshot_payload(provisional, include_seal=False)); return DirectSourceSnapshot(**raw)
+
+
+@dataclass(frozen=True)
+class AdaptiveDirectVisibilityProof:
+    component_key: str
+    pose_key: str
+    camera_key: str
+    reference_visible_mask_pixels: int
+    candidate_visible_mask_pixels: int
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        if any(type(item) is not str or not item for item in (self.component_key, self.pose_key, self.camera_key)):
+            raise ValueError("source-union visibility identity is invalid")
+        if any(type(item) is not int or item < 1 for item in (self.reference_visible_mask_pixels, self.candidate_visible_mask_pixels)):
+            raise ValueError("source-union visibility pixels are invalid")
+        if self.evidence_sha256 != _pure_seal(_visibility_payload(self, False)):
+            raise ValueError("source-union visibility seal mismatch")
+
+
+def _visibility_payload(value: AdaptiveDirectVisibilityProof, include_seal: bool = True) -> dict[str, object]:
+    payload = {"component_key": value.component_key, "pose_key": value.pose_key, "camera_key": value.camera_key, "reference_visible_mask_pixels": value.reference_visible_mask_pixels, "candidate_visible_mask_pixels": value.candidate_visible_mask_pixels}
+    if include_seal: payload["evidence_sha256"] = value.evidence_sha256
+    return payload
+
+
+adaptive_direct_visibility_payload = _visibility_payload
+
+
+def adaptive_direct_visibility_from_payload(value: object) -> AdaptiveDirectVisibilityProof:
+    fields = {"component_key", "pose_key", "camera_key", "reference_visible_mask_pixels", "candidate_visible_mask_pixels", "evidence_sha256"}
+    if type(value) is not dict or set(value) != fields: raise ValueError("source-union visibility payload fields are invalid")
+    return AdaptiveDirectVisibilityProof(**value)
+
+
+@dataclass(frozen=True)
+class AdaptiveDirectSourceUnionTarget:
+    source_identity: str
+    union_key: str
+    coverage_manifest_sha256: str
+    source_coverage_sha256: str
+    component_keys: tuple[str, ...]
+    material_region_keys: tuple[str, ...]
+    pose_keys: tuple[str, ...]
+    image_count: int
+    target_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.source_identity) is not str or not self.source_identity or "\\" in self.source_identity or Path(self.source_identity).is_absolute() or ".." in Path(self.source_identity).parts: raise ValueError("source-union identity is invalid")
+        expected_key = f"source-union-{self.source_coverage_sha256[:32]}"
+        if self.union_key != expected_key or not re.fullmatch(r"source-union-[0-9a-f]{32}", self.union_key): raise ValueError("source-union key is invalid")
+        for value in (self.coverage_manifest_sha256, self.source_coverage_sha256):
+            if not re.fullmatch(r"[0-9a-f]{64}", value): raise ValueError("source-union hash is invalid")
+        components = tuple(self.component_keys); materials = tuple(self.material_region_keys); poses = tuple(self.pose_keys)
+        if not components or len(components) > 256 or components != tuple(sorted(components)) or len(set(components)) != len(components): raise ValueError("source-union components are invalid")
+        if not materials or len(materials) > 256 or materials != tuple(sorted(materials)) or len(set(materials)) != len(materials): raise ValueError("source-union materials are invalid")
+        if not 1 <= len(poses) <= 2 or poses[0] != "bind" or len(set(poses)) != len(poses): raise ValueError("source-union poses are invalid")
+        if type(self.image_count) is not int or self.image_count != 32 * len(poses) or self.image_count > 64: raise ValueError("source-union image count is invalid")
+        if self.target_sha256 != _pure_seal(_union_target_payload(self, False)): raise ValueError("source-union target seal mismatch")
+
+
+def _union_target_payload(value: AdaptiveDirectSourceUnionTarget, include_seal: bool = True) -> dict[str, object]:
+    payload = {"source_identity": value.source_identity, "union_key": value.union_key, "coverage_manifest_sha256": value.coverage_manifest_sha256, "source_coverage_sha256": value.source_coverage_sha256, "component_keys": list(value.component_keys), "material_region_keys": list(value.material_region_keys), "pose_keys": list(value.pose_keys), "image_count": value.image_count}
+    if include_seal: payload["target_sha256"] = value.target_sha256
+    return payload
+
+
+adaptive_direct_source_union_target_payload = _union_target_payload
+
+
+def adaptive_direct_source_union_target_from_payload(value: object) -> AdaptiveDirectSourceUnionTarget:
+    fields = {"source_identity", "union_key", "coverage_manifest_sha256", "source_coverage_sha256", "component_keys", "material_region_keys", "pose_keys", "image_count", "target_sha256"}
+    if type(value) is not dict or set(value) != fields or any(type(value[name]) is not list for name in ("component_keys", "material_region_keys", "pose_keys")): raise ValueError("source-union target payload fields are invalid")
+    copied = dict(value)
+    for name in ("component_keys", "material_region_keys", "pose_keys"): copied[name] = tuple(copied[name])
+    return AdaptiveDirectSourceUnionTarget(**copied)
+
+
+def build_adaptive_direct_source_union_target(**values) -> AdaptiveDirectSourceUnionTarget:
+    source_coverage = values["source_coverage_sha256"]
+    poses = tuple(values.pop("pose_keys")); components = tuple(values.pop("component_keys")); materials = tuple(values.pop("material_region_keys"))
+    raw = dict(union_key=f"source-union-{source_coverage[:32]}", component_keys=components, material_region_keys=materials, pose_keys=poses, image_count=32 * len(poses), target_sha256=_ZERO_HASH, **values)
+    provisional = _unsealed(AdaptiveDirectSourceUnionTarget, **raw); raw["target_sha256"] = _pure_seal(_union_target_payload(provisional, False)); return AdaptiveDirectSourceUnionTarget(**raw)
+
+
+def _render_payload(value: RenderFileProof) -> dict[str, object]:
+    return {"side": value.side, "kind": value.kind, "path": value.path, "size": value.size, "sha256": value.sha256, "width": value.width, "height": value.height}
+
+
+@dataclass(frozen=True)
+class AdaptiveDirectSourceUnionRecord:
+    target: AdaptiveDirectSourceUnionTarget
+    validation: ValidationResult
+    files: tuple[RenderFileProof, ...]
+    visibility: tuple[AdaptiveDirectVisibilityProof, ...]
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.target, AdaptiveDirectSourceUnionTarget) or not isinstance(self.validation, ValidationResult): raise TypeError("source-union record identity is invalid")
+        files = tuple(self.files); visibility = tuple(self.visibility)
+        cameras = tuple(f"camera-{index:02d}" for index in range(8)); passes = ("beauty", "mask")
+        expected = {f"source-union/{self.target.union_key}/{side}/{pose}/{render_pass}/{camera}.png" for side in ("candidate", "reference") for pose in self.target.pose_keys for render_pass in passes for camera in cameras}
+        if len(files) != self.target.image_count or any(not isinstance(item, RenderFileProof) or item.kind != "image" for item in files) or {item.path for item in files} != expected or tuple(item.path for item in files) != tuple(sorted(item.path for item in files)):
+            raise ValueError("source-union files are not the exact canonical matrix")
+        expected_visibility = {(component, pose) for component in self.target.component_keys for pose in self.target.pose_keys}
+        actual_visibility = {(item.component_key, item.pose_key) for item in visibility if isinstance(item, AdaptiveDirectVisibilityProof)}
+        if len(visibility) != len(expected_visibility) or actual_visibility != expected_visibility or tuple((item.component_key, item.pose_key) for item in visibility) != tuple(sorted(actual_visibility)) or any(item.camera_key not in cameras for item in visibility):
+            raise ValueError("source-union visibility is not exact")
+        if self.evidence_sha256 != _pure_seal(_union_record_payload(self, False)): raise ValueError("source-union record seal mismatch")
+        object.__setattr__(self, "files", files); object.__setattr__(self, "visibility", visibility)
+
+
+def _union_record_payload(value: AdaptiveDirectSourceUnionRecord, include_seal: bool = True) -> dict[str, object]:
+    payload = {"target": _union_target_payload(value.target), "validation": validation_result_payload(value.validation), "files": [_render_payload(item) for item in value.files], "visibility": [_visibility_payload(item) for item in value.visibility]}
+    if include_seal: payload["evidence_sha256"] = value.evidence_sha256
+    return payload
+
+
+adaptive_direct_source_union_record_payload = _union_record_payload
+
+
+def adaptive_direct_source_union_record_from_payload(value: object) -> AdaptiveDirectSourceUnionRecord:
+    fields = {"target", "validation", "files", "visibility", "evidence_sha256"}
+    if type(value) is not dict or set(value) != fields or type(value["files"]) is not list or type(value["visibility"]) is not list: raise ValueError("source-union record payload fields are invalid")
+    validation = value["validation"]
+    if type(validation) is not dict or set(validation) != {"passed", "failures", "metrics", "worst_scope"} or type(validation["failures"]) is not list or type(validation["metrics"]) is not dict: raise ValueError("source-union validation payload is invalid")
+    failures = []
+    for raw in validation["failures"]:
+        if type(raw) is not dict or set(raw) != {"gate", "scope", "metric", "observed", "limit", "detail"}: raise ValueError("source-union failure payload is invalid")
+        failures.append(GateFailure(**raw))
+    validation_value = ValidationResult(validation["passed"], tuple(failures), validation["metrics"], validation["worst_scope"])
+    files = []
+    for raw in value["files"]:
+        if type(raw) is not dict or set(raw) != {"side", "kind", "path", "size", "sha256", "width", "height"}: raise ValueError("source-union render payload is invalid")
+        files.append(RenderFileProof(**raw))
+    return AdaptiveDirectSourceUnionRecord(
+        adaptive_direct_source_union_target_from_payload(value["target"]), validation_value,
+        tuple(files), tuple(adaptive_direct_visibility_from_payload(item) for item in value["visibility"]),
+        value["evidence_sha256"],
+    )
+
+
+def build_adaptive_direct_source_union_record(*, target, validation, files, visibility) -> AdaptiveDirectSourceUnionRecord:
+    visibility_proofs = []
+    for component, pose, camera, reference_pixels, candidate_pixels in visibility:
+        raw = dict(component_key=component, pose_key=pose, camera_key=camera, reference_visible_mask_pixels=reference_pixels, candidate_visible_mask_pixels=candidate_pixels, evidence_sha256=_ZERO_HASH)
+        provisional = _unsealed(AdaptiveDirectVisibilityProof, **raw); raw["evidence_sha256"] = _pure_seal(_visibility_payload(provisional, False)); visibility_proofs.append(AdaptiveDirectVisibilityProof(**raw))
+    raw = dict(target=target, validation=validation, files=tuple(files), visibility=tuple(visibility_proofs), evidence_sha256=_ZERO_HASH)
+    provisional = _unsealed(AdaptiveDirectSourceUnionRecord, **raw); raw["evidence_sha256"] = _pure_seal(_union_record_payload(provisional, False)); return AdaptiveDirectSourceUnionRecord(**raw)
 
 
 def _cancel(cancel_event: threading.Event | None) -> None:
@@ -682,7 +915,7 @@ def _composition_proof(
         raise ValueError("composition did not prove every overlay")
     changed_tuple = tuple(sorted(changed, key=lambda item: (item.source_identity.casefold(), item.source_identity)))
     payload = {
-        "schema": 1, "recipe_sha256": recipe.recipe_sha256,
+        "schema": 1, "kind": recipe.kind, "recipe_sha256": recipe.recipe_sha256,
         "base_manifest_sha256": base_manifest.digest,
         "composed_manifest_sha256": composed_manifest.digest,
         "changed_sources": [changed_source_proof_payload(item) for item in changed_tuple],
@@ -690,7 +923,7 @@ def _composition_proof(
     evidence = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
     return CompositionProof(
         1, recipe.recipe_sha256, base_manifest.digest, composed_manifest.digest,
-        changed_tuple, evidence,
+        changed_tuple, evidence, recipe.kind,
     )
 
 
