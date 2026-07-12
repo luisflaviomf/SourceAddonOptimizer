@@ -200,38 +200,63 @@ def restore_direct_smd_normals(
             raise RuntimeError("direct provenance crosses material ownership")
         expected.append((material, tuple(source_corners[i] for i in ordinals)))
     by_material_expected: dict[str, list[tuple[SmdCorner, ...]]] = {}
-    by_material_exported: dict[str, list[SmdTriangle]] = {}
     for material, corners in expected:
         by_material_expected.setdefault(material, []).append(corners)
-    for triangle in exported.triangles:
-        by_material_exported.setdefault(triangle.material, []).append(triangle)
-    if set(by_material_expected) != set(by_material_exported):
+    if set(by_material_expected) != {triangle.material for triangle in exported.triangles}:
         raise RuntimeError("direct provenance material set differs from export")
     output = list(exported.lines)
     used_lines: set[int] = set()
-    for material in sorted(by_material_expected):
-        before_rows, after_rows = by_material_expected[material], by_material_exported[material]
-        if len(before_rows) != len(after_rows):
-            raise RuntimeError("direct provenance material triangle count differs from export")
-        for before, after in zip(before_rows, after_rows):
-            for source, candidate in zip(before, after.corners):
+    remaining = {material: list(rows) for material, rows in by_material_expected.items()}
+
+    def coarse_corner(corner: SmdCorner) -> tuple[object, ...]:
+        return (
+            corner.tokens[0], tuple(round(value, 5) for value in corner.position),
+            corner.uv, tuple(corner.tokens[9:]),
+        )
+
+    indexed: dict[tuple[object, ...], list[tuple[int, tuple[SmdCorner, ...]]]] = {}
+    for material, rows in remaining.items():
+        for row_index, row in enumerate(rows):
+            for shift in range(3):
+                rotated = row[shift:] + row[:shift]
+                key = (material, *(coarse_corner(corner) for corner in rotated))
+                indexed.setdefault(key, []).append((row_index, rotated))
+
+    def corner_matches(source: SmdCorner, candidate: SmdCorner) -> bool:
+        return (
+            source.tokens[0] == candidate.tokens[0]
+            and source.uv == candidate.uv
+            and len(source.tokens) == len(candidate.tokens)
+            and all(abs(a-b) <= position_tolerance for a,b in zip(source.position, candidate.position))
+            and all(_numeric_token_equal(source.tokens[i], candidate.tokens[i]) for i in range(9, len(source.tokens)))
+        )
+
+    for after in exported.triangles:
+        matches: list[tuple[int, tuple[SmdCorner, ...]]] = []
+        key = (after.material, *(coarse_corner(corner) for corner in after.corners))
+        for row_index, rotated in indexed.get(key, ()):
+            if row_index < len(remaining[after.material]) and remaining[after.material][row_index] is not None and all(
+                corner_matches(source, candidate) for source, candidate in zip(rotated, after.corners)
+            ):
+                matches.append((row_index, rotated))
+        if not matches:
+            raise RuntimeError("direct provenance has no matching output triangle")
+        normal_signatures = {tuple(c.normal for c in row) for _index, row in matches}
+        if len(normal_signatures) != 1:
+            raise RuntimeError("direct provenance triangle match is ambiguous across hard normals")
+        row_index, before = matches[0]
+        remaining[after.material][row_index] = None  # type: ignore[list-item]
+        for source, candidate in zip(before, after.corners):
                 if candidate.line_index in used_lines:
                     raise RuntimeError("direct provenance is not bijective")
                 used_lines.add(candidate.line_index)
-                if source.tokens[0] != candidate.tokens[0] or source.uv != candidate.uv:
-                    raise RuntimeError("direct provenance bone or UV payload differs")
-                if any(abs(a-b) > position_tolerance for a,b in zip(source.position, candidate.position)):
-                    raise RuntimeError("direct provenance position differs")
-                if len(source.tokens) != len(candidate.tokens) or any(
-                    not _numeric_token_equal(source.tokens[i], candidate.tokens[i])
-                    for i in range(9, len(source.tokens))
-                ):
-                    raise RuntimeError("direct provenance weight payload differs")
                 raw = output[candidate.line_index]
                 for token_index in (6, 5, 4):
                     start, end = candidate.spans[token_index]
                     raw = raw[:start] + source.tokens[token_index] + raw[end:]
                 output[candidate.line_index] = raw
+    if any(any(row is not None for row in rows) for rows in remaining.values()):
+        raise RuntimeError("direct provenance contains unmatched source triangles")
     if len(used_lines) != len(source_corner_ordinals):
         raise RuntimeError("direct provenance is not a complete bijection")
     return "".join(output)

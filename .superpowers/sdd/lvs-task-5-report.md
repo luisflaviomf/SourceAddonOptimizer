@@ -43,6 +43,9 @@ match; all three SMDs passed. StudioMDL compiled every ratio. Totals were 1,070,
 Texture-missing and uncalibrated visual quality remain unverified; no winner claim is made. Evidence is in
 `benchmarks/lvs_models/meshopt_direct_v1.json`.
 
+Two clean `/Brepro` x64 native rebuilds matched at SHA-256
+`c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa`; ABI remains v2.
+
 ## TDD
 
 Observed REDs covered absent strategy fields, implicit `from_search => true`, missing direct

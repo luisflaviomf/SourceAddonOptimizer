@@ -9,7 +9,7 @@ import sys
 import unittest
 
 import batch_optimize_maximum as maximum
-from maximum_optimizer.smd_contract import validate_fixed_topology_smd
+from maximum_optimizer.smd_contract import restore_direct_smd_normals, validate_fixed_topology_smd
 from maximum_optimizer.smoothing import (
     canonicalize_export_normals, canonicalize_normals_by_identity, reconstruct_smoothing,
 )
@@ -47,6 +47,16 @@ end
         reordered = header + "glass\n" + second.rsplit("end\n", 1)[0] + "paint\n" + first + "end\n"
         with self.assertRaisesRegex(RuntimeError, "triangle order|material"):
             validate_fixed_topology_smd(original, reordered)
+
+    def test_direct_provenance_matches_exporter_reorder_without_material_zip(self) -> None:
+        original = self._two_triangle_smd()
+        parsed = original.split("triangles\n", 1)[1].rsplit("end\n", 1)[0]
+        paint, glass = parsed.split("glass\n", 1)
+        exported = original.split("triangles\n", 1)[0] + "triangles\nglass\n" + glass + "paint\n" + paint.split("paint\n", 1)[1] + "end\n"
+        restored = restore_direct_smd_normals(original, exported, (0, 1, 2, 3, 4, 5))
+        self.assertIn("glass\n", restored)
+        with self.assertRaisesRegex(RuntimeError, "no matching"):
+            restore_direct_smd_normals(original, exported.replace("0.5 0.5", "0.6 0.5"), (0, 1, 2, 3, 4, 5))
 
         lines = original.splitlines(keepends=True)
         start = lines.index("paint\n") + 1

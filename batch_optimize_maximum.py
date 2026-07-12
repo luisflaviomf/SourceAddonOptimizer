@@ -1009,6 +1009,8 @@ def _process_source_file(
     mesh_objects = tuple(obj for obj in bpy.context.scene.objects if obj.type == "MESH")
     if not mesh_objects:
         raise RuntimeError(f"Source Tools imported no mesh from {source}")
+    if candidate.strategy == "meshopt-direct-v1" and len(mesh_objects) != 1:
+        raise RuntimeError("meshopt-direct-v1 requires one unambiguous source object per occurrence")
     object_metrics = optimize_region_objects(
         source_identity,
         mesh_objects,
@@ -1039,6 +1041,7 @@ def _process_source_file(
         shutil.rmtree(staging_dir, ignore_errors=True)
     if not destination.is_file():
         raise RuntimeError(f"Source Tools did not export {destination}")
+    raw_export_sha256 = hashlib.sha256(destination.read_bytes()).hexdigest()
     restored = restore_smd_bone_identity(
         original_text, destination.read_text(encoding="utf-8", errors="strict")
     )
@@ -1052,6 +1055,8 @@ def _process_source_file(
     return {
         "source": source.as_posix(),
         "output": destination.as_posix(),
+        "raw_export_sha256": raw_export_sha256,
+        "restored_export_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
         "triangles_before": before_audit.triangle_count,
         "triangles_after": after_audit.triangle_count,
         "materials_before": list(before_audit.materials),

@@ -21,7 +21,7 @@
       {"path": "wheel_anims/neutral.smd", "sha256": "4ef9631312c0e17b2ecf37569b47adaba7e84f8752a8576940c4468f2e8c962a", "size_bytes": 153},
       {"path": "wheel_physics.smd", "sha256": "b085c7108b6335c5490dfb56cf3fd7ae8f980cc2fa6c1f50623a620bbd90f00f", "size_bytes": 26663}
     ],
-    "raw_export_sha256": "192edd54b5d94904e228ca8f60def783f2595f4651029a16c56633aac7086fbe"
+    "restored_export_sha256": "192edd54b5d94904e228ca8f60def783f2595f4651029a16c56633aac7086fbe"
   }],
   "skipped": [
     {"stage": "one_car", "reason": "best direct wheel was 1034283 bytes versus 633089 best Blender and saturated by r0.40"},
