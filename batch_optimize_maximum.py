@@ -128,6 +128,15 @@ class Settings:
 
 
 @dataclass(frozen=True)
+class SourceContract:
+    original_text: str
+    effective_text: str
+    audit: "SmdAudit"
+    source_triangle_count: int
+    prefilter: DirectDegeneratePrefilter | None
+
+
+@dataclass(frozen=True)
 class GeometryClass:
     is_thin: bool
     extents: tuple[float, float, float]
@@ -275,7 +284,10 @@ def should_preserve_exact(
     candidate: CandidateConfig, region_ratios: Sequence[float]
 ) -> bool:
     return (
-        candidate.strategy in _PRESERVE_EXACT_BLENDER_STRATEGIES
+        candidate.strategy in (
+            _PRESERVE_EXACT_BLENDER_STRATEGIES
+            | {"meshopt-direct-v1", "meshopt-direct-position-v1"}
+        )
         and preserve_whole_source(region_ratios)
     )
 
@@ -1590,23 +1602,6 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
     }
 
 
-def _describe_source_file(
-    source: Path, source_identity: str
-) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
-    assert bpy is not None
-    import batch_optimize_qc as source_tools
-
-    _clear_blender_scene()
-    source_tools.import_source_file(source)
-    mesh_objects = tuple(obj for obj in bpy.context.scene.objects if obj.type == "MESH")
-    if not mesh_objects:
-        raise RuntimeError(f"Source Tools imported no mesh from {source}")
-    source_materials = audit_smd_text(
-        source.read_text(encoding="utf-8", errors="replace")
-    ).materials
-    return _object_region_observations(source_identity, mesh_objects, source_materials)
-
-
 def require_direct_single_object(candidate: CandidateConfig, mesh_objects: Sequence[object]) -> None:
     if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"} and not mesh_objects:
         raise RuntimeError(f"{candidate.strategy} requires at least one mapped source object")
@@ -1626,6 +1621,100 @@ def direct_degenerate_prefilter(
     ):
         raise ValueError("direct prefilter requires a typed direct R&D strategy")
     return prefilter_direct_degenerate_smd(original_text)
+
+
+def prepare_source_contract(
+    candidate: CandidateConfig | None, original_text: str
+) -> SourceContract:
+    prefilter = (
+        direct_degenerate_prefilter(candidate, original_text)
+        if candidate is not None else None
+    )
+    effective_text = prefilter.filtered_text if prefilter is not None else original_text
+    audit = audit_smd_text(effective_text)
+    source_triangle_count = (
+        int(prefilter.evidence["source_triangle_count"])
+        if prefilter is not None else audit.triangle_count
+    )
+    return SourceContract(
+        original_text, effective_text, audit, source_triangle_count, prefilter
+    )
+
+
+def _import_source_contract(
+    source: Path, contract: SourceContract, source_tools: object
+) -> None:
+    if contract.prefilter is None:
+        source_tools.import_source_file(source)
+        return
+    staging_dir = Path(tempfile.mkdtemp(
+        prefix=".maximum-direct-prefilter-", dir=source.parent
+    ))
+    staged_source = staging_dir / source.name
+    try:
+        atomic_write_bytes(
+            source.parent, staged_source, contract.effective_text.encode("utf-8")
+        )
+        source_tools.import_source_file(staged_source)
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+def _describe_source_file(
+    source: Path,
+    source_identity: str,
+    candidate: CandidateConfig | None = None,
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    assert bpy is not None
+    import batch_optimize_qc as source_tools
+
+    contract = prepare_source_contract(
+        candidate, source.read_text(encoding="utf-8", errors="strict")
+    )
+    _clear_blender_scene()
+    _import_source_contract(source, contract, source_tools)
+    mesh_objects = tuple(obj for obj in bpy.context.scene.objects if obj.type == "MESH")
+    if not mesh_objects:
+        raise RuntimeError(f"Source Tools imported no mesh from {source}")
+    return _object_region_observations(
+        source_identity, mesh_objects, contract.audit.materials
+    )
+
+
+def direct_prefilter_runtime_evidence(
+    evidence: dict[str, object], *, applied: bool
+) -> dict[str, object]:
+    runtime = dict(evidence)
+    runtime["applied"] = bool(applied)
+    if not applied:
+        runtime["detected_dropped_count"] = evidence["dropped_count"]
+        runtime["detected_dropped_fraction"] = evidence["dropped_fraction"]
+        runtime["detected_triangles"] = evidence["triangles"]
+        runtime["dropped_count"] = 0
+        runtime["dropped_fraction"] = 0.0
+        runtime["triangles"] = []
+    runtime_without_hash = {
+        key: value for key, value in runtime.items() if key != "evidence_sha256"
+    }
+    encoded = (
+        json.dumps(runtime_without_hash, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("ascii")
+    runtime["evidence_sha256"] = hashlib.sha256(encoded).hexdigest()
+    return runtime
+
+
+def processed_provenance_status(
+    file_metrics: dict[str, object], *, strategy: str
+) -> tuple[str, str]:
+    if bool(file_metrics.get("preserved_exact")):
+        return (
+            "preserved",
+            str(file_metrics.get("fallback_reason") or "exact-source-v1"),
+        )
+    if strategy in _BLENDER_STRATEGIES:
+        return provenance_status(file_metrics.get("fallback_reason"), strategy=strategy)
+    return "optimized", strategy
 
 
 def bind_direct_degenerate_provenance(
@@ -1663,26 +1752,12 @@ def _process_source_file(
     assert bpy is not None
     import batch_optimize_qc as source_tools
 
-    before_audit = audit_smd_text(source.read_text(encoding="utf-8", errors="replace"))
     original_text = source.read_text(encoding="utf-8", errors="strict")
-    direct_prefilter = direct_degenerate_prefilter(candidate, original_text)
+    source_contract = prepare_source_contract(candidate, original_text)
+    before_audit = source_contract.audit
+    direct_prefilter = source_contract.prefilter
     _clear_blender_scene()
-    if direct_prefilter is None:
-        source_tools.import_source_file(source)
-    else:
-        staging_dir = Path(tempfile.mkdtemp(
-            prefix=".maximum-direct-prefilter-", dir=source.parent
-        ))
-        staged_source = staging_dir / source.name
-        try:
-            atomic_write_bytes(
-                source.parent,
-                staged_source,
-                direct_prefilter.filtered_text.encode("utf-8"),
-            )
-            source_tools.import_source_file(staged_source)
-        finally:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+    _import_source_contract(source, source_contract, source_tools)
     mesh_objects = tuple(obj for obj in bpy.context.scene.objects if obj.type == "MESH")
     if not mesh_objects:
         raise RuntimeError(f"Source Tools imported no mesh from {source}")
@@ -1843,9 +1918,12 @@ def _process_source_file(
             restored = restore_smd_bone_identity(original_text, restored)
         atomic_write_bytes(source.parent, destination, restored.encode("utf-8"))
     try:
-        after_audit = audit_exported_smd_text(
-            destination.read_text(encoding="utf-8", errors="replace")
+        audit_text = (
+            source_contract.effective_text
+            if preserve_exact and direct_prefilter is not None
+            else destination.read_text(encoding="utf-8", errors="replace")
         )
+        after_audit = audit_exported_smd_text(audit_text)
         validate_smd_audits(before_audit, after_audit)
     except RuntimeError as exc:
         if candidate.strategy not in _BLENDER_STRATEGIES or not allows_strategy_exact_fallback(
@@ -1855,9 +1933,12 @@ def _process_source_file(
         preserve_exact = True
         fallback_reason = str(exc)
         atomic_write_bytes(source.parent, destination, exact_source_payload(source.read_bytes()))
-        after_audit = audit_exported_smd_text(
-            destination.read_text(encoding="utf-8", errors="replace")
+        audit_text = (
+            source_contract.effective_text
+            if direct_prefilter is not None
+            else destination.read_text(encoding="utf-8", errors="replace")
         )
+        after_audit = audit_exported_smd_text(audit_text)
         validate_smd_audits(before_audit, after_audit)
         for item in object_metrics:
             item["attempted_achieved_ratio"] = item.get("achieved_ratio")
@@ -1865,7 +1946,10 @@ def _process_source_file(
             item["preserved_exact"] = True
             item["fallback_reason"] = fallback_reason
             item["transfer"] = "exact-source-fallback-v1"
-    if not preserve_exact and after_audit.triangle_count >= before_audit.triangle_count:
+    output_triangle_count = (
+        source_contract.source_triangle_count if preserve_exact else after_audit.triangle_count
+    )
+    if not preserve_exact and output_triangle_count >= source_contract.source_triangle_count:
         raise RuntimeError("export did not reduce SMD triangle count")
     result = {
         "source": source.as_posix(),
@@ -1873,8 +1957,9 @@ def _process_source_file(
         "raw_export_sha256": raw_export_sha256,
         "raw_export_path": raw_export_path.relative_to(source.parent).as_posix(),
         "restored_export_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
-        "triangles_before": before_audit.triangle_count,
-        "triangles_after": after_audit.triangle_count,
+        "triangles_before": source_contract.source_triangle_count,
+        "retained_triangles_before": before_audit.triangle_count,
+        "triangles_after": output_triangle_count,
         "materials_before": list(before_audit.materials),
         "materials_after": list(after_audit.materials),
         "bones_before": list(before_audit.bones),
@@ -1894,9 +1979,12 @@ def _process_source_file(
         "objects": object_metrics,
         "regions": [item["region_key"] for item in object_metrics],
         "fallback_reason": fallback_reason,
+        "preserved_exact": preserve_exact,
     }
     if direct_prefilter is not None:
-        result["direct_degenerate_prefilter"] = direct_prefilter.evidence
+        result["direct_degenerate_prefilter"] = direct_prefilter_runtime_evidence(
+            direct_prefilter.evidence, applied=not preserve_exact
+        )
     return result
 
 
@@ -2103,7 +2191,9 @@ def run_blender(settings: Settings) -> dict[str, object]:
     observations = tuple(
         observation
         for source_identity, source in sorted(visual_sources.items())
-        for observation in _describe_source_file(source, source_identity)
+        for observation in _describe_source_file(
+            source, source_identity, settings.candidate
+        )
     )
     region_manifest = build_region_manifest(
         observations, occurrences=source_occurrences
@@ -2143,12 +2233,9 @@ def run_blender(settings: Settings) -> dict[str, object]:
                             matched_regions[key] += 1
                 destination, _item = processed[reference.source_path]
                 optimized_sources[reference.source_path] = destination
-                if settings.candidate.strategy in _BLENDER_STRATEGIES:
-                    status, reason = provenance_status(
-                        _item.get("fallback_reason"), strategy=settings.candidate.strategy
-                    )
-                else:
-                    status, reason = "optimized", settings.candidate.strategy
+                status, reason = processed_provenance_status(
+                    _item, strategy=settings.candidate.strategy
+                )
                 output_hash = hashlib.sha256(destination.read_bytes()).hexdigest()
             else:
                 status = "preserved"

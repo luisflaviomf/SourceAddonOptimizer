@@ -117,6 +117,103 @@ class MaximumBlenderPureTests(unittest.TestCase):
             provenance,
         )
 
+    def test_direct_source_contract_filters_before_strict_audit(self) -> None:
+        candidate = maximum.CandidateConfig(
+            "position", "meshoptimizer", 0.5, 0.01, False, (),
+            strategy="meshopt-direct-position-v1", transfer="direct-v1",
+            direct_degenerate_prefilter="direct-degenerate-prefilter-v1",
+        )
+
+        contract = maximum.prepare_source_contract(
+            candidate, self._direct_degenerate_fixture()
+        )
+
+        self.assertNotIn("nan", contract.effective_text.casefold())
+        self.assertEqual(contract.audit.triangle_count, 1)
+        self.assertEqual(contract.source_triangle_count, 2)
+        self.assertEqual(contract.prefilter.dropped_source_triangles, (0,))
+
+    def test_describe_imports_prefiltered_source_before_region_observation(self) -> None:
+        candidate = maximum.CandidateConfig(
+            "position", "meshoptimizer", 0.5, 0.01, False, (),
+            strategy="meshopt-direct-position-v1", transfer="direct-v1",
+            direct_degenerate_prefilter="direct-degenerate-prefilter-v1",
+        )
+        imported: list[str] = []
+        source_tools = SimpleNamespace(
+            import_source_file=lambda path: imported.append(
+                Path(path).read_text(encoding="utf-8")
+            )
+        )
+        fake_bpy = SimpleNamespace(
+            context=SimpleNamespace(
+                scene=SimpleNamespace(objects=[SimpleNamespace(type="MESH")])
+            )
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "model.smd"
+            source.write_text(self._direct_degenerate_fixture(), encoding="utf-8")
+            with patch.dict("sys.modules", {"batch_optimize_qc": source_tools}), patch.object(
+                maximum, "bpy", fake_bpy
+            ), patch.object(maximum, "_clear_blender_scene"), patch.object(
+                maximum, "_object_region_observations", return_value=(("ok",),)
+            ) as observations:
+                result = maximum._describe_source_file(source, "model.smd", candidate)
+
+        self.assertEqual(result, (("ok",),))
+        self.assertEqual(len(imported), 1)
+        self.assertNotIn("nan", imported[0].casefold())
+        observations.assert_called_once()
+        self.assertEqual(observations.call_args.args[2], ("metal",))
+
+    def test_direct_prefilter_audit_excludes_dropped_material_and_influence(self) -> None:
+        candidate = maximum.CandidateConfig(
+            "position", "meshoptimizer", 0.5, 0.01, False, (),
+            strategy="meshopt-direct-position-v1", transfer="direct-v1",
+            direct_degenerate_prefilter="direct-degenerate-prefilter-v1",
+        )
+        source = self._direct_degenerate_fixture().replace(
+            "triangles\nmetal\n0 2", "triangles\ndropped_only\n9 2", 1
+        )
+
+        contract = maximum.prepare_source_contract(candidate, source)
+
+        self.assertEqual(contract.audit.materials, ("metal",))
+        self.assertNotIn(9, contract.audit.influence_bones)
+
+    def test_exact_direct_result_reports_prefilter_not_applied(self) -> None:
+        evidence = {
+            "schema": 1,
+            "source_triangle_count": 2,
+            "dropped_count": 1,
+            "dropped_fraction": 0.5,
+            "triangles": [{"ordinal": 0}],
+            "evidence_sha256": "a" * 64,
+        }
+
+        runtime = maximum.direct_prefilter_runtime_evidence(evidence, applied=False)
+
+        self.assertFalse(runtime["applied"])
+        self.assertEqual(runtime["dropped_count"], 0)
+        self.assertEqual(runtime["dropped_fraction"], 0.0)
+        self.assertEqual(runtime["triangles"], [])
+        self.assertEqual(runtime["detected_dropped_count"], 1)
+
+    def test_direct_exact_provenance_is_preserved(self) -> None:
+        candidate = maximum.CandidateConfig(
+            "position", "meshoptimizer", 1.0, 0.01, False, (),
+            strategy="meshopt-direct-position-v1", transfer="direct-v1",
+            direct_degenerate_prefilter="direct-degenerate-prefilter-v1",
+        )
+        self.assertTrue(maximum.should_preserve_exact(candidate, (1.0,)))
+        self.assertEqual(
+            maximum.processed_provenance_status({
+                "preserved_exact": True,
+                "fallback_reason": "invalid retained normal",
+            }, strategy="meshopt-direct-position-v1"),
+            ("preserved", "invalid retained normal"),
+        )
+
     def test_round_export_runtime_failure_writes_exact_source_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
