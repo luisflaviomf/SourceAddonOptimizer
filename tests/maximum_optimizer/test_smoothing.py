@@ -50,12 +50,53 @@ class SmoothingReconstructionTests(unittest.TestCase):
             original,
             ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
              (0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
-            ((5, 4, 3), (2, 0, 1)),
+            ((4, 5, 3), (2, 0, 1)),
             ((0.0, 1.0, 0.0),) * 3 + ((0.0, 0.0, 1.0),) * 3,
-            ((1.0, 1.0), (0.0, 1.0), (0.5, 0.5), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0)),
+            ((0.0, 1.0), (1.0, 1.0), (0.5, 0.5), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0)),
             (1, 0), ("paint", "glass"), ((('root', 1.0),),) * 3 + ((('tip', 1.0),),) * 3,
         )
-        self.assertEqual(mapping, (5, 4, 3, 2, 0, 1))
+        self.assertEqual(mapping, (4, 5, 3, 2, 0, 1))
+
+    def test_direct_corner_mapping_accepts_only_cyclic_rotations_and_preserves_backface_orientation(self):
+        original = self._one_triangle_smd()
+        positions = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+        uvs = ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0))
+        influences = ((('Root', 1.0),),) * 3
+        for order in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
+            with self.subTest(order=order):
+                mapping = smd_contract.map_imported_corners_to_smd(
+                    original, positions, (order,), ((0.0, 0.0, 1.0),) * 3,
+                    tuple(uvs[index] for index in order), (0,), ("paint",), influences,
+                )
+                self.assertEqual(mapping, order)
+                serialized = smd_contract.serialize_direct_smd(
+                    original, tuple(positions[index] for index in order), ((0.0, 0.0, 1.0),) * 3,
+                    tuple(uvs[index] for index in order), influences, (0, 1, 2), ("paint",),
+                    source_corner_ordinals=mapping,
+                )
+                corners = smd_contract.parse_smd_triangles(serialized).triangles[0].corners
+                ab = tuple(corners[1].position[i] - corners[0].position[i] for i in range(3))
+                ac = tuple(corners[2].position[i] - corners[0].position[i] for i in range(3))
+                self.assertGreater(ab[0] * ac[1] - ab[1] * ac[0], 0.0)
+        with self.assertRaisesRegex(RuntimeError, "no source-corner mapping"):
+            smd_contract.map_imported_corners_to_smd(
+                original, positions, ((0, 2, 1),), ((0.0, 0.0, 1.0),) * 3,
+                (uvs[0], uvs[2], uvs[1]), (0,), ("paint",), influences,
+            )
+
+    def test_direct_corner_mapping_zero_links_uses_primary_bone_and_bone_case_is_exact(self):
+        original = self._one_triangle_smd(link_count=0)
+        args = (
+            original, ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)), ((0, 1, 2),),
+            ((0.0, 0.0, 1.0),) * 3, ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+            (0,), ("paint",),
+        )
+        self.assertEqual(
+            smd_contract.map_imported_corners_to_smd(*args, ((('Root', 1.0),),) * 3),
+            (0, 1, 2),
+        )
+        with self.assertRaisesRegex(RuntimeError, "no source-corner mapping"):
+            smd_contract.map_imported_corners_to_smd(*args, ((('root', 1.0),),) * 3)
 
     def test_direct_corner_mapping_rejects_normal_near_tie_and_has_15_degree_ceiling(self):
         self.assertAlmostEqual(
@@ -97,6 +138,25 @@ glass
 1 0 0 1 0 1 0 1 1 1 1 1.000000
 end
 """
+
+    @staticmethod
+    def _one_triangle_smd(*, link_count: int = 1) -> str:
+        suffix = "0" if link_count == 0 else "1 0 1.000000"
+        return f'''version 1
+nodes
+0 "Root" -1
+end
+skeleton
+time 0
+0 0 0 0 0 0 0
+end
+triangles
+paint
+0 0 0 0 0 0 1 0 0 {suffix}
+0 1 0 0 0 0 1 1 0 {suffix}
+0 0 1 0 0 0 1 0 1 {suffix}
+end
+'''
 
     def test_fixed_topology_contract_rejects_triangle_reorder_and_winding(self) -> None:
         original = self._two_triangle_smd()

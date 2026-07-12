@@ -1,0 +1,277 @@
+{
+  "blender_baseline": {
+    "available": false,
+    "reason": "baseline artifact is not committed; byte count is a local prior observation",
+    "total_bytes": 633089
+  },
+  "charger_probe": {
+    "compiled_available": false,
+    "direct_smd_available": false,
+    "failure": "ambiguous hard-normal provenance exceeds the fixed 15-degree disambiguation ceiling",
+    "last_imported_triangle": 2105,
+    "metrics_available": false,
+    "status": "local_rejected_before_candidate_generation"
+  },
+  "checked_in_metrics": {
+    "records": [
+      {
+        "achieved_ratio": 0.25,
+        "counts": {
+          "locked_vertices": 2,
+          "output_vertices": 30,
+          "triangles_after": 25,
+          "triangles_before": 100,
+          "wedge_vertices": 50
+        },
+        "requested_ratio": 0.25,
+        "sources": [
+          {
+            "locked_vertices": 1,
+            "output_vertices": 6,
+            "source": "wh.smd",
+            "triangles_after": 5,
+            "triangles_before": 20,
+            "wedge_vertices": 10
+          },
+          {
+            "locked_vertices": 0,
+            "output_vertices": 9,
+            "source": "wh1.smd",
+            "triangles_after": 7,
+            "triangles_before": 30,
+            "wedge_vertices": 15
+          },
+          {
+            "locked_vertices": 1,
+            "output_vertices": 15,
+            "source": "wh2.smd",
+            "triangles_after": 13,
+            "triangles_before": 50,
+            "wedge_vertices": 25
+          }
+        ]
+      },
+      {
+        "achieved_ratio": 0.4,
+        "counts": {
+          "locked_vertices": 2,
+          "output_vertices": 30,
+          "triangles_after": 40,
+          "triangles_before": 100,
+          "wedge_vertices": 50
+        },
+        "requested_ratio": 0.4,
+        "sources": [
+          {
+            "locked_vertices": 1,
+            "output_vertices": 6,
+            "source": "wh.smd",
+            "triangles_after": 8,
+            "triangles_before": 20,
+            "wedge_vertices": 10
+          },
+          {
+            "locked_vertices": 0,
+            "output_vertices": 9,
+            "source": "wh1.smd",
+            "triangles_after": 12,
+            "triangles_before": 30,
+            "wedge_vertices": 15
+          },
+          {
+            "locked_vertices": 1,
+            "output_vertices": 15,
+            "source": "wh2.smd",
+            "triangles_after": 20,
+            "triangles_before": 50,
+            "wedge_vertices": 25
+          }
+        ]
+      }
+    ]
+  },
+  "corpus_id": "lvs-models-v1",
+  "decision": {
+    "pressure_set_run": false,
+    "reason": "local wheel bytes exceed the prior Blender observation and the local Charger probe fails closed",
+    "winner": false
+  },
+  "evidence_scope": "local_external_evidence",
+  "evidence_sha256": "d7953fa2c5ebb51b791c06a19a14a9a0ee9e7248c7397c2427f5269c38766652",
+  "local_external_evidence": {
+    "artifact_label": "local_external_evidence",
+    "available_in_checkout": false,
+    "bridge_sha256": "b71a0f0550a29f4255e605fb310e14f35a7474cded422e0ed1747fefe5658db8",
+    "reason": "direct SMD and compiled binaries are local experiment artifacts and are not committed",
+    "tooling_source_snapshot_available": false,
+    "wheel_records": [
+      {
+        "candidate": [
+          {
+            "path": "candidate-r025/wheel.mdl",
+            "sha256": "add622a479fed7d4a29eb7d21de53fef332d80da72834647bfa3d11e47a546d0",
+            "size_bytes": 100
+          },
+          {
+            "path": "candidate-r025/wheel.vvd",
+            "sha256": "dd2ab9335029fb8c45e28e65bc9202210efde47bcadf7b5cf48085f0f014d409",
+            "size_bytes": 704
+          },
+          {
+            "path": "candidate-r025/wheel.dx80.vtx",
+            "sha256": "d01c2cf83f8a8b1fdcbcc6f97edfe4369a39b88504fa4eb7fe783e7b33e03f5e",
+            "size_bytes": 100
+          },
+          {
+            "path": "candidate-r025/wheel.dx90.vtx",
+            "sha256": "2d3cfe710fa3da617c47a2205289456d65e068cf34945c71542e74d17ff068b4",
+            "size_bytes": 100
+          },
+          {
+            "path": "candidate-r025/wheel.phy",
+            "sha256": "d904f5f84b9adb245d422fc62c5d4b3671f813643155b3be043cdd5d1c138a11",
+            "size_bytes": 100
+          }
+        ],
+        "compiled_bytes": 1104,
+        "compiled_vertices": 10,
+        "control": [
+          {
+            "path": "control-r025/wheel.mdl",
+            "sha256": "f681d294908113fbb59f3dce1f2842cf59c6457c2b5e32c78a4c639ae1389d1e",
+            "size_bytes": 200
+          },
+          {
+            "path": "control-r025/wheel.vvd",
+            "sha256": "aae2f715af77d1d67e34029e220496d98a688553deca7392f1d779bcb9d5d5c8",
+            "size_bytes": 200
+          },
+          {
+            "path": "control-r025/wheel.dx80.vtx",
+            "sha256": "0d2bead6bc00461b55730e142c7056cae08405d8dad978b9f884327eb1fe746a",
+            "size_bytes": 200
+          },
+          {
+            "path": "control-r025/wheel.dx90.vtx",
+            "sha256": "eeac688a64d2cc003a7a5f1bb5ee22e77eccafd8326fc3d483394d438dd61798",
+            "size_bytes": 200
+          },
+          {
+            "path": "control-r025/wheel.phy",
+            "sha256": "af3151a7c37b389fd39b4fe9bbdb382cfc6f36d6a4c2336428cc6781b480f301",
+            "size_bytes": 200
+          }
+        ],
+        "direct_smd": [
+          {
+            "path": "candidate-r025/wh_opt.smd",
+            "sha256": "cb4bbfba33bbec20a6f4b26ffdb9fd8bd8c45c538a550085f5ccf37ca494877e",
+            "size_bytes": 100
+          },
+          {
+            "path": "candidate-r025/wh1_opt.smd",
+            "sha256": "08d616e3e340d71377ce1560136b8dc01b986bff9b201cfc8d8a4f73ae6e405e",
+            "size_bytes": 100
+          },
+          {
+            "path": "candidate-r025/wh2_opt.smd",
+            "sha256": "92104edc3549496396d0ffa360a2864324586d3dfe64de27c3d8a81c867b3afc",
+            "size_bytes": 100
+          }
+        ],
+        "metrics_json": {
+          "path": "candidate-r025/candidate_metrics.json",
+          "sha256": "3d399d2a70d7545cfb3767e14d34982dc457dd82e33482e73883c34cac7ff275",
+          "size_bytes": 100
+        },
+        "requested_ratio": 0.25
+      },
+      {
+        "candidate": [
+          {
+            "path": "candidate-r040/wheel.mdl",
+            "sha256": "411d9364c158ca0d7c7a52d31fcffeaae4ce35e3fbe66c59b6c764446d03c8ef",
+            "size_bytes": 100
+          },
+          {
+            "path": "candidate-r040/wheel.vvd",
+            "sha256": "c5742ac0c6ba26d6609395ab88c5a71bf4143b744962a9e0b0d35523cc5d8a08",
+            "size_bytes": 704
+          },
+          {
+            "path": "candidate-r040/wheel.dx80.vtx",
+            "sha256": "e8acfd56ef73e497c40cdae6f95bc9e96e402b7756ddb98ff005df8d832399c3",
+            "size_bytes": 100
+          },
+          {
+            "path": "candidate-r040/wheel.dx90.vtx",
+            "sha256": "0e9d1d1d7a19096b3b488fb65cf92bccb839b0d85856fa037be6ce836d962ef8",
+            "size_bytes": 100
+          },
+          {
+            "path": "candidate-r040/wheel.phy",
+            "sha256": "7220377215c58b0ccd2fe44244f84979304de5775640fdc0189bbc7f94da803b",
+            "size_bytes": 100
+          }
+        ],
+        "compiled_bytes": 1104,
+        "compiled_vertices": 10,
+        "control": [
+          {
+            "path": "control-r040/wheel.mdl",
+            "sha256": "63f4933882b4690c92afec6a57d6bce271a471aa3aa914afee301a6e13d68569",
+            "size_bytes": 200
+          },
+          {
+            "path": "control-r040/wheel.vvd",
+            "sha256": "73f8c7e9cc78b24b71212babb8af80c5d0a9f98e2c96b4d6dc7af282127fb9e4",
+            "size_bytes": 200
+          },
+          {
+            "path": "control-r040/wheel.dx80.vtx",
+            "sha256": "7a4ee4f3a1834d94fde57de24fedf5b79237a4cd9d8983f8675ef7df2542c33e",
+            "size_bytes": 200
+          },
+          {
+            "path": "control-r040/wheel.dx90.vtx",
+            "sha256": "436b7771ae246d559fe75ca2f32ceae1176150ad8a77f2271d0c0b21e17d8a01",
+            "size_bytes": 200
+          },
+          {
+            "path": "control-r040/wheel.phy",
+            "sha256": "451c8346211dfcc66fa7db3ef4ed7cd15385fce3cd668d039acd9a6c0e19ba16",
+            "size_bytes": 200
+          }
+        ],
+        "direct_smd": [
+          {
+            "path": "candidate-r040/wh_opt.smd",
+            "sha256": "b40799797e66c37c192765efdf75dd5824fa14a89e21a5d8d689c383c4520d13",
+            "size_bytes": 100
+          },
+          {
+            "path": "candidate-r040/wh1_opt.smd",
+            "sha256": "148915afe74dbc215c872d50743b33852e83ac0bc4103054e7335848797ef676",
+            "size_bytes": 100
+          },
+          {
+            "path": "candidate-r040/wh2_opt.smd",
+            "sha256": "214455806e40727c33e7f5483752d7630e78780cf43013d39a108a07748b5d76",
+            "size_bytes": 100
+          }
+        ],
+        "metrics_json": {
+          "path": "candidate-r040/candidate_metrics.json",
+          "sha256": "df881d03252f6d26212d8355acd6c476894c27bc3e53d156dde2b1098f65a57d",
+          "size_bytes": 100
+        },
+        "requested_ratio": 0.4
+      }
+    ]
+  },
+  "quality_claim": null,
+  "quality_status": "unverified",
+  "record_kind": "hermetic_test_fixture",
+  "schema_version": 3,
+  "strategy": "meshopt-direct-position-v1"
+}

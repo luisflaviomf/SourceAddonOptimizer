@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import math
 import re
 import struct
-from itertools import permutations
 from typing import Sequence
 
 
@@ -124,7 +123,7 @@ def _influence_key(values: Sequence[tuple[str, float]]) -> tuple[tuple[str, int]
         if type(name) is not str or not name or not math.isfinite(float(weight)):
             raise ValueError("corner influence is invalid")
         if float(weight) > 0.0:
-            combined[name.casefold()] = combined.get(name.casefold(), 0.0) + float(weight)
+            combined[name] = combined.get(name, 0.0) + float(weight)
     total = sum(combined.values())
     if not combined or total <= 1e-12:
         raise ValueError("corner influence is empty")
@@ -166,6 +165,8 @@ def map_imported_corners_to_smd(
     def source_influences(corner: SmdCorner) -> tuple[tuple[str, float], ...]:
         if len(corner.tokens) > 9:
             count = int(corner.tokens[9])
+            if count == 0:
+                return ((node_names[int(corner.tokens[0])], 1.0),)
             values = tuple(
                 (node_names[int(corner.tokens[10 + i * 2])], float(corner.tokens[11 + i * 2]))
                 for i in range(count)
@@ -200,7 +201,7 @@ def map_imported_corners_to_smd(
     )
     result: list[int] = []
     used: set[int] = set(excluded_source_triangles)
-    orders = tuple(permutations(range(3)))
+    orders = ((0, 1, 2), (1, 2, 0), (2, 0, 1))
     def coarse(value: tuple[object, ...]) -> tuple[object, ...]:
         return (value[0], value[2], value[3])
 
