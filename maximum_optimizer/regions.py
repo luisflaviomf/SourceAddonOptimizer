@@ -370,6 +370,54 @@ def resolve_region_assignments(
     return MappingProxyType(result)
 
 
+def filter_region_manifest(
+    manifest: RegionManifest,
+    source_identities: Sequence[str],
+) -> RegionManifest:
+    requested = tuple(source_identities)
+    if not requested:
+        raise ValueError("region source identities cannot be empty")
+    normalized = tuple(normalized_source_identity(source) for source in requested)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("duplicate region source identity")
+
+    requested_set = set(normalized)
+    available = {entry.descriptor.source_identity for entry in manifest.entries}
+    unknown = sorted(requested_set - available)
+    if unknown:
+        raise ValueError(f"unknown region source identities: {unknown}")
+
+    observations: list[RegionObservation] = []
+    occurrences: dict[str, tuple[RegionOccurrence, ...]] = {}
+    selected_descriptors: set[RegionDescriptor] = set()
+    for entry in manifest.entries:
+        descriptor = entry.descriptor
+        if descriptor.source_identity not in requested_set:
+            continue
+        selected_descriptors.add(descriptor)
+        observations.append((
+            descriptor.source_identity,
+            descriptor.object_name + (" " * descriptor.local_ordinal),
+            descriptor.materials,
+        ))
+        existing_occurrences = occurrences.setdefault(
+            descriptor.source_identity, entry.occurrences
+        )
+        if existing_occurrences != entry.occurrences:
+            raise ValueError("inconsistent region occurrences for source identity")
+
+    rebuilt = build_region_manifest(
+        observations,
+        occurrences={
+            source: tuple(occurrence.to_payload() for occurrence in source_occurrences)
+            for source, source_occurrences in occurrences.items()
+        },
+    )
+    if set(rebuilt.by_descriptor) != selected_descriptors:
+        raise ValueError("region source descriptors are not canonical")
+    return rebuilt
+
+
 def manifest_for_source(manifest: RegionManifest, source_identity: str) -> RegionManifest:
     normalized = normalized_source_identity(source_identity)
     entries = tuple(entry for entry in manifest.entries if entry.descriptor.source_identity == normalized)
