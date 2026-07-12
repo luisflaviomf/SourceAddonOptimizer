@@ -37,7 +37,8 @@ from maximum_optimizer.meshopt_bridge import (
     simplify_mesh,
 )
 from maximum_optimizer.compiler_aware import (
-    SmdAuditValidationError, allows_strategy_exact_fallback, engine_evidence, exact_source_payload,
+    SmdAuditValidationError, allows_exact_fallback, allows_strategy_exact_fallback,
+    engine_evidence, exact_source_payload,
     move_modifier_first, preserve_whole_source, provenance_status, require_triangular_mesh,
 )
 from maximum_optimizer.importance_map import MeshImportanceInput, build_importance_weights
