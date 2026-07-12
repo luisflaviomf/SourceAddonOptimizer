@@ -516,8 +516,9 @@ bracket refinement, midpoint generation, donor recovery, or legacy regional reco
 After complete zero/greater-than-eight preflight, the prefix allowed by the remaining
 `SearchBudget.max_candidates` is reserved contiguously in that ratio order, including
 report/event terminal capacity. No source snapshot or direct cache opens and no copy,
-hash, or process begins before its ratio reservation. A cache hit consumes its reserved
-attempt, and every reservation receives exactly one terminal result.
+hash, or process begins before its ratio reservation. Task 6 has no pre-build hit; a
+concurrent same-key incumbent can be adopted only after this attempt was built and
+therefore consumes its reservation. Every reservation receives one terminal result.
 
 Each ratio is an independent `adaptive-direct-fallback-v1` composite, not a donor
 continuation. It uses a discriminated schema-2 `AdaptiveDirectEvidence` whose exact
@@ -539,13 +540,26 @@ copies the immutable base, replaces exactly the declared SMDs, proves every QC a
 undeclared source byte unchanged, and rejects same-size mutation.
 
 Every composed ratio runs structural authorization and two mandatory fresh focused
-sets without reuse: every selected base top-K focus, plus one isolated direct focus for
-every changed source identity. The direct focus is required even when that source
-appears inside a base top-K target, so no local defect can hide behind aggregate
-coverage. `AdaptiveDirectEvidence` seals both exact matrices and current render-file
-manifests over the immutable base schema-1 context and authorizes only if all records
-pass. The base prefix and canonical direct-source set are immutable; fresh ranking
-cannot remove either. Only then does exactly one fresh final whole render run.
+sets without reuse: every selected base top-K focus, plus one deterministic isolated
+source-wide union proof for every changed source identity. For a source, the proof
+contains the canonical union of every QC occurrence, object/component, material region,
+selected state dependency, and required pose that resolves to that SMD. Repeated
+geometry is deduplicated in source-local space; the complete union is rendered for at
+most two poses with exactly eight cameras and both passes. A sealed visibility matrix
+requires every canonical connected component to contribute nonzero isolated mask
+pixels in at least one fixed camera for every required pose. The proof is required even
+when the source overlaps a base target. If any disconnected, enclosed, or occluded
+component cannot be represented and visibly proved within this fixed matrix, the
+candidate fails closed; there is no object-only, partial, or unbounded per-component
+fallback. The exact union key is
+`source-union-<first-32-hex(sha256(canonical coverage manifest))>`; that manifest seals
+source identity, sorted occurrence/component/material/state-dependency/pose keys, and
+profile/dependency bindings. Shuffled graph or object discovery therefore produces the
+same key and manifest. `AdaptiveDirectEvidence` seals both exact matrices, the union coverage
+manifest, visibility proofs, and current render-file manifests over the immutable base
+schema-1 context. The base prefix and canonical direct-source set are immutable; fresh
+ranking cannot remove either. Only after every record passes does exactly one fresh
+final whole render run.
 The final-whole evidence binds the composite recipe/composition, complete compile
 manifest, current candidate/cache identity, and fresh whole index. Only terminal
 `authorized` schema 2 can enter candidate cache, best update, winner selection, or
@@ -557,7 +571,33 @@ strictly positive compiled saving, the winner is the minimum actual StudioMDL by
 then the stronger fidelity score, then candidate ID. A composite never wins merely
 because its intermediate SMD files are smaller.
 
-## Cache design
+### Task-6 cache checkpoint
+
+Task 6 uses the validated private candidate transaction already present at commit
+`a4e9ad9`; it does not implement Task 7 early. After a ratio has been fully built, its
+private workspace is copied into private candidate-cache staging. Staging integrity is
+sealed first, current source/compile/whole/base-focus/source-union bytes are then
+semantically reauthorized, integrity is verified, `complete.json` is written last, and
+one durable atomic rename publishes the entry. The runner reopens `final/payload`,
+reauthorizes it again, retains that final payload as the selected immutable build, and
+promotes output only from its authorized compile proofs. A concurrent same-key winner
+is retained only after the same semantic validation. Stale legacy/corrupt entries are
+replaced transactionally; cancellation and control-flow exceptions preserve the
+incumbent.
+
+Task 6 performs no pre-build cache lookup and offers no cross-run recovery resume. An
+adopted concurrent incumbent is therefore not a free attempt: the ratio was already
+reserved and built. The direct workspace uses the future-compatible
+`direct/<ratio-token>/<source-ordinal>-<identity-digest>/output.smd` shape, but Task 7
+alone introduces the exact whitelist, outer/record schemas, report schema, pre-build
+lookup, and private resume restore described below. Task-7 restore copies whitelisted
+bytes into a new private root and reruns current structural, base top-K, every
+source-union proof, and final whole exactly once.
+
+## Task-7 cache design and resume contract
+
+The remainder of this section is implemented by Task 7, not by the Task-6 checkpoint
+transaction above.
 
 The candidate cache uses outer schema 2 and maximum cache-record schema 3. An entry
 root has exactly `payload/`, `payload-manifest.json`, `metadata.json`, and
@@ -625,7 +665,7 @@ inventory, recipe, composition, and complete compiled bytes
 before a build enters any retained registry. Legacy/ordinary hits rerun their current
 structural/whole/focused gates. A focused-recovery hit reruns structural validation and
 its selected top-K. An adaptive-direct hit reruns structural validation, the complete
-base top-K, and one isolated focus for every changed direct source. Each rebuilds its
+base top-K, and one complete source-union proof for every changed direct source. Each rebuilds its
 correct discriminated schema 2 from the sealed ordinary-base context and then runs
 exactly one fresh final whole gate after every required focus passes. Fresh and resume have identical authorization semantics;
 only cache-hit diagnostics may differ. Old schema, stale proof, same-size mutation,
@@ -937,6 +977,12 @@ The following are hard validation limits, not tunable environment variables:
 - base focused renders per candidate: maximum 4;
 - adaptive-direct isolated source focuses: exactly one per changed direct source,
   maximum 8, in addition to the base focused prefix;
+- source-union proof per changed source: maximum 4,096 canonical occurrence records,
+  256 connected components, 256 material-region keys, 16 state/dependency keys, and
+  2 poses; excess rejects the ratio before render;
+- source-union render images: maximum 64 per changed source and 512 per candidate
+  (`2 sides * 2 poses * 8 cameras * 2 passes`); visibility witnesses: maximum 512 per
+  source and 4,096 per candidate (`256 components * 2 poses`);
 - recovery rounds per base candidate: maximum 3;
 - changed sources per focused-recovery composition: maximum 4;
 - donor candidates inspected per changed source: maximum 8;
@@ -1055,7 +1101,7 @@ mechanism. The default sentinel remains uncalibrated.
   metrics, provenance, and snapshot evidence; filenames and environment variables
   cannot activate or steer it.
 - Every Monaco ratio has independent discriminated round-0 schema-2 authorization,
-  rerenders all base top-K focuses plus one isolated focus for every changed direct
+  rerenders all base top-K focuses plus one complete source-union proof for every changed direct
   source, and runs at most one final whole gate before it can win.
 - Winner selection uses compiled bytes only after structural, whole, and focused
   gates pass.

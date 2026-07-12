@@ -21,8 +21,12 @@
 - Schema-1 and schema-2 runs never call `focused_visual` and never write a
   whole-visual index.
 - Focus bounds are fixed: base top-K maximum 4, adaptive-direct adds exactly one
-  isolated focus per changed direct source up to 8, eight angles, two passes, two
+  source-union proof per changed direct source up to 8, eight angles, two passes, two
   poses, sixteen whole states, and three donor-recovery rounds.
+- Each source union is bounded to 4,096 occurrences, 256 connected components, 256
+  material regions, 16 state/dependency keys, 2 poses, 64 render images, and 512
+  component/pose visibility witnesses; candidate totals are 512 union images and
+  4,096 witnesses.
 - Recovery source manifests are limited to 4,096 regular files and 2 GiB; compiled
   composition manifests are limited to 64 regular artifacts and 2 GiB.
 - Donor inspection is limited to eight ordered snapshots per changed source; invalid
@@ -40,8 +44,8 @@
   evaluation that already passed structural, initial whole, and every focused gate;
   candidate ID breaks ties.
 - Every Monaco ratio is an independent discriminated schema-2 composite with one round
-  at index 0, rerenders all base top-K focuses and one isolated focus for every changed
-  direct source, and is outside the three-round donor-recovery bound.
+  at index 0, rerenders all base top-K focuses and one complete source-union proof for
+  every changed direct source, and is outside the donor-recovery bound.
 - Every candidate still requires complete QC compilation, structural validation, whole visual validation, and focused validation before promotion.
 - No task changes the WPF or CLI surface.
 
@@ -1107,8 +1111,9 @@ enable schema 3 receive the current defaults and behavior.
   IneligibleAdaptiveSourceProof`, `AdaptiveCandidateMetricsProof`,
   `DirectPrefilterProof`, `DirectSourceBuildRequest`, and `DirectSourceSnapshot`. A direct snapshot contains
   exactly one contained regular `.smd` output and is not a `RecoverySourceSnapshot`.
-- `maximum_optimizer.focused_cache` produces `AdaptiveDirectFocusProof` and
-  `AdaptiveDirectEvidence` beside `FocusedRenderEvidence`, avoiding a
+- `maximum_optimizer.focused_cache` produces `AdaptiveDirectVisibilityProof`,
+  `AdaptiveDirectSourceUnionFocusProof`, and `AdaptiveDirectEvidence` beside
+  `FocusedRenderEvidence`, avoiding a
   `domain <-> focused_cache` import cycle.
   `AdaptiveDirectEvidence` has exact kind `adaptive-direct-fallback-v1`, schema 2, and
   `round_index == 0`; it cannot parse as `FocusedRecoveryEvidence`.
@@ -1136,8 +1141,8 @@ enable schema 3 receive the current defaults and behavior.
   reason `approved-direct-position-v1` exactly.
 - Each global ratio is an independent adaptive-direct schema-2 composite containing
   one exact record at `round_index == 0`; it is outside the Task-5 donor round counter.
-  It rerenders the complete base top-K and exactly one isolated focus for every changed
-  direct source before final whole authorization.
+  It rerenders the complete base top-K and exactly one isolated source-wide union proof
+  for every changed direct source before final whole authorization.
 
   ```python
   @dataclass(frozen=True)
@@ -1265,10 +1270,26 @@ enable schema 3 receive the current defaults and behavior.
       snapshot_sha256: str
 
   @dataclass(frozen=True)
-  class AdaptiveDirectFocusProof:
+  class AdaptiveDirectVisibilityProof:
+      component_key: str
+      pose_key: str
+      camera_key: str
+      visible_mask_pixels: int
+      evidence_sha256: str
+
+  @dataclass(frozen=True)
+  class AdaptiveDirectSourceUnionFocusProof:
       source_identity: str
-      target: FocusTarget
-      record: FocusedRenderEvidence
+      union_key: str
+      occurrence_keys: tuple[str, ...]
+      component_keys: tuple[str, ...]
+      material_region_keys: tuple[str, ...]
+      state_dependency_keys: tuple[str, ...]
+      pose_keys: tuple[str, ...]
+      coverage_manifest_sha256: str
+      union_target: FocusTarget
+      records: tuple[FocusedRenderEvidence, ...]
+      visibility: tuple[AdaptiveDirectVisibilityProof, ...]
       evidence_sha256: str
 
   @dataclass(frozen=True)
@@ -1280,9 +1301,9 @@ enable schema 3 receive the current defaults and behavior.
       composition: CompositionProof | None
       changed_sources: tuple[ChangedSourceProof, ...]
       compile_files: tuple[CompileFileProof, ...]
-      structural: StructuralRecoveryEvidence | None
+      structural: StructuralAuthorizationEvidence | None
       base_focus_records: tuple[FocusedRenderEvidence, ...]
-      direct_focus_records: tuple[AdaptiveDirectFocusProof, ...]
+      direct_focus_records: tuple[AdaptiveDirectSourceUnionFocusProof, ...]
       final_whole: FinalWholeAuthorizationEvidence | None
       terminal_status: Literal[
           "composition_failed", "compile_failed", "structural_failed",
@@ -1301,8 +1322,19 @@ enable schema 3 receive the current defaults and behavior.
   `source_root`. `SourceOverlay.replacement_snapshot_sha256` may resolve to a
   `DirectSourceSnapshot` only when `mode == "direct-position"`; donor and
   exact-original modes continue to require `RecoverySourceSnapshot`.
-  `AdaptiveDirectEvidence.evidence_sha256` seals exact base-focus and direct-focus
+  `AdaptiveDirectEvidence.evidence_sha256` seals exact base-focus and source-union
   matrices; its direct-source identities equal the changed-source identities exactly.
+  A source-union proof is derived from every canonical QC occurrence/object/material
+  region and selected state/dependency that resolves to the changed SMD. Geometry is
+  deduplicated into one isolated source-local union and rendered for each required pose
+  (maximum two), eight cameras, and both passes. Every canonical connected component
+  must produce nonzero mask coverage in at least one fixed camera for every pose. If
+  any disconnected, enclosed, or occluded component cannot be proved visible within
+  that fixed matrix, the candidate fails closed; there is no partial or unbounded
+  component fallback. `union_key` is exactly
+  `source-union-<first-32-hex(sha256(canonical coverage manifest))>`; the manifest
+  seals source identity plus sorted occurrence/component/material/state-dependency/
+  pose keys and profile/dependency bindings, so shuffled discovery cannot change it.
 
 - [ ] **Step 1: Write typed adaptive-metrics, direct-request, and snapshot RED tests**
 
@@ -1361,8 +1393,9 @@ enable schema 3 receive the current defaults and behavior.
   returned. After complete inventory preflight, reserve the available fixed-ratio
   prefix and report/event terminal capacity contiguously in ratio order. Assert every
   reserved attempt terminates once and reservation precedes source/direct-cache open,
-  copy/hash, and mini-build. A cache hit consumes its reservation; unavailable budget
-  leaves all inputs unopened.
+  copy/hash, and mini-build. Task 6 has no pre-build resume hit; adoption of a valid
+  concurrent same-key winner occurs only after the reserved candidate was built and
+  therefore consumes that reservation. Unavailable budget leaves all inputs unopened.
 
 - [ ] **Step 4: Run domain/composite/search tests and verify RED**
 
@@ -1381,9 +1414,11 @@ enable schema 3 receive the current defaults and behavior.
   current no-follow bytes, both reparsed QC graph digests, and the base snapshot.
 
   Implement exact direct parsers/builders rather than adding optional fields to the generic
-  search JSON. Each request binds family/input, immutable base candidate/cache/source
-  manifest, optimizer/profile/dependency contracts, canonical input proof, one
-  global ratio, fixed strategy/prefilter, and request digest. Build each selected
+  search JSON. Each request binds family/input, immutable base candidate ID,
+  `base_spec_sha256`, base cache digest, source manifest and source snapshot digests,
+  explicit `base_strategy="blender-adaptive-v1"` and its full cache payload,
+  optimizer/profile/dependency contracts, canonical input proof, one global ratio,
+  fixed direct strategy/transfer/prefilter, and request digest. Build each selected
   source in a fresh non-overlapping canonical mini-QC workspace through no-follow
   handles and cancellation barriers.
 
@@ -1413,8 +1448,15 @@ enable schema 3 receive the current defaults and behavior.
   is independent, has `round_index == 0`, and seals the base plus all sorted direct
   requests/snapshots/prefilter proofs and explicit base/direct strategy identities.
   Materialize each ratio in a fresh same-volume private
-  `direct/<ratio-token>/<ordinal>-<identity-digest>/output.smd` layout; copy and
-  revalidate cache hits there, and never root a snapshot in shared cache storage.
+  `direct/<ratio-token>/<ordinal>-<identity-digest>/output.smd` layout. Task 6 does not
+  implement pre-build cache lookup/resume or Task-7's whitelist/record/report schema.
+  It uses the current `a4e9ad9` `CandidateCache.store_validated` transaction only after
+  a full candidate has been built: copy the private workspace to private staging,
+  seal integrity, semantically reauthorize all current bytes, verify integrity, write
+  the complete marker, durably rename, reopen `final/payload`, and reauthorize again.
+  The reopened final payload is the retained selected build and the only source of
+  output promotion. A concurrently published same-key incumbent may be adopted only
+  after the same semantic validation; this still consumes the reserved built attempt.
   Never carry an overlay from one ratio into
   another and never consume the three-round donor-recovery counter.
 
@@ -1422,9 +1464,13 @@ enable schema 3 receive the current defaults and behavior.
 
   Compile the complete composed QC and seal every current contained StudioMDL
   artifact, including required `.mdl/.vvd/.vtx/.ani/.phy` sidecars. Run structural
-  authorization, rerender every selected base top-K focus without reuse, then render
-  exactly one additional isolated direct focus for every changed source, even when it
-  overlaps a base target. Fold both exact current-file matrices over the selected
+  authorization, rerender every selected base top-K focus without reuse, then build
+  exactly one deterministic isolated source-wide union proof for every changed source,
+  even when it overlaps a base target. Derive its canonical occurrence/component/
+  material/state-dependency closure from the QC graph, render the deduplicated union
+  for at most two poses with eight cameras and both passes, and require every component
+  to be visibly covered in at least one camera per pose. Reject an unrepresentable or
+  occluded union; never silently fall back to one object region. Fold both exact current-file matrices over the selected
   base's sealed schema-1 context in discriminated `AdaptiveDirectEvidence` schema 2
   with one record at round 0. The base prefix and direct-source set are immutable; no
   ranking can drop either.
@@ -1433,10 +1479,12 @@ enable schema 3 receive the current defaults and behavior.
   and candidate/cache identity. Earlier terminal failure has no final-whole evidence.
 
   Only terminal `authorized` enters candidate cache, best update, winner selection,
-  or promotion. Keep the passing Blender base in evaluations. Cache restore must copy
-  only the Task-7-compatible private whitelist, revalidate direct snapshots/current
-  source bytes and both strategy identities, and rerun structural, every base focus,
-  every changed-source isolated focus, and final whole; diagnostics never authorize.
+  or promotion. Keep the passing Blender base in evaluations. At the Task-6
+  checkpoint, reopen and reauthorize only the just-published or concurrently adopted
+  `final/payload`; there is no cross-run resume hit. Task 7 later adds the exact
+  whitelist, record/report schema, pre-build lookup, private restore, and fresh rerun
+  of structural, every base focus, every changed-source union focus, and final whole
+  exactly once. Stored diagnostics never authorize in either task.
 
 - [ ] **Step 8: Add compiled-byte, failure, and bound regression tests**
 
@@ -1449,12 +1497,16 @@ enable schema 3 receive the current defaults and behavior.
   Cover one direct source failure, prefilter self-reseal and prefilter-only output,
   same-size input/output
   mutation, source alias, incomplete compile sidecars, structural failure, focused
-  failure, final-whole failure, cache hit, and cancellation before/within/after each
+  failure, final-whole failure, concurrent-incumbent adoption, and cancellation before/within/after each
   mini-build and gate. Assert exactly four full-QC compile attempts maximum, no fifth
   ratio/bracket, no partial recipe/schema-2 authorization, no best update/promotion,
   and schema-1/schema-2 behavior unchanged. Add schema/report/cache/current-byte tests
   for cross-kind fields, round other than zero, incomplete inventory, missing or
-  duplicate changed-source focus, changed direct render bytes, stale private-cache
+  duplicate changed-source union proof, multi-object/shared-source closures,
+  disconnected components, shared-source occurrences, component 257, material region
+  257, state key 17, occurrence 4,097, image/witness bounds, invisible/occluded
+  component failure, shuffled canonical
+  union order, changed direct render/visibility bytes, stale private-cache
   snapshot, base/direct strategy collision, reservation-before-I/O, and 4-vs-8 limits.
 
 - [ ] **Step 9: Run composite integration and commit checkpoint 6**
@@ -1574,7 +1626,7 @@ enable schema 3 receive the current defaults and behavior.
   and direct ratio, selected-focus states, changed source identities, reused region
   keys, and nullable composition/compile/structural/schema-2/final-whole hashes.
   Require one base-focus state per selected top-K target and, for adaptive-direct, one
-  separate direct-focus state per changed source identity. Report-only state is exactly
+  separate source-union focus state per changed source identity. Report-only state is exactly
   `passed`, `failed`, `cancelled`, or `unattempted`; only passed/failed attempted
   states carry an evidence hash. Recovery rounds are contiguous reserved `0..n-1`;
   adaptive-direct has exactly `[0]`. Changed/reused sets exactly partition selected
@@ -1594,6 +1646,8 @@ enable schema 3 receive the current defaults and behavior.
   ratio, fourth recovery round, and candidate-budget
   exhaustion. Each must reject before opening/hashing an excess snapshot, allocating
   staging, or starting a process. Add cache source file 4,097, compiled artifact 65,
+  source-union occurrence 4,097, component/material 257, state key 17, pose 3,
+  per-source image 65/witness 513 and candidate image 513/witness 4,097,
   aggregate direct snapshot over its existing 4,096-file/2-GiB bound, sparse content
   above any 2-GiB class bound, control/report JSON byte 16 MiB + 1, deep/oversized
   arrays, and event-count exhaustion. Instrument open/hash/copy/process/cache store/
