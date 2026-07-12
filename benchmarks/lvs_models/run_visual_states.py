@@ -38,7 +38,10 @@ def main() -> int:
     parser.add_argument("--vtfcmd", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--max-alternatives", type=int, default=8)
+    parser.add_argument("--aggregate-regions", action="store_true")
     args = parser.parse_args()
+    if args.aggregate_regions and args.max_alternatives != 0:
+        raise ValueError("aggregate appearance anchor is restricted to engine-default only")
 
     source_root = args.source_root.resolve(strict=True)
     original_graph = parse_qc_graph(args.original_qc.resolve(strict=True), source_root)
@@ -70,9 +73,13 @@ def main() -> int:
             state_manifest,
             filter_region_manifest(full_manifest, identities).to_payload(),
         )
+        configuration_name = (
+            "aggregate-appearance-anchor-not-structural-baseline:engine-default"
+            if args.aggregate_regions else original.name
+        )
         configuration = {
             "schema": 1,
-            "name": original.name,
+            "name": configuration_name,
             "bodygroups": dict(original.bodygroup_indices),
             "lod_index": original.lod_index,
             "source_pairs": [
@@ -107,6 +114,8 @@ def main() -> int:
         ))
         for materials_root in args.materials_root:
             command.extend(("--materials-root", str(materials_root.resolve(strict=True))))
+        if args.aggregate_regions:
+            command.append("--aggregate-regions")
         process = subprocess.run(command, cwd=args.repo_root, capture_output=True, text=True)
         (state_root / "blender.log").write_text(
             process.stdout + "\n" + process.stderr, encoding="utf-8"
@@ -142,6 +151,10 @@ def main() -> int:
     _write_json(args.out / "raw-visual-states.json", {
         "schema": 1,
         "quality_status": "raw-unverified-not-calibrated",
+        "validation_scope": (
+            "aggregate-appearance-anchor-not-structural-baseline"
+            if args.aggregate_regions else "strict-region-paired"
+        ),
         "records": records,
     })
     return 0

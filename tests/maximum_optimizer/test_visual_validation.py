@@ -612,6 +612,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertIsNone(args.materials_root)
         self.assertIsNone(args.vtfcmd)
         self.assertIsNone(args.texture_cache)
+        self.assertFalse(args.aggregate_regions)
         self.assertIsNone(args.region_manifest)
         self.assertFalse(render_previews._is_extended_mode(args))
 
@@ -638,6 +639,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                 "shared-vtf-cache",
                 "--region-manifest",
                 "maximum_region_manifest.json",
+                "--aggregate-regions",
             ]
         )
 
@@ -648,6 +650,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertEqual(args.vtfcmd, "VTFCmd.exe")
         self.assertEqual(args.texture_cache, "shared-vtf-cache")
         self.assertEqual(args.region_manifest, "maximum_region_manifest.json")
+        self.assertTrue(args.aggregate_regions)
 
     def test_explicit_texture_cache_is_shared_outside_long_state_name(self):
         import render_previews
@@ -858,6 +861,21 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             "filtered_degenerate_triangles": 1,
             "filtered_indices_sha256": hashlib.sha256(b"1").hexdigest(),
         })
+
+    def test_explicit_aggregate_region_merges_real_triangle_payloads(self):
+        import render_previews
+
+        triangle = {
+            "positions": ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+            "normals": ((0.0, 0.0, 1.0),) * 3,
+            "uvs": ((0.0, 0.0),) * 3,
+        }
+        merged = render_previews._aggregate_triangle_regions((
+            {"triangles": [triangle]}, {"triangles": [triangle]},
+        ))
+        self.assertEqual(merged["scope"], "aggregate")
+        self.assertEqual(len(merged["triangles"]), 2)
+        self.assertEqual(merged["triangle_audit"]["kept_triangles"], 2)
 
 
 

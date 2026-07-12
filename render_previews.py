@@ -272,6 +272,10 @@ def _parse_args(argv: list[str]):
         "--configuration-manifest", default=None,
         help="Required paired bodygroup/LOD configuration identity for extended validation",
     )
+    ap.add_argument(
+        "--aggregate-regions", action="store_true",
+        help="Research-only whole-state geometry scope for calibration anchors with changed mesh partitioning",
+    )
     return ap.parse_args(argv)
 
 
@@ -1031,9 +1035,20 @@ def _capture_regions(
     frame: int,
     region_manifest: RegionManifest,
     source_material_evidence: dict[str, tuple[str, ...]],
+    *,
+    aggregate: bool = False,
 ) -> dict[str, dict]:
     bpy.context.scene.frame_set(frame)
     depsgraph = bpy.context.evaluated_depsgraph_get()
+    if aggregate:
+        captured = []
+        for obj in sorted(
+            objs, key=lambda item: (_region_source_identity(item), item.name.casefold(), item.name)
+        ):
+            region = _capture_object_region(obj, "aggregate", depsgraph, audited=False)
+            if region is not None:
+                captured.append(region)
+        return {"aggregate": _aggregate_triangle_regions(captured)}
     observations = tuple(
         (
             _region_source_identity(obj),
@@ -1055,45 +1070,62 @@ def _capture_regions(
         zip(objs, observations), key=lambda item: assignments[item[1]]
     ):
         region_key = assignments[observation]
-        evaluated = obj.evaluated_get(depsgraph)
-        mesh = evaluated.to_mesh()
-        if mesh is None:
-            continue
-        try:
-            mesh.calc_loop_triangles()
-            matrix = evaluated.matrix_world.copy()
-            normal_matrix = matrix.to_3x3().inverted().transposed()
-            uv_layer = mesh.uv_layers.active
-            triangles = []
-            for triangle in mesh.loop_triangles:
-                positions = []
-                normals = []
-                uvs = []
-                for loop_index in triangle.loops:
-                    loop = mesh.loops[loop_index]
-                    vertex = mesh.vertices[loop.vertex_index]
-                    positions.append(matrix @ vertex.co.copy())
-                    normals.append((normal_matrix @ loop.normal).normalized())
-                    if uv_layer is None:
-                        uvs.append((0.0, 0.0))
-                    else:
-                        uv = uv_layer.data[loop_index].uv
-                        uvs.append((float(uv.x), float(uv.y)))
-                triangles.append(
-                    {
-                        "positions": tuple(positions),
-                        "normals": tuple(normals),
-                        "uvs": tuple(uvs),
-                    }
-                )
-            regions[region_key] = _audited_nondegenerate_region({
-                "scope": region_key,
-                "source_object": obj.name,
-                "triangles": triangles,
-            })
-        finally:
-            evaluated.to_mesh_clear()
+        region = _capture_object_region(obj, region_key, depsgraph)
+        if region is not None:
+            regions[region_key] = region
     return regions
+
+
+def _capture_object_region(
+    obj, region_key: str, depsgraph, *, audited: bool = True
+) -> dict | None:
+    evaluated = obj.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    if mesh is None:
+        return None
+    try:
+        mesh.calc_loop_triangles()
+        matrix = evaluated.matrix_world.copy()
+        normal_matrix = matrix.to_3x3().inverted().transposed()
+        uv_layer = mesh.uv_layers.active
+        triangles = []
+        for triangle in mesh.loop_triangles:
+            positions = []
+            normals = []
+            uvs = []
+            for loop_index in triangle.loops:
+                loop = mesh.loops[loop_index]
+                vertex = mesh.vertices[loop.vertex_index]
+                positions.append(matrix @ vertex.co.copy())
+                normals.append((normal_matrix @ loop.normal).normalized())
+                if uv_layer is None:
+                    uvs.append((0.0, 0.0))
+                else:
+                    uv = uv_layer.data[loop_index].uv
+                    uvs.append((float(uv.x), float(uv.y)))
+            triangles.append({
+                "positions": tuple(positions),
+                "normals": tuple(normals),
+                "uvs": tuple(uvs),
+            })
+        region = {
+            "scope": region_key,
+            "source_object": obj.name,
+            "triangles": triangles,
+        }
+        return _audited_nondegenerate_region(region) if audited else region
+    finally:
+        evaluated.to_mesh_clear()
+
+
+def _aggregate_triangle_regions(regions) -> dict:
+    return _audited_nondegenerate_region({
+        "scope": "aggregate",
+        "source_object": "aggregate",
+        "triangles": [
+            triangle for region in regions for triangle in region.get("triangles", ())
+        ],
+    })
 
 
 def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
@@ -1519,6 +1551,7 @@ def _render_extended_set(
     *,
     fit=None,
     source_search_paths: dict[str, tuple[str, ...]] | None = None,
+    aggregate_regions: bool = False,
 ) -> tuple[list[dict], dict[str, dict[str, dict]], tuple, dict]:
     _clear_scene()
     _setup_scene(size, transparent=True)
@@ -1557,7 +1590,8 @@ def _render_extended_set(
         objs,
         poses,
         capture=lambda captured_objects, frame: _capture_regions(
-            captured_objects, frame, region_manifest, source_material_evidence
+            captured_objects, frame, region_manifest, source_material_evidence,
+            aggregate=aggregate_regions,
         ),
         animation_binding=animation_binding,
     )
@@ -1660,6 +1694,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         source_materials,
         animation_before,
         source_search_paths=source_search_paths,
+        aggregate_regions=args.aggregate_regions,
     )
     candidate_entries, candidate_snapshots, _, candidate_bbox = _render_extended_set(
         "after",
@@ -1678,6 +1713,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         animation_after,
         fit=fit,
         source_search_paths=source_search_paths,
+        aggregate_regions=args.aggregate_regions,
     )
     stride = 7
     seed = 0
