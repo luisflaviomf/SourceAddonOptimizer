@@ -56,9 +56,20 @@ The committed builder independently rehashes every ignored artifact and must rep
 payload byte-for-structure in the focused test.
 
 Final canonical evidence digest:
-`3d8854e868ad7cbbb53eb880089f7929c9530cb6fde589a0219f0e5c216cd0dd`.
-Final verification after evidence hardening: 2/2 focused evidence tests and 370 full-discovery tests
+`cdeffa260013302bef04d6711ebc60da3d01e5c4a7f7fa031cc5faf1b6c6e7da`.
+Final verification after evidence hardening: 5/5 focused delta tests and 372 full-discovery tests
 passed; 12 full-suite skips are the existing environment symlink-privilege skips.
+
+The QC-discovered nonvisual manifest binds `wheel.qc`, both declared animation SMDs and the
+collision SMD by portable path/size/SHA-256 under aggregate digest
+`fabe11c1fa68f3dbb9b756b72d595d510655efa72110853244ce86814e6eb2d1`. Every ratio references that
+digest; the builder rehashes each original and work copy and cross-checks animation/collision hashes
+against optimizer provenance before making a preservation claim.
+
+The evidence also binds two clean `/Brepro` attestations to canonical native-source digest
+`037cde763cae2b14dc3b491eba90f154aa86e45306bef203257b3f28c3895b28`; both produced DLL digest
+`c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa` under configuration
+`Release|x64|/Brepro` with ABI unchanged.
 
 ## TDD
 

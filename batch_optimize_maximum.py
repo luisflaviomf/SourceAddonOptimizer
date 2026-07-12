@@ -992,6 +992,11 @@ def _describe_source_file(
     return _object_region_observations(source_identity, mesh_objects, source_materials)
 
 
+def require_direct_single_object(candidate: CandidateConfig, mesh_objects: Sequence[object]) -> None:
+    if candidate.strategy == "meshopt-direct-v1" and len(mesh_objects) != 1:
+        raise RuntimeError("meshopt-direct-v1 requires one unambiguous source object per occurrence")
+
+
 def _process_source_file(
     source: Path,
     destination: Path,
@@ -1009,8 +1014,7 @@ def _process_source_file(
     mesh_objects = tuple(obj for obj in bpy.context.scene.objects if obj.type == "MESH")
     if not mesh_objects:
         raise RuntimeError(f"Source Tools imported no mesh from {source}")
-    if candidate.strategy == "meshopt-direct-v1" and len(mesh_objects) != 1:
-        raise RuntimeError("meshopt-direct-v1 requires one unambiguous source object per occurrence")
+    require_direct_single_object(candidate, mesh_objects)
     object_metrics = optimize_region_objects(
         source_identity,
         mesh_objects,

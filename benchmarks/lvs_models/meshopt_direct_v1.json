@@ -1,4 +1,12 @@
 {
+  "build_attestation": {
+    "build1_sha256": "c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa",
+    "build2_sha256": "c91d98949cee5488ce038776edfd9156db4103dea67f2e6d6dd6cbf0b5352afa",
+    "command": "powershell -File maximum_optimizer/native/build.ps1",
+    "configuration": "Release|x64|/Brepro",
+    "equal": true,
+    "source_sha256": "037cde763cae2b14dc3b491eba90f154aa86e45306bef203257b3f28c3895b28"
+  },
   "corpus_id": "lvs-models-v1",
   "decision": {
     "best_blender_bytes": 633089,
@@ -7,7 +15,32 @@
     "reason": "direct output improves control but remains larger than the approved Blender wheel and saturates under existing locks",
     "winner": false
   },
-  "evidence_sha256": "3d8854e868ad7cbbb53eb880089f7929c9530cb6fde589a0219f0e5c216cd0dd",
+  "evidence_sha256": "cdeffa260013302bef04d6711ebc60da3d01e5c4a7f7fa031cc5faf1b6c6e7da",
+  "nonvisual": {
+    "artifacts": [
+      {
+        "path": "wheel.qc",
+        "sha256": "6066206afe1c7084c0250e0acdfd7f52883e44980e47245eeec1cd265e956e62",
+        "size_bytes": 930
+      },
+      {
+        "path": "wheel_anims/idle.smd",
+        "sha256": "4ef9631312c0e17b2ecf37569b47adaba7e84f8752a8576940c4468f2e8c962a",
+        "size_bytes": 153
+      },
+      {
+        "path": "wheel_anims/neutral.smd",
+        "sha256": "4ef9631312c0e17b2ecf37569b47adaba7e84f8752a8576940c4468f2e8c962a",
+        "size_bytes": 153
+      },
+      {
+        "path": "wheel_physics.smd",
+        "sha256": "b085c7108b6335c5490dfb56cf3fd7ae8f980cc2fa6c1f50623a620bbd90f00f",
+        "size_bytes": 26663
+      }
+    ],
+    "digest": "fabe11c1fa68f3dbb9b756b72d595d510655efa72110853244ce86814e6eb2d1"
+  },
   "quality_claim": null,
   "quality_status": "unverified",
   "records": [
@@ -82,6 +115,7 @@
       },
       "control_total_bytes": 1187559,
       "delta_bytes": -117024,
+      "nonvisual_digest": "fabe11c1fa68f3dbb9b756b72d595d510655efa72110853244ce86814e6eb2d1",
       "ratio": 0.85,
       "smd": [
         {
@@ -205,6 +239,7 @@
       },
       "control_total_bytes": 1187559,
       "delta_bytes": -130592,
+      "nonvisual_digest": "fabe11c1fa68f3dbb9b756b72d595d510655efa72110853244ce86814e6eb2d1",
       "ratio": 0.7,
       "smd": [
         {
@@ -328,6 +363,7 @@
       },
       "control_total_bytes": 1187559,
       "delta_bytes": -144478,
+      "nonvisual_digest": "fabe11c1fa68f3dbb9b756b72d595d510655efa72110853244ce86814e6eb2d1",
       "ratio": 0.55,
       "smd": [
         {
@@ -451,6 +487,7 @@
       },
       "control_total_bytes": 1187559,
       "delta_bytes": -153170,
+      "nonvisual_digest": "fabe11c1fa68f3dbb9b756b72d595d510655efa72110853244ce86814e6eb2d1",
       "ratio": 0.4,
       "smd": [
         {
@@ -574,6 +611,7 @@
       },
       "control_total_bytes": 1187559,
       "delta_bytes": -153276,
+      "nonvisual_digest": "fabe11c1fa68f3dbb9b756b72d595d510655efa72110853244ce86814e6eb2d1",
       "ratio": 0.25,
       "smd": [
         {
@@ -669,8 +707,8 @@
       "version": "meshoptimizer-v1.2-abi2"
     },
     "runner": {
-      "sha256": "e6c0cfa6360103c9864ee0fc8556edeffb94e7103409efbc67e147012aec2005",
-      "size_bytes": 61498,
+      "sha256": "85ac15e4a768b0e91fc1cf48acbb308543bb924beacaa681e73e112b419c79bd",
+      "size_bytes": 61660,
       "version": "meshopt-direct-v1"
     },
     "studiomdl": {

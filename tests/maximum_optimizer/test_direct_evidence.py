@@ -31,6 +31,10 @@ class DirectEvidenceTests(unittest.TestCase):
         restored = copy.deepcopy(self.valid); restored["records"][0]["smd"][0]["restored_sha256"] = restored["records"][0]["smd"][0]["raw_sha256"]; mutations.append(seal_evidence(restored))
         source = copy.deepcopy(self.valid); source["sources"][0]["sha256"] = "0" * 64; mutations.append(seal_evidence(source))
         tool = copy.deepcopy(self.valid); tool["tools"]["meshopt_bridge"]["sha256"] = "X" * 64; mutations.append(seal_evidence(tool))
+        nonvisual = copy.deepcopy(self.valid); nonvisual["records"][2]["nonvisual_digest"] = "0" * 64; mutations.append(seal_evidence(nonvisual))
+        nonvisual_size = copy.deepcopy(self.valid); nonvisual_size["nonvisual"]["artifacts"][0]["size_bytes"] += 1; mutations.append(seal_evidence(nonvisual_size))
+        build_hash = copy.deepcopy(self.valid); build_hash["build_attestation"]["build2_sha256"] = "0" * 64; mutations.append(seal_evidence(build_hash))
+        build_config = copy.deepcopy(self.valid); build_config["build_attestation"]["configuration"] = "Debug|x64"; mutations.append(seal_evidence(build_config))
         digest = copy.deepcopy(self.valid); digest["evidence_sha256"] = "0" * 64; mutations.append(digest)
         for payload in mutations:
             with self.subTest(payload=payload), self.assertRaises(ValueError):

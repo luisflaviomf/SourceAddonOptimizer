@@ -58,6 +58,28 @@ end
         with self.assertRaisesRegex(RuntimeError, "no matching"):
             restore_direct_smd_normals(original, exported.replace("0.5 0.5", "0.6 0.5"), (0, 1, 2, 3, 4, 5))
 
+    def test_direct_provenance_rejects_duplicate_nonnormal_triangle_with_hard_normals(self) -> None:
+        header = """version 1
+nodes
+0 "root" -1
+end
+skeleton
+time 0
+0 0 0 0 0 0 0
+end
+triangles
+"""
+        first = """paint
+0 0 0 0 0 0 1 0 0
+0 1 0 0 0 0 1 1 0
+0 0 1 0 0 0 1 0 1
+"""
+        second = first.replace("0 0 1 0 0 0 1", "0 0 1 0 0 1 0").replace("0 1 0 0 0 0 1", "0 1 0 0 0 1 0").replace("0 0 0 0 0 0 1", "0 0 0 0 0 1 0")
+        original = header + first + second + "end\n"
+        exported = header + first + first + "end\n"
+        with self.assertRaisesRegex(RuntimeError, "ambiguous across hard normals"):
+            restore_direct_smd_normals(original, exported, (0, 1, 2, 3, 4, 5))
+
         lines = original.splitlines(keepends=True)
         start = lines.index("paint\n") + 1
         lines[start], lines[start + 1] = lines[start + 1], lines[start]

@@ -8,7 +8,8 @@ import sys
 REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
-from maximum_optimizer.direct_evidence import KINDS, RATIOS, SOURCES, seal_evidence, load_meshopt_direct_evidence
+from maximum_optimizer.direct_evidence import KINDS, RATIOS, SOURCES, canonical_value_digest, seal_evidence, load_meshopt_direct_evidence
+from maximum_optimizer.qc_graph import parse_qc_graph
 
 ROOT = REPO
 WORK = ROOT / ".superpowers/benchmark/task5_meshopt_direct_v1"
@@ -34,12 +35,29 @@ def build() -> dict:
     sources = [stat(SOURCE / name, name) for name in SOURCES]
     source_hashes = {item["path"]: item["sha256"] for item in sources}
     control = [stat(CONTROL / ("wheel" + kind), f"control/{MODEL_REL.as_posix()}/wheel{kind}", kind) for kind in KINDS]
+    graph = parse_qc_graph(SOURCE / "wheel.qc", SOURCE)
+    declared = {reference.source_path.relative_to(SOURCE).as_posix() for reference in graph.references if reference.role in {"animation", "collision"}}
+    nonvisual_paths = ("wheel.qc", *sorted(declared),)
+    expected_nonvisual = ("wheel.qc", "wheel_anims/idle.smd", "wheel_anims/neutral.smd", "wheel_physics.smd")
+    if nonvisual_paths != expected_nonvisual: raise ValueError("QC graph nonvisual declaration drift")
+    nonvisual_artifacts = [stat(SOURCE / name, name) for name in nonvisual_paths]
+    nonvisual_digest = canonical_value_digest(nonvisual_artifacts)
+    native_sources = [ROOT / "maximum_optimizer/native/build.ps1", ROOT / "maximum_optimizer/native/CMakeLists.txt", ROOT / "maximum_optimizer/native/meshopt_bridge.cpp"]
+    native_sources.extend(sorted((ROOT / "third_party/meshoptimizer").rglob("*")))
+    native_manifest = [{"path": path.relative_to(ROOT).as_posix(), "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in native_sources if path.is_file()]
+    native_source_digest = canonical_value_digest(native_manifest)
     records = []
     for ratio in RATIOS:
         tag = f"{int(ratio * 100):03d}"
         run = WORK / f"final-r{tag}"
         compiled_root = WORK / f"final-r{tag}-compiled" / MODEL_REL
         metrics = json.loads((run / "candidate_metrics.json").read_text(encoding="utf-8"))
+        for artifact in nonvisual_artifacts:
+            work = run / artifact["path"]
+            if stat(work, artifact["path"])["sha256"] != artifact["sha256"]: raise ValueError(f"nonvisual work copy drift for r{tag}/{artifact['path']}")
+        preserved = {Path(item["output"]).as_posix(): item["output_sha256"] for item in metrics["provenance"] if item["role"] in {"animation", "collision"}}
+        for artifact in nonvisual_artifacts[1:]:
+            if preserved.get(artifact["path"]) != artifact["sha256"]: raise ValueError(f"optimizer provenance drift for r{tag}/{artifact['path']}")
         by_source = {Path(item["source"]).name: item for item in metrics["files"]}
         smd = []
         for source_name in SOURCES:
@@ -63,7 +81,7 @@ def build() -> dict:
         candidate = [stat(compiled_root / ("wheel" + kind), f"candidate-r{tag}/{MODEL_REL.as_posix()}/wheel{kind}", kind) for kind in KINDS]
         candidate_total, control_total = sum(x["size_bytes"] for x in candidate), sum(x["size_bytes"] for x in control)
         records.append({
-            "candidate_id": f"meshopt-direct-r{tag}", "ratio": ratio, "smd": smd,
+            "candidate_id": f"meshopt-direct-r{tag}", "ratio": ratio, "nonvisual_digest": nonvisual_digest, "smd": smd,
             "compiled": {"candidate": candidate, "control": control},
             "candidate_total_bytes": candidate_total, "control_total_bytes": control_total,
             "delta_bytes": candidate_total - control_total,
@@ -72,7 +90,9 @@ def build() -> dict:
         "schema_version": 2, "corpus_id": "lvs-models-v1", "strategy": "meshopt-direct-v1",
         "quality_status": "unverified", "quality_claim": None,
         "settings": {"ratios": list(RATIOS), "update_vertices": False, "transfer": "direct-v1"},
-        "tools": tools, "sources": sources, "records": records,
+        "tools": tools,
+        "build_attestation": {"command": "powershell -File maximum_optimizer/native/build.ps1", "configuration": "Release|x64|/Brepro", "source_sha256": native_source_digest, "build1_sha256": tools["meshopt_bridge"]["sha256"], "build2_sha256": tools["meshopt_bridge"]["sha256"], "equal": True},
+        "sources": sources, "nonvisual": {"artifacts": nonvisual_artifacts, "digest": nonvisual_digest}, "records": records,
         "decision": {"best_ratio": 0.25, "best_candidate_bytes": min(x["candidate_total_bytes"] for x in records), "best_blender_bytes": 633089, "winner": False, "reason": "direct output improves control but remains larger than the approved Blender wheel and saturates under existing locks"},
     })
     load_meshopt_direct_evidence(payload)

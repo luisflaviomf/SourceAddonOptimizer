@@ -20,6 +20,11 @@ def canonical_digest(payload: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def canonical_value_digest(value: object) -> str:
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def seal_evidence(payload: dict[str, Any]) -> dict[str, Any]:
     result = dict(payload)
     result["evidence_sha256"] = canonical_digest(result)
@@ -54,7 +59,7 @@ def _artifact(value: object, expected_kind: str, label: str) -> dict[str, Any]:
 
 
 def load_meshopt_direct_evidence(payload: object) -> dict[str, Any]:
-    root = _exact(payload, {"schema_version", "corpus_id", "strategy", "quality_status", "quality_claim", "settings", "tools", "sources", "records", "decision", "evidence_sha256"}, "evidence")
+    root = _exact(payload, {"schema_version", "corpus_id", "strategy", "quality_status", "quality_claim", "settings", "tools", "build_attestation", "sources", "nonvisual", "records", "decision", "evidence_sha256"}, "evidence")
     if root["schema_version"] != 2 or root["corpus_id"] != "lvs-models-v1" or root["strategy"] != "meshopt-direct-v1" or root["quality_status"] != "unverified" or root["quality_claim"] is not None:
         raise ValueError("evidence identity or quality state is invalid")
     settings = _exact(root["settings"], {"ratios", "update_vertices", "transfer"}, "settings")
@@ -66,6 +71,12 @@ def load_meshopt_direct_evidence(payload: object) -> dict[str, Any]:
         if type(item["version"]) is not str or not item["version"] or type(item["size_bytes"]) is not int or item["size_bytes"] <= 0:
             raise ValueError(f"tools.{name} metadata is invalid")
         _sha(item["sha256"], f"tools.{name}.sha256")
+    attestation = _exact(root["build_attestation"], {"command", "configuration", "source_sha256", "build1_sha256", "build2_sha256", "equal"}, "build_attestation")
+    if attestation["command"] != "powershell -File maximum_optimizer/native/build.ps1" or attestation["configuration"] != "Release|x64|/Brepro" or attestation["equal"] is not True:
+        raise ValueError("build attestation command/configuration is invalid")
+    for field in ("source_sha256", "build1_sha256", "build2_sha256"): _sha(attestation[field], f"build_attestation.{field}")
+    if attestation["build1_sha256"] != attestation["build2_sha256"] or attestation["build1_sha256"] != tools["meshopt_bridge"]["sha256"]:
+        raise ValueError("build attestation DLL hashes do not match")
     sources = root["sources"]
     if type(sources) is not list or tuple(item.get("path") for item in sources if type(item) is dict) != SOURCES:
         raise ValueError("source set/order is invalid")
@@ -73,12 +84,23 @@ def load_meshopt_direct_evidence(payload: object) -> dict[str, Any]:
         item = _exact(item, {"path", "size_bytes", "sha256"}, f"sources[{index}]")
         _path(item["path"], f"sources[{index}].path"); _sha(item["sha256"], f"sources[{index}].sha256")
         if type(item["size_bytes"]) is not int or item["size_bytes"] <= 0: raise ValueError("source size is invalid")
+    nonvisual = _exact(root["nonvisual"], {"artifacts", "digest"}, "nonvisual")
+    expected_nonvisual = ("wheel.qc", "wheel_anims/idle.smd", "wheel_anims/neutral.smd", "wheel_physics.smd")
+    if type(nonvisual["artifacts"]) is not list or tuple(x.get("path") for x in nonvisual["artifacts"] if type(x) is dict) != expected_nonvisual:
+        raise ValueError("nonvisual source set/order is invalid")
+    for index, item in enumerate(nonvisual["artifacts"]):
+        item = _exact(item, {"path", "size_bytes", "sha256"}, f"nonvisual.artifacts[{index}]")
+        _path(item["path"], "nonvisual.path"); _sha(item["sha256"], "nonvisual.sha256")
+        if type(item["size_bytes"]) is not int or item["size_bytes"] <= 0: raise ValueError("nonvisual size is invalid")
+    _sha(nonvisual["digest"], "nonvisual.digest")
+    if nonvisual["digest"] != canonical_value_digest(nonvisual["artifacts"]): raise ValueError("nonvisual aggregate digest mismatch")
     records = root["records"]
     if type(records) is not list or len(records) != len(RATIOS): raise ValueError("ratio records are incomplete")
     control_manifest = None
     for ri, (record, ratio) in enumerate(zip(records, RATIOS)):
-        record = _exact(record, {"candidate_id", "ratio", "smd", "compiled", "candidate_total_bytes", "control_total_bytes", "delta_bytes"}, f"records[{ri}]")
+        record = _exact(record, {"candidate_id", "ratio", "nonvisual_digest", "smd", "compiled", "candidate_total_bytes", "control_total_bytes", "delta_bytes"}, f"records[{ri}]")
         if record["ratio"] != ratio or record["candidate_id"] != f"meshopt-direct-r{int(ratio * 100):03d}": raise ValueError("ratio record identity is invalid")
+        if record["nonvisual_digest"] != nonvisual["digest"]: raise ValueError("ratio is not bound to nonvisual sources")
         smd = record["smd"]
         if type(smd) is not list or tuple(item.get("source") for item in smd if type(item) is dict) != SOURCES: raise ValueError("SMD evidence set/order is invalid")
         for si, item in enumerate(smd):
