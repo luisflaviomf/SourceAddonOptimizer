@@ -402,6 +402,37 @@ class MaterialResolutionProofTests(unittest.TestCase):
                 self.roots, self.requests, cancelled
             )
 
+    def test_cancellation_between_material_files_closes_prior_vmt_capture(self):
+        from maximum_optimizer import focused_cache
+        from maximum_optimizer.processes import ProcessCancelledError
+
+        cancelled = threading.Event()
+        captures = []
+        original_spool = tempfile.SpooledTemporaryFile
+        original_proof = focused_cache._file_proof
+
+        def record_spool(*args, **kwargs):
+            stream = original_spool(*args, **kwargs)
+            captures.append(stream)
+            return stream
+
+        def cancel_after_first_vmt(path, *args, **kwargs):
+            result = original_proof(path, *args, **kwargs)
+            if Path(path).suffix.casefold() == ".vmt":
+                cancelled.set()
+            return result
+
+        with mock.patch.object(
+            focused_cache.tempfile, "SpooledTemporaryFile", side_effect=record_spool
+        ), mock.patch.object(
+            focused_cache, "_file_proof", side_effect=cancel_after_first_vmt
+        ), self.assertRaises(ProcessCancelledError):
+            focused_cache.material_resolution_proof(
+                self.roots, self.requests, cancelled
+            )
+        self.assertTrue(captures)
+        self.assertTrue(all(stream.closed for stream in captures))
+
     def test_material_proof_bounds_are_inclusive_and_stop_before_excess_hash(self):
         from maximum_optimizer import focused_cache
 

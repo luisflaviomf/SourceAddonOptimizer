@@ -1008,14 +1008,25 @@ def material_resolution_proof(
     captured_vmt = {}
     captured_vmt_bytes = 0
     total_bytes = 0
+
+    def close_captured_vmt() -> None:
+        for stream in captured_vmt.values():
+            stream.close()
+
     for root_index, path, _folded, relative, stat_size in candidates:
-        _cancel(cancel_event, "cancelled during material inventory")
+        try:
+            _cancel(cancel_event, "cancelled during material inventory")
+        except BaseException:
+            close_captured_vmt()
+            raise
         if len(files) >= _MAX_MATERIAL_FILES:
+            close_captured_vmt()
             return _uncacheable_material_proof(
                 "file-limit", canonical_roots_tuple, request_tuple,
                 len(files), total_bytes,
             )
         if total_bytes + stat_size > _MAX_MATERIAL_BYTES:
+            close_captured_vmt()
             return _uncacheable_material_proof(
                 "byte-limit", canonical_roots_tuple, request_tuple,
                 len(files), total_bytes,
@@ -1026,8 +1037,7 @@ def material_resolution_proof(
             if (root_index, relative.casefold()) in selected_vmt_keys:
                 capture_remaining = _MAX_CAPTURED_VMT_BYTES - captured_vmt_bytes
                 if stat_size > min(_MAX_SELECTED_VMT_BYTES, capture_remaining):
-                    for stream in captured_vmt.values():
-                        stream.close()
+                    close_captured_vmt()
                     return _uncacheable_material_proof(
                         "byte-limit", canonical_roots_tuple, request_tuple,
                         len(files), total_bytes,
@@ -1050,8 +1060,7 @@ def material_resolution_proof(
         except _MaterialByteLimitError:
             if capture is not None:
                 capture.close()
-            for stream in captured_vmt.values():
-                stream.close()
+            close_captured_vmt()
             return _uncacheable_material_proof(
                 "byte-limit", canonical_roots_tuple, request_tuple,
                 len(files), total_bytes,
@@ -1059,8 +1068,7 @@ def material_resolution_proof(
         except OSError:
             if capture is not None:
                 capture.close()
-            for stream in captured_vmt.values():
-                stream.close()
+            close_captured_vmt()
             return _uncacheable_material_proof(
                 "io-error", canonical_roots_tuple, request_tuple,
                 len(files), total_bytes,
@@ -1068,8 +1076,7 @@ def material_resolution_proof(
         except ValueError:
             if capture is not None:
                 capture.close()
-            for stream in captured_vmt.values():
-                stream.close()
+            close_captured_vmt()
             return _uncacheable_material_proof(
                 "unsafe-tree", canonical_roots_tuple, request_tuple,
                 len(files), total_bytes,
@@ -1077,8 +1084,12 @@ def material_resolution_proof(
         except ProcessCancelledError:
             if capture is not None:
                 capture.close()
-            for stream in captured_vmt.values():
-                stream.close()
+            close_captured_vmt()
+            raise
+        except BaseException:
+            if capture is not None:
+                capture.close()
+            close_captured_vmt()
             raise
         files.append(MaterialFileProof(root_index, relative, path.suffix.casefold()[1:], size, digest))
         total_bytes += size
@@ -1089,9 +1100,8 @@ def material_resolution_proof(
     for request in request_tuple:
         try:
             _cancel(cancel_event, "cancelled during material resolution")
-        except ProcessCancelledError:
-            for stream in captured_vmt.values():
-                stream.close()
+        except BaseException:
+            close_captured_vmt()
             raise
         selected = selected_vmt[request.request_index]
         if selected is None:
@@ -1110,9 +1120,8 @@ def material_resolution_proof(
             _cancel(cancel_event, "cancelled after material root parse")
             texture_reference = render_previews._source_texture_reference(vmt_text)
             _cancel(cancel_event, "cancelled after material texture parse")
-        except ProcessCancelledError:
-            for captured in captured_vmt.values():
-                captured.close()
+        except BaseException:
+            close_captured_vmt()
             raise
         if parsed is None or texture_reference is None:
             resolutions.append(MaterialRequestResolution(
@@ -1160,8 +1169,7 @@ def material_resolution_proof(
             vtf_root, vtf_relative, vtf.sha256, shader,
             texture_directive, duplicates,
         ))
-    for stream in captured_vmt.values():
-        stream.close()
+    close_captured_vmt()
     root_proofs = []
     for root_index, (identity, _root) in enumerate(canonical_roots_tuple):
         inventory = tuple(item for item in files if item.root_index == root_index)
