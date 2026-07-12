@@ -100,3 +100,17 @@ reported separately and contribute no bytes, DX80, median or worst value. A fail
 
 Review-fix verification ran 17 focused tests successfully with one Windows symlink privilege skip,
 then ran all 327 tests successfully with 11 environment skips.
+
+### Final review delta
+
+Derived byte totals are now exact non-negative integers before comparison, so JSON booleans and
+integral floats cannot impersonate valid totals. Control generation performs one read-only
+preflight over the raw and resolved run root plus every family/game/workspace path before creating
+the first directory or `gameinfo.txt`; deterministic reparse-guard coverage proves rejection leaves
+external paths untouched. Failed-control residue detection enumerates only the exact model stem and
+covers generic `.vtx`, `.sw.vtx`, DX variants, `.mdl`, `.vvd`, `.ani` and `.phy`, without matching a
+similarly prefixed sibling model.
+
+Final-delta verification ran 19 focused tests successfully with one environment skip and the full
+329-test suite successfully with 11 environment skips; Python byte-compilation and strict real
+control re-import also passed.

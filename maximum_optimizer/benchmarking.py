@@ -115,6 +115,46 @@ def safe_existing_file(path: Path, context: str) -> Path:
     return result
 
 
+def safe_new_directory_path(path: Path, containment_root: Path, context: str) -> Path:
+    containment = _safe_root(containment_root.absolute(), f"{context} containment root")
+    raw = path.expanduser()
+    candidate = Path(os.path.abspath(raw))
+    try:
+        relative = candidate.relative_to(containment)
+    except ValueError as exc:
+        raise CorpusError(f"{context} must remain inside {containment}") from exc
+    current = containment
+    for part in relative.parts:
+        current = current / part
+        if os.path.lexists(current):
+            if _is_reparse(current):
+                raise CorpusError(f"{context} contains a symlink or reparse point: {current}")
+            if not current.is_dir():
+                raise CorpusError(f"{context} contains a non-directory component: {current}")
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(containment)
+    except ValueError as exc:
+        raise CorpusError(f"{context} resolves outside {containment}") from exc
+    return resolved
+
+
+def preflight_control_layout(
+    run_root: Path, containment_root: Path, family_ids: Sequence[str]
+) -> tuple[Path, ...]:
+    safe_run = safe_new_directory_path(run_root, containment_root, "control run root")
+    if os.path.lexists(safe_run):
+        raise CorpusError(f"immutable control run root already exists: {safe_run}")
+    planned = [safe_run]
+    for family_id in family_ids:
+        _logical_id(family_id, "control family_id")
+        family = safe_new_directory_path(safe_run / family_id, containment_root, f"{family_id} family root")
+        game = safe_new_directory_path(family / "game", containment_root, f"{family_id} game root")
+        workspace = safe_new_directory_path(family / "workspace", containment_root, f"{family_id} workspace root")
+        planned.extend((family, game, workspace))
+    return tuple(planned)
+
+
 def safe_join(root: Path, relative: str | PurePosixPath, *, must_exist: bool = True) -> Path:
     rel = _relative_path(str(relative), "artifact path")
     current = root
@@ -218,6 +258,24 @@ def _verify_exact_sidecars(root: Path, stem: str, declarations: Sequence[Artifac
     kinds = {compiled_kind(path) for path in actual}
     if not {".mdl", ".vvd", ".dx90.vtx"}.issubset(kinds):
         raise CorpusError(f"{context} lacks required .mdl/.vvd/.dx90.vtx sidecars")
+
+
+def find_stem_sidecars(root: Path, stem: str) -> tuple[Path, ...]:
+    safe_root = _safe_root(root, "compiled sidecar root")
+    stem_path = _relative_path(stem, "compiled stem")
+    parent = safe_join(safe_root, stem_path.parent) if str(stem_path.parent) != "." else safe_root
+    exact = {
+        f"{stem_path.name}.mdl", f"{stem_path.name}.vvd", f"{stem_path.name}.ani",
+        f"{stem_path.name}.phy", f"{stem_path.name}.vtx",
+    }
+    variant = re.compile(rf"^{re.escape(stem_path.name)}\.[^.]+\.vtx$", re.IGNORECASE)
+    found: list[Path] = []
+    for child in parent.iterdir():
+        if _is_reparse(child):
+            raise CorpusError(f"compiled sidecar directory contains a symlink or reparse point: {child}")
+        if child.is_file() and (child.name.lower() in {name.lower() for name in exact} or variant.fullmatch(child.name)):
+            found.append(child)
+    return tuple(sorted(found))
 
 
 def verify_declared_sidecars(
@@ -480,6 +538,8 @@ class BenchmarkRecord:
             raise ValueError(f"record keys must be exactly {sorted(expected)}")
         if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
             raise ValueError("unsupported record schema_version")
+        for field in ("total_bytes", "geometry_comparable_bytes", "dx80_optional_bytes"):
+            _exact_int(raw[field], field, nonnegative=True)
         record = cls.create(
             corpus_id=raw["corpus_id"], family_id=raw["family_id"], lane=raw["lane"],
             strategy=raw["strategy"], cache_key=raw["cache_key"], artifacts=raw["artifacts"],

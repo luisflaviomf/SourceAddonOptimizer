@@ -16,9 +16,11 @@ from maximum_optimizer.benchmarking import (
     StrictControlRoundtripAdapter,
     canonical_json_bytes,
     import_compiled_baseline,
+    find_stem_sidecars,
     load_corpus,
     parse_control_results,
     portable_compiler_error,
+    preflight_control_layout,
     sha256_file,
     safe_existing_file,
     safe_existing_root,
@@ -137,17 +139,18 @@ def generate_control(args: argparse.Namespace) -> int:
     corpus = load_corpus(args.corpus)
     if corpus.full_ids != FULL_FAMILY_IDS:
         raise ValueError("control generation is restricted to the fixed ten-family LVS corpus")
-    run_root = args.run_root.resolve()
-    if ".superpowers" not in run_root.parts:
-        raise ValueError("control run root must be an ignored .superpowers directory")
-    run_root.mkdir(parents=True, exist_ok=True)
+    studiomdl = safe_existing_file(args.studiomdl.resolve(strict=True), "StudioMDL")
+    containment = safe_existing_root(Path.cwd() / ".superpowers", "control containment root")
+    layout = preflight_control_layout(args.run_root, containment, corpus.full_ids)
+    run_root = layout[0]
+    run_root.mkdir()
     results = []
     for family in corpus.families:
         family_root = run_root / family.id
         game = family_root / "game"
         game.mkdir(parents=True, exist_ok=True)
         (game / "gameinfo.txt").write_text('"GameInfo" { game "LVS control" FileSystem { SearchPaths { Game |gameinfo_path|. } } }\n', encoding="utf-8")
-        adapter = StrictControlRoundtripAdapter(args.studiomdl.resolve(strict=True), game)
+        adapter = StrictControlRoundtripAdapter(studiomdl, game)
         try:
             result = adapter.compile(source_root=corpus.roots["source"], source_files=family.source_files,
                                      source_qc=family.source_qc, run_root=family_root / "workspace", family_id=family.id)
@@ -207,8 +210,7 @@ def record_control(args: argparse.Namespace) -> int:
         else:
             models = run_root / family.id / "game" / "models"
             if models.exists():
-                base = models / family.compiled_stem
-                if any(Path(str(base) + suffix).exists() for suffix in (".mdl", ".vvd", ".dx80.vtx", ".dx90.vtx", ".ani", ".phy")):
+                if find_stem_sidecars(models, family.compiled_stem):
                     raise ValueError(f"failed control contains stale/partial sidecars for {family.id}")
             errors = [line.strip() for line in log_text.splitlines() if line.startswith("ERROR:")]
             item["failure"] = " | ".join(portable_compiler_error(line) for line in errors[-2:]) or f"StudioMDL return code {result.get('returncode')}"

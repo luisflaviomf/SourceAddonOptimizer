@@ -8,6 +8,7 @@ import unittest
 import math
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from unittest import mock
 
 from maximum_optimizer.benchmarking import (
     BASELINE_LANES,
@@ -22,6 +23,8 @@ from maximum_optimizer.benchmarking import (
     parse_control_results,
     portable_compiler_error,
     summarize_records,
+    find_stem_sidecars,
+    preflight_control_layout,
 )
 
 
@@ -147,6 +150,11 @@ class BenchmarkRecordTests(unittest.TestCase):
         payload["total_bytes"] = 999
         with self.assertRaisesRegex(ValueError, "derived byte totals"):
             BenchmarkRecord.from_dict(payload)
+        for field, value in (("total_bytes", 410.0), ("geometry_comparable_bytes", True), ("dx80_optional_bytes", 40.0)):
+            tampered = record.to_dict()
+            tampered[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
+                BenchmarkRecord.from_dict(tampered)
 
     def test_record_schema_rejects_unknown_fields_and_incomplete_provenance(self):
         record = BenchmarkRecord.create(
@@ -330,6 +338,32 @@ class ControlSchemaTests(unittest.TestCase):
             self.assertEqual("original", qc.read_text(encoding="utf-8"))
             self.assertFalse(result["autofixes"])
             self.assertFalse(result["source_mutated"])
+
+    def test_control_layout_preflight_rejects_reparse_before_any_write(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            containment = root / ".superpowers"; containment.mkdir()
+            jump = containment / "jump"; jump.mkdir()
+            external = root / "external"; external.mkdir()
+            original_guard = __import__("maximum_optimizer.benchmarking", fromlist=["_is_reparse"])._is_reparse
+
+            def guarded(path: Path) -> bool:
+                return path == jump or original_guard(path)
+
+            with mock.patch("maximum_optimizer.benchmarking._is_reparse", side_effect=guarded):
+                with self.assertRaisesRegex(CorpusError, "reparse"):
+                    preflight_control_layout(jump / "run", containment, ("a", "b"))
+            self.assertFalse((external / "gameinfo.txt").exists())
+            self.assertFalse((jump / "run").exists())
+
+    def test_failed_control_sidecar_scan_is_exact_and_covers_all_vtx_variants(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            parent = root / "models" / "cars"; parent.mkdir(parents=True)
+            for name in ("car.sw.vtx", "car.vtx", "car.dx80.vtx", "car.ani", "car_extra.dx90.vtx"):
+                (parent / name).write_bytes(b"x")
+            found = {path.name for path in find_stem_sidecars(root / "models", "cars/car")}
+            self.assertEqual({"car.sw.vtx", "car.vtx", "car.dx80.vtx", "car.ani"}, found)
 
 
 class BaselineImportTests(unittest.TestCase):
