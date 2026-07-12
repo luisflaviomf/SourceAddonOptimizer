@@ -222,14 +222,14 @@ def _regional_recovery(
         return None
 
     contract = _recovery_key(failed.spec)
-    passing_ratios = sorted({
-        evaluation.spec.target_ratio
+    passing_donors = [
+        evaluation
         for evaluation in evaluations
         if evaluation.passed
         and _recovery_key(evaluation.spec) == contract
         and evaluation.spec.target_ratio > failed.spec.target_ratio
-    })
-    if not passing_ratios:
+    ]
+    if not passing_donors:
         return None
 
     parsed_scope = parse_region_scope(failed.visual.worst_scope)
@@ -242,7 +242,17 @@ def _regional_recovery(
             return None
         existing[key] = ratio
     current_ratio = existing.get(region_key, failed.spec.target_ratio)
-    donor_ratio = next((ratio for ratio in passing_ratios if ratio > current_ratio), None)
+    effective_ratios = set()
+    for donor in passing_donors:
+        donor_overrides = dict(donor.spec.region_overrides)
+        if len(donor_overrides) != len(donor.spec.region_overrides):
+            continue
+        effective_ratios.add(
+            donor_overrides.get(region_key, donor.spec.target_ratio)
+        )
+    donor_ratio = next(
+        (ratio for ratio in sorted(effective_ratios) if ratio > current_ratio), None
+    )
     if donor_ratio is None:
         return None
     existing[region_key] = donor_ratio

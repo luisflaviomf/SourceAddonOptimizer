@@ -524,6 +524,32 @@ class SearchTests(unittest.TestCase):
         recovered = choose_next(evaluations, SearchBudget.experimental_default(), initial=())
         self.assertEqual(recovered.region_overrides, ((failed_region, 0.35),))
 
+    def test_regional_recovery_uses_donor_effective_ratio_for_same_region(self):
+        region = "r-" + "d" * 64
+        donor = evaluation_at(
+            0.35, True, candidate_id="regional-donor",
+            region_overrides=((region, 0.50),),
+        )
+        failure = evaluation_at(
+            0.30, False, candidate_id="global-failure", worst_scope=f"{region}/bind",
+        )
+
+        recovered = choose_next(
+            [donor, failure], SearchBudget.experimental_default(), initial=(),
+        )
+
+        self.assertEqual(recovered.region_overrides, ((region, 0.50),))
+        repeated_failure = evaluation_at(
+            0.30, False, candidate_id=recovered.candidate_id,
+            worst_scope=f"{region}/bind", region_overrides=recovered.region_overrides,
+        )
+        after_maximum = choose_next(
+            [donor, failure, repeated_failure],
+            SearchBudget.experimental_default(), initial=(),
+        )
+        self.assertNotIn("-regions-", after_maximum.candidate_id)
+        self.assertEqual(after_maximum.region_overrides, ((region, 0.50),))
+
     def test_bracket_and_recovery_never_mix_strategies(self):
         region = "r-" + "c" * 64
         evaluations = [
