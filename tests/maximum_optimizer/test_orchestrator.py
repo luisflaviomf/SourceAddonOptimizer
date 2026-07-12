@@ -19,6 +19,12 @@ from maximum_optimizer.domain import (
     StructuralFingerprint,
     ValidationResult,
 )
+from maximum_optimizer.fidelity_selection import (
+    GENERAL_BODY_DETAIL,
+    ROUND_RIGID,
+    FamilyFidelitySelection,
+    SourceFidelityAudit,
+)
 from maximum_optimizer.orchestrator import (
     AttemptReport,
     MaximumConfigError,
@@ -73,6 +79,23 @@ def _profile(path: Path) -> Path:
     return path
 
 
+def _typed_profile(path: Path) -> Path:
+    limits = json.loads(_profile(path).read_text(encoding="utf-8"))["limits"]
+    payload = {
+        "schema": 2,
+        "version": "test-typed-v1",
+        "calibrated": True,
+        "corpus_hash": "b" * 64,
+        "selector": "audited-original-round-family-v1",
+        "profiles": {
+            GENERAL_BODY_DETAIL: {"limits": {**limits, "edge_error": 0.2}},
+            ROUND_RIGID: {"limits": {**limits, "edge_error": 0.05}},
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def _family(root: Path, name: str = "test") -> FamilyManifest:
     source = root / "source" / name
     source.mkdir(parents=True)
@@ -102,6 +125,7 @@ class FakeAdapters:
         self.cancel_during_visual = False
         self.cancel_event = None
         self.extra_collision = False
+        self.visual_profiles: list[tuple[str, str, str]] = []
 
     def inventory(self, config):
         return self._families
@@ -141,6 +165,9 @@ class FakeAdapters:
         )
 
     def visual(self, manifest, control, candidate, profile):
+        self.visual_profiles.append(
+            (manifest.model_rel, candidate.spec.candidate_id, profile.version)
+        )
         if self.cancel_during_visual:
             self.cancel_event.set()
         passed = candidate.spec.candidate_id != "candidate-40"
@@ -415,6 +442,112 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(candidate_started["candidate_total"], self.config.budget.max_candidates + 1)
         final_payload = json.loads(report.report_path.read_text(encoding="utf-8"))
         self.assertEqual(final_payload["events"][-1]["kind"], "run_finished")
+
+    def test_legacy_profile_never_invokes_typed_selector(self):
+        def forbidden(_manifest):
+            raise AssertionError("legacy profile invoked typed selector")
+
+        report = run_maximum_addon(
+            self.config,
+            adapters=self.adapters,
+            validator=self.structural,
+            event_sink=self.events.append,
+            profile_selector=forbidden,
+        )
+
+        self.assertEqual(report.status, "success")
+        self.assertTrue(self.adapters.visual_profiles)
+        self.assertEqual(
+            {version for _family, _candidate, version in self.adapters.visual_profiles},
+            {"test-calibrated-v1"},
+        )
+
+    def test_typed_profile_is_selected_once_and_reused_for_control_and_candidates(self):
+        self.config = MaximumRunConfig(**{
+            **self.config.to_kwargs(),
+            "profile_path": _typed_profile(self.root / "typed.json"),
+        })
+        calls = []
+
+        def selector(manifest):
+            calls.append((manifest.model_rel, len(self.adapters.calls)))
+            return FamilyFidelitySelection(
+                ROUND_RIGID,
+                "all-visual-sources-round-rigid",
+                (SourceFidelityAudit("wheel.smd", True, "eligible", 2),),
+            )
+
+        report = run_maximum_addon(
+            self.config,
+            adapters=self.adapters,
+            validator=self.structural,
+            event_sink=self.events.append,
+            profile_selector=selector,
+        )
+
+        self.assertEqual(report.status, "success")
+        self.assertEqual(calls, [("test.mdl", 0)])
+        self.assertTrue(self.adapters.visual_profiles)
+        self.assertEqual(
+            {version for _family, _candidate, version in self.adapters.visual_profiles},
+            {"test-typed-v1:round-rigid-v1"},
+        )
+        audit = json.loads(
+            (self.config.work_dir / "logs/fidelity-profile-selection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(audit["selector"], "audited-original-round-family-v1")
+        self.assertEqual(audit["families"][0]["profile_class"], ROUND_RIGID)
+        self.assertEqual(audit["families"][0]["sources"][0]["source"], "wheel.smd")
+
+    def test_typed_general_fallback_continues_with_general_profile(self):
+        self.config = MaximumRunConfig(**{
+            **self.config.to_kwargs(),
+            "profile_path": _typed_profile(self.root / "typed.json"),
+        })
+
+        report = run_maximum_addon(
+            self.config,
+            adapters=self.adapters,
+            validator=self.structural,
+            profile_selector=lambda _manifest: FamilyFidelitySelection(
+                GENERAL_BODY_DETAIL,
+                "body.dmx:unsupported-source-format:.dmx",
+                (SourceFidelityAudit(
+                    "body.dmx", False, "unsupported-source-format:.dmx", None
+                ),),
+            ),
+        )
+
+        self.assertEqual(report.status, "success")
+        self.assertEqual(
+            {version for _family, _candidate, version in self.adapters.visual_profiles},
+            {"test-typed-v1:general-body-detail-v1"},
+        )
+
+    def test_typed_selector_error_fails_family_before_any_build(self):
+        self.config = MaximumRunConfig(**{
+            **self.config.to_kwargs(),
+            "profile_path": _typed_profile(self.root / "typed.json"),
+        })
+
+        report = run_maximum_addon(
+            self.config,
+            adapters=self.adapters,
+            validator=self.structural,
+            profile_selector=lambda _manifest: (_ for _ in ()).throw(ValueError("bad source")),
+        )
+
+        self.assertEqual(report.status, "failed")
+        self.assertEqual(report.families[0].status, "failed")
+        self.assertEqual(self.adapters.calls, [])
+        audit = json.loads(
+            (self.config.work_dir / "logs/fidelity-profile-selection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(audit["families"][0]["status"], "failed")
 
     def test_resume_reuses_only_complete_keyed_candidate_results(self):
         first = self.run_optimizer()

@@ -12,7 +12,7 @@ import threading
 import tempfile
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
@@ -36,6 +36,13 @@ from .domain import (
     GateFailure,
     SearchBudget,
     ValidationResult,
+)
+from .fidelity_selection import (
+    GENERAL_BODY_DETAIL,
+    LEGACY_GLOBAL,
+    FamilyFidelitySelection,
+    classify_original_family,
+    load_fidelity_profile_set,
 )
 from .meshopt_bridge import MESHOPT_ENGINE_PREFERRED
 from .processes import ProcessCancelledError, run_process
@@ -1292,12 +1299,13 @@ def run_maximum_addon(
     adapters: AdapterSet | None = None,
     validator: StructuralValidator | None = None,
     event_sink: EventSink | None = None,
+    profile_selector: Callable[[FamilyManifest], FamilyFidelitySelection] | None = None,
 ) -> MaximumRunReport:
     if not isinstance(config, MaximumRunConfig):
         raise TypeError("config must be MaximumRunConfig")
     # Loading the calibrated profile is deliberately first: the production sentinel
     # must fail closed before any candidate, cache mutation, or output promotion.
-    profile = load_profile(config.profile_path)
+    profile_set = load_fidelity_profile_set(config.profile_path)
     validate_run_paths(config, create=False)
     _recover_output_transaction(config.output_dir)
     validate_run_paths(config, create=True)
@@ -1346,6 +1354,7 @@ def run_maximum_addon(
     report_path = config.work_dir / "logs" / "maximum_report.json"
     versions = dict(adapter_set.tool_versions())
     versions["profile_sha256"] = _sha256_file(config.profile_path, cancel)
+    versions["fidelity_selector"] = profile_set.mode
     dependency = _dependency_proof(config, cancel)
     versions["dependency_digest"] = str(dependency["digest"])
     if any(
@@ -1358,6 +1367,8 @@ def run_maximum_addon(
     control_snapshots: list[CompiledSizeSnapshot] = []
     selected_snapshots: list[CompiledSizeSnapshot] = []
     selected_builds: dict[str, CandidateBuild] = {}
+    selection_audit_path = config.work_dir / "logs" / "fidelity-profile-selection.json"
+    selection_records: list[dict[str, Any]] = []
     cache = CandidateCache(config.work_dir / "cache")
     event_history: list[dict[str, Any]] = []
     candidate_counts: dict[str, int] = {}
@@ -1370,6 +1381,13 @@ def run_maximum_addon(
         heuristic_map=config.work_dir / "logs" / "selective_policy_map.json",
         meshopt_dll=config.repo_root / "maximum_optimizer" / "native" / "bin" / "win-x64" / "meshopt_bridge.dll",
     )
+
+    def write_selection_audit() -> None:
+        atomic_write_json(selection_audit_path, {
+            "schema": 1,
+            "selector": profile_set.mode,
+            "families": selection_records,
+        })
 
     def partial(status: str) -> None:
         atomic_write_json(
@@ -1385,6 +1403,7 @@ def run_maximum_addon(
                 "events": tuple(event_history),
             },
         )
+        write_selection_audit()
 
     def emit(kind: str, **payload: Any) -> None:
         if kind not in EVENT_KINDS:
@@ -1510,6 +1529,70 @@ def run_maximum_addon(
         original_family = _family_snapshot(original, manifest.model_rel)
         attempts: list[AttemptReport] = []
         emit("family_started", family=manifest.model_rel, index=family_index, total=total_family_count)
+        try:
+            if profile_set.mode == LEGACY_GLOBAL:
+                profile_class = LEGACY_GLOBAL
+                profile = profile_set.profile_for(GENERAL_BODY_DETAIL)
+                reason = "legacy-global-profile"
+                sources: list[dict[str, Any]] = []
+            else:
+                if profile_selector is not None:
+                    selection = profile_selector(manifest)
+                else:
+                    original_qcs = _matching_qcs(
+                        manifest.source_dir, manifest.model_rel, optimized=False
+                    )
+                    if len(original_qcs) != 1:
+                        raise ValueError(
+                            "typed fidelity selection requires exactly one original QC"
+                        )
+                    selection = classify_original_family(
+                        parse_qc_graph(original_qcs[0], manifest.source_dir)
+                    )
+                if not isinstance(selection, FamilyFidelitySelection):
+                    raise TypeError("profile selector returned an invalid selection")
+                profile_class = selection.profile_class
+                profile = profile_set.profile_for(profile_class)
+                reason = selection.reason
+                sources = [asdict(source) for source in selection.sources]
+            selection_records.append({
+                "family_id": manifest.family_id,
+                "model_rel": manifest.model_rel,
+                "status": "selected",
+                "profile_class": profile_class,
+                "reason": reason,
+                "version": profile.version,
+                "corpus_hash": profile.corpus_hash,
+                "sources": sources,
+            })
+            write_selection_audit()
+        except Exception as exc:
+            selection_records.append({
+                "family_id": manifest.family_id,
+                "model_rel": manifest.model_rel,
+                "status": "failed",
+                "profile_class": None,
+                "reason": f"classification-error:{type(exc).__name__}",
+                "version": None,
+                "corpus_hash": profile_set.corpus_hash,
+                "sources": [],
+            })
+            write_selection_audit()
+            outcome = FamilyRunOutcome(
+                manifest.family_id, manifest.model_rel, "failed", None,
+                original_family, None, original_family, {}, tuple(attempts),
+                f"fidelity profile selection failed: {exc}", {}, {},
+                {"source": "original-preserved"},
+            )
+            outcomes.append(outcome)
+            selected_snapshots.append(original_family)
+            emit(
+                "family_finished",
+                family=manifest.model_rel,
+                status="failed",
+                reason=outcome.reason,
+            )
+            continue
         control_spec = CandidateSpec("roundtrip-control", "blender", 1.0, 0.0, "roundtrip-control")
         control_build: CandidateBuild | None = None
         control_size: CompiledSizeSnapshot | None = None
