@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -553,6 +554,30 @@ print(json.dumps({{"owned": owned, "entry": str(entry)}}))
         self.assertLess(tree_index, rename_index)
         self.assertTrue(root_flushes)
         self.assertGreater(root_flushes[-1], rename_index)
+
+    def test_validated_store_flushes_read_only_payload_on_windows(self):
+        source_file = self.source / "model.mdl"
+        source_file.chmod(stat.S_IREAD)
+        try:
+            final, owned = self.cache.store_validated(
+                self.key, self.source, {},
+                finalize_staging=lambda staging: (
+                    staging / "maximum_integrity.json"
+                ).write_text('{"sealed":true}', encoding="utf-8"),
+                validate_existing=lambda _entry: None,
+            )
+            self.assertTrue(owned)
+            self.assertTrue((final / "payload/model.mdl").is_file())
+        finally:
+            source_file.chmod(stat.S_IWRITE | stat.S_IREAD)
+
+    def test_validated_mutex_identity_includes_cache_root_and_key(self):
+        first = cache_module._validated_mutex_name(self.root, self.key.digest)
+        other_root = cache_module._validated_mutex_name(
+            self.root / "other", self.key.digest
+        )
+        other_key = cache_module._validated_mutex_name(self.root, "8" * 64)
+        self.assertEqual(len({first, other_root, other_key}), 3)
 
     def test_store_quarantines_invalid_final_and_promotes_without_merging(self):
         final = self.create_final_entry(None)

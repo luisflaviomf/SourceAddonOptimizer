@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import threading
 import uuid
 from contextlib import contextmanager
@@ -37,7 +38,9 @@ def _validated_key_lock(digest: str):
 
 
 @contextmanager
-def _cross_process_cache_lock(root: Path, digest: str):
+def _cross_process_cache_lock(
+    root: Path, digest: str, cancel_check: Callable[[], None],
+):
     if os.name == "nt":
         import ctypes
         from ctypes import wintypes
@@ -53,17 +56,30 @@ def _cross_process_cache_lock(root: Path, digest: str):
         kernel32.ReleaseMutex.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
         kernel32.CloseHandle.restype = wintypes.BOOL
-        name = "Local\\GmodAddonOptimizer-RecoveryCache-" + digest
+        name = _validated_mutex_name(root, digest)
         handle = kernel32.CreateMutexW(None, False, name)
         if not handle:
             raise OSError(ctypes.get_last_error(), "cannot create recovery cache mutex")
+        acquired = False
         try:
-            result = kernel32.WaitForSingleObject(handle, 30_000)
-            if result not in {0x00000000, 0x00000080}:
-                raise TimeoutError("timed out acquiring recovery cache mutex")
+            while not acquired:
+                cancel_check()
+                result = kernel32.WaitForSingleObject(handle, 30_000)
+                if result in {0x00000000, 0x00000080}:
+                    acquired = True
+                elif result == 0x00000102:
+                    continue
+                elif result == 0xFFFFFFFF:
+                    raise OSError(
+                        ctypes.get_last_error(),
+                        "failed acquiring recovery cache mutex",
+                    )
+                else:
+                    raise OSError(result, "cannot acquire recovery cache mutex")
             yield
         finally:
-            kernel32.ReleaseMutex(handle)
+            if acquired:
+                kernel32.ReleaseMutex(handle)
             kernel32.CloseHandle(handle)
         return
     import fcntl
@@ -77,6 +93,13 @@ def _cross_process_cache_lock(root: Path, digest: str):
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+
+
+def _validated_mutex_name(root: Path, digest: str) -> str:
+    root_identity = hashlib.sha256(
+        (str(root.resolve()).casefold() + "\0" + digest).encode("utf-8")
+    ).hexdigest()
+    return "Local\\GmodAddonOptimizer-RecoveryCache-" + root_identity
 
 
 class AtomicReplaceError(RuntimeError):
@@ -183,11 +206,21 @@ def _flush_tree(root: Path) -> None:
             path = parent / name
             if _is_symlink(path):
                 raise ValueError("validated cache tree contains a symlink")
-            descriptor = os.open(path, os.O_RDWR if os.name == "nt" else os.O_RDONLY)
+            original_mode = path.stat().st_mode
+            made_writable = os.name == "nt" and not (original_mode & stat.S_IWRITE)
+            if made_writable:
+                path.chmod(original_mode | stat.S_IWRITE)
             try:
-                os.fsync(descriptor)
+                descriptor = os.open(
+                    path, os.O_RDWR if os.name == "nt" else os.O_RDONLY
+                )
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
             finally:
-                os.close(descriptor)
+                if made_writable:
+                    path.chmod(original_mode)
     for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
         _flush_directory(directory)
 
@@ -399,10 +432,11 @@ class CandidateCache:
         finalize_staging: Callable[[Path], None],
         validate_existing: Callable[[Path], None],
         copy_function: Callable[[str, str], str | os.PathLike[str]] = shutil.copy2,
+        cancel_check: Callable[[], None] = lambda: None,
     ) -> tuple[Path, bool]:
         """Publish a recovery entry only after private-staging semantic validation."""
         with _validated_key_lock(key.digest):
-            with _cross_process_cache_lock(self.root, key.digest):
+            with _cross_process_cache_lock(self.root, key.digest, cancel_check):
                 return self._store_validated_locked(
                     key, source_dir, metadata,
                     finalize_staging=finalize_staging,

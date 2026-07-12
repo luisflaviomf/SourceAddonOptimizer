@@ -567,6 +567,373 @@ class OrchestratorTests(unittest.TestCase):
             )
         self.assertFalse((entry / "complete.json").exists())
 
+    def test_recovery_cache_complete_marker_validates_and_detects_mutation(self):
+        from maximum_optimizer.cache import CandidateCache, CacheKey
+
+        source = self.root / "recovery-cache-source"
+        source.mkdir()
+        (source / "maximum_cache_record.json").write_text("{}", encoding="utf-8")
+        (source / "artifact.bin").write_bytes(b"authorized")
+        key = CacheKey("7" * 64)
+        cache = CandidateCache(self.root / "recovery-cache")
+        entry, owned = cache.store_validated(
+            key, source, {"candidate": "recovery"},
+            finalize_staging=lambda staging: orchestrator_module._seal_cache_entry(
+                staging, None
+            ),
+            validate_existing=lambda _entry: None,
+        )
+
+        self.assertTrue(owned)
+        self.assertTrue(orchestrator_module._verify_recovery_cache_entry(
+            entry, key, threading.Event()
+        ))
+        (entry / "metadata.json").write_text("{}", encoding="utf-8")
+        self.assertFalse(orchestrator_module._verify_recovery_cache_entry(
+            entry, key, threading.Event()
+        ))
+
+    def test_real_typed_recovery_boundary_and_final_cache_transaction_pass(self):
+        from dataclasses import replace
+        from tests.maximum_optimizer.test_focused_cache import (
+            _cache_payload, _material_proof, _render_file_proofs,
+            _validation_metrics, _write_render_side,
+        )
+        from maximum_optimizer.cache import CandidateCache, CacheKey
+        from maximum_optimizer.composite import (
+            build_recovery_source_snapshot, build_source_tree_manifest,
+            candidate_spec_sha256, optimizer_contract_sha256,
+            recovery_candidate_spec,
+        )
+        from maximum_optimizer.domain import (
+            ChangedSourceProof, CompositeRecipe, CompositionProof,
+            FocusedEvidenceRef, SourceOverlay,
+            changed_source_proof_payload, composition_proof_payload,
+            source_overlay_payload,
+        )
+        from maximum_optimizer.focused_cache import (
+            FocusedEvidenceContext, FocusedRecoveryContext,
+            build_final_whole_authorization_evidence,
+            build_focused_recovery_evidence, build_focused_render_evidence,
+            compile_manifest_sha256, focused_gate_evidence_payload,
+            focused_recovery_evidence_payload,
+        )
+        from maximum_optimizer.focused_regions import FocusSelection
+
+        def digest(value):
+            return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+        event = threading.Event()
+        workspace = self.root / "real-recovery-boundary"
+        index_payload = _whole_index_payload(workspace)
+        source = workspace / "src"
+        (source / "main_OPT.qc").write_text(
+            '$modelname "test.mdl"\n$body body "test_OPT.smd"\n',
+            encoding="utf-8",
+        )
+        graph = parse_qc_graph(source / "main_OPT.qc", source)
+        source_manifest = build_source_tree_manifest(
+            source, graph, "candidate-source-v1", event
+        )
+        base_source = self.root / "real-recovery-base"
+        base_source.mkdir()
+        (base_source / "test_OPT.smd").write_bytes(b"compressed-source")
+        (base_source / "main_OPT.qc").write_text(
+            '$modelname "test.mdl"\n$body body "test_OPT.smd"\n',
+            encoding="utf-8",
+        )
+        base_manifest = build_source_tree_manifest(
+            base_source,
+            parse_qc_graph(base_source / "main_OPT.qc", base_source),
+            "candidate-source-v1", event,
+        )
+        base_spec = CandidateSpec(
+            "base", "blender", 0.4, 0.0, "blender-adaptive-v1",
+            strategy="blender-adaptive-v1", transfer="blender-native-v1",
+        )
+        cache_payload = _cache_payload()
+        whole_profile_sha = digest(cache_payload["whole_profile"])
+        focused_profile_sha = digest(cache_payload["focused_profile"])
+        original_snapshot = build_recovery_source_snapshot(
+            kind="original", family_id=self.family.family_id,
+            family_input_sha256=self.family.input_hash,
+            optimizer_contract_sha256=optimizer_contract_sha256(base_spec),
+            whole_profile_sha256=whole_profile_sha,
+            focused_profile_sha256=focused_profile_sha,
+            dependency_proof_sha256=cache_payload["dependency_proof_sha256"],
+            candidate_id=None, candidate_cache_digest=None,
+            source_root=source, source_manifest=source_manifest,
+            focused_evidence=(),
+        )
+        target = _focus_target()
+        base_file = next(
+            item for item in base_manifest.files if item.file_identity == "test.smd"
+        )
+        current_file = next(
+            item for item in source_manifest.files if item.file_identity == "test.smd"
+        )
+        overlay = SourceOverlay(
+            "test.smd", "exact-original", target.region_key,
+            base_file.sha256, current_file.sha256, current_file.size,
+            original_snapshot.snapshot_sha256, None, None, None, (),
+            "donors-exhausted-v1",
+        )
+        recipe_raw = {
+            "schema": 1, "kind": "focused-recovery-v1",
+            "family_id": self.family.family_id,
+            "family_input_sha256": self.family.input_hash,
+            "base_candidate_id": "base",
+            "base_spec_sha256": candidate_spec_sha256(base_spec),
+            "base_cache_digest": "b" * 64,
+            "base_source_manifest_sha256": base_manifest.digest,
+            "optimizer_contract_sha256": optimizer_contract_sha256(base_spec),
+            "whole_profile_sha256": whole_profile_sha,
+            "focused_profile_sha256": focused_profile_sha,
+            "dependency_proof_sha256": cache_payload["dependency_proof_sha256"],
+            "round_index": 0, "direct_ratio": None,
+            "overlays": [source_overlay_payload(overlay)],
+            "selector_version": "surface-risk-top-k-v1",
+            "prefilter_version": None,
+        }
+        recipe = CompositeRecipe(
+            1, "focused-recovery-v1", self.family.family_id,
+            self.family.input_hash, "base", candidate_spec_sha256(base_spec),
+            "b" * 64, base_manifest.digest,
+            optimizer_contract_sha256(base_spec), whole_profile_sha,
+            focused_profile_sha, cache_payload["dependency_proof_sha256"],
+            0, None, (overlay,), "surface-risk-top-k-v1", None,
+            digest(recipe_raw),
+        )
+        spec = recovery_candidate_spec(base_spec, recipe)
+        changed = ChangedSourceProof(
+            "test.smd", "test_OPT.smd", base_file.size, base_file.sha256,
+            current_file.size, current_file.sha256,
+            digest(source_overlay_payload(overlay)),
+            original_snapshot.snapshot_sha256,
+        )
+        composition_raw = {
+            "schema": 1, "recipe_sha256": recipe.recipe_sha256,
+            "base_manifest_sha256": base_manifest.digest,
+            "composed_manifest_sha256": source_manifest.digest,
+            "changed_sources": [changed_source_proof_payload(changed)],
+        }
+        composition = CompositionProof(
+            1, recipe.recipe_sha256, base_manifest.digest,
+            source_manifest.digest, (changed,), digest(composition_raw),
+        )
+        compiled = workspace / "compiled/models"
+        compiled.mkdir(parents=True)
+        (compiled / "test.mdl").write_bytes(b"compiled-recovery")
+        key = CacheKey("9" * 64)
+        build = CandidateBuild(
+            spec, workspace, source / "main_OPT.qc", compiled, {},
+            {"test.mdl": "candidate-compile"}, (), None,
+        )
+        compile_files = orchestrator_module._current_recovery_compile_files(
+            self.family, build, event
+        )
+        compile_sha = compile_manifest_sha256(compile_files)
+        structural_validation = ValidationResult(True)
+        structural = ProductionAdapters._structural_recovery_evidence(
+            key.digest, composition.evidence_sha256, compile_sha,
+            self.family, structural_validation,
+        )
+        selection = FocusSelection(
+            target.selector_input_sha256, (target,), (target,)
+        )
+        expected = dict(cache_payload["expected"])
+        expected["region_key"] = target.region_key
+        initial_reference = self.root / "initial-focused/reference"
+        initial_candidate = self.root / "initial-focused/candidate"
+        _write_render_side(initial_reference)
+        _write_render_side(initial_candidate)
+        failed_metrics = _validation_metrics(0.0)
+        failed_metrics["edge_error"] = 0.2
+        failed_metrics["fidelity_score"] = 0.0
+        initial_validation = ValidationResult(
+            False,
+            (GateFailure("edge_error", "bind", 0.2, 0.05, "failed"),),
+            failed_metrics, "bind",
+        )
+        material = _material_proof()
+        initial_record = build_focused_render_evidence(
+            target, initial_validation, expected,
+            _render_file_proofs(initial_reference, initial_candidate),
+            material["digest"], False,
+        )
+        base_context = FocusedEvidenceContext(
+            1, self.family.family_id, "base",
+            FocusedRegionPolicy(1, "surface-risk-top-k-v1", 1),
+            cache_payload["whole_profile"], cache_payload["focused_profile"],
+            cache_payload["trusted_evidence_v3_sha256"],
+            cache_payload["dependency_proof_sha256"],
+            {target.region_key: material},
+        )
+        initial_auth = focused_gate_evidence_payload(
+            base_context, selection, (initial_record,)
+        )
+        recovery_context = FocusedRecoveryContext(
+            2, base_context, "b" * 64, initial_auth["authorization_sha256"]
+        )
+        focused_root = (
+            workspace / "focused-authorized/round-000"
+            / f"{target.rank:03d}-{target.region_key}"
+        )
+        focused_reference = focused_root / "reference"
+        focused_candidate = focused_root / "candidate"
+        _write_render_side(focused_reference)
+        _write_render_side(focused_candidate)
+        pass_validation = ValidationResult(
+            True, metrics=_validation_metrics(0.0)
+        )
+        final_record = build_focused_render_evidence(
+            target, pass_validation, expected,
+            _render_file_proofs(focused_reference, focused_candidate),
+            material["digest"], False,
+        )
+        index_payload["family"] = {
+            "family_id": self.family.family_id,
+            "model_rel": self.family.model_rel,
+            "input_sha256": self.family.input_hash,
+        }
+        index_payload["candidate"] = {
+            "candidate_id": spec.candidate_id,
+            "spec": spec.cache_payload(), "cache_digest": key.digest,
+        }
+        index_payload["dependency"] = {
+            "digest": recipe.dependency_proof_sha256,
+        }
+        whole_seal = orchestrator_module._write_whole_visual_index(
+            workspace / "logs/whole-visual-index.json", workspace,
+            index_payload, event,
+        )
+        whole_validation = ValidationResult(
+            True, metrics=_validation_metrics(0.0)
+        )
+        whole_render_sha = digest({
+            "whole_index_sha256": whole_seal,
+            "validation": orchestrator_module.validation_result_payload(
+                whole_validation
+            ),
+        })
+        final_whole = build_final_whole_authorization_evidence(
+            spec.candidate_id, key.digest, recipe.recipe_sha256,
+            composition.evidence_sha256, compile_sha,
+            "logs/whole-visual-index.json", whole_seal,
+            whole_render_sha, whole_validation,
+        )
+        recovery = build_focused_recovery_evidence(
+            0, "authorized", recipe, composition, (changed,), (),
+            compile_files, structural, (final_record,), final_whole,
+        )
+        authorization = focused_recovery_evidence_payload(
+            recovery_context, selection, (initial_record,), (recovery,)
+        )
+        snapshot = build_recovery_source_snapshot(
+            kind="candidate", family_id=self.family.family_id,
+            family_input_sha256=self.family.input_hash,
+            optimizer_contract_sha256=recipe.optimizer_contract_sha256,
+            whole_profile_sha256=recipe.whole_profile_sha256,
+            focused_profile_sha256=recipe.focused_profile_sha256,
+            dependency_proof_sha256=recipe.dependency_proof_sha256,
+            candidate_id=spec.candidate_id,
+            candidate_cache_digest=key.digest, source_root=source,
+            source_manifest=source_manifest,
+            focused_evidence=(FocusedEvidenceRef(
+                target.region_key, final_record.evidence_sha256
+            ),),
+        )
+        build = replace(build, source_snapshot=snapshot)
+        region = FocusRegionResult(
+            target, pass_validation, final_record.evidence_sha256, False
+        )
+        focused_validation = orchestrator_module._aggregate_visual_results((
+            (target.region_key, pass_validation),
+        ))
+        gate = FocusedGateResult(
+            focused_validation, (target,), {target.region_key: region},
+            recovery.evidence_sha256,
+        )
+        evaluation = CandidateEvaluation(
+            spec,
+            orchestrator_module._family_snapshot(
+                orchestrator_module.scan_compiled_models(compiled),
+                self.family.model_rel,
+            ),
+            structural_validation,
+            orchestrator_module._aggregate_focused_gate(whole_validation, gate),
+            compiled, whole_validation, {target.region_key: region},
+        )
+        result = orchestrator_module.FocusedRecoveryAdapterResult(
+            build, evaluation, recovery, authorization,
+            recovery_context, (initial_record,), selection, (recovery,),
+        )
+        validated = orchestrator_module._validate_authorized_recovery_boundary(
+            result=result, manifest=self.family, recipe=recipe,
+            cache_key=key, cancel_event=event,
+        )
+        self.assertEqual(canonical_json(validated), canonical_json(authorization))
+
+        orchestrator_module._store_cache_record(
+            workspace, build, evaluation.structural, evaluation.visual,
+            key=key, manifest=self.family,
+            dependency_digest=recipe.dependency_proof_sha256,
+        )
+        (workspace / "logs/focused-region-gate.json").write_text(
+            canonical_json(authorization), encoding="utf-8"
+        )
+        cache = CandidateCache(self.root / "real-recovery-cache")
+        entry, owned = cache.store_validated(
+            key, workspace, {"candidate": spec.candidate_id},
+            finalize_staging=lambda staging: (
+                orchestrator_module._seal_then_validate_private_recovery_entry(
+                    staging,
+                    lambda: None,
+                )
+            ),
+            validate_existing=lambda _entry: None,
+            copy_function=lambda src, dst: orchestrator_module._copy_file_cancellable(
+                src, dst, event
+            ),
+        )
+        self.assertTrue(owned)
+        self.assertTrue(orchestrator_module._verify_recovery_cache_entry(
+            entry, key, event
+        ))
+        cached_build = orchestrator_module._load_cached_build(
+            entry, spec, key=key, manifest=self.family,
+            dependency_digest=recipe.dependency_proof_sha256,
+            materialized_workspace=entry / "payload", cancel_event=event,
+            optimizer_contract_digest=recipe.optimizer_contract_sha256,
+            whole_profile_digest=recipe.whole_profile_sha256,
+            focused_profile_digest=recipe.focused_profile_sha256,
+        )
+        cached_authorization = json.loads(
+            (entry / "payload/logs/focused-region-gate.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        cached_evaluation = replace(
+            evaluation,
+            size=orchestrator_module._family_snapshot(
+                orchestrator_module.scan_compiled_models(
+                    cached_build.compiled_models_dir
+                ), self.family.model_rel,
+            ),
+            compiled_models_dir=cached_build.compiled_models_dir,
+        )
+        cached_result = replace(
+            result, build=cached_build, evaluation=cached_evaluation,
+            authorization=cached_authorization,
+        )
+        cached_validated = orchestrator_module._validate_authorized_recovery_boundary(
+            result=cached_result, manifest=self.family, recipe=recipe,
+            cache_key=key, cancel_event=event,
+        )
+        self.assertEqual(
+            canonical_json(cached_validated), canonical_json(authorization)
+        )
+
     def test_outer_recovery_boundary_rehashes_focused_rerun_snapshots(self):
         from tests.maximum_optimizer.test_focused_cache import (
             _cache_payload, _render_file_proofs, _target, _validation_metrics,

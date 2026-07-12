@@ -875,16 +875,6 @@ def _verify_recovery_cache_entry(
 ) -> bool:
     if not _verify_cache_entry(cache_entry, cancel_event):
         return False
-
-
-def _seal_then_validate_private_recovery_entry(
-    entry: Path,
-    semantic_validator: Callable[[], None],
-) -> None:
-    _seal_cache_entry(entry, None)
-    semantic_validator()
-    if not _verify_cache_entry(entry, None):
-        raise ValueError("focused recovery cache integrity is invalid")
     try:
         complete = json.loads(_read_regular_no_follow(
             cache_entry / "complete.json", cancel_event,
@@ -908,6 +898,16 @@ def _seal_then_validate_private_recovery_entry(
         return True
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
+
+
+def _seal_then_validate_private_recovery_entry(
+    entry: Path,
+    semantic_validator: Callable[[], None],
+) -> None:
+    _seal_cache_entry(entry, None)
+    semantic_validator()
+    if not _verify_cache_entry(entry, None):
+        raise ValueError("focused recovery cache integrity is invalid")
 
 
 def _cache_record_path(workspace: Path) -> Path:
@@ -1438,7 +1438,10 @@ def _validate_authorized_recovery_boundary(
         ):
             raise ValueError("authorized recovery focused evaluation differs")
     focused_gate = FocusedGateResult(
-        ValidationResult(all(record.validation.passed for record in final_records)),
+        _aggregate_visual_results(tuple(
+            (record.target.region_key, record.validation)
+            for record in final_records
+        )),
         tuple(record.target for record in final_records),
         dict(evaluation.focused_by_region), result.evidence.evidence_sha256,
     )
@@ -2766,6 +2769,9 @@ def run_maximum_addon(
                             ),
                             copy_function=lambda source, destination: _copy_file_cancellable(
                                 source, destination, cancel
+                            ),
+                            cancel_check=lambda: _check_cancelled(
+                                cancel, "cancelled waiting for recovery cache lock"
                             ),
                         )
                         recovery_cache_sealed = True
