@@ -38,6 +38,11 @@ from maximum_optimizer.orchestrator import (
 )
 from maximum_optimizer.reporting import canonical_json, event_line
 from maximum_optimizer.processes import ProcessCancelledError, ProcessResult
+from maximum_optimizer.regions import (
+    build_region_manifest,
+    load_region_manifest_payload,
+    resolve_region_assignments,
+)
 from maximum_optimizer.visual_validation import load_profile
 
 
@@ -735,11 +740,44 @@ class OrchestratorTests(unittest.TestCase):
             workspace, qc, compiled, {}, {"test.mdl": "candidate-compile"}, (),
         )
         commands = []
+        full_region_manifest = build_region_manifest((
+            ("mesh.smd", "Body", ("material/base",)),
+            ("lod.smd", "Body", ("material/lod",)),
+        ))
+        def write_full_region_manifest():
+            (workspace / "render-source" / "maximum_region_manifest.json").write_text(
+                canonical_json(full_region_manifest.to_payload()) + "\n",
+                encoding="utf-8",
+            )
+        rendered_region_sources = []
         def runner(command, **kwargs):
             commands.append(tuple(str(item) for item in command))
             if "--python-expr" in command:
-                (workspace / "render-source" / "maximum_region_manifest.json").write_text("{}", encoding="utf-8")
+                write_full_region_manifest()
             else:
+                region_manifest_path = Path(command[command.index("--region-manifest") + 1])
+                region_manifest = load_region_manifest_payload(json.loads(
+                    region_manifest_path.read_text(encoding="utf-8")
+                ))
+                before_paths = tuple(
+                    Path(command[index + 1])
+                    for index, item in enumerate(command)
+                    if item == "--before"
+                )
+                observations = tuple(
+                    (
+                        path.relative_to(region_manifest_path.parent).as_posix(),
+                        "Body",
+                        ("material/lod",) if path.name == "lod.smd" else ("material/base",),
+                    )
+                    for path in before_paths
+                )
+                resolve_region_assignments(
+                    region_manifest, observations, require_complete=True
+                )
+                rendered_region_sources.append({
+                    entry.descriptor.source_identity for entry in region_manifest.entries
+                })
                 out = Path(command[command.index("--out") + 1])
                 for side in ("original", "optimized"):
                     (out / side).mkdir(parents=True)
@@ -759,6 +797,11 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(renders[0][renders[0].index("--before") + 1].endswith("mesh.smd"))
         self.assertTrue(renders[1][renders[1].index("--before") + 1].endswith("lod.smd"))
         self.assertTrue(renders[1][renders[1].index("--after") + 1].endswith("lod_OPT.smd"))
+        self.assertEqual(rendered_region_sources, [{"mesh.smd"}, {"lod.smd"}])
+        self.assertNotEqual(
+            renders[0][renders[0].index("--region-manifest") + 1],
+            renders[1][renders[1].index("--region-manifest") + 1],
+        )
         for render in renders:
             self.assertEqual(render[render.index("--poses") + 1], "bind:0,representative:10")
             self.assertTrue(render[render.index("--animation-before") + 1].endswith("anim.smd"))
@@ -766,7 +809,7 @@ class OrchestratorTests(unittest.TestCase):
 
         def no_fresh_output(command, **kwargs):
             if "--python-expr" in command:
-                (workspace / "render-source" / "maximum_region_manifest.json").write_text("{}", encoding="utf-8")
+                write_full_region_manifest()
             return ProcessResult(tuple(str(item) for item in command), 0, 0.01, kwargs["log_path"])
         with patch("maximum_optimizer.orchestrator.run_process", side_effect=no_fresh_output):
             with self.assertRaisesRegex(CandidateBuildError, "fresh manifest"):

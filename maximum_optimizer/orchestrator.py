@@ -40,6 +40,7 @@ from .meshopt_bridge import MESHOPT_ENGINE_PREFERRED
 from .processes import ProcessCancelledError, run_process
 from .qc_inventory import _inventory_qc, build_family_manifests
 from .qc_graph import QcGraph, parse_qc_graph
+from .regions import filter_region_manifest, load_region_manifest_payload
 from .reporting import atomic_write_json, canonical_payload, deep_freeze, event_line
 from .search import choose_next, select_winner
 from .structural_validation import validate_structure
@@ -1910,6 +1911,16 @@ class ProductionAdapters:
                 log_path=manifest_log,
             )
         region_manifest = source_root / "maximum_region_manifest.json"
+        try:
+            full_region_manifest = load_region_manifest_payload(
+                json.loads(region_manifest.read_text(encoding="utf-8"))
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise CandidateBuildError(
+                f"region manifest is invalid: {exc}",
+                stage="render",
+                log_path=manifest_log,
+            ) from exc
         candidate_source_root = candidate.workspace / "src"
         original_qcs = _matching_qcs(manifest.source_dir, manifest.model_rel, optimized=False)
         if len(original_qcs) != 1:
@@ -1962,6 +1973,28 @@ class ProductionAdapters:
             after = tuple(after_sources)
             if any(not path.is_file() for path in (*before, *after)):
                 raise CandidateBuildError("render source pairs are missing", stage="render")
+            state_region_manifest = region_manifest.with_name(
+                f"maximum_region_manifest.state-{state_index:03d}-{state_name}.json"
+            )
+            try:
+                copied_source_root = source_root.resolve(strict=True)
+                source_identities = tuple(
+                    path.resolve(strict=True).relative_to(copied_source_root).as_posix()
+                    for path in before
+                )
+                state_manifest_payload = filter_region_manifest(
+                    full_region_manifest, source_identities
+                ).to_payload()
+                load_region_manifest_payload(state_manifest_payload)
+                atomic_write_json(state_region_manifest, state_manifest_payload)
+                load_region_manifest_payload(json.loads(
+                    state_region_manifest.read_text(encoding="utf-8")
+                ))
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+                raise CandidateBuildError(
+                    f"state region manifest is invalid for {state_name}: {exc}",
+                    stage="render",
+                ) from exc
             command: list[str] = [
                 str(self.config.blender_path), "--background", "--python",
                 str(self.config.repo_root / "render_previews.py"), "--",
@@ -1974,7 +2007,7 @@ class ProductionAdapters:
                 "--out", str(state_root), "--size", "512",
                 "--passes", "textured,clay", "--poses", pose_arg,
                 "--materials-root", str(self.config.addon_dir / "materials"),
-                "--region-manifest", str(region_manifest),
+                "--region-manifest", str(state_region_manifest),
             ))
             if animation is not None:
                 original_animation = source_root / animation[0].relative_to(
