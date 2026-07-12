@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import math
 import re
 import struct
@@ -41,7 +43,16 @@ class ParsedSmd:
     triangles: tuple[SmdTriangle, ...]
 
 
-def _corner(line_index: int, raw: str) -> SmdCorner:
+@dataclass(frozen=True)
+class DirectDegeneratePrefilter:
+    filtered_text: str
+    dropped_source_triangles: tuple[int, ...]
+    evidence: dict[str, object]
+
+
+def _corner(
+    line_index: int, raw: str, *, allow_invalid_normals: bool = False
+) -> SmdCorner:
     matches = tuple(re.finditer(r"\S+", raw))
     tokens = tuple(match.group(0) for match in matches)
     if len(tokens) < 9 or not tokens[0].lstrip("-").isdigit():
@@ -52,7 +63,13 @@ def _corner(line_index: int, raw: str) -> SmdCorner:
         uv = tuple(float(tokens[index]) for index in (7, 8))
     except ValueError as exc:
         raise ValueError(f"SMD corner line {line_index + 1} contains non-numeric payload") from exc
-    if not all(math.isfinite(value) for value in (*position, *normal, *uv)):
+    if (
+        not all(math.isfinite(value) for value in (*position, *uv))
+        or (
+            not allow_invalid_normals
+            and not all(math.isfinite(value) for value in normal)
+        )
+    ):
         raise ValueError(f"SMD corner line {line_index + 1} contains non-finite payload")
     if len(tokens) > 9:
         try:
@@ -71,7 +88,9 @@ def _corner(line_index: int, raw: str) -> SmdCorner:
     )
 
 
-def parse_smd_triangles(text: str) -> ParsedSmd:
+def parse_smd_triangles(
+    text: str, *, allow_invalid_normals: bool = False
+) -> ParsedSmd:
     lines = tuple(text.splitlines(keepends=True))
     section = False
     expect_material = False
@@ -94,13 +113,110 @@ def parse_smd_triangles(text: str) -> ParsedSmd:
                 raise ValueError("SMD triangle material is empty")
             material, expect_material = line, False
             continue
-        corners.append(_corner(index, raw))
+        corners.append(
+            _corner(index, raw, allow_invalid_normals=allow_invalid_normals)
+        )
         if len(corners) == 3:
             triangles.append(SmdTriangle(material, tuple(corners)))  # type: ignore[arg-type]
             corners, expect_material = [], True
     if not section or not triangles:
         raise ValueError("SMD has no triangle records")
     return ParsedSmd(lines, tuple(triangles))
+
+
+def prefilter_direct_degenerate_smd(
+    text: str, *, cross_squared_threshold: float = 1e-30
+) -> DirectDegeneratePrefilter:
+    if (
+        isinstance(cross_squared_threshold, bool)
+        or not isinstance(cross_squared_threshold, (int, float))
+        or not math.isfinite(float(cross_squared_threshold))
+        or float(cross_squared_threshold) != 1e-30
+    ):
+        raise ValueError("direct degenerate threshold must be exactly 1e-30")
+    parsed = parse_smd_triangles(text, allow_invalid_normals=True)
+    node_names: dict[int, str] = {}
+    in_nodes = False
+    for raw in parsed.lines:
+        folded = raw.strip().casefold()
+        if folded == "nodes":
+            in_nodes = True
+            continue
+        if in_nodes and folded == "end":
+            break
+        if in_nodes:
+            match = re.match(r'^\s*(-?\d+)\s+"([^"]*)"\s+-?\d+', raw)
+            if match:
+                node_names[int(match.group(1))] = match.group(2)
+
+    dropped: list[int] = []
+    removed_lines: set[int] = set()
+    records: list[dict[str, object]] = []
+    for ordinal, triangle in enumerate(parsed.triangles):
+        a, b, c = (corner.position for corner in triangle.corners)
+        ab = tuple(b[axis] - a[axis] for axis in range(3))
+        ac = tuple(c[axis] - a[axis] for axis in range(3))
+        cross = (
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        )
+        cross_squared = sum(value * value for value in cross)
+        invalid_normals = tuple(
+            corner for corner in triangle.corners
+            if (
+                not all(math.isfinite(value) for value in corner.normal)
+                or sum(value * value for value in corner.normal) <= 1e-24
+            )
+        )
+        if cross_squared <= float(cross_squared_threshold):
+            start = triangle.corners[0].line_index - 1
+            end = triangle.corners[-1].line_index
+            removed_lines.update(range(start, end + 1))
+            raw_record = "".join(parsed.lines[start : end + 1]).encode("utf-8")
+            dropped.append(ordinal)
+            records.append({
+                "ordinal": ordinal,
+                "material": triangle.material,
+                "primary_bones": [
+                    node_names.get(int(corner.tokens[0]), corner.tokens[0])
+                    for corner in triangle.corners
+                ],
+                "reason": "cross-squared-at-most-1e-30",
+                "source_sha256": hashlib.sha256(raw_record).hexdigest(),
+            })
+        elif invalid_normals:
+            raise ValueError(
+                f"invalid normal outside dropped triangle: {ordinal}"
+            )
+    filtered_text = "".join(
+        raw for index, raw in enumerate(parsed.lines) if index not in removed_lines
+    )
+    evidence_without_hash: dict[str, object] = {
+        "schema": 1,
+        "strategy": "direct-degenerate-prefilter-v1",
+        "cross_squared_threshold": float(cross_squared_threshold),
+        "source_triangle_count": len(parsed.triangles),
+        "dropped_count": len(dropped),
+        "dropped_fraction": len(dropped) / len(parsed.triangles),
+        "triangles": records,
+    }
+    encoded = (
+        json.dumps(
+            evidence_without_hash,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("ascii")
+    evidence = {
+        **evidence_without_hash,
+        "evidence_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+    return DirectDegeneratePrefilter(
+        filtered_text, tuple(dropped), evidence
+    )
 
 
 def _direct_float(value: float) -> str:
@@ -141,9 +257,18 @@ def map_imported_corners_to_smd(
     vertex_influences: Sequence[Sequence[tuple[str, float]]],
     *,
     excluded_source_triangles: frozenset[int] = frozenset(),
+    dropped_source_triangles: frozenset[int] = frozenset(),
 ) -> tuple[int, ...]:
     """Map imported loops to source corners by exact float32 tuple identity, never by ordinal."""
-    parsed = parse_smd_triangles(original_text)
+    parsed = parse_smd_triangles(
+        original_text, allow_invalid_normals=bool(dropped_source_triangles)
+    )
+    if any(
+        type(index) is not int or index < 0 or index >= len(parsed.triangles)
+        for index in dropped_source_triangles
+    ):
+        raise ValueError("dropped source triangle ordinal is invalid")
+    excluded = frozenset(excluded_source_triangles | dropped_source_triangles)
     if len(loop_normals) != len(triangles) * 3 or len(loop_uvs) != len(triangles) * 3:
         raise ValueError("imported loop attribute counts are invalid")
     if len(material_ids) != len(triangles) or len(vertex_influences) != len(positions):
@@ -196,23 +321,28 @@ def map_imported_corners_to_smd(
         )
 
     source_identities = tuple(
-        tuple(identity(c.position, c.normal, c.uv, source_influences(c)) for c in triangle.corners)
-        for triangle in parsed.triangles
+        None if index in dropped_source_triangles else tuple(
+            identity(c.position, c.normal, c.uv, source_influences(c))
+            for c in triangle.corners
+        )
+        for index, triangle in enumerate(parsed.triangles)
     )
     result: list[int] = []
-    used: set[int] = set(excluded_source_triangles)
+    used: set[int] = set(excluded)
     orders = ((0, 1, 2), (1, 2, 0), (2, 0, 1))
     def coarse(value: tuple[object, ...]) -> tuple[object, ...]:
         return (value[0], value[2], value[3])
 
     source_lookup: dict[tuple[object, ...], list[tuple[int, tuple[int, int, int]]]] = {}
     for source_triangle_index, source_triangle in enumerate(parsed.triangles):
-        if source_triangle_index in excluded_source_triangles:
+        if source_triangle_index in excluded:
             continue
+        identities = source_identities[source_triangle_index]
+        assert identities is not None
         for order in orders:
             key = (
                 source_triangle.material.casefold(),
-                *(coarse(source_identities[source_triangle_index][order[i]]) for i in range(3)),
+                *(coarse(identities[order[i]]) for i in range(3)),
             )
             source_lookup.setdefault(key, []).append((source_triangle_index, order))
     for triangle_index, triangle in enumerate(triangles):
@@ -231,8 +361,10 @@ def map_imported_corners_to_smd(
         matches: list[tuple[int, tuple[int, int, int]]] = []
         key = (material_names[material_slot].casefold(), *(coarse(value) for value in imported))
         for candidate_source, order in source_lookup.get(key, ()):
+            identities = source_identities[candidate_source]
+            assert identities is not None
             if candidate_source not in used and all(
-                equivalent(imported[i], source_identities[candidate_source][order[i]]) for i in range(3)
+                equivalent(imported[i], identities[order[i]]) for i in range(3)
             ):
                 matches.append((candidate_source, order))
         if not matches:
@@ -241,7 +373,7 @@ def map_imported_corners_to_smd(
             )
             ranked = sorted(
                 (
-                    max(math.sqrt(sum((a-b)**2 for a,b in zip(imported[i][1], source_identities[source][order[i]][1]))) for i in range(3)),
+                    max(math.sqrt(sum((a-b)**2 for a,b in zip(imported[i][1], source_identities[source][order[i]][1]))) for i in range(3)),  # type: ignore[index]
                     source, order,
                 )
                 for source, order in available
@@ -256,16 +388,20 @@ def map_imported_corners_to_smd(
         if not matches:
             coarse_candidates = source_lookup.get(key, ())
             nearest_normal = min((
-                max(math.sqrt(sum((a-b)**2 for a,b in zip(imported[i][1], source_identities[source][order[i]][1]))) for i in range(3))
+                max(math.sqrt(sum((a-b)**2 for a,b in zip(imported[i][1], source_identities[source][order[i]][1]))) for i in range(3))  # type: ignore[index]
                 for source, order in coarse_candidates if source not in used
             ), default=None)
             diagnostics = {"position": 0, "normal": 0, "uv": 0, "skin": 0}
             for diagnostic_source, source_triangle in enumerate(parsed.triangles):
+                if diagnostic_source in excluded:
+                    continue
+                diagnostic_identities = source_identities[diagnostic_source]
+                assert diagnostic_identities is not None
                 if source_triangle.material.casefold() != material_names[material_slot].casefold():
                     continue
                 for order in orders:
                     for i in range(3):
-                        left, right = imported[i], source_identities[diagnostic_source][order[i]]
+                        left, right = imported[i], diagnostic_identities[order[i]]
                         diagnostics["position"] += int(left[0] == right[0])
                         diagnostics["normal"] += int(math.sqrt(sum((a-b)**2 for a,b in zip(left[1], right[1]))) <= IMPORT_NORMAL_EQUIVALENCE_TOLERANCE)
                         diagnostics["uv"] += int(left[2] == right[2])
@@ -297,16 +433,30 @@ def serialize_direct_smd(
     triangle_materials: Sequence[str],
     *,
     source_corner_ordinals: Sequence[int] | None = None,
+    dropped_source_triangles: frozenset[int] = frozenset(),
 ) -> str:
     """Serialize retained direct tuples without a Blender export round-trip."""
     if not positions or len(indices) < 3 or len(indices) % 3 or len(triangle_materials) != len(indices) // 3:
         raise ValueError("direct SMD topology/material counts are invalid")
     if not (len(normals) == len(uvs) == len(influences) == len(positions)):
         raise ValueError("direct SMD attribute counts are invalid")
-    source_corners = tuple(corner for triangle in parse_smd_triangles(original_text).triangles for corner in triangle.corners)
+    parsed_source = parse_smd_triangles(
+        original_text, allow_invalid_normals=bool(dropped_source_triangles)
+    )
+    if any(
+        type(index) is not int
+        or index < 0
+        or index >= len(parsed_source.triangles)
+        for index in dropped_source_triangles
+    ):
+        raise ValueError("dropped source triangle ordinal is invalid")
+    source_corners = tuple(
+        corner for triangle in parsed_source.triangles for corner in triangle.corners
+    )
     if source_corner_ordinals is not None and (
         len(source_corner_ordinals) != len(positions)
         or any(type(value) is not int or value < 0 or value >= len(source_corners) for value in source_corner_ordinals)
+        or any(value // 3 in dropped_source_triangles for value in source_corner_ordinals)
     ):
         raise ValueError("direct SMD source-corner provenance is invalid")
     lines = original_text.splitlines(keepends=True)
