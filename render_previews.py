@@ -23,7 +23,10 @@ if str(_SCRIPT_ROOT) not in sys.path:
 
 from maximum_optimizer.regions import (
     RegionManifest,
+    is_region_key,
     load_region_manifest_payload,
+    manifest_for_region,
+    manifest_for_source,
     normalized_source_identity as _normalized_source_identity,
     resolve_region_assignments as _resolve_region_assignments,
     source_material_slot_identities as _source_material_slot_identities,
@@ -283,6 +286,10 @@ def _parse_args(argv: list[str]):
         help="Required paired bodygroup/LOD configuration identity for extended validation",
     )
     ap.add_argument(
+        "--focus-region", default=None,
+        help="Render exactly one canonical Maximum region in isolation",
+    )
+    ap.add_argument(
         "--aggregate-regions", action="store_true",
         help="Research-only whole-state geometry scope for calibration anchors with changed mesh partitioning",
     )
@@ -409,6 +416,81 @@ def _required_configuration_manifest(args) -> dict:
     return payload
 
 
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _reject_focus_reparse_ancestors(path: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    for component in (*reversed(absolute.parents), absolute):
+        if _path_is_link_or_reparse(component):
+            raise ValueError(
+                f"focused source ancestor is a link or reparse point: {component}"
+            )
+
+
+def _focus_source_context(
+    region_manifest: RegionManifest,
+    focus_region: str,
+    source_root: Path,
+    before: list[Path],
+    after: list[Path],
+    configuration: dict,
+) -> tuple[list[Path], list[Path], str, RegionManifest]:
+    selected_manifest = manifest_for_region(region_manifest, focus_region)
+    source_identity = selected_manifest.entries[0].descriptor.source_identity
+    source_manifest = manifest_for_source(region_manifest, source_identity)
+    if len(before) != len(after) or not before:
+        raise ValueError("focused validation requires paired before/after sources")
+    source_root = Path(source_root).resolve(strict=True)
+
+    pairs_by_source = {}
+    for pair in configuration.get("source_pairs", ()):
+        if type(pair) is not dict or set(pair) != {
+            "source_identity", "reference_sha256", "candidate_sha256"
+        }:
+            raise ValueError("focused configuration source pair is invalid")
+        identity = _normalized_source_identity(pair["source_identity"])
+        if identity in pairs_by_source:
+            raise ValueError("focused configuration has duplicate source identities")
+        pairs_by_source[identity] = pair
+
+    candidates = {}
+    for before_path, after_path in zip(before, after):
+        before_path = Path(before_path)
+        after_path = Path(after_path)
+        _reject_focus_reparse_ancestors(before_path)
+        _reject_focus_reparse_ancestors(after_path)
+        try:
+            resolved_before = before_path.resolve(strict=True)
+            relative = resolved_before.relative_to(source_root)
+            resolved_after = after_path.resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise ValueError("focused source path is outside its trusted root or missing") from exc
+        if (
+            not resolved_before.is_file() or not resolved_after.is_file()
+            or resolved_before.suffix.casefold() != ".smd"
+            or resolved_after.suffix.casefold() != ".smd"
+        ):
+            raise ValueError("focused source paths must be regular SMD files")
+        identity = _normalized_source_identity(relative.as_posix())
+        if identity in candidates:
+            raise ValueError("focused validation requires uniquely paired source identities")
+        pair = pairs_by_source.get(identity)
+        if pair is None:
+            raise ValueError("focused source is absent from the configuration pairs")
+        if (
+            _file_sha256(resolved_before) != pair["reference_sha256"]
+            or _file_sha256(resolved_after) != pair["candidate_sha256"]
+        ):
+            raise ValueError("focused source hash does not match the configuration pair")
+        candidates[identity] = (resolved_before, resolved_after)
+    if source_identity not in candidates:
+        raise ValueError("focused region source is absent from the paired render inputs")
+    selected_before, selected_after = candidates[source_identity]
+    return [selected_before], [selected_after], source_identity, source_manifest
+
+
 def _parse_csv(raw: str | None) -> tuple[str, ...]:
     if raw is None:
         return ()
@@ -462,8 +544,75 @@ def _is_extended_mode(args) -> bool:
         for value in (
             args.passes, args.poses, args.materials_root, args.vtfcmd,
             args.texture_cache, args.region_manifest, args.configuration_manifest,
+            getattr(args, "focus_region", None),
         )
     )
+
+
+def _validated_focus_request(args, poses: tuple[tuple[str, int], ...]) -> str | None:
+    focus_region = args.focus_region
+    if focus_region is None:
+        return None
+    if not is_region_key(focus_region):
+        raise ValueError("focused region key is invalid")
+    if args.aggregate_regions:
+        raise ValueError("focused rendering cannot be combined with aggregate regions")
+    if len(poses) > 2 or not poses or poses[0][0] != "bind":
+        raise ValueError("focused rendering poses must be bind plus at most one representative pose")
+    return focus_region
+
+
+def _validate_focus_render_payload(
+    entries,
+    snapshots,
+    passes: tuple[str, ...],
+    angles: tuple[str, ...],
+    poses: tuple[tuple[str, int], ...],
+    focus_region: str,
+) -> None:
+    pose_names = tuple(name for name, _frame in poses)
+    expected = {
+        (render_pass, pose, angle)
+        for render_pass in passes for pose in pose_names for angle in angles
+    }
+    observed = []
+    for entry in entries:
+        if type(entry) is not dict:
+            raise ValueError("focused render entry is invalid")
+        observed.append((entry.get("pass"), entry.get("pose"), entry.get("angle")))
+    if len(observed) != len(expected) or set(observed) != expected:
+        raise ValueError("focused render image matrix is incomplete or duplicated")
+    if tuple(snapshots) != pose_names or any(
+        set(snapshots[pose]) != {focus_region} for pose in pose_names
+    ):
+        raise ValueError("focused geometry matrix must contain exactly one region per pose")
+
+
+def _validate_focus_output_inventory(root: Path, entries) -> None:
+    root = Path(root)
+    _reject_focus_reparse_ancestors(root)
+    expected = set()
+    for entry in entries:
+        image = entry.get("image") if type(entry) is dict else None
+        if type(image) is not str or not image:
+            raise ValueError("focused render entry image path is invalid")
+        relative = PurePosixPath(image.replace("\\", "/"))
+        windows = PureWindowsPath(image)
+        if relative.is_absolute() or windows.is_absolute() or windows.drive or ".." in relative.parts:
+            raise ValueError("focused render entry image path escapes its root")
+        canonical = PurePosixPath(*(part for part in relative.parts if part not in ("", "."))).as_posix()
+        if canonical != image or canonical in expected:
+            raise ValueError("focused render entry image path is non-canonical or duplicated")
+        expected.add(canonical)
+    actual = set()
+    if root.exists():
+        for path in root.rglob("*"):
+            if _path_is_link_or_reparse(path):
+                raise ValueError("focused output contains a link or reparse point")
+            if path.is_file():
+                actual.add(path.relative_to(root).as_posix())
+    if actual != expected:
+        raise ValueError("focused output contains extra or missing image files")
 
 
 def _texture_cache_root(args, out_dir: Path) -> Path:
@@ -1283,6 +1432,52 @@ def _region_source_identity(obj) -> str:
     return value
 
 
+def _focus_mesh_objects(
+    objs,
+    source_manifest: RegionManifest,
+    source_material_evidence: dict[str, tuple[str, ...]],
+    focus_region: str,
+):
+    manifest_for_region(source_manifest, focus_region)
+    ordered = tuple(sorted(
+        objs, key=lambda item: (_region_source_identity(item), item.name.casefold(), item.name)
+    ))
+    observations = []
+    for obj in ordered:
+        source_identity = _region_source_identity(obj)
+        materials = source_material_evidence.get(source_identity)
+        if materials is None:
+            raise ValueError("focused mesh source has no canonical material evidence")
+        observations.append((
+            source_identity,
+            obj.name,
+            _source_material_slot_identities(
+                source_identity,
+                materials,
+                tuple(
+                    material.name if material else "none"
+                    for material in getattr(obj.data, "materials", ())
+                ),
+            ),
+        ))
+    assignments = _resolve_region_assignments(
+        source_manifest, tuple(observations), require_complete=True
+    )
+    selected = tuple(
+        obj for obj, observation in zip(ordered, observations)
+        if assignments[observation] == focus_region
+    )
+    if len(selected) != 1:
+        raise ValueError("focused region must resolve to exactly one mesh object")
+    selected_ids = {id(obj) for obj in selected}
+    for obj in ordered:
+        visible = id(obj) in selected_ids
+        obj.hide_render = not visible
+        if hasattr(obj, "hide_set"):
+            obj.hide_set(not visible)
+    return selected
+
+
 def _capture_regions(
     objs,
     frame: int,
@@ -1805,6 +2000,7 @@ def _render_extended_set(
     fit=None,
     source_search_paths: dict[str, tuple[str, ...]] | None = None,
     aggregate_regions: bool = False,
+    focus_region: str | None = None,
 ) -> tuple[list[dict], dict[str, dict[str, dict]], tuple, dict]:
     _clear_scene()
     _setup_scene(size, transparent=True)
@@ -1833,17 +2029,27 @@ def _render_extended_set(
     objs = _get_mesh_objects()
     if not objs:
         raise RuntimeError(f"No mesh objects found for {label}: {src_paths}")
+    render_objs = (
+        _focus_mesh_objects(
+            objs, region_manifest, source_material_evidence, focus_region
+        )
+        if focus_region is not None else tuple(objs)
+    )
+    capture_manifest = (
+        manifest_for_region(region_manifest, focus_region)
+        if focus_region is not None else region_manifest
+    )
     blender_source_materials = {
         (obj.name, index): material.name if material else ""
-        for obj in objs
+        for obj in render_objs
         if hasattr(obj.data, "materials")
         for index, material in enumerate(obj.data.materials)
     }
     snapshots = _capture_pose_snapshots(
-        objs,
+        render_objs,
         poses,
         capture=lambda captured_objects, frame: _capture_regions(
-            captured_objects, frame, region_manifest, source_material_evidence,
+            captured_objects, frame, capture_manifest, source_material_evidence,
             aggregate=aggregate_regions,
         ),
         animation_binding=animation_binding,
@@ -1856,11 +2062,11 @@ def _render_extended_set(
     root.mkdir(parents=True, exist_ok=True)
     for render_pass in passes:
         if render_pass == "clay":
-            _apply_clay_material(objs)
+            _apply_clay_material(render_objs)
             material_audit = {"missing": (), "resolved": ()}
         else:
             material_audit = _apply_textured_materials(
-                objs,
+                render_objs,
                 blender_source_materials,
                 materials_root,
                 vtfcmd,
@@ -1896,6 +2102,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         passes = _validated_passes(args.passes)
         validated_angles = _validated_angles(",".join(angles))
         poses = _parse_poses(args.poses)
+        focus_region = _validated_focus_request(args, poses)
     except ValueError as exc:
         raise SystemExit(f"[ERROR] {exc}") from exc
     materials_root = tuple(Path(value).resolve(strict=True) for value in (args.materials_root or ()))
@@ -1911,9 +2118,20 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         raise ValueError("extended Maximum validation requires paired animation sources")
     animation_before = Path(args.animation_before).resolve(strict=True) if args.animation_before else None
     animation_after = Path(args.animation_after).resolve(strict=True) if args.animation_after else None
-    source_identities_tuple, source_materials, source_search_paths = _extended_source_context(
-        region_manifest, source_root, before
-    )
+    if focus_region is not None:
+        before, after, source_identity, region_manifest = _focus_source_context(
+            region_manifest, focus_region, source_root, before, after, configuration
+        )
+        source_identities_tuple = (source_identity,)
+        source_identities, source_materials, source_search_paths = _extended_source_context(
+            region_manifest, source_root, before
+        )
+        if source_identities != source_identities_tuple:
+            raise ValueError("focused source identity changed during material audit")
+    else:
+        source_identities_tuple, source_materials, source_search_paths = _extended_source_context(
+            region_manifest, source_root, before
+        )
     original_dir = out_dir / "original"
     candidate_dir = out_dir / "optimized"
     reference_entries, reference_snapshots, fit, bbox = _render_extended_set(
@@ -1933,6 +2151,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         animation_before,
         source_search_paths=source_search_paths,
         aggregate_regions=args.aggregate_regions,
+        focus_region=focus_region,
     )
     candidate_entries, candidate_snapshots, _, candidate_bbox = _render_extended_set(
         "after",
@@ -1952,7 +2171,19 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         fit=fit,
         source_search_paths=source_search_paths,
         aggregate_regions=args.aggregate_regions,
+        focus_region=focus_region,
     )
+    if focus_region is not None:
+        _validate_focus_render_payload(
+            reference_entries, reference_snapshots, passes, validated_angles,
+            poses, focus_region,
+        )
+        _validate_focus_render_payload(
+            candidate_entries, candidate_snapshots, passes, validated_angles,
+            poses, focus_region,
+        )
+        _validate_focus_output_inventory(original_dir, reference_entries)
+        _validate_focus_output_inventory(candidate_dir, candidate_entries)
     stride = 7
     seed = 0
     diagonal = max(float(bbox["diagonal"]), 1e-12)
@@ -2005,8 +2236,14 @@ def main():
     if bpy is None:
         raise SystemExit("[ERROR] render_previews.py must be executed by Blender.")
     _ensure_source_tools()
-    before = [Path(p).resolve() for p in _expand_paths(args.before)]
-    after = [Path(p).resolve() for p in _expand_paths(args.after)]
+    before_inputs = [Path(p).expanduser() for p in _expand_paths(args.before)]
+    after_inputs = [Path(p).expanduser() for p in _expand_paths(args.after)]
+    if args.focus_region is not None:
+        before = before_inputs
+        after = after_inputs
+    else:
+        before = [path.resolve() for path in before_inputs]
+        after = [path.resolve() for path in after_inputs]
     out_dir = Path(args.out).resolve()
     angles = [a.strip() for a in args.angles.split(",") if a.strip()]
 

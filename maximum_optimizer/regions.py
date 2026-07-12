@@ -426,6 +426,23 @@ def manifest_for_source(manifest: RegionManifest, source_identity: str) -> Regio
     return RegionManifest(entries)
 
 
+def manifest_for_region(manifest: RegionManifest, region_key: str) -> RegionManifest:
+    if not isinstance(manifest, RegionManifest):
+        raise TypeError("manifest must be a RegionManifest")
+    if not is_region_key(region_key):
+        raise ValueError("focused region key is invalid")
+    canonical = load_region_manifest_payload(manifest.to_payload())
+    if (
+        canonical.to_payload() != manifest.to_payload()
+        or manifest.entries != tuple(sorted(manifest.entries, key=lambda item: item.descriptor))
+    ):
+        raise ValueError("region manifest is not canonical")
+    entry = canonical.by_key.get(region_key)
+    if entry is None:
+        raise ValueError(f"unknown focused region key: {region_key}")
+    return RegionManifest((entry,))
+
+
 def parse_region_scope(scope: str) -> tuple[str, str] | None:
     if type(scope) is not str or scope.count("/") != 1:
         return None

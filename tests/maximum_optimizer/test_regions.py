@@ -10,6 +10,7 @@ from maximum_optimizer.regions import (
     RegionManifest,
     build_region_manifest,
     filter_region_manifest,
+    manifest_for_region,
     resolve_region_assignments,
 )
 
@@ -118,6 +119,32 @@ class RegionStateManifestTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "unknown"):
             filter_region_manifest(self.manifest, ("models/car/missing.smd",))
+
+    def test_manifest_for_region_preserves_exact_descriptor_and_occurrences(self) -> None:
+        selected = self.manifest.entries[1]
+
+        focused = manifest_for_region(self.manifest, selected.key)
+
+        self.assertEqual(focused.entries, (selected,))
+        self.assertEqual(focused.schema_version, REGION_MANIFEST_SCHEMA_VERSION)
+        self.assertEqual(focused.descriptor_schema, REGION_DESCRIPTOR_SCHEMA)
+        self.assertEqual(focused.hash_algorithm, REGION_HASH_ALGORITHM)
+
+    def test_manifest_for_region_rejects_unknown_malformed_or_noncanonical_manifest(self) -> None:
+        selected = self.manifest.entries[0]
+        stale = RegionManifest(
+            (replace(selected, key="r-" + "0" * 64),),
+            schema_version=999,
+        )
+        reordered = RegionManifest(tuple(reversed(self.manifest.entries)))
+        for manifest, key in (
+            (self.manifest, "not-a-region"),
+            (self.manifest, "r-" + "f" * 64),
+            (stale, stale.entries[0].key),
+            (reordered, selected.key),
+        ):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                manifest_for_region(manifest, key)
 
 
 if __name__ == "__main__":

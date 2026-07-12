@@ -701,7 +701,36 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertFalse(args.aggregate_regions)
         self.assertIsNone(args.region_manifest)
         self.assertIsNone(args.source_root)
+        self.assertIsNone(args.focus_region)
         self.assertFalse(render_previews._is_extended_mode(args))
+
+    def test_focus_argument_enables_extended_mode_and_has_hard_matrix(self):
+        import render_previews
+
+        args = render_previews._parse_args([
+            "--before", "before.smd", "--after", "after.smd", "--out", "renders",
+            "--focus-region", "r-" + "a" * 64,
+        ])
+        self.assertTrue(render_previews._is_extended_mode(args))
+        self.assertEqual(
+            render_previews._validated_focus_request(args, (("bind", 0),)),
+            "r-" + "a" * 64,
+        )
+        for mutate in (
+            lambda item: setattr(item, "aggregate_regions", True),
+            lambda item: setattr(item, "focus_region", "bad"),
+        ):
+            changed = render_previews._parse_args([
+                "--before", "before.smd", "--after", "after.smd", "--out", "renders",
+                "--focus-region", "r-" + "a" * 64,
+            ])
+            mutate(changed)
+            with self.assertRaises(ValueError):
+                render_previews._validated_focus_request(changed, (("bind", 0),))
+        with self.assertRaisesRegex(ValueError, "poses"):
+            render_previews._validated_focus_request(
+                args, (("bind", 0), ("run", 1), ("idle", 2))
+            )
 
     def test_new_arguments_parse_passes_and_pose_frames_deterministically(self):
         import render_previews
@@ -776,6 +805,206 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             self.assertEqual(identities, ("wh.smd",))
             self.assertEqual(materials, {"wh.smd": ("rim",)})
             self.assertEqual(search, {"wh.smd": ("models/cars/wheel",)})
+
+    def test_focus_source_context_selects_exact_paired_source_and_hashes(self):
+        import render_previews
+        from maximum_optimizer.regions import build_region_manifest
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            candidate_root = root / "candidate"
+            source_root.mkdir(); candidate_root.mkdir()
+            before_body = source_root / "body.smd"; before_body.write_bytes(b"before-body")
+            before_wheel = source_root / "wheel.smd"; before_wheel.write_bytes(b"before-wheel")
+            after_body = candidate_root / "body_opt.smd"; after_body.write_bytes(b"after-body")
+            after_wheel = candidate_root / "wheel_opt.smd"; after_wheel.write_bytes(b"after-wheel")
+            manifest = build_region_manifest((
+                ("body.smd", "body", ("paint",)),
+                ("body.smd", "trim", ("chrome",)),
+                ("wheel.smd", "wheel", ("rubber",)),
+            ))
+            body = next(item for item in manifest.entries if item.descriptor.object_name == "body")
+            configuration = {
+                "source_pairs": [
+                    {"source_identity": "BODY.SMD", "reference_sha256": _sha256(before_body),
+                     "candidate_sha256": _sha256(after_body)},
+                    {"source_identity": "wheel.smd", "reference_sha256": _sha256(before_wheel),
+                     "candidate_sha256": _sha256(after_wheel)},
+                ]
+            }
+
+            selected = render_previews._focus_source_context(
+                manifest, body.key, source_root,
+                [before_wheel, before_body], [after_wheel, after_body], configuration,
+            )
+
+            self.assertEqual(selected[0], [before_body.resolve()])
+            self.assertEqual(selected[1], [after_body.resolve()])
+            self.assertEqual(selected[2], "body.smd")
+            self.assertEqual(
+                {entry.descriptor.object_name for entry in selected[3].entries},
+                {"body", "trim"},
+            )
+
+            forged = json.loads(json.dumps(configuration))
+            forged["source_pairs"][0]["candidate_sha256"] = "0" * 64
+            with self.assertRaisesRegex(ValueError, "hash"):
+                render_previews._focus_source_context(
+                    manifest, body.key, source_root,
+                    [before_body], [after_body], forged,
+                )
+            with self.assertRaisesRegex(ValueError, "paired"):
+                render_previews._focus_source_context(
+                    manifest, body.key, source_root,
+                    [before_body, before_body], [after_body, after_body], configuration,
+                )
+            with mock.patch.object(
+                render_previews, "_path_is_link_or_reparse",
+                side_effect=lambda path: Path(path) == after_body,
+            ):
+                with self.assertRaisesRegex(ValueError, "link or reparse"):
+                    render_previews._focus_source_context(
+                        manifest, body.key, source_root,
+                        [before_body], [after_body], configuration,
+                    )
+            with mock.patch.object(
+                render_previews, "_path_is_link_or_reparse",
+                side_effect=lambda path: Path(path) == candidate_root,
+            ):
+                with self.assertRaisesRegex(ValueError, "ancestor"):
+                    render_previews._focus_source_context(
+                        manifest, body.key, source_root,
+                        [before_body], [after_body], configuration,
+                    )
+
+    def test_focus_object_isolation_resolves_full_source_before_hiding_siblings(self):
+        import render_previews
+        from maximum_optimizer.regions import build_region_manifest
+
+        class Material:
+            def __init__(self, name): self.name = name
+        class Data:
+            def __init__(self, material): self.materials = [Material(material)]
+        class Obj:
+            type = "MESH"
+            def __init__(self, name, material):
+                self.name = name; self.data = Data(material); self.hide_render = False
+                self._props = {"maximum_region_source_identity": "body.smd"}
+            def get(self, name, default=None): return self._props.get(name, default)
+
+        manifest = build_region_manifest((
+            ("body.smd", "body", ("slot:0:paint",)),
+            ("body.smd", "trim", ("slot:1:chrome",)),
+        ))
+        body = next(item for item in manifest.entries if item.descriptor.object_name == "body")
+        body_obj = Obj("body", "paint")
+        trim_obj = Obj("trim", "chrome")
+
+        selected = render_previews._focus_mesh_objects(
+            (trim_obj, body_obj), manifest,
+            {"body.smd": ("paint", "chrome")}, body.key,
+        )
+
+        self.assertEqual(selected, (body_obj,))
+        self.assertFalse(body_obj.hide_render)
+        self.assertTrue(trim_obj.hide_render)
+        with self.assertRaises(ValueError):
+            render_previews._focus_mesh_objects(
+                (body_obj,), manifest, {"body.smd": ("paint", "chrome")}, body.key,
+            )
+
+    def test_focus_render_payload_requires_exact_image_and_region_matrix(self):
+        import render_previews
+
+        region = "r-" + "a" * 64
+        poses = (("bind", 0), ("run", 12))
+        entries = [
+            {"pass": render_pass, "pose": pose, "angle": angle}
+            for render_pass in PASSES
+            for pose, _frame in poses
+            for angle in ANGLES
+        ]
+        snapshots = {pose: {region: {"triangles": [1]}} for pose, _frame in poses}
+        render_previews._validate_focus_render_payload(
+            entries, snapshots, PASSES, ANGLES, poses, region,
+        )
+        for changed_entries, changed_snapshots in (
+            (entries[:-1], snapshots),
+            (entries + [dict(entries[0])], snapshots),
+            (entries, {"bind": snapshots["bind"]}),
+            (entries, {**snapshots, "run": {region: snapshots["run"][region], "extra": {}}}),
+        ):
+            with self.subTest(
+                entry_count=len(changed_entries), poses=tuple(changed_snapshots)
+            ), self.assertRaises(ValueError):
+                render_previews._validate_focus_render_payload(
+                    changed_entries, changed_snapshots, PASSES, ANGLES, poses, region,
+                )
+
+    def test_focus_output_inventory_rejects_stale_extra_images(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            expected = root / "textured/bind/front.png"
+            _write_image(expected)
+            entries = [{"image": "textured/bind/front.png"}]
+            render_previews._validate_focus_output_inventory(root, entries)
+
+            _write_image(root / "clay/old-pose/iso1.png")
+            with self.assertRaisesRegex(ValueError, "extra or missing"):
+                render_previews._validate_focus_output_inventory(root, entries)
+
+    def test_focus_render_scope_passes_only_target_to_snapshot_bbox_and_materials(self):
+        import render_previews
+        from maximum_optimizer.regions import build_region_manifest
+
+        class Material:
+            def __init__(self, name): self.name = name
+        class Data:
+            def __init__(self, material): self.materials = [Material(material)]
+        class Obj:
+            type = "MESH"
+            def __init__(self, name, material):
+                self.name = name; self.data = Data(material); self.hide_render = False
+                self._props = {"maximum_region_source_identity": "body.smd"}
+            def get(self, name, default=None): return self._props.get(name, default)
+
+        manifest = build_region_manifest((
+            ("body.smd", "body", ("slot:0:paint",)),
+            ("body.smd", "trim", ("slot:1:chrome",)),
+        ))
+        region = next(item.key for item in manifest.entries if item.descriptor.object_name == "body")
+        body = Obj("body", "paint"); trim = Obj("trim", "chrome")
+        snapshots = {"bind": {region: {"triangles": [{"positions": ((0, 0, 0),) * 3}]}}}
+        bbox = {"min": [0, 0, 0], "max": [1, 1, 1], "diagonal": 1.0}
+        camera = mock.MagicMock(); camera.data = mock.MagicMock()
+        fake_bpy = mock.MagicMock()
+        with tempfile.TemporaryDirectory() as raw, \
+             mock.patch.object(render_previews, "bpy", fake_bpy), \
+             mock.patch.object(render_previews, "_clear_scene"), \
+             mock.patch.object(render_previews, "_setup_scene"), \
+             mock.patch.object(render_previews, "_ensure_camera", return_value=camera), \
+             mock.patch.object(render_previews, "_get_mesh_objects", return_value=(trim, body)), \
+             mock.patch.object(render_previews, "_capture_pose_snapshots", return_value=snapshots) as capture, \
+             mock.patch.object(render_previews, "_framing_from_snapshots", return_value=(bbox, (render_previews.Vector((0, 0, 0)), 1.0, 2.0))), \
+             mock.patch.object(render_previews, "_setup_lights"), \
+             mock.patch.object(render_previews, "_set_pose_state"), \
+             mock.patch.object(render_previews, "_set_camera_pose"), \
+             mock.patch.object(render_previews, "_render_entry", side_effect=lambda _root, render_pass, pose, angle, *_args, **_kwargs: {"pass": render_pass, "pose": pose, "angle": angle}), \
+             mock.patch.object(render_previews, "_apply_textured_materials", return_value={"missing": (), "resolved": ()}) as textured, \
+             mock.patch.object(render_previews, "_apply_clay_material") as clay:
+            render_previews._render_extended_set(
+                "focus", [], Path(raw), ("front",), 64, PASSES, (("bind", 0),),
+                (), None, Path(raw) / "cache", manifest, (),
+                {"body.smd": ("paint", "chrome")}, focus_region=region,
+            )
+
+        self.assertEqual(capture.call_args.args[0], (body,))
+        self.assertEqual(textured.call_args.args[0], (body,))
+        self.assertEqual(clay.call_args.args[0], (body,))
+        self.assertTrue(trim.hide_render)
 
     def test_explicit_texture_cache_is_shared_outside_long_state_name(self):
         import render_previews
