@@ -517,8 +517,6 @@ def _parse_vmt_root(vmt_text: str) -> tuple[str, dict[str, str]] | None:
                 index += 1
                 continue
             key = token.casefold()
-            if key in directives:
-                return None
             directives[key] = tokens[index + 1]
             index += 2
             continue

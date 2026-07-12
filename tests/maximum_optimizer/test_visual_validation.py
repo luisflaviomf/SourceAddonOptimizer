@@ -1205,6 +1205,18 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             ("vertexlitgeneric", "$basetexture", "cars/body", False),
         )
 
+    def test_vmt_parser_uses_last_duplicate_root_directive_like_source_materials(self):
+        import render_previews
+
+        duplicated = (
+            'VertexLitGeneric { "$basetexture" "cars/body" '
+            '"$alphatest" "1" "$alphatest" "0" }'
+        )
+        self.assertEqual(
+            render_previews._source_texture_reference(duplicated),
+            ("vertexlitgeneric", "$basetexture", "cars/body", False),
+        )
+
     def test_vmt_parser_rejects_nested_or_trailing_directive_and_unknown_shader(self):
         import render_previews
 
