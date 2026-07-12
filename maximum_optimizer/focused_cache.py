@@ -10,7 +10,7 @@ import stat
 import threading
 import tempfile
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -45,6 +45,8 @@ _MAX_MATERIAL_BYTES = 2 * 1024 ** 3
 _MAX_SELECTED_VMT_BYTES = 8 * 1024 ** 2
 _MAX_CAPTURED_VMT_BYTES = 32 * 1024 ** 2
 _MAX_CONTROL_FILE_BYTES = 16 * 1024 ** 2
+_MAX_RENDER_FILES_PER_SIDE = 33
+_MAX_RENDER_BYTES_PER_SIDE = 512 * 1024 ** 2
 _IO_CHUNK_SIZE = 1024 * 1024
 _TOP_FIELDS = {
     "schema", "family_input_sha256", "candidate_cache_digest", "source_pairs",
@@ -877,10 +879,11 @@ def _uncacheable_material_proof(
     )
 
 
-def material_resolution_proof(
+def _material_resolution_proof(
     roots,
     requests,
     cancel_event: threading.Event | None,
+    capture_stack: ExitStack,
 ) -> MaterialResolutionProof:
     _cancel(cancel_event, "cancelled before material proof")
     if isinstance(roots, (str, bytes)) or not roots:
@@ -1042,8 +1045,10 @@ def material_resolution_proof(
                         "byte-limit", canonical_roots_tuple, request_tuple,
                         len(files), total_bytes,
                     )
-                capture = tempfile.SpooledTemporaryFile(
-                    max_size=_MAX_SELECTED_VMT_BYTES, mode="w+b"
+                capture = capture_stack.enter_context(
+                    tempfile.SpooledTemporaryFile(
+                        max_size=_MAX_SELECTED_VMT_BYTES, mode="w+b"
+                    )
                 )
                 file_max_bytes = min(
                     file_max_bytes, _MAX_SELECTED_VMT_BYTES, capture_remaining
@@ -1188,6 +1193,17 @@ def material_resolution_proof(
     )
 
 
+def material_resolution_proof(
+    roots,
+    requests,
+    cancel_event: threading.Event | None,
+) -> MaterialResolutionProof:
+    with ExitStack() as capture_stack:
+        return _material_resolution_proof(
+            roots, requests, cancel_event, capture_stack
+        )
+
+
 def _write_json_fsync(path: Path, payload: object) -> None:
     with Path(path).open("w", encoding="utf-8", newline="\n") as stream:
         stream.write(canonical_json(payload))
@@ -1209,25 +1225,65 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _assert_safe_tree(root: Path) -> None:
+def _assert_safe_tree(
+    root: Path,
+    cancel_event: threading.Event | None = None,
+    expected_paths: set[str] | None = None,
+    *,
+    max_files: int = 128,
+    max_bytes: int = 1024 ** 3,
+) -> tuple[Path, ...]:
     root = Path(root)
     if _is_reparse(root) or not root.is_dir():
         raise ValueError(f"render tree is a reparse or missing directory: {root}")
+    allowed_dirs = {"."}
+    if expected_paths is not None:
+        for relative in expected_paths:
+            parent = PurePosixPath(relative).parent
+            while parent.as_posix() not in ("", "."):
+                allowed_dirs.add(parent.as_posix())
+                parent = parent.parent
+    files: list[Path] = []
+    total_bytes = 0
     for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        _cancel(cancel_event, "cancelled during render tree traversal")
         parent = Path(directory)
+        directory_names.sort(key=str.casefold)
+        file_names.sort(key=str.casefold)
         for name in directory_names:
             child = parent / name
             if _is_reparse(child):
                 raise ValueError(f"render tree contains a reparse directory: {child}")
+            relative_dir = child.relative_to(root).as_posix()
+            if expected_paths is not None and relative_dir not in allowed_dirs:
+                raise ValueError("render tree contains an unexpected directory")
         for name in file_names:
+            _cancel(cancel_event, "cancelled during render tree traversal")
             child = parent / name
-            if _is_reparse(child) or not stat.S_ISREG(child.lstat().st_mode):
+            info = child.lstat()
+            if _is_reparse(child) or not stat.S_ISREG(info.st_mode):
                 raise ValueError(f"render tree contains a reparse or special file: {child}")
+            relative = child.relative_to(root).as_posix()
+            if expected_paths is not None and relative not in expected_paths:
+                raise ValueError("render tree contains an unexpected file")
+            if len(files) >= max_files:
+                raise ValueError("render tree exceeds file bound")
+            total_bytes += info.st_size
+            if total_bytes > max_bytes:
+                raise ValueError("render tree exceeds byte bound")
+            files.append(child)
+    if expected_paths is not None and {
+        path.relative_to(root).as_posix() for path in files
+    } != expected_paths:
+        raise ValueError("render tree differs from expected layout")
+    return tuple(sorted(files, key=lambda path: path.relative_to(root).as_posix()))
 
 
 def _render_file_manifest(
     directories: FocusRenderDirectories,
     cancel_event: threading.Event | None,
+    *,
+    expected_files: tuple[RenderFileProof, ...] | None = None,
 ) -> tuple[RenderFileProof, ...]:
     from PIL import Image, UnidentifiedImageError
 
@@ -1235,24 +1291,39 @@ def _render_file_manifest(
     folded: set[tuple[str, str]] = set()
     for side, root in (("reference", directories.reference), ("candidate", directories.candidate)):
         _cancel(cancel_event, "cancelled before render manifest")
-        _assert_safe_tree(root)
-        for path in sorted(
-            (item for item in root.rglob("*") if item.is_file()),
-            key=lambda item: item.relative_to(root).as_posix(),
-        ):
+        expected_side = None if expected_files is None else tuple(
+            item for item in expected_files if item.side == side
+        )
+        expected_by_path = None if expected_side is None else {
+            item.path: item for item in expected_side
+        }
+        paths = _assert_safe_tree(
+            root, cancel_event,
+            None if expected_by_path is None else set(expected_by_path),
+            max_files=_MAX_RENDER_FILES_PER_SIDE,
+            max_bytes=_MAX_RENDER_BYTES_PER_SIDE,
+        )
+        for path in paths:
             _cancel(cancel_event, "cancelled during render manifest")
             relative = path.relative_to(root).as_posix()
             key = (side, relative.casefold())
             if key in folded:
                 raise ValueError("render tree contains case-colliding paths")
             folded.add(key)
+            proof_limit = (
+                _MAX_RENDER_BYTES_PER_SIDE if expected_by_path is None
+                else expected_by_path[relative].size
+            )
             if relative == "render_manifest.json":
-                size, digest = _file_proof(path, cancel_event, contained_root=root)
+                size, digest = _file_proof(
+                    path, cancel_event, contained_root=root, max_bytes=proof_limit
+                )
                 kind, width, height = "manifest", None, None
             elif relative.casefold().endswith(".png"):
                 with tempfile.SpooledTemporaryFile(max_size=_IO_CHUNK_SIZE, mode="w+b") as capture:
                     size, digest = _file_proof(
-                        path, cancel_event, contained_root=root, capture_stream=capture
+                        path, cancel_event, contained_root=root,
+                        max_bytes=proof_limit, capture_stream=capture
                     )
                     capture.seek(0)
                     try:
@@ -1279,6 +1350,11 @@ def _validate_render_files(
         raise ValueError("render file proofs are not canonical")
     for side, count_field in (("reference", "reference_count"), ("candidate", "candidate_count")):
         side_files = tuple(item for item in files if item.side == side)
+        if (
+            len(side_files) > _MAX_RENDER_FILES_PER_SIDE
+            or sum(item.size for item in side_files) > _MAX_RENDER_BYTES_PER_SIDE
+        ):
+            raise ValueError("focused render files exceed bounds")
         manifests = tuple(item for item in side_files if item.kind == "manifest")
         images = tuple(item for item in side_files if item.kind == "image")
         if len(manifests) != 1 or len(images) != expected[count_field]:
@@ -1326,7 +1402,11 @@ def _copy_render_tree(
         (source.reference, destination.reference),
         (source.candidate, destination.candidate),
     ):
-        _assert_safe_tree(source_root)
+        _assert_safe_tree(
+            source_root, cancel_event,
+            max_files=_MAX_RENDER_FILES_PER_SIDE,
+            max_bytes=_MAX_RENDER_BYTES_PER_SIDE,
+        )
         destination_root.mkdir(parents=True, exist_ok=False)
         for directory, directory_names, file_names in os.walk(source_root, followlinks=False):
             _cancel(cancel_event, "cancelled during cache tree copy")
@@ -1426,10 +1506,34 @@ class FocusedRenderCache:
             )
             if FocusCacheKey.build(metadata.context) != key:
                 return None
+            raw_files = marker["files"]
+            if (
+                type(raw_files) is not list
+                or len(raw_files) != marker["expected_file_count"]
+                or len(raw_files) > 2 * _MAX_RENDER_FILES_PER_SIDE
+            ):
+                return None
+            expected_files_list = []
+            for raw in raw_files:
+                item = _exact(raw, {"path", "size", "sha256"}, "cache marker file")
+                combined = _relative(item["path"], "cache marker path")
+                side, separator, relative = combined.partition("/")
+                if not separator or side not in {"reference", "candidate"}:
+                    return None
+                kind = "manifest" if relative == "render_manifest.json" else "image"
+                expected_files_list.append(RenderFileProof(
+                    side, kind, relative, item["size"], item["sha256"],
+                    None if kind == "manifest" else metadata.expected["width"],
+                    None if kind == "manifest" else metadata.expected["height"],
+                ))
+            expected_files = tuple(expected_files_list)
+            _validate_render_files(expected_files, metadata.expected)
             directories = FocusRenderDirectories(
                 final / "payload/reference", final / "payload/candidate"
             )
-            actual = _render_file_manifest(directories, cancel_event)
+            actual = _render_file_manifest(
+                directories, cancel_event, expected_files=expected_files
+            )
             _validate_render_files(actual, metadata.expected)
             if marker["expected_file_count"] != len(actual) or marker["files"] != _marker_files(actual):
                 return None
@@ -1456,7 +1560,9 @@ class FocusedRenderCache:
         if any(not isinstance(item, RenderFileProof) for item in expected_tuple):
             raise TypeError("expected render files are invalid")
         _validate_render_files(expected_tuple, metadata.expected)
-        actual_source = _render_file_manifest(source, cancel_event)
+        actual_source = _render_file_manifest(
+            source, cancel_event, expected_files=expected_tuple
+        )
         if actual_source != expected_tuple:
             raise ValueError("fresh render files differ from expected proof")
         if _has_reparse_ancestor(self.root.parent):
@@ -1479,19 +1585,22 @@ class FocusedRenderCache:
                     final / "payload/reference", final / "payload/candidate"
                 )
             raise OSError("focused cache key is locked by another writer") from exc
-        if _is_reparse(lock) or not lock.is_dir():
-            raise OSError("focused cache key lock is unsafe")
-        lock_identity = _path_identity(lock)
+        lock_identity: tuple[int, int] | None = None
         staging = self.root / f"{key.digest}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
-        staging.mkdir()
         quarantine: Path | None = None
         try:
+            if _is_reparse(lock) or not lock.is_dir():
+                raise OSError("focused cache key lock is unsafe")
+            lock_identity = _path_identity(lock)
+            staging.mkdir()
             staged_dirs = FocusRenderDirectories(
                 staging / "payload/reference", staging / "payload/candidate"
             )
             (staging / "payload").mkdir()
             _copy_render_tree(source, staged_dirs, cancel_event)
-            copied = _render_file_manifest(staged_dirs, cancel_event)
+            copied = _render_file_manifest(
+                staged_dirs, cancel_event, expected_files=expected_tuple
+            )
             if copied != expected_tuple:
                 raise ValueError("copied render files differ from expected proof")
             metadata_path = staging / "metadata.json"
@@ -1581,7 +1690,7 @@ class FocusedRenderCache:
             try:
                 if (
                     os.path.lexists(lock) and not _is_reparse(lock)
-                    and _path_identity(lock) == lock_identity
+                    and (lock_identity is None or _path_identity(lock) == lock_identity)
                 ):
                     lock.rmdir()
             except (OSError, ValueError):
@@ -1613,7 +1722,9 @@ class FocusedRenderCache:
                 snapshot / "reference", snapshot / "candidate"
             )
             _copy_render_tree(source, destination, cancel_event)
-            copied = _render_file_manifest(destination, cancel_event)
+            copied = _render_file_manifest(
+                destination, cancel_event, expected_files=expected_files
+            )
             _validate_render_files(copied, metadata.expected)
             if copied != expected_files:
                 raise ValueError("focused cache changed while materializing snapshot")
@@ -1665,6 +1776,39 @@ def _validate_validation(value: ValidationResult, terminal_status: str) -> None:
             raise ValueError("focused validation metric is invalid")
     if type(value.worst_scope) is not str:
         raise ValueError("focused validation worst scope is invalid")
+
+
+def _validate_profile_coherence(
+    validation: ValidationResult,
+    profile: Mapping[str, object],
+) -> None:
+    limits = profile["limits"]
+    ratios = []
+    exceeded = set()
+    for metric in REQUIRED_METRICS:
+        measured = float(validation.metrics[metric])
+        limit = float(limits[metric])
+        ratio = measured / limit if limit > 0 else (0.0 if measured == 0 else math.inf)
+        ratios.append(ratio)
+        if measured > limit:
+            exceeded.add(metric)
+    infrastructure = tuple(
+        failure for failure in validation.failures
+        if failure.gate not in REQUIRED_METRICS
+    )
+    expected_score = 0.0 if infrastructure else max(0.0, 1.0 - max(ratios, default=0.0))
+    if not math.isclose(
+        float(validation.metrics["fidelity_score"]), expected_score,
+        rel_tol=0.0, abs_tol=1e-12,
+    ):
+        raise ValueError("focused validation fidelity score differs from profile")
+    failure_gates = {failure.gate for failure in validation.failures}
+    if validation.passed:
+        if exceeded:
+            raise ValueError("focused passed validation exceeds focused profile")
+    elif not infrastructure:
+        if not exceeded or not exceeded.issubset(failure_gates):
+            raise ValueError("focused failed validation differs from focused profile")
 
 
 def _record_payload(
@@ -1855,7 +1999,10 @@ def validate_focused_target(
     if not isinstance(validation, ValidationResult):
         raise TypeError("focused comparator returned an invalid result")
     _cancel(cancel_event, "cancelled after focused comparison")
-    files = _render_file_manifest(directories, cancel_event)
+    expected_tuple = tuple(expected_files)
+    files = _render_file_manifest(
+        directories, cancel_event, expected_files=expected_tuple
+    )
     material_digest = str(metadata.context["material_proof"]["digest"])
     record = build_focused_render_evidence(
         target, validation, metadata.expected, files, material_digest, cache_hit,
@@ -1913,6 +2060,7 @@ def focused_gate_evidence_payload(
         raise ValueError("focused material proof cardinality differs from selection")
     for record in record_tuple:
         _validate_focused_render_record(record, verify_seal=True)
+        _validate_profile_coherence(record.validation, context.focused_profile)
         proof = context.material_proofs[record.target.region_key]
         if record.material_proof_sha256 != proof["digest"]:
             raise ValueError("focused record material proof differs from context")

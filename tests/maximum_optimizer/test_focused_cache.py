@@ -433,6 +433,45 @@ class MaterialResolutionProofTests(unittest.TestCase):
         self.assertTrue(captures)
         self.assertTrue(all(stream.closed for stream in captures))
 
+    def test_resolution_seek_failure_closes_all_vmt_captures(self):
+        from maximum_optimizer import focused_cache
+
+        captures = []
+        original_spool = tempfile.SpooledTemporaryFile
+
+        class FailingSecondSeek:
+            def __init__(self, stream):
+                self.stream = stream
+                self.seek_count = 0
+            def __getattr__(self, name):
+                return getattr(self.stream, name)
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.close()
+            @property
+            def closed(self):
+                return self.stream.closed
+            def seek(self, *args, **kwargs):
+                self.seek_count += 1
+                if self.seek_count == 2:
+                    raise OSError("injected resolution seek")
+                return self.stream.seek(*args, **kwargs)
+
+        def failing_spool(*args, **kwargs):
+            stream = FailingSecondSeek(original_spool(*args, **kwargs))
+            captures.append(stream)
+            return stream
+
+        with mock.patch.object(
+            focused_cache.tempfile, "SpooledTemporaryFile", side_effect=failing_spool
+        ), self.assertRaisesRegex(OSError, "resolution seek"):
+            focused_cache.material_resolution_proof(
+                self.roots, self.requests, threading.Event()
+            )
+        self.assertTrue(captures)
+        self.assertTrue(all(stream.closed for stream in captures))
+
     def test_material_proof_bounds_are_inclusive_and_stop_before_excess_hash(self):
         from maximum_optimizer import focused_cache
 
@@ -721,6 +760,53 @@ class FocusedRenderCacheTests(unittest.TestCase):
             cache.store(self.key, self.directories, self.metadata, self.files, threading.Event())
         self.assertFalse((cache.root / self.key.digest).exists())
         self.assertEqual(tuple(lock.iterdir()), ())
+
+    def test_staging_creation_failure_never_leaks_owned_key_lock(self):
+        from maximum_optimizer import focused_cache
+
+        cache = focused_cache.FocusedRenderCache(self.base / "cache")
+        original_mkdir = Path.mkdir
+
+        def fail_staging(path, *args, **kwargs):
+            if ".tmp-" in Path(path).name:
+                raise OSError("injected staging mkdir failure")
+            return original_mkdir(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "mkdir", fail_staging), self.assertRaisesRegex(
+            OSError, "staging mkdir"
+        ):
+            cache.store(
+                self.key, self.directories, self.metadata, self.files, threading.Event()
+            )
+        self.assertFalse(tuple((self.base / "cache").glob("*.lock")))
+
+    def test_expected_layout_rejects_extra_before_hash_and_traversal_is_cancelable(self):
+        from maximum_optimizer import focused_cache
+        from maximum_optimizer.processes import ProcessCancelledError
+
+        extra = self.reference / "hostile.bin"
+        extra.write_bytes(b"do-not-hash")
+        hashed = []
+        original = focused_cache._file_proof
+
+        def record_hash(path, *args, **kwargs):
+            hashed.append(Path(path))
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(
+            focused_cache, "_file_proof", side_effect=record_hash
+        ), self.assertRaisesRegex(ValueError, "unexpected"):
+            focused_cache._render_file_manifest(
+                self.directories, threading.Event(), expected_files=self.files
+            )
+        self.assertNotIn(extra, hashed)
+
+        extra.unlink()
+        cancelled = threading.Event(); cancelled.set()
+        with self.assertRaises(ProcessCancelledError):
+            focused_cache._render_file_manifest(
+                self.directories, cancelled, expected_files=self.files
+            )
 
     def test_lookup_rejects_extra_missing_corrupt_metadata_and_reparse(self):
         import json
@@ -1060,6 +1146,7 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
         cache.store(self.key, self.directories, self.metadata, self.files, threading.Event())
         failed_metrics = _validation_metrics(0.0)
         failed_metrics["edge_error"] = 0.2
+        failed_metrics["fidelity_score"] = 0.0
         failed = ValidationResult(
             False, (GateFailure("edge_error", "scope", 0.2, 0.05, "failed"),),
             failed_metrics, "scope",
@@ -1208,6 +1295,27 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
         forged = replace(record, reference_manifest_sha256=HASHES["9"])
         forged = replace(forged, evidence_sha256=focused_cache._record_digest(forged))
         with self.assertRaisesRegex(ValueError, "manifest"):
+            focused_cache.focused_gate_evidence_payload(
+                self.context, self.selection, (forged,)
+            )
+
+    def test_schema1_rejects_self_resealed_pass_above_focused_profile_limit(self):
+        from dataclasses import replace
+        from maximum_optimizer.domain import ValidationResult
+        from maximum_optimizer import focused_cache
+
+        record = focused_cache.build_focused_render_evidence(
+            self.target, ValidationResult(True, metrics=_validation_metrics(0.0)),
+            self.metadata.expected, self.files,
+            self.payload["material_proof"]["digest"], False,
+        )
+        forged_metrics = _validation_metrics(0.0)
+        forged_metrics["edge_error"] = 999.0
+        forged = replace(
+            record, validation=ValidationResult(True, metrics=forged_metrics)
+        )
+        forged = replace(forged, evidence_sha256=focused_cache._record_digest(forged))
+        with self.assertRaisesRegex(ValueError, "profile"):
             focused_cache.focused_gate_evidence_payload(
                 self.context, self.selection, (forged,)
             )
