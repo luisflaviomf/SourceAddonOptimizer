@@ -1415,10 +1415,14 @@ enable schema 3 receive the current defaults and behavior.
   lexicographically first camera with nonzero pixels in both sides. If
   any disconnected, enclosed, or occluded component cannot be proved visible within
   that fixed matrix, the candidate fails closed; there is no partial or unbounded
-  component fallback and no unconstrained extra record is accepted. `union_key` is exactly
-  `source-union-<first-32-hex(sha256(canonical coverage manifest))>`; the manifest
+  component fallback and no unconstrained extra record is accepted. `union_key` is
+  exactly `source-union-<first-32-hex(source_coverage_sha256)>`, where
+  `source_coverage_sha256` hashes the canonical per-source coverage proof. That proof
   seals source identity plus sorted occurrence/component/material/state-dependency/
-  pose keys and profile/dependency bindings, so shuffled discovery cannot change it.
+  pose keys and profile/dependency bindings, so shuffled discovery cannot change it
+  and a different source cannot perturb this union key. The separate whole
+  `coverage_manifest_sha256` continues to bind every request, recipe, spec, cache, and
+  evidence identity.
 
 - [ ] **Step 1: Write typed adaptive-metrics, direct-request, and snapshot RED tests**
 
@@ -1490,6 +1494,9 @@ enable schema 3 receive the current defaults and behavior.
   insertion order. Candidate/recipe/cache hashes must change with either base or direct
   strategy/transfer, base spec/cache/source manifest/snapshot, request/snapshot set,
   coverage-manifest digest, prefilter proof, ratio, or source mutation.
+  Mutating source A must change A's `source_coverage_sha256`/`union_key` and the whole
+  manifest/candidate identity, while leaving source B's `union_key` unchanged; shuffled
+  per-source or whole-manifest order changes neither canonical hash.
 
   Feed pass/fail results for all four adaptive-direct specs back to `choose_next` and
   instrument `_narrowest_bracket`, donor recovery, and legacy `_regional_recovery`.

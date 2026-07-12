@@ -578,10 +578,12 @@ when the source overlaps a base target. If any disconnected, enclosed, or occlud
 component cannot be represented and visibly proved within this fixed matrix, the
 candidate fails closed; there is no object-only, partial, or unbounded per-component
 fallback. The exact union key is
-`source-union-<first-32-hex(sha256(canonical source-coverage proof))>`; the source
-proof seals sorted occurrence/component/material/state-dependency/pose keys and
-profile/dependency bindings. Shuffled graph or object discovery therefore produces the
-same key. `AdaptiveDirectEvidence` seals both exact matrices, the complete coverage
+`source-union-<first-32-hex(source_coverage_sha256)>`, where that digest hashes the
+canonical per-source coverage proof. The source proof seals sorted occurrence/
+component/material/state-dependency/pose keys and profile/dependency bindings.
+Shuffled graph or object discovery therefore produces the same key, and changing a
+different source changes the whole coverage-manifest digest but not this union key.
+`AdaptiveDirectEvidence` seals both exact matrices, the complete coverage
 manifest, visibility proofs, and current render-file manifests over the immutable base
 schema-1 context. The base prefix and canonical direct-source set are immutable; fresh
 ranking cannot remove either. Only after every record passes does exactly one fresh
