@@ -897,17 +897,27 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             root = Path(raw)
             source_root = root / "source"
             source_root.mkdir()
-            qc = source_root / "Materials.QCI"
-            qc.write_text(
-                '$cdmaterials "Models\\DiggerCars\\Pontiac_TransAm3\\"\n',
+            (source_root / "Wheel.QC").write_text(
+                '$cdmaterials "Models\\DiggerCars\\Pontiac_TransAm3\\"\n'
+                '$include "Parts.QCI"\n',
                 encoding="utf-8",
             )
+            (source_root / "Parts.QCI").write_text(
+                '$body "wheel" "wh.smd"\n',
+                encoding="utf-8",
+            )
+            (source_root / "wh.smd").write_text("", encoding="utf-8")
+            (source_root / "Unrelated.QC").write_text(
+                '$cdmaterials "models/unrelated"\n$body "other" "other.smd"\n',
+                encoding="utf-8",
+            )
+            (source_root / "other.smd").write_text("", encoding="utf-8")
             manifest = build_region_manifest(
                 (("wh.smd", "wh", ("rim2",)),),
                 occurrences={
                     "wh.smd": (
                         {
-                            "graph_file": "materials.qci",
+                            "graph_file": "parts.qci",
                             "directive": "$body/studio",
                             "line": 2,
                             "logical_path": "wh.smd",

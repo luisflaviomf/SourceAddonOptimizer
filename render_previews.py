@@ -22,7 +22,7 @@ from maximum_optimizer.regions import (
     resolve_region_assignments as _resolve_region_assignments,
     source_material_slot_identities as _source_material_slot_identities,
 )
-from maximum_optimizer.qc_graph import _lex as _lex_qc
+from maximum_optimizer.qc_graph import _lex as _lex_qc, parse_qc_graph
 
 try:
     import bpy
@@ -157,21 +157,19 @@ def _normalized_material_search_path(raw: str) -> str:
 def _source_cdmaterial_search_paths(
     manifest: RegionManifest, manifest_root: Path
 ) -> dict[str, tuple[str, ...]]:
-    manifest_root = Path(manifest_root)
+    manifest_root = Path(manifest_root).resolve(strict=True)
     sources = sorted({entry.descriptor.source_identity for entry in manifest.entries})
-    graph_files: dict[str, list[str]] = {source: [] for source in sources}
+    occurrence_files: dict[str, list[str]] = {source: [] for source in sources}
     for entry in manifest.entries:
-        target = graph_files[entry.descriptor.source_identity]
+        target = occurrence_files[entry.descriptor.source_identity]
         for occurrence in entry.occurrences:
             if occurrence.graph_file not in target:
                 target.append(occurrence.graph_file)
-    result: dict[str, tuple[str, ...]] = {}
-    for source in sources:
+
+    def paths_from_files(paths: tuple[Path, ...]) -> tuple[str, ...]:
         search_paths: list[str] = []
-        for graph_file in graph_files[source]:
-            path = _contained_material_path(manifest_root, graph_file, "")
-            if path is None or not path.is_file():
-                raise ValueError(f"QC/QCI material evidence is missing: {graph_file}")
+        for path in paths:
+            graph_file = path.relative_to(manifest_root).as_posix()
             try:
                 tokens = _lex_qc(path.read_text(encoding="utf-8-sig", errors="strict"))
             except (OSError, UnicodeError) as exc:
@@ -185,8 +183,51 @@ def _source_cdmaterial_search_paths(
                 value = _normalized_material_search_path(tokens[cursor].value)
                 if value not in search_paths:
                     search_paths.append(value)
-        result[source] = tuple(search_paths)
-    return result
+        return tuple(search_paths)
+
+    collected: dict[str, list[str]] = {source: [] for source in sources}
+    matched_graph: set[str] = set()
+    root_qcs = tuple(
+        path
+        for path in sorted(
+            (item for item in manifest_root.rglob("*") if item.is_file()),
+            key=lambda item: item.relative_to(manifest_root).as_posix().casefold(),
+        )
+        if path.suffix.casefold() == ".qc"
+        and not path.stem.casefold().endswith("_opt")
+        and "output" not in {part.casefold() for part in path.parts}
+    )
+    for root_qc in root_qcs:
+        graph = parse_qc_graph(root_qc, manifest_root)
+        graph_sources = {
+            _normalized_source_identity(
+                reference.source_path.relative_to(manifest_root).as_posix()
+            )
+            for reference in graph.references
+            if reference.role == "visual"
+        }
+        relevant = graph_sources.intersection(sources)
+        if not relevant:
+            continue
+        graph_paths = paths_from_files(tuple(item.path for item in graph.files))
+        for source in relevant:
+            matched_graph.add(source)
+            for value in graph_paths:
+                if value not in collected[source]:
+                    collected[source].append(value)
+
+    for source in sources:
+        if source in matched_graph:
+            continue
+        direct_files: list[Path] = []
+        for graph_file in occurrence_files[source]:
+            path = _contained_material_path(manifest_root, graph_file, "")
+            if path is None or not path.is_file():
+                raise ValueError(f"QC/QCI material evidence is missing: {graph_file}")
+            if path not in direct_files:
+                direct_files.append(path)
+        collected[source].extend(paths_from_files(tuple(direct_files)))
+    return {source: tuple(collected[source]) for source in sources}
 
 
 def _parse_args(argv: list[str]):
