@@ -661,6 +661,20 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         )
         self.assertEqual(selected, Path("C:/short/cache").resolve())
 
+    def test_configuration_or_aggregate_alone_enable_extended_mode(self):
+        import render_previews
+
+        configuration = render_previews._parse_args([
+            "--before", "before.smd", "--after", "after.smd", "--out", "renders",
+            "--configuration-manifest", "configuration.json",
+        ])
+        aggregate = render_previews._parse_args([
+            "--before", "before.smd", "--after", "after.smd", "--out", "renders",
+            "--aggregate-regions",
+        ])
+        self.assertTrue(render_previews._is_extended_mode(configuration))
+        self.assertTrue(render_previews._is_extended_mode(aggregate))
+
     def test_invalid_new_pass_or_pose_is_rejected(self):
         import render_previews
 

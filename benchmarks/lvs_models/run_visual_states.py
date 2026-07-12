@@ -11,7 +11,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from maximum_optimizer.orchestrator import _graph_visual_configurations
+from maximum_optimizer.orchestrator import (
+    _graph_visual_configurations,
+    _validate_visual_configuration_pairing,
+)
 from maximum_optimizer.qc_graph import parse_qc_graph
 from maximum_optimizer.regions import filter_region_manifest, load_region_manifest_payload
 from maximum_optimizer.reporting import canonical_json
@@ -52,12 +55,7 @@ def main() -> int:
     candidate_states = _graph_visual_configurations(
         candidate_graph, max_alternatives=args.max_alternatives
     )
-    signatures = lambda states: tuple(
-        (state.name, state.bodygroup_indices, state.lod_index, len(state.sources))
-        for state in states
-    )
-    if signatures(original_states) != signatures(candidate_states):
-        raise ValueError("original/candidate visual configurations do not pair exactly")
+    _validate_visual_configuration_pairing(original_states, candidate_states)
     full_manifest = load_region_manifest_payload(
         json.loads(args.region_manifest.resolve(strict=True).read_text(encoding="utf-8"))
     )

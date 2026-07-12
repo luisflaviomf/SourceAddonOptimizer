@@ -1274,9 +1274,9 @@ class OrchestratorTests(unittest.TestCase):
             parse_qc_graph(qc, source), max_alternatives=2
         )
 
-        self.assertEqual([state.name for state in states], [
-            "engine-default", "bodygroup-hood-1", "bodygroup-wheel-1"
-        ])
+        self.assertEqual(states[0].name, "engine-default")
+        self.assertRegex(states[1].name, r"bodygroup-hood-000-[0-9a-f]{8}-1")
+        self.assertRegex(states[2].name, r"bodygroup-wheel-001-[0-9a-f]{8}-1")
         self.assertEqual(
             [[path.name for path in state.sources] for state in states],
             [
@@ -1287,6 +1287,62 @@ class OrchestratorTests(unittest.TestCase):
         )
         self.assertEqual(states[0].bodygroup_indices, (("hood", 0), ("wheel", 0)))
         self.assertEqual(states[2].bodygroup_indices, (("hood", 0), ("wheel", 1)))
+
+    def test_visual_state_names_disambiguate_sanitized_bodygroup_collisions(self):
+        source = self.root / "colliding-bodygroup-states"
+        source.mkdir()
+        for name in ("base.smd", "one.smd", "two.smd"):
+            (source / name).write_text("mesh", encoding="utf-8")
+        qc = source / "car.qc"
+        qc.write_text(
+            '$body body "base.smd"\n'
+            '$bodygroup "a b" { blank studio "one.smd" }\n'
+            '$bodygroup "a-b" { blank studio "two.smd" }\n',
+            encoding="utf-8",
+        )
+
+        states = orchestrator_module._graph_visual_configurations(
+            parse_qc_graph(qc, source), max_alternatives=2
+        )
+
+        self.assertEqual(len({state.name for state in states}), 3)
+        self.assertNotEqual(states[1].name, states[2].name)
+        self.assertRegex(states[1].name, r"bodygroup-a-b-000-[0-9a-f]{8}-1")
+        self.assertRegex(states[2].name, r"bodygroup-a-b-001-[0-9a-f]{8}-1")
+
+    def test_visual_pairing_accepts_opt_paths_but_rejects_logical_source_reorder(self):
+        original = self.root / "pair-original"
+        candidate = self.root / "pair-candidate"
+        original.mkdir()
+        (candidate / "output").mkdir(parents=True)
+        for name in ("body.smd", "hood.smd"):
+            (original / name).write_text("mesh", encoding="utf-8")
+            (candidate / "output" / name.replace(".smd", "_OPT.smd")).write_text("mesh", encoding="utf-8")
+        (original / "car.qc").write_text(
+            '$body body "body.smd"\n$bodygroup hood { studio "hood.smd" }\n', encoding="utf-8"
+        )
+        candidate_qc = candidate / "car_OPT.qc"
+        candidate_qc.write_text(
+            '$body body "output/body_OPT.smd"\n'
+            '$bodygroup hood { studio "output/hood_OPT.smd" }\n', encoding="utf-8"
+        )
+        before = orchestrator_module._graph_visual_configurations(
+            parse_qc_graph(original / "car.qc", original)
+        )
+        after = orchestrator_module._graph_visual_configurations(
+            parse_qc_graph(candidate_qc, candidate)
+        )
+        orchestrator_module._validate_visual_configuration_pairing(before, after)
+
+        candidate_qc.write_text(
+            '$body body "output/hood_OPT.smd"\n'
+            '$bodygroup hood { studio "output/body_OPT.smd" }\n', encoding="utf-8"
+        )
+        reordered = orchestrator_module._graph_visual_configurations(
+            parse_qc_graph(candidate_qc, candidate)
+        )
+        with self.assertRaisesRegex(ValueError, "logical source identities"):
+            orchestrator_module._validate_visual_configuration_pairing(before, reordered)
 
     def test_production_material_roots_keep_addon_first_and_accept_explicit_overlays(self):
         addon_materials = self.addon / "materials"

@@ -300,6 +300,7 @@ class MaximumBlenderPureTests(unittest.TestCase):
                 (None, "closed.smd", "open.smd"),
             )
             for malformed in (
+                '$bodygroup hood extra { studio "open.smd" }\n',
                 '$bodygroup hood { studio studio "open.smd" }\n',
                 '$bodygroup hood { blank "open.smd" }\n',
                 '$bodygroup hood { studio "open.smd" "closed.smd" }\n',

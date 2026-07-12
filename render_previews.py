@@ -413,11 +413,11 @@ def _parse_poses(raw: str | None) -> tuple[tuple[str, int], ...]:
 
 
 def _is_extended_mode(args) -> bool:
-    return any(
+    return bool(args.aggregate_regions) or any(
         value is not None
         for value in (
             args.passes, args.poses, args.materials_root, args.vtfcmd,
-            args.texture_cache, args.region_manifest,
+            args.texture_cache, args.region_manifest, args.configuration_manifest,
         )
     )
 

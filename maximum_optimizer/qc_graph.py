@@ -267,8 +267,8 @@ def parse_qc_graph(root_qc: Path, family_root: Path) -> QcGraph:
                     raise ValueError(f"{directive} requires exactly one visual source at line {token.line}")
                 add_ref(sources[0], "visual", directive)
             elif directive == "$bodygroup":
-                if not args:
-                    raise ValueError(f"$bodygroup has no name at line {token.line}")
+                if len(args) != 1:
+                    raise ValueError(f"$bodygroup requires exactly one name at line {token.line}")
                 group_id = f"{path.relative_to(root).as_posix()}:{token.line}"
                 choices: list[QcReference | None] = []
                 cursor = block_start

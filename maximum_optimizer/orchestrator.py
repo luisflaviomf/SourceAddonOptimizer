@@ -1956,8 +1956,49 @@ def run_maximum_addon(
 class VisualConfiguration:
     name: str
     sources: tuple[Path, ...]
+    source_identities: tuple[str, ...]
     bodygroup_indices: tuple[tuple[str, int], ...]
     lod_index: int = 0
+
+
+def _logical_visual_source_identity(graph: QcGraph, path: Path) -> str:
+    relative = path.resolve(strict=True).relative_to(
+        graph.family_root.resolve(strict=True)
+    )
+    parts = list(PurePosixPath(relative.as_posix()).parts)
+    if parts and parts[0].casefold() == "output":
+        parts.pop(0)
+    if not parts:
+        raise ValueError("visual source has no logical identity")
+    leaf = PurePosixPath(parts[-1])
+    stem = re.sub(r"_opt$", "", leaf.stem, flags=re.IGNORECASE)
+    parts[-1] = f"{stem}{leaf.suffix.casefold()}"
+    identity = PurePosixPath(*(part.casefold() for part in parts)).as_posix()
+    collisions = {
+        reference.source_path.resolve(strict=True)
+        for reference in graph.references
+        if reference.role == "visual"
+        and _normalized_visual_identity_without_collision_check(
+            graph, reference.source_path
+        ) == identity
+    }
+    if len(collisions) != 1:
+        raise ValueError(f"ambiguous logical visual source identity: {identity}")
+    return identity
+
+
+def _normalized_visual_identity_without_collision_check(
+    graph: QcGraph, path: Path
+) -> str:
+    relative = path.resolve(strict=True).relative_to(
+        graph.family_root.resolve(strict=True)
+    )
+    parts = list(PurePosixPath(relative.as_posix()).parts)
+    if parts and parts[0].casefold() == "output":
+        parts.pop(0)
+    leaf = PurePosixPath(parts[-1])
+    parts[-1] = f"{re.sub(r'_opt$', '', leaf.stem, flags=re.IGNORECASE)}{leaf.suffix.casefold()}"
+    return PurePosixPath(*(part.casefold() for part in parts)).as_posix()
 
 
 def _graph_visual_configurations(
@@ -1965,22 +2006,31 @@ def _graph_visual_configurations(
 ) -> tuple[VisualConfiguration, ...]:
     if type(max_alternatives) is not int or max_alternatives < 0:
         raise ValueError("bodygroup alternative bound must be a non-negative integer")
-    fixed = tuple(
-        reference.source_path
+    fixed_references = tuple(
+        reference
         for reference in graph.references
         if reference.role == "visual"
         and reference.directive not in {"$lod/replacemodel", "$bodygroup/studio"}
+    )
+    fixed = tuple(reference.source_path for reference in fixed_references)
+    fixed_identities = tuple(
+        _logical_visual_source_identity(graph, reference.source_path)
+        for reference in fixed_references
     )
     groups = graph.bodygroups
     if len({group.name.casefold() for group in groups}) != len(groups):
         raise ValueError("duplicate bodygroup names are ambiguous for visual validation")
     defaults = tuple(group.choices[0] for group in groups)
     base = fixed + tuple(choice.source_path for choice in defaults if choice is not None)
+    base_identities = fixed_identities + tuple(
+        _logical_visual_source_identity(graph, choice.source_path)
+        for choice in defaults if choice is not None
+    )
     if not base:
         raise ValueError("QC graph has no base visual sources")
     default_indices = tuple((group.name, 0) for group in groups)
     states: list[VisualConfiguration] = [
-        VisualConfiguration("engine-default", base, default_indices)
+        VisualConfiguration("engine-default", base, base_identities, default_indices)
     ]
     alternatives = 0
     for group_index, group in enumerate(groups):
@@ -1994,14 +2044,21 @@ def _graph_visual_configurations(
                 for selected_choice in selected
                 if selected_choice is not None
             )
+            source_identities = fixed_identities + tuple(
+                _logical_visual_source_identity(graph, selected_choice.source_path)
+                for selected_choice in selected
+                if selected_choice is not None
+            )
             indices = tuple(
                 (item.name, choice_index if index == group_index else 0)
                 for index, item in enumerate(groups)
             )
             safe_name = re.sub(r"[^a-z0-9_.-]+", "-", group.name.casefold()).strip("-")
+            stable_hash = hashlib.sha256(group.name.casefold().encode("utf-8")).hexdigest()[:8]
             states.append(VisualConfiguration(
-                f"bodygroup-{safe_name or group_index}-{choice_index}",
+                f"bodygroup-{safe_name or 'group'}-{group_index:03d}-{stable_hash}-{choice_index}",
                 sources,
+                source_identities,
                 indices,
             ))
             alternatives += 1
@@ -2019,10 +2076,13 @@ def _graph_visual_configurations(
             for index in range(0, len(references), 2)
         }
         state = tuple(replacements.get(source, source) for source in base)
+        state_identities = tuple(
+            _logical_visual_source_identity(graph, source) for source in state
+        )
         if state == base:
             raise ValueError("LOD state does not replace a base source")
         states.append(VisualConfiguration(
-            f"lod-{lod_index}", state, default_indices, lod_index
+            f"lod-{lod_index}", state, state_identities, default_indices, lod_index
         ))
     return tuple(states)
 
@@ -2030,6 +2090,29 @@ def _graph_visual_configurations(
 def _graph_visual_states(graph: QcGraph) -> tuple[tuple[Path, ...], ...]:
     """Compatibility view for callers that only need source tuples."""
     return tuple(state.sources for state in _graph_visual_configurations(graph))
+
+
+def _validate_visual_configuration_pairing(
+    original: Sequence[VisualConfiguration],
+    candidate: Sequence[VisualConfiguration],
+) -> None:
+    if len(original) != len(candidate):
+        raise ValueError("render configuration counts differ")
+    for before, after in zip(original, candidate):
+        if (
+            before.name,
+            before.bodygroup_indices,
+            before.lod_index,
+        ) != (
+            after.name,
+            after.bodygroup_indices,
+            after.lod_index,
+        ):
+            raise ValueError("render configuration identities differ")
+        if before.source_identities != after.source_identities:
+            raise ValueError(
+                "render logical source identities or order differ"
+            )
 
 
 def _smd_animation_frames(path: Path) -> tuple[int, ...]:
@@ -2393,22 +2476,13 @@ class ProductionAdapters:
             candidate_states = _graph_visual_configurations(candidate_graph)
         except (OSError, ValueError) as exc:
             raise CandidateBuildError(f"render QC graph is invalid: {exc}", stage="render") from exc
-        if len(original_states) != len(candidate_states) or any(
-            (
-                before.name,
-                before.bodygroup_indices,
-                before.lod_index,
-                len(before.sources),
-            )
-            != (
-                after.name,
-                after.bodygroup_indices,
-                after.lod_index,
-                len(after.sources),
-            )
-            for before, after in zip(original_states, candidate_states)
-        ):
-            raise CandidateBuildError("render bodygroup/LOD state pairs are ambiguous", stage="render")
+        try:
+            _validate_visual_configuration_pairing(original_states, candidate_states)
+        except ValueError as exc:
+            raise CandidateBuildError(
+                f"render bodygroup/LOD state pairs are ambiguous: {exc}",
+                stage="render",
+            ) from exc
 
         original_visual_sources = tuple(
             source for state in original_states for source in state.sources
