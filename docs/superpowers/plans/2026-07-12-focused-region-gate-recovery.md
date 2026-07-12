@@ -29,7 +29,15 @@
   and one `SearchBudget.max_candidates` slot before any mutation or process launch.
 - Under trusted schema 3, byte-exact composite recovery disables the legacy
   `search._regional_recovery` path; schema-1/schema-2 search remains unchanged.
-- Monaco uses exactly four global direct ratios `(0.50, 0.45, 0.40, 0.35)` and at most eight fallback sources.
+- Monaco uses exactly four terminal global direct ratios
+  `(0.50, 0.45, 0.40, 0.35)`, at most eight fallback sources, no Cartesian product,
+  bracket refinement, donor recovery, legacy regional recovery, filename trigger, or
+  environment trigger.
+- The Monaco base is the smallest compiled ordinary `blender-adaptive-v1`
+  evaluation that already passed structural, initial whole, and every focused gate;
+  candidate ID breaks ties.
+- Every Monaco ratio is an independent schema-2 composite with one round at index 0,
+  rerenders all top-K focuses, and is outside the three-round donor-recovery bound.
 - Every candidate still requires complete QC compilation, structural validation, whole visual validation, and focused validation before promotion.
 - No task changes the WPF or CLI surface.
 
@@ -1075,62 +1083,294 @@ enable schema 3 receive the current defaults and behavior.
 ### Task 6: Bounded Monaco adaptive-direct composites
 
 **Files:**
+- Modify: `maximum_optimizer/domain.py`
 - Modify: `maximum_optimizer/composite.py`
 - Modify: `maximum_optimizer/candidates.py`
 - Modify: `maximum_optimizer/search.py`
+- Modify: `maximum_optimizer/focused_cache.py`
+- Modify: `maximum_optimizer/orchestrator.py`
 - Modify: `batch_optimize_maximum.py`
+- Modify: `tests/maximum_optimizer/test_domain.py`
 - Modify: `tests/maximum_optimizer/test_composite.py`
+- Modify: `tests/maximum_optimizer/test_candidates.py`
 - Modify: `tests/maximum_optimizer/test_search.py`
+- Modify: `tests/maximum_optimizer/test_focused_cache.py`
 - Modify: `tests/maximum_optimizer/test_orchestrator.py`
 
 **Interfaces:**
-- Produces `select_exact_fallback_sources(base_build, original_graph, candidate_graph) -> tuple[str, ...]` and `monaco_composite_specs(base_spec, source_identities) -> tuple[CandidateSpec, ...]`.
-- Uses `meshopt-direct-position-v1` and `direct-degenerate-prefilter-v1` exactly.
+- `maximum_optimizer.domain` produces immutable `AdaptiveGraphOccurrenceProof`,
+  `AdaptiveSourceMetricsProof`, `AdaptiveCandidateMetricsProof`,
+  `DirectPrefilterProof`, `DirectSourceBuildRequest`, and `DirectSourceSnapshot`. A
+  direct snapshot contains exactly one contained regular `.smd` output and is not a
+  `RecoverySourceSnapshot`.
+- `maximum_optimizer.composite` produces
+  `select_monaco_base(evaluations, retained_builds) -> CandidateEvaluation | None`,
+  `select_exact_fallback_sources(base_build, base_snapshot, original_graph,
+  candidate_graph, cancel_event) -> tuple[str, ...]`,
+  `direct_source_requests(base_build, base_snapshot, source_identities,
+  ratio) -> tuple[DirectSourceBuildRequest, ...]`, and
+  `monaco_composite_specs(base_spec, base_snapshot, snapshots_by_ratio) ->
+  tuple[CandidateSpec, ...]`. Task 6 extends the Task-5 compositor's snapshot
+  resolver to `Mapping[str, RecoverySourceSnapshot | DirectSourceSnapshot]` and
+  dispatches strictly by `SourceOverlay.mode`; the other two overlay modes never
+  accept a direct snapshot.
+- `maximum_optimizer.candidates` produces
+  `build_direct_source_snapshot(request, workspace, tools, cancel_event) ->
+  DirectSourceSnapshot` and never routes a composite `CandidateSpec.cache_payload()`
+  through the existing exact search-candidate JSON parser.
+- Uses fixed strategy `meshopt-direct-position-v1`, prefilter
+  `direct-degenerate-prefilter-v1`, eligibility reasons
+  `ratio-preserved-exact-v1`/`approved-exact-source-fallback-v1`, and direct overlay
+  reason `approved-direct-position-v1` exactly.
+- Each global ratio is an independent schema-2 composite containing one recovery
+  record at `round_index == 0`; it is outside the Task-5 donor round counter of three.
 
-- [ ] **Step 1: Write fallback-selector RED tests**
+  ```python
+  @dataclass(frozen=True)
+  class AdaptiveGraphOccurrenceProof:
+      graph_relative_path: str
+      directive: str
+      line: int
+      logical_path: str
+      role: Literal["visual"]
 
-  Select only paired visual SMDs whose sealed base metrics say `preserved_exact` or
-  the approved fallback reason. Reject filename heuristics, animation/physics roles,
-  DMX, ambiguous identities, missing outputs, duplicate provenance, malformed
-  prefilter evidence, and a ninth source.
+  @dataclass(frozen=True)
+  class AdaptiveSourceMetricsProof:
+      source_identity: str
+      source_relative_path: str
+      source_size: int
+      source_sha256: str
+      output_relative_path: str
+      output_size: int
+      output_sha256: str
+      preserved_exact: bool
+      eligibility_reason: Literal[
+          "ratio-preserved-exact-v1",
+          "approved-exact-source-fallback-v1",
+      ] | None
+      occurrences: tuple[AdaptiveGraphOccurrenceProof, ...]
+      metrics_sha256: str
 
-- [ ] **Step 2: Write schedule RED tests**
+  @dataclass(frozen=True)
+  class AdaptiveCandidateMetricsProof:
+      schema: Literal[1]
+      family_id: str
+      family_input_sha256: str
+      candidate_id: str
+      candidate_cache_digest: str
+      strategy: Literal["blender-adaptive-v1"]
+      source_manifest_sha256: str
+      raw_metrics_sha256: str
+      sources: tuple[AdaptiveSourceMetricsProof, ...]
+      evidence_sha256: str
 
-  Assert exact global ratios `(0.50, 0.45, 0.40, 0.35)`, at most four candidates,
+  @dataclass(frozen=True)
+  class DirectDroppedTriangleProof:
+      ordinal: int
+      material: str
+      primary_bones: tuple[str, ...]
+      reason: Literal["cross-squared-at-most-1e-30"]
+      source_sha256: str
+
+  @dataclass(frozen=True)
+  class DirectPrefilterProof:
+      schema: Literal[1]
+      strategy: Literal["direct-degenerate-prefilter-v1"]
+      cross_squared_threshold: float
+      source_triangle_count: int
+      dropped_count: int
+      dropped_fraction: float
+      triangles: tuple[DirectDroppedTriangleProof, ...]
+      applied: Literal[True]
+      evidence_sha256: str
+
+  @dataclass(frozen=True)
+  class DirectSourceBuildRequest:
+      schema: Literal[1]
+      family_id: str
+      family_input_sha256: str
+      base_candidate_id: str
+      base_cache_digest: str
+      base_source_manifest_sha256: str
+      optimizer_contract_sha256: str
+      whole_profile_sha256: str
+      focused_profile_sha256: str
+      dependency_proof_sha256: str
+      source_identity: str
+      source_relative_path: str
+      source_size: int
+      source_sha256: str
+      direct_ratio: float
+      strategy: Literal["meshopt-direct-position-v1"]
+      prefilter_version: Literal["direct-degenerate-prefilter-v1"]
+      expected_prefilter: DirectPrefilterProof
+      request_sha256: str
+
+  @dataclass(frozen=True)
+  class DirectSourceSnapshot:
+      schema: Literal[1]
+      request: DirectSourceBuildRequest
+      direct_candidate_id: str
+      direct_cache_digest: str
+      source_root: Path
+      output_relative_path: str
+      output_size: int
+      output_sha256: str
+      triangles_before: int
+      triangles_after: int
+      prefilter: DirectPrefilterProof
+      fallback_reason: None
+      preserved_exact: Literal[False]
+      reason: Literal["approved-direct-position-v1"]
+      snapshot_sha256: str
+  ```
+
+  `request_sha256` seals every request field except itself.
+  `metrics_sha256` seals the normalized per-source metrics and canonical grouped
+  occurrences; `AdaptiveCandidateMetricsProof.evidence_sha256` seals every field
+  except itself and must bind the same candidate/cache/source manifest as the selected
+  base snapshot. It inventories every paired visual SMD, not only eligible sources.
+  `snapshot_sha256` seals every snapshot field except itself and runtime-only
+  `source_root`. `SourceOverlay.replacement_snapshot_sha256` may resolve to a
+  `DirectSourceSnapshot` only when `mode == "direct-position"`; donor and
+  exact-original modes continue to require `RecoverySourceSnapshot`.
+
+- [ ] **Step 1: Write typed adaptive-metrics, direct-request, and snapshot RED tests**
+
+  In `test_domain.py` and `test_composite.py`, construct each new type and mutate
+  every field. Require exact schema/keys, deep immutability, lowercase hashes,
+  finite non-bool ratio, exact threshold `1e-30`, coherent dropped counts/fraction,
+  canonical source identity/path, fixed strategy/prefilter/
+  reason enums, direct candidate/cache identity, one `.smd` output, changed bytes,
+  decreasing triangle counts, and a seal over every canonical field except the
+  runtime absolute root. Reject a snapshot presented as a complete recovery source
+  tree, a second output, case aliases, reparse/special/escaping paths, stale current
+  bytes, and per-ratio aggregate discovery/copy/hash beyond 4,096 files or 2 GiB.
+  Require the adaptive metrics proof to inventory every paired visual SMD in canonical
+  order, group only byte-identical occurrences, bind raw metrics plus base
+  candidate/cache/source manifest, and authorize eligibility only through the two
+  fixed reason enums. Reject an eligible-only/incomplete inventory and arbitrary
+  diagnostic exception text.
+
+- [ ] **Step 2: Write deterministic base and fallback-selector RED tests**
+
+  Build shuffled ordinary evaluations and select only a `blender-adaptive-v1`
+  evaluation that already passed structural, initial whole, and all focused gates;
+  choose smallest actual compiled bytes then candidate ID. Reject composite bases,
+  schema-1/2 activation, environment-only activation, filename tokens, failed gates,
+  missing retained build/snapshot, and stale base evidence.
+
+  Parse the sealed base candidate-metrics proof and both QC graphs. Select only paired
+  visual `.smd` identities with `preserved_exact == true` and fixed reason
+  `ratio-preserved-exact-v1` or `approved-exact-source-fallback-v1`. Group repeated
+  byte-identical graph occurrences, but reject conflicting duplicate provenance,
+  animation/physics roles, DMX, ambiguous/case-colliding identities, arbitrary
+  exception strings, missing/stale outputs, and a ninth eligible source. Instrument
+  snapshot access and assert the ninth is rejected before any mini-build, hash, or
+  process. Assert zero eligible sources returns no proposal and consumes no budget.
+
+- [ ] **Step 3: Write fixed-ratio terminal schedule RED tests**
+
+  Assert exact global ratios `(0.50, 0.45, 0.40, 0.35)`, exactly four scheduled
+  candidates (subject only to the existing outer attempt budget),
   the same ratio for every source within one candidate, no Cartesian product, and
-  stable candidate IDs under shuffled metrics.
+  stable candidate IDs under shuffled metrics, graph occurrences, and snapshot-map
+  insertion order. Candidate/recipe hashes must change with any base cache/source
+  manifest, direct snapshot, prefilter proof, ratio, or source mutation.
 
-- [ ] **Step 3: Run composite/search tests and verify RED**
+  Feed pass/fail results for all four adaptive-direct specs back to `choose_next` and
+  instrument `_narrowest_bracket`, donor recovery, and legacy `_regional_recovery`.
+  Assert none is called for this terminal strategy and no midpoint/fifth ratio is
+  returned. Assert outer `SearchBudget.max_candidates` is reserved before opening a
+  direct snapshot or starting a mini-build; unavailable budget leaves all inputs
+  unopened.
+
+- [ ] **Step 4: Run domain/composite/search tests and verify RED**
+
+  Run: `python -m unittest tests.maximum_optimizer.test_domain tests.maximum_optimizer.test_composite tests.maximum_optimizer.test_search -v`
+
+  Expected: direct request/snapshot and Monaco coordinator contracts are absent.
+
+- [ ] **Step 5: Implement isolated typed direct-position mini-builds**
+
+  First make `batch_optimize_maximum.py` emit a separate normalized
+  `eligibility_reason` using only `ratio-preserved-exact-v1`,
+  `approved-exact-source-fallback-v1`, or null; retain raw exception text only in a
+  diagnostic field excluded from eligibility. Emit the approved-fallback enum only
+  after the existing typed exact-fallback predicate accepts the failure class/reason.
+  Build and seal the complete
+  `AdaptiveCandidateMetricsProof` against current no-follow bytes and the base
+  snapshot.
+
+  Implement exact direct parsers/builders rather than adding optional fields to the generic
+  search JSON. Each request binds family/input, immutable base candidate/cache/source
+  manifest, optimizer/profile/dependency contracts, canonical input proof, one
+  global ratio, fixed strategy/prefilter, and request digest. Build each selected
+  source in a fresh non-overlapping canonical mini-QC workspace through no-follow
+  handles and cancellation barriers.
+
+  Recompute `direct-degenerate-prefilter-v1` from the exact input bytes and require
+  exact equality with the complete reported proof: schema, strategy, threshold,
+  source/dropped counts, dropped fraction, ordered triangle records, and digest.
+  Require `applied == true`, `fallback_reason is None`, `preserved_exact == false`,
+  exact direct strategy/transfer, changed output hash, decreasing triangle count, and
+  a current one-file output proof. On any source failure, publish no partial recipe
+  for that ratio, record its reserved terminal failure, clean owned staging no-follow,
+  and allow the next fixed ratio only if budget/cancellation permits.
+
+- [ ] **Step 6: Assemble byte-exact independent composites**
+
+  Resolve every direct overlay only through the `DirectSourceSnapshot` registry.
+  For one ratio, overlay all selected outputs on the same immutable ordinary base,
+  set mode `direct-position`, no motivating region or donor focus refs, fixed reason
+  `approved-direct-position-v1`, and the identical global ratio on every overlay.
+  Require exact unchanged bytes for every undeclared source and every QC file.
+
+  Emit one complete `adaptive-direct-fallback-v1` recipe/spec per ratio. Each recipe
+  is independent, has `round_index == 0`, and seals the base plus all sorted direct
+  requests/snapshots/prefilter proofs. Never carry an overlay from one ratio into
+  another and never consume the three-round donor-recovery counter.
+
+- [ ] **Step 7: Require complete compile and schema-2 gates**
+
+  Compile the complete composed QC and seal every current contained StudioMDL
+  artifact, including required `.mdl/.vvd/.vtx/.ani/.phy` sidecars. Run structural
+  authorization, rerender all selected top-K focuses without reuse, and fold exactly
+  those records over the selected base candidate's sealed schema-1 initial
+  authorization in an independent `FocusedRecoveryContext`/schema-2 payload with one
+  record at round 0. The selected target/ranking prefix is immutable across that
+  ratio; no fresh ranking can silently drop a base target.
+  Only after structural and every focus pass, run exactly one fresh final whole gate
+  and bind its whole index/render evidence to recipe, composition, compile manifest,
+  and candidate/cache identity. Earlier terminal failure has no final-whole evidence.
+
+  Only terminal `authorized` enters candidate cache, best update, winner selection,
+  or promotion. Keep the passing Blender base in evaluations. Cache restore must
+  revalidate direct snapshots/current source bytes and rerun structural, all focuses,
+  and final whole; cache diagnostics never authorize.
+
+- [ ] **Step 8: Add compiled-byte, failure, and bound regression tests**
+
+  Make the smallest intermediate-SMD tree compile to larger complete artifacts and
+  assert it loses to lower actual StudioMDL bytes. Make every composite fail one
+  focus and assert the passing Blender base wins without a composite cache store or
+  final whole. Make every passing candidate, including the base, at least as large as
+  original and assert original preservation.
+
+  Cover one direct source failure, prefilter self-reseal, same-size input/output
+  mutation, source alias, incomplete compile sidecars, structural failure, focused
+  failure, final-whole failure, cache hit, and cancellation before/within/after each
+  mini-build and gate. Assert exactly four full-QC compile attempts maximum, no fifth
+  ratio/bracket, no partial recipe/schema-2 authorization, no best update/promotion,
+  and schema-1/schema-2 behavior unchanged.
+
+- [ ] **Step 9: Run composite integration and commit checkpoint 6**
 
   Run:
-  `python -m unittest tests.maximum_optimizer.test_composite tests.maximum_optimizer.test_search -v`
+  `python -m unittest tests.maximum_optimizer.test_domain tests.maximum_optimizer.test_composite tests.maximum_optimizer.test_candidates tests.maximum_optimizer.test_search tests.maximum_optimizer.test_focused_cache tests.maximum_optimizer.test_orchestrator -v`
 
-  Expected: Monaco composite contracts are absent.
-
-- [ ] **Step 4: Implement isolated direct-position fallback builds**
-
-  Build the Blender-adaptive base once. For each global ratio, process selected
-  sources in isolated canonical mini-QCs, require stable prefilter schema/hash and
-  `fallback_reason is None`, then overlay output bytes on the base.
-
-- [ ] **Step 5: Require complete compile and gates**
-
-  Every variant compiles the full QC and receives structural, whole, and focused
-  validation. Keep the Blender base in evaluations. `select_winner` continues to use
-  compiled bytes only among fully passing candidates.
-
-- [ ] **Step 6: Add compiled-byte regression tests**
-
-  Make the smallest intermediate-SMD candidate compile larger and assert it loses.
-  Make all composites fail one focus and assert the passing Blender base wins. Make
-  every variant larger than original and assert original preservation.
-
-- [ ] **Step 7: Run composite integration and commit checkpoint 6**
-
-  Run:
-  `python -m unittest tests.maximum_optimizer.test_composite tests.maximum_optimizer.test_search tests.maximum_optimizer.test_orchestrator -v`
-
-  Expected: zero failures.
+  Expected: zero failures; four terminal ratios only, independent schema-2 round-0
+  authorization, all top-K rerendered, and winner chosen from complete compiled bytes.
 
   Commit:
   `git commit -m "feat: build bounded adaptive direct composites"`

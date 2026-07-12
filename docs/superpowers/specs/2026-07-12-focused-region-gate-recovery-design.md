@@ -394,21 +394,86 @@ and non-focused search behavior remain unchanged.
 
 ## Monaco adaptive-direct composite
 
-The Monaco path is typed, not filename-based:
+The Monaco path is typed, not filename-based and not environment-gated. It activates
+only under trusted schema 3 after at least one completed ordinary
+`blender-adaptive-v1` evaluation has passed structural, initial whole, and every
+selected focused gate. Among those eligible ordinary evaluations, the immutable base
+is the one with the smallest actual compiled byte count, then candidate ID. Strategy,
+candidate metrics, source provenance, source snapshot, and current bytes prove
+eligibility; model/family filenames, path tokens, environment variables, and CLI
+switches never do.
 
-1. Build a normal `blender-adaptive-v1` base.
-2. Read its sealed candidate metrics and QC graph.
-3. Select only visual `.smd` sources explicitly marked `preserved_exact` or carrying
-   the approved exact-fallback reason.
-4. Reject ambiguous provenance, unsupported formats, missing outputs, duplicate
-   identities, or more than eight selected sources.
-5. For the global direct ratios `0.50`, `0.45`, `0.40`, and `0.35`, optimize every
-   selected source in isolation with `meshopt-direct-position-v1` and exactly
-   `direct-degenerate-prefilter-v1`.
-6. Assemble one complete candidate per global ratio. Ratios are not combined per
-   source, so the search creates at most four variants rather than a Cartesian
-   product.
-7. Compile the full QC and run structural, whole, and focused gates.
+The base publishes a sealed exact `AdaptiveCandidateMetricsProof` tied to its
+candidate/cache identity and `RecoverySourceSnapshot` source-manifest digest. It
+inventories every paired visual SMD, not only eligible sources, and contains canonical
+per-source input/output byte proofs plus grouped graph-occurrence proofs. The selector
+reparses the original and candidate QC graphs
+and groups repeated identical graph occurrences by canonical visual source identity.
+It selects only paired visual `.smd` outputs whose exact per-source metrics have
+`preserved_exact == true` and either fixed reason `ratio-preserved-exact-v1` or fixed
+reason `approved-exact-source-fallback-v1`. Arbitrary exception text is diagnostic
+only and never an authorization reason. Animation, physics/collision, DMX, missing or
+stale outputs, conflicting repeated occurrences, duplicate/case-colliding identities,
+unsealed metrics, and a ninth eligible source reject the Monaco proposal before a
+mini-build, snapshot open, hash, or process starts. No eligible source produces no
+Monaco candidates and consumes no budget.
+
+Task 6 introduces a bounded `DirectSourceBuildRequest` and
+`DirectSourceSnapshot`; an isolated mini-source is not misrepresented as a complete
+`RecoverySourceSnapshot`. The request seals family/input, base candidate/cache/source
+manifest, optimizer/profile/dependency contracts, canonical source identity and
+current input proof, one global ratio, strategy
+`meshopt-direct-position-v1`, prefilter
+`direct-degenerate-prefilter-v1`, the exact expected prefilter proof recomputed from
+the request input bytes, and its own digest. The snapshot carries the request,
+direct candidate/cache identity, one contained regular `.smd` output proof, input and
+output triangle counts, the exact recomputed prefilter proof, fixed reason
+`approved-direct-position-v1`, and a seal over every canonical field except its
+runtime absolute root. It contains exactly one output; across one ratio, the at-most
+eight snapshots remain within the existing 4,096-file/2-GiB source bound.
+
+The prefilter proof is authorization data, not a self-signed log. The builder
+recomputes `direct-degenerate-prefilter-v1` from the exact no-follow input bytes and
+requires exact canonical equality with the reported schema, threshold, dropped
+triangle ordinals/records, counts, and digest. A usable direct snapshot requires
+`applied == true`, `fallback_reason is None`, `preserved_exact == false`, finite
+strictly decreasing triangle counts, changed output bytes, the exact strategy and
+transfer contract, and current output bytes matching the sealed proof. A failure in
+one mini-source makes that global-ratio candidate terminally failed without publishing
+a partial recipe; later fixed ratios may still run if the outer candidate budget
+permits.
+
+`monaco_composite_specs` creates exactly the four terminal global ratios
+`(0.50, 0.45, 0.40, 0.35)`. Every selected source inside one variant receives the
+same ratio. Source order is canonical and cannot create a Cartesian product. Candidate
+and recipe identity bind the base cache/source manifest plus every sorted direct
+snapshot and prefilter proof. Adaptive-direct trails are terminal: `choose_next`
+never applies bracket refinement, midpoint generation, donor recovery, or legacy
+regional recovery, so there is no fifth ratio. The four scheduled variants still
+obey `SearchBudget.max_candidates`; unavailable outer budget stops before opening a
+snapshot or starting a mini-build.
+
+Each ratio is an independent `adaptive-direct-fallback-v1` composite, not a donor
+recovery continuation. It has its own focused-evidence schema-2 payload with exactly
+one recovery record at `round_index == 0`; the four independent records do not consume
+or extend the donor-recovery maximum of three rounds and are never cumulative across
+ratios. Its direct `SourceOverlay` entries resolve only through the supplied
+`DirectSourceSnapshot` registry and require fixed mode/reason, ratio, direct
+candidate/cache identity, snapshot hash, and byte proof. The compositor overlays
+those outputs on the immutable ordinary base, changes no other source or QC byte, and
+recompiles the complete QC.
+
+Every successfully composed ratio runs structural authorization, rerenders all
+selected top-K focuses without reuse, folds those records over the immutable base
+candidate's sealed schema-1 initial ranking/authorization through schema 2, and—only
+after the structural and focused set passes—runs exactly one fresh final whole render.
+The base selected prefix is fixed for that ratio; recomputing a ranking cannot remove
+or replace an initially selected target.
+The final-whole evidence binds the composite recipe/composition, complete compile
+manifest, current candidate/cache identity, and fresh whole index. Only terminal
+`authorized` schema 2 can enter candidate cache, best update, winner selection, or
+output promotion. Earlier composition/compile/structural/focused failure carries the
+Task-5 typed terminal status and no final-whole authorization.
 
 The Blender base remains eligible. Among candidates that pass every gate and have a
 strictly positive compiled saving, the winner is the minimum actual StudioMDL bytes,
@@ -425,6 +490,15 @@ hashes with exact keys. Cache restoration validates current contained source byt
 before the build enters the retained donor registry. A valid hit still reruns every
 current hard gate; an old schema, mixed ordinary/composite fields, stale recipe,
 same-size source mutation, or missing source manifest is a cache miss.
+
+An adaptive-direct cache entry additionally binds every canonical
+`DirectSourceBuildRequest`, `DirectSourceSnapshot`, recomputed prefilter proof, and
+the exact independent ratio recipe. Direct snapshots never enter the donor registry
+and cannot authorize donor/exact-original overlays. Restore reopens the one contained
+`.smd` output no-follow, revalidates input and output bytes plus the base snapshot,
+then reruns structural authorization, every selected focus, and the one final whole
+gate. A stale mini-source snapshot is a miss for that ratio, not permission to reuse
+schema-1 diagnostics.
 
 A separate focused-render cache may reuse expensive Blender image generation. It
 stores render bytes only and never stores a `ValidationResult`, `passed` flag, or
@@ -642,6 +716,10 @@ The following are hard validation limits, not tunable environment variables:
   exactly one original snapshot;
 - Monaco exact-fallback visual sources: maximum 8;
 - Monaco direct ratios: exactly 4 and no Cartesian expansion;
+- Monaco direct snapshots: exactly one contained regular `.smd` output each, with
+  per-ratio aggregate discovery/copy/hash bounded by 4,096 files and 2 GiB;
+- Monaco schema-2 records: exactly one independent record at round index 0 per
+  global ratio, outside the three-round donor-recovery counter;
 - focus-cache material proof: maximum 4,096 files and 2 GiB of hashed content; over
   the bound disables the cache and renders fresh;
 - all copy, hash, render, compile, cache, and round boundaries observe cancellation.
@@ -706,6 +784,11 @@ mechanism.
 - Exact fallback is explicit and auditable.
 - Monaco creates no more than four direct composite variants and touches only
   approved exact-fallback visual SMDs.
+- Monaco activation, base selection, and source eligibility use sealed typed strategy,
+  metrics, provenance, and snapshot evidence; filenames and environment variables
+  cannot activate or steer it.
+- Every Monaco ratio has an independent one-round schema-2 authorization, rerenders
+  all selected focuses, and runs at most one final whole gate before it can win.
 - Winner selection uses compiled bytes only after structural, whole, and focused
   gates pass.
 - Cache hits and misses produce the same authorization result.
