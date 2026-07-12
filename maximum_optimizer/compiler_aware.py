@@ -62,7 +62,10 @@ def allows_exact_fallback(error: object) -> bool:
 
 
 def allows_strategy_exact_fallback(error: object, *, strategy: str) -> bool:
-    if strategy == "round-planar-priority-v1" and isinstance(
+    if strategy in {
+        "round-planar-priority-v1",
+        "round-priority-collapse-v1",
+    } and isinstance(
         error, (RuntimeError, ValueError, OSError)
     ):
         return True
@@ -76,6 +79,7 @@ def provenance_status(
         "blender-adaptive-v1",
         "blender-importance-map-v1",
         "round-planar-priority-v1",
+        "round-priority-collapse-v1",
     }:
         raise ValueError("unknown Blender research strategy")
     if fallback_reason is None:

@@ -218,26 +218,31 @@ class MaximumBlenderPureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             source = root / "wheel.smd"
-            destination = root / "output" / "wheel_opt.smd"
             payload = b"version 1\r\ntriangles\r\nend\r\n\xff"
             source.write_bytes(payload)
-            candidate = maximum.CandidateConfig(
-                "round",
-                "blender",
-                0.35,
-                0.0,
-                True,
-                (),
-                strategy="round-planar-priority-v1",
-                transfer="blender-native-v1",
-            )
+            for strategy in (
+                "round-planar-priority-v1",
+                "round-priority-collapse-v1",
+            ):
+                with self.subTest(strategy=strategy):
+                    destination = root / "output" / f"{strategy}.smd"
+                    candidate = maximum.CandidateConfig(
+                        "round",
+                        "blender",
+                        0.35,
+                        0.0,
+                        True,
+                        (),
+                        strategy=strategy,
+                        transfer="blender-native-v1",
+                    )
 
-            reason = maximum._write_round_export_fallback(
-                source, destination, candidate, RuntimeError("export failed")
-            )
+                    reason = maximum._write_round_export_fallback(
+                        source, destination, candidate, RuntimeError("export failed")
+                    )
 
-            self.assertEqual(reason, "export failed")
-            self.assertEqual(destination.read_bytes(), payload)
+                    self.assertEqual(reason, "export failed")
+                    self.assertEqual(destination.read_bytes(), payload)
 
     def test_round_planar_candidate_is_explicit_opt_in_blender_contract(self) -> None:
         payload = {
@@ -254,6 +259,23 @@ class MaximumBlenderPureTests(unittest.TestCase):
         candidate = maximum.load_candidate_payload(payload)
 
         self.assertEqual(candidate.strategy, "round-planar-priority-v1")
+        self.assertEqual(candidate.ratio, 0.35)
+
+    def test_round_collapse_candidate_is_separate_typed_blender_contract(self) -> None:
+        payload = {
+            "candidate_id": "round-collapse-r035",
+            "engine": "blender",
+            "ratio": 0.35,
+            "target_error": 0.0,
+            "update_vertices": True,
+            "region_overrides": [],
+            "strategy": "round-priority-collapse-v1",
+            "transfer": "blender-native-v1",
+        }
+
+        candidate = maximum.load_candidate_payload(payload)
+
+        self.assertEqual(candidate.strategy, "round-priority-collapse-v1")
         self.assertEqual(candidate.ratio, 0.35)
 
     def test_round_planar_modifiers_dissolve_before_priority_collapse(self) -> None:
@@ -352,8 +374,11 @@ class MaximumBlenderPureTests(unittest.TestCase):
             tuple(vertex.co for vertex in obj.data.vertices), (0, 2, 4)
         )["sha256"]
         self.assertEqual(evidence, {
+            "prepass": "planar-dissolve",
             "planar_angle_degrees": 1.0,
             "planar_triangles_after": 8,
+            "collapse_triangles_before": 8,
+            "collapse_triangles_after": 8,
             "priority_vertices_requested": 3,
             "priority_vertices_survived": 3,
             "priority_geometric_vertices_requested": 3,
@@ -384,6 +409,104 @@ class MaximumBlenderPureTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(maximum.SmdAuditValidationError, "did not survive"):
             maximum._surviving_priority_vertices(obj, group)
+
+    def test_round_collapse_only_skips_planar_and_audits_after_collapse(self) -> None:
+        applied = []
+
+        class Modifiers(list):
+            def new(self, *, name, type):
+                modifier = SimpleNamespace(name=name, type=type)
+                self.append(modifier)
+                return modifier
+
+            def find(self, name):
+                return next(
+                    (index for index, item in enumerate(self) if item.name == name), -1
+                )
+
+            def move(self, source, target):
+                self.insert(target, self.pop(source))
+
+        class Group:
+            name = "__maximum_round_priority_v1__"
+            index = 4
+
+            def add(self, indices, weight, mode):
+                self.assignments = (tuple(indices), weight, mode)
+
+        class Groups:
+            def __init__(self):
+                self.group = None
+
+            def get(self, name):
+                return self.group if self.group and self.group.name == name else None
+
+            def new(self, *, name):
+                self.group = Group()
+                self.group.name = name
+                return self.group
+
+            def remove(self, group):
+                self.group = None
+
+        positions = tuple((float(index), 0.0, 0.0) for index in range(5))
+        obj = SimpleNamespace(
+            modifiers=Modifiers(),
+            vertex_groups=Groups(),
+            data=SimpleNamespace(
+                vertices=tuple(
+                    SimpleNamespace(index=index, co=position, groups=())
+                    for index, position in enumerate(positions)
+                ),
+                loop_triangles=[SimpleNamespace(vertices=(0, 1, 2))] * 12,
+                polygons=[object()] * 12,
+            ),
+        )
+        obj.data.calc_loop_triangles = lambda: None
+        obj.select_set = lambda selected: None
+
+        def apply(*, modifier):
+            item = next(item for item in obj.modifiers if item.name == modifier)
+            applied.append(item)
+            obj.modifiers.remove(item)
+
+        fake_bpy = SimpleNamespace(
+            context=SimpleNamespace(
+                view_layer=SimpleNamespace(objects=SimpleNamespace(active=None)),
+            ),
+            ops=SimpleNamespace(object=SimpleNamespace(modifier_apply=apply)),
+        )
+
+        with mock.patch.object(maximum, "bpy", fake_bpy):
+            evidence = maximum._apply_round_collapse_only_modifier(
+                obj, ratio=0.35, priority_vertices=(0, 2, 4)
+            )
+
+        self.assertEqual(len(applied), 1)
+        collapse = applied[0]
+        self.assertEqual(collapse.decimate_type, "COLLAPSE")
+        self.assertEqual(collapse.ratio, 0.35)
+        self.assertTrue(collapse.use_collapse_triangulate)
+        self.assertEqual(collapse.vertex_group, "__maximum_round_priority_v1__")
+        self.assertTrue(collapse.invert_vertex_group)
+        self.assertEqual(evidence["prepass"], "none")
+        self.assertIsNone(evidence["planar_angle_degrees"])
+        self.assertIsNone(evidence["priority_geometric_vertices_survived_planar"])
+        self.assertEqual(evidence["priority_geometric_vertices_requested"], 3)
+        self.assertEqual(evidence["priority_geometric_vertices_survived_collapse"], 3)
+        self.assertEqual(evidence["collapse_triangles_before"], 12)
+        self.assertEqual(evidence["collapse_triangles_after"], 12)
+        self.assertEqual(obj.vertex_groups.group, None)
+        payload = maximum._round_evidence_payload(
+            SimpleNamespace(
+                reason="eligible", axis=1, position_tolerance=2e-6, components=()
+            ),
+            evidence,
+        )
+        self.assertEqual(payload["round_prepass"], "none")
+        self.assertIsNone(payload["round_planar_triangles_after"])
+        self.assertEqual(payload["round_collapse_triangles_before"], 12)
+        self.assertEqual(payload["round_collapse_triangles_after"], 12)
 
     def test_round_boundary_survival_requires_every_position_and_boundary_edge(self) -> None:
         positions = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
@@ -474,6 +597,9 @@ class MaximumBlenderPureTests(unittest.TestCase):
             {
                 "planar_angle_degrees": 1.0,
                 "planar_triangles_after": 40,
+                "prepass": "planar-dissolve",
+                "collapse_triangles_before": 40,
+                "collapse_triangles_after": 24,
                 "priority_vertices_requested": 3,
                 "priority_vertices_survived": 3,
                 "priority_geometric_vertices_requested": 3,
@@ -494,6 +620,7 @@ class MaximumBlenderPureTests(unittest.TestCase):
         self.assertEqual(payload, {
             "round_admission": "eligible",
             "round_axis": 2,
+            "round_prepass": "planar-dissolve",
             "round_position_tolerance": 2e-6,
             "round_components": [{
                 "index": 0,
@@ -520,6 +647,8 @@ class MaximumBlenderPureTests(unittest.TestCase):
             }],
             "round_planar_angle_degrees": 1.0,
             "round_planar_triangles_after": 40,
+            "round_collapse_triangles_before": 40,
+            "round_collapse_triangles_after": 24,
             "round_priority_vertices_requested": 3,
             "round_priority_vertices_survived": 3,
             "round_priority_geometric_vertices_requested": 3,

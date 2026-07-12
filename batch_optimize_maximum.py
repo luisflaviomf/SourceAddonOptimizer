@@ -98,6 +98,7 @@ _BLENDER_STRATEGIES = frozenset({
     "blender-adaptive-v1",
     "blender-importance-map-v1",
     "round-planar-priority-v1",
+    "round-priority-collapse-v1",
 })
 _PRESERVE_EXACT_BLENDER_STRATEGIES = frozenset({
     "blender-adaptive-v1",
@@ -215,6 +216,7 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
         ("blender", "blender-adaptive-v1", True, "blender-native-v1"),
         ("blender", "blender-importance-map-v1", True, "blender-native-v1"),
         ("blender", "round-planar-priority-v1", True, "blender-native-v1"),
+        ("blender", "round-priority-collapse-v1", True, "blender-native-v1"),
     }:
         raise ValueError("unknown or inconsistent optimizer strategy")
     if strategy in _BLENDER_STRATEGIES and target_error != 0.0:
@@ -569,10 +571,17 @@ def _round_evidence_payload(
     return {
         "round_admission": str(decision.reason),
         "round_axis": decision.axis,
+        "round_prepass": modifier_evidence["prepass"],
         "round_position_tolerance": decision.position_tolerance,
         "round_components": components,
         "round_planar_angle_degrees": modifier_evidence["planar_angle_degrees"],
         "round_planar_triangles_after": modifier_evidence["planar_triangles_after"],
+        "round_collapse_triangles_before": modifier_evidence[
+            "collapse_triangles_before"
+        ],
+        "round_collapse_triangles_after": modifier_evidence[
+            "collapse_triangles_after"
+        ],
         "round_priority_vertices_requested": modifier_evidence["priority_vertices_requested"],
         "round_priority_vertices_survived": modifier_evidence["priority_vertices_survived"],
         "round_priority_geometric_vertices_requested": modifier_evidence[
@@ -691,8 +700,11 @@ def _apply_round_planar_modifiers(
         else:
             collapse_boundary = {"boundary_vertices": 0, "boundary_edges": 0}
         return {
+            "prepass": "planar-dissolve",
             "planar_angle_degrees": float(planar_angle_degrees),
             "planar_triangles_after": planar_triangles_after,
+            "collapse_triangles_before": planar_triangles_after,
+            "collapse_triangles_after": len(collapse_triangles),
             "priority_vertices_requested": len(tuple(priority_vertices)),
             "priority_vertices_survived": len(surviving_vertices),
             "priority_geometric_vertices_requested": expected_priority["count"],
@@ -712,6 +724,87 @@ def _apply_round_planar_modifiers(
         }
     finally:
         remaining = obj.vertex_groups.get("__maximum_round_priority_v1__")
+        if remaining is not None:
+            obj.vertex_groups.remove(remaining)
+
+
+def _apply_round_collapse_only_modifier(
+    obj: object,
+    *,
+    ratio: float,
+    priority_vertices: Sequence[int],
+    boundary_edges: Sequence[tuple[int, int]] = (),
+) -> dict[str, object]:
+    if bpy is None:
+        raise RuntimeError("round collapse strategy requires Blender")
+    if not priority_vertices:
+        raise SmdAuditValidationError("round-priority-collapse has no silhouette ring")
+    group_name = "__maximum_round_priority_v1__"
+    if obj.vertex_groups.get(group_name) is not None:
+        raise RuntimeError("reserved round priority vertex group already exists")
+    group = obj.vertex_groups.new(name=group_name)
+    group.add(list(priority_vertices), 1.0, "REPLACE")
+    expected_positions, source_triangles = _round_object_geometry(obj)
+    expected_priority = _round_priority_identities(
+        expected_positions, priority_vertices
+    )
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    try:
+        collapse = obj.modifiers.new(name="MaximumRoundPriorityCollapse", type="DECIMATE")
+        move_modifier_first(obj.modifiers, collapse)
+        collapse.decimate_type = "COLLAPSE"
+        collapse.ratio = float(ratio)
+        collapse.use_collapse_triangulate = True
+        collapse.vertex_group = group.name
+        collapse.invert_vertex_group = True
+        collapse.vertex_group_factor = 1.0
+        bpy.ops.object.modifier_apply(modifier=collapse.name)
+
+        collapse_positions, collapse_triangles = _round_object_geometry(obj)
+        collapse_priority = _verify_round_priority_survival(
+            expected_priority, collapse_positions
+        )
+        if boundary_edges:
+            collapse_boundary = _verify_round_boundary_survival(
+                expected_positions,
+                boundary_edges,
+                collapse_positions,
+                collapse_triangles,
+            )
+        else:
+            collapse_boundary = {"boundary_vertices": 0, "boundary_edges": 0}
+        if len(obj.data.polygons) != len(collapse_triangles):
+            raise SmdAuditValidationError(
+                "round collapse output must be explicitly triangulated"
+            )
+        return {
+            "prepass": "none",
+            "planar_angle_degrees": None,
+            "planar_triangles_after": None,
+            "collapse_triangles_before": len(source_triangles),
+            "collapse_triangles_after": len(collapse_triangles),
+            "priority_vertices_requested": len(tuple(priority_vertices)),
+            "priority_vertices_survived": None,
+            "priority_geometric_vertices_requested": expected_priority["count"],
+            "priority_geometric_vertices_survived_planar": None,
+            "priority_geometric_vertices_survived_collapse": collapse_priority["count"],
+            "priority_identity_sha256_requested": expected_priority["sha256"],
+            "priority_identity_sha256_planar": None,
+            "priority_identity_sha256_collapse": collapse_priority["sha256"],
+            "boundary_vertices_requested": len({
+                index for edge in boundary_edges for index in edge
+            }),
+            "boundary_edges_requested": len(tuple(boundary_edges)),
+            "boundary_vertices_survived_planar": None,
+            "boundary_edges_survived_planar": None,
+            "boundary_vertices_survived_collapse": collapse_boundary[
+                "boundary_vertices"
+            ],
+            "boundary_edges_survived_collapse": collapse_boundary["boundary_edges"],
+        }
+    finally:
+        remaining = obj.vertex_groups.get(group_name)
         if remaining is not None:
             obj.vertex_groups.remove(remaining)
 
@@ -738,7 +831,10 @@ def _optimize_blender_object(
     importance = None
     importance_group = None
     round_evidence = None
-    if candidate.strategy == "round-planar-priority-v1":
+    if candidate.strategy in {
+        "round-planar-priority-v1",
+        "round-priority-collapse-v1",
+    }:
         positions = tuple(tuple(float(value) for value in vertex.co) for vertex in mesh.vertices)
         faces = tuple(tuple(int(index) for index in tri.vertices) for tri in mesh.loop_triangles)
         influences = tuple(
@@ -747,13 +843,23 @@ def _optimize_blender_object(
         )
         decision = classify_round_component(positions, faces, influences)
         if not decision.eligible:
-            raise SmdAuditValidationError(f"round-planar-priority rejected: {decision.reason}")
-        modifier_evidence = _apply_round_planar_modifiers(
-            obj,
-            ratio=ratio,
-            priority_vertices=decision.priority_vertices,
-            boundary_edges=decision.boundary_edges,
-        )
+            raise SmdAuditValidationError(
+                f"{candidate.strategy} rejected: {decision.reason}"
+            )
+        if candidate.strategy == "round-planar-priority-v1":
+            modifier_evidence = _apply_round_planar_modifiers(
+                obj,
+                ratio=ratio,
+                priority_vertices=decision.priority_vertices,
+                boundary_edges=decision.boundary_edges,
+            )
+        else:
+            modifier_evidence = _apply_round_collapse_only_modifier(
+                obj,
+                ratio=ratio,
+                priority_vertices=decision.priority_vertices,
+                boundary_edges=decision.boundary_edges,
+            )
         round_evidence = _round_evidence_payload(decision, modifier_evidence)
         modifier = None
     else:
@@ -1733,7 +1839,10 @@ def _write_round_export_fallback(
     candidate: CandidateConfig,
     error: BaseException,
 ) -> str:
-    if candidate.strategy != "round-planar-priority-v1" or not allows_strategy_exact_fallback(
+    if candidate.strategy not in {
+        "round-planar-priority-v1",
+        "round-priority-collapse-v1",
+    } or not allows_strategy_exact_fallback(
         error, strategy=candidate.strategy
     ):
         raise error

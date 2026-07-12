@@ -25,6 +25,11 @@ class CompilerAwareTests(unittest.TestCase):
         self.assertTrue(
             allows_strategy_exact_fallback(error, strategy="round-planar-priority-v1")
         )
+        self.assertTrue(
+            allows_strategy_exact_fallback(
+                error, strategy="round-priority-collapse-v1"
+            )
+        )
         self.assertFalse(
             allows_strategy_exact_fallback(error, strategy="blender-adaptive-v1")
         )
@@ -100,6 +105,10 @@ class CompilerAwareTests(unittest.TestCase):
         self.assertEqual(
             provenance_status(None, strategy="round-planar-priority-v1"),
             ("optimized", "round-planar-priority-v1"),
+        )
+        self.assertEqual(
+            provenance_status(None, strategy="round-priority-collapse-v1"),
+            ("optimized", "round-priority-collapse-v1"),
         )
         with self.assertRaisesRegex(ValueError, "strategy"):
             provenance_status(None, strategy="made-up")
