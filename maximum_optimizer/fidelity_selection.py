@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+import json
 import math
 from pathlib import Path
+import re
+from types import MappingProxyType
 
 from maximum_optimizer.qc_graph import QcGraph
 from maximum_optimizer.round_planar_priority import classify_round_component
 from maximum_optimizer.smd_contract import parse_smd_triangles
+from maximum_optimizer.visual_validation import FidelityProfile, load_profile
 
 
 ROUND_RIGID = "round-rigid-v1"
 GENERAL_BODY_DETAIL = "general-body-detail-v1"
+LEGACY_GLOBAL = "legacy-global-v1"
+TYPED_SELECTOR = "audited-original-round-family-v1"
 
 
 @dataclass(frozen=True)
@@ -26,6 +33,80 @@ class FamilyFidelitySelection:
     profile_class: str
     reason: str
     sources: tuple[SourceFidelityAudit, ...]
+
+
+@dataclass(frozen=True)
+class FidelityProfileSet:
+    mode: str
+    version: str
+    corpus_hash: str
+    profiles: Mapping[str, FidelityProfile]
+
+    def __post_init__(self) -> None:
+        if self.mode not in {LEGACY_GLOBAL, TYPED_SELECTOR}:
+            raise ValueError("invalid fidelity profile set mode")
+        if type(self.version) is not str or not self.version:
+            raise ValueError("fidelity profile set version is required")
+        if type(self.corpus_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", self.corpus_hash) is None:
+            raise ValueError("fidelity profile set corpus hash is invalid")
+        copied = dict(self.profiles)
+        if set(copied) != {GENERAL_BODY_DETAIL, ROUND_RIGID} or any(
+            not isinstance(value, FidelityProfile) for value in copied.values()
+        ):
+            raise ValueError("fidelity profile set classes are invalid")
+        object.__setattr__(self, "profiles", MappingProxyType(copied))
+
+    def profile_for(self, profile_class: str) -> FidelityProfile:
+        if profile_class not in self.profiles:
+            raise ValueError(f"unknown fidelity profile class: {profile_class}")
+        return self.profiles[profile_class]
+
+
+def load_fidelity_profile_set(path: Path) -> FidelityProfileSet:
+    path = Path(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid fidelity profile set: {path}") from exc
+    if type(payload) is not dict:
+        raise ValueError("fidelity profile set must be an object")
+    if payload.get("schema") == 1:
+        profile = load_profile(path)
+        return FidelityProfileSet(
+            LEGACY_GLOBAL,
+            profile.version,
+            profile.corpus_hash,
+            {GENERAL_BODY_DETAIL: profile, ROUND_RIGID: profile},
+        )
+    expected = {"schema", "version", "calibrated", "corpus_hash", "selector", "profiles"}
+    if set(payload) != expected or payload.get("schema") != 2:
+        raise ValueError("typed fidelity profile fields are invalid")
+    if payload.get("calibrated") is not True:
+        raise ValueError("typed fidelity profile must be calibrated")
+    version = payload.get("version")
+    corpus_hash = payload.get("corpus_hash")
+    if type(version) is not str or not version.strip():
+        raise ValueError("typed fidelity profile version is required")
+    if type(corpus_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", corpus_hash) is None:
+        raise ValueError("typed fidelity profile corpus hash is invalid")
+    if payload.get("selector") != TYPED_SELECTOR:
+        raise ValueError("typed fidelity selector is invalid")
+    children = payload.get("profiles")
+    if type(children) is not dict or set(children) != {GENERAL_BODY_DETAIL, ROUND_RIGID}:
+        raise ValueError("typed fidelity profile classes are invalid")
+    profiles = {}
+    for profile_class in (GENERAL_BODY_DETAIL, ROUND_RIGID):
+        child = children[profile_class]
+        if type(child) is not dict or set(child) != {"limits"}:
+            raise ValueError(f"typed fidelity profile {profile_class} fields are invalid")
+        profiles[profile_class] = FidelityProfile(
+            schema=1,
+            version=f"{version}:{profile_class}",
+            calibrated=True,
+            corpus_hash=corpus_hash,
+            limits=child["limits"],
+        )
+    return FidelityProfileSet(TYPED_SELECTOR, version, corpus_hash, profiles)
 
 
 def _corner_influences(tokens: tuple[str, ...]) -> tuple[tuple[int, float], ...]:
