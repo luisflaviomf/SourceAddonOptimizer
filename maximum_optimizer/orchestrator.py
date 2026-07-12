@@ -2077,7 +2077,7 @@ def _smd_controlling_bones(path: Path) -> frozenset[int] | None:
             link_count = int(fields[9])
         except ValueError:
             return None
-        if link_count <= 0 or len(fields) != 10 + (link_count * 2):
+        if link_count < 0 or len(fields) != 10 + (link_count * 2):
             return None
         explicit_sum = 0.0
         linked_bones: set[int] = set()
@@ -2097,7 +2097,7 @@ def _smd_controlling_bones(path: Path) -> frozenset[int] | None:
             if weight > 0:
                 controlling.add(bone_id)
         tolerance = 1e-6
-        if explicit_sum <= tolerance or explicit_sum > 1.0 + tolerance:
+        if explicit_sum > 1.0 + tolerance:
             return None
         # SMD v1 assigns any unlisted remainder to the vertex parent bone.
         if explicit_sum < 1.0 - tolerance:

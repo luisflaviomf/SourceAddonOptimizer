@@ -950,6 +950,25 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIsNotNone(helper, "conservative real-SMD deformation helper is missing")
         self.assertTrue(helper((deformable,)))
 
+    def test_zero_links_and_zero_explicit_sum_use_parent_remainder(self):
+        helper = getattr(orchestrator_module, "_smd_deformation_required", None)
+        self.assertIsNotNone(helper)
+        cases = {
+            "zero_links": "0 0 0 0 0 0 1 0 0 0",
+            "zero_explicit": "0 0 0 0 0 0 1 0 0 1 0 0",
+        }
+        for name, vertex in cases.items():
+            with self.subTest(name=name):
+                path = self.root / f"valid-{name}.smd"
+                path.write_text(
+                    "version 1\nnodes\n0 \"root\" -1\nend\n"
+                    "skeleton\ntime 0\n0 0 0 0 0 0 0\nend\n"
+                    f"triangles\nmaterial/base\n{vertex}\n"
+                    "0 1 0 0 0 0 1 1 0\n0 0 1 0 0 0 1 0 1\nend\n",
+                    encoding="utf-8",
+                )
+                self.assertFalse(helper((path,)))
+
     def test_ambiguous_smd_link_evidence_never_authorizes_bind_only(self):
         helper = getattr(orchestrator_module, "_smd_deformation_required", None)
         self.assertIsNotNone(helper, "conservative real-SMD deformation helper is missing")
