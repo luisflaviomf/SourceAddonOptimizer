@@ -53,11 +53,21 @@ class QcGraphFile:
 
 
 @dataclass(frozen=True)
+class QcBodygroup:
+    graph_file: Path
+    line: int
+    name: str
+    group: str
+    choices: tuple[QcReference | None, ...]
+
+
+@dataclass(frozen=True)
 class QcGraph:
     root: Path
     family_root: Path
     files: tuple[QcGraphFile, ...]
     references: tuple[QcReference, ...]
+    bodygroups: tuple[QcBodygroup, ...] = ()
 
 
 def _lex(text: str) -> tuple[Token, ...]:
@@ -206,6 +216,7 @@ def parse_qc_graph(root_qc: Path, family_root: Path) -> QcGraph:
     visited: set[Path] = set()
     active: set[Path] = set()
     files: list[QcGraphFile] = []
+    bodygroups: list[QcBodygroup] = []
 
     def parse_file(path: Path, depth: int) -> None:
         if depth > _MAX_INCLUDE_DEPTH:
@@ -227,13 +238,16 @@ def parse_qc_graph(root_qc: Path, family_root: Path) -> QcGraph:
         references: list[QcReference] = []
         includes: list[QcInclude] = []
 
-        def add_ref(token: Token, role: str, directive: str, *, group: str = "") -> None:
+        def add_ref(token: Token, role: str, directive: str, *, group: str = "") -> QcReference | None:
             if token.value.casefold() == "blank":
-                return
+                return None
             source = _contained_existing(root, path.parent, token.value, "source reference")
-            references.append(
-                QcReference(path, directive, token.line, token.value, source, role, token.start, token.end, group)
+            reference = QcReference(
+                path, directive, token.line, token.value, source, role,
+                token.start, token.end, group,
             )
+            references.append(reference)
+            return reference
 
         index = 0
         while index < len(tokens):
@@ -253,16 +267,47 @@ def parse_qc_graph(root_qc: Path, family_root: Path) -> QcGraph:
                     raise ValueError(f"{directive} requires exactly one visual source at line {token.line}")
                 add_ref(sources[0], "visual", directive)
             elif directive == "$bodygroup":
-                sources = _block_command_sources(tokens, block_start, block_end, "studio", all_sources=False)
-                if not sources:
+                if not args:
+                    raise ValueError(f"$bodygroup has no name at line {token.line}")
+                group_id = f"{path.relative_to(root).as_posix()}:{token.line}"
+                choices: list[QcReference | None] = []
+                cursor = block_start
+                while cursor < block_end:
+                    if tokens[cursor].kind == "newline":
+                        cursor += 1
+                        continue
+                    command = tokens[cursor].value.casefold()
+                    if command == "blank":
+                        choices.append(None)
+                        cursor += 1
+                    elif command == "studio":
+                        argument_index = cursor + 1
+                        if (
+                            argument_index >= block_end
+                            or tokens[argument_index].kind in {"newline", "brace"}
+                            or tokens[argument_index].value.casefold() in {"studio", "blank"}
+                            or not _source_tokens([tokens[argument_index]])
+                        ):
+                            raise ValueError(f"$bodygroup studio has no source at line {tokens[cursor].line}")
+                        choices.append(add_ref(
+                            tokens[argument_index], "visual", "$bodygroup/studio", group=group_id
+                        ))
+                        cursor += 2
+                    else:
+                        raise ValueError(
+                            f"unknown bodygroup command at line {tokens[cursor].line}"
+                        )
+                if not choices:
                     raise ValueError(f"$bodygroup has no studio/blank source at line {token.line}")
                 all_block_sources = _source_tokens(list(tokens[block_start:block_end]))
+                selected_sources = [choice for choice in choices if choice is not None]
                 if {(item.start, item.end) for item in all_block_sources} != {
-                    (item.start, item.end) for item in sources
+                    (item.token_start, item.token_end) for item in selected_sources
                 }:
                     raise ValueError(f"unknown bodygroup geometry command at line {token.line}")
-                for source in sources:
-                    add_ref(source, "visual", "$bodygroup/studio")
+                bodygroups.append(QcBodygroup(
+                    path, token.line, args[0].value, group_id, tuple(choices)
+                ))
             elif directive == "$lod":
                 sources = _block_command_sources(tokens, block_start, block_end, "replacemodel", all_sources=True)
                 if not sources:
@@ -321,7 +366,7 @@ def parse_qc_graph(root_qc: Path, family_root: Path) -> QcGraph:
     conflicts = [path for path, roles in roles_by_source.items() if "collision" in roles and len(roles) > 1]
     if conflicts:
         raise ValueError(f"ambiguous collision/visual source role: {conflicts[0]}")
-    return QcGraph(root_qc, root, tuple(files), references)
+    return QcGraph(root_qc, root, tuple(files), references, tuple(bodygroups))
 
 
 def rewritten_qc_graph_texts(

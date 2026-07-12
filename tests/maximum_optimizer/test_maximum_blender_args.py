@@ -237,6 +237,13 @@ class MaximumBlenderPureTests(unittest.TestCase):
             )
             collision_hash = __import__("hashlib").sha256((root / "physics.smd").read_bytes()).hexdigest()
             graph = parse_qc_graph(qc, root)
+            self.assertEqual(
+                [
+                    (group.name, tuple(choice.logical_path if choice else None for choice in group.choices))
+                    for group in graph.bodygroups
+                ],
+                [("panels", ("panel one.smd",))],
+            )
             roles = [(ref.directive, ref.role, ref.logical_path) for ref in graph.references]
             self.assertIn(("$bodygroup/studio", "visual", "panel one.smd"), roles)
             self.assertIn(("$lod/replacemodel", "visual", "panel_lod.smd"), roles)
@@ -269,6 +276,38 @@ class MaximumBlenderPureTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "unknown bodygroup"):
                 parse_qc_graph(qc, root)
+
+    def test_qc_graph_preserves_zero_based_bodygroup_choices_including_blank(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("body.smd", "closed.smd", "open.smd"):
+                (root / name).write_text("mesh", encoding="utf-8")
+            qc = root / "car.qc"
+            qc.write_text(
+                '$body body "body.smd"\n'
+                '$bodygroup hood { blank studio "closed.smd" studio "open.smd" }\n',
+                encoding="utf-8",
+            )
+
+            graph = parse_qc_graph(qc, root)
+
+            self.assertEqual(len(graph.bodygroups), 1)
+            group = graph.bodygroups[0]
+            self.assertEqual(group.name, "hood")
+            self.assertEqual(group.group, "car.qc:2")
+            self.assertEqual(
+                tuple(choice.logical_path if choice else None for choice in group.choices),
+                (None, "closed.smd", "open.smd"),
+            )
+            for malformed in (
+                '$bodygroup hood { studio studio "open.smd" }\n',
+                '$bodygroup hood { blank "open.smd" }\n',
+                '$bodygroup hood { studio "open.smd" "closed.smd" }\n',
+            ):
+                with self.subTest(malformed=malformed):
+                    qc.write_text(malformed, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "bodygroup"):
+                        parse_qc_graph(qc, root)
 
     def test_qc_graph_rejects_include_cycle_and_dmx_before_blender(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

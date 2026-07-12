@@ -78,6 +78,7 @@ def _write_manifest(
         ]
     payload = {
         "schema": 1,
+        "configuration": {"schema": 1, "name": "engine-default", "bodygroups": {}, "lod_index": 0, "source_pairs": [{"source_identity": "fixture.smd", "reference_sha256": "a" * 64, "candidate_sha256": "b" * 64}]},
         "expected": {
             "passes": list(passes),
             "angles": list(angles),
@@ -89,6 +90,21 @@ def _write_manifest(
         "geometry": geometry,
         "bbox": {"min": [0, 0, 0], "max": [1, 1, 1], "diagonal": math.sqrt(3)},
         "sampling": {"stride": 1, "seed": 0},
+        "geometry_audit": {
+            f"{region}/{pose}": {
+                "input_triangles": 1,
+                "kept_triangles": 1,
+                "filtered_degenerate_triangles": 0,
+                "filtered_indices_sha256": hashlib.sha256(b"").hexdigest(),
+            }
+            for region in regions
+            for pose in poses
+        },
+        "geometry_audit_algorithm": {
+            "name": "relative-cross-area-squared-v1",
+            "relative_area_squared_epsilon": 1e-24,
+            "max_filtered_fraction": 0.05,
+        },
     }
     (root / "render_manifest.json").write_text(
         json.dumps(payload, sort_keys=True), encoding="utf-8"
@@ -486,6 +502,28 @@ class VisualValidationTests(unittest.TestCase):
         result = compare_render_sets(self.reference, self.candidate, _profile())
         self.assertIn("invalid_geometry", {failure.gate for failure in result.failures})
 
+    def test_manifest_configuration_must_match_and_geometry_audit_is_validated(self):
+        self.write_matching()
+        reference_path = self.reference / "render_manifest.json"
+        candidate_path = self.candidate / "render_manifest.json"
+        reference = json.loads(reference_path.read_text())
+        candidate = json.loads(candidate_path.read_text())
+        reference["configuration"] = {"schema": 1, "name": "engine-default", "bodygroups": {"hood": 0}, "lod_index": 0, "source_pairs": [{"source_identity": "body.smd", "reference_sha256": "a" * 64, "candidate_sha256": "b" * 64}]}
+        candidate["configuration"] = {"schema": 1, "name": "hood-open", "bodygroups": {"hood": 1}, "lod_index": 0, "source_pairs": [{"source_identity": "body.smd", "reference_sha256": "a" * 64, "candidate_sha256": "b" * 64}]}
+        reference["geometry_audit"] = {"body/bind": {"input_triangles": 3, "kept_triangles": 2, "filtered_degenerate_triangles": 1, "filtered_indices_sha256": hashlib.sha256(b"1").hexdigest()}}
+        candidate["geometry_audit"] = dict(reference["geometry_audit"])
+        reference_path.write_text(json.dumps(reference), encoding="utf-8")
+        candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+
+        result = compare_render_sets(self.reference, self.candidate, _profile())
+
+        self.assertIn("configuration_mismatch", {failure.gate for failure in result.failures})
+        candidate["configuration"] = reference["configuration"]
+        candidate["geometry_audit"]["body/bind"]["kept_triangles"] = 3
+        candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+        result = compare_render_sets(self.reference, self.candidate, _profile())
+        self.assertIn("invalid_geometry_audit", {failure.gate for failure in result.failures})
+
     def test_region_missing_is_a_hard_failure_even_with_permissive_limits(self):
         self.write_matching()
         manifest_path = self.candidate / "render_manifest.json"
@@ -603,7 +641,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertTrue(render_previews._is_extended_mode(args))
         self.assertEqual(render_previews._parse_csv(args.passes), ("textured", "clay"))
         self.assertEqual(render_previews._parse_poses(args.poses), (("bind", 0), ("run", 12)))
-        self.assertEqual(args.materials_root, "materials")
+        self.assertEqual(args.materials_root, ["materials"])
         self.assertEqual(args.vtfcmd, "VTFCmd.exe")
         self.assertEqual(args.region_manifest, "maximum_region_manifest.json")
 
@@ -778,6 +816,37 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             {"bind": {"empty": empty}}, ("empty",), ("bind",)
         )
         self.assertTrue(reference_entries[0]["region_missing"])
+
+    def test_degenerate_triangles_are_filtered_with_deterministic_audit(self):
+        import render_previews
+
+        region = {
+            "scope": "body",
+            "triangles": [
+                {
+                    "positions": ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+                    "normals": ((0.0, 0.0, 1.0),) * 3,
+                    "uvs": ((0.0, 0.0),) * 3,
+                },
+                {
+                    "positions": ((2.0, 0.0, 0.0),) * 3,
+                    "normals": ((0.0, 0.0, 1.0),) * 3,
+                    "uvs": ((0.0, 0.0),) * 3,
+                },
+            ],
+        }
+
+        filtered = render_previews._audited_nondegenerate_region(region)
+
+        self.assertEqual(len(filtered["triangles"]), 1)
+        self.assertEqual(filtered["triangle_audit"], {
+            "input_triangles": 2,
+            "kept_triangles": 1,
+            "filtered_degenerate_triangles": 1,
+            "filtered_indices_sha256": hashlib.sha256(b"1").hexdigest(),
+        })
+
+
 
     def test_pose_snapshot_union_drives_bbox_and_camera_fit(self):
         import render_previews
@@ -957,7 +1026,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             self.assertEqual(resolved, converted)
             convert.assert_called_once_with(texture, root / "VTFCmd.exe", root / "cache")
 
-    def test_cdmaterials_ambiguity_and_escape_fail_closed(self):
+    def test_cdmaterials_use_declared_search_order_and_escape_fails_closed(self):
         import render_previews
 
         with tempfile.TemporaryDirectory() as raw:
@@ -974,15 +1043,17 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             shared.mkdir()
             (shared / "paint.vtf").write_bytes(b"vtf")
 
-            with mock.patch.object(render_previews, "_convert_vtf") as convert:
-                self.assertIsNone(
+            converted = root / "converted.png"
+            with mock.patch.object(render_previews, "_convert_vtf", return_value=converted) as convert:
+                self.assertEqual(
                     render_previews._source_texture_png(
                         "paint",
                         materials,
                         root / "VTFCmd.exe",
                         root / "cache",
                         search_paths=("models/first", "models/second"),
-                    )
+                    ),
+                    converted,
                 )
                 self.assertIsNone(
                     render_previews._source_texture_png(
@@ -993,7 +1064,88 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                         search_paths=("../outside",),
                     )
                 )
-                convert.assert_not_called()
+                convert.assert_called_once_with(
+                    shared / "paint.vtf", root / "VTFCmd.exe", root / "cache"
+                )
+
+    def test_vmt_texture_alpha_is_opt_in_only(self):
+        import render_previews
+
+        opaque = 'VertexLitGeneric { "$basetexture" "cars/body" }'
+        explicit_zero = 'VertexLitGeneric { "$translucent" "0" "$alphatest" 0 }'
+        translucent = 'VertexLitGeneric { "$translucent" "1" }'
+        alpha_tested = 'VertexLitGeneric { "$alphatest" 1 }'
+
+        self.assertFalse(render_previews._vmt_uses_texture_alpha(opaque))
+        self.assertFalse(render_previews._vmt_uses_texture_alpha(explicit_zero))
+        self.assertTrue(render_previews._vmt_uses_texture_alpha(translucent))
+        self.assertTrue(render_previews._vmt_uses_texture_alpha(alpha_tested))
+
+    def test_material_roots_are_ordered_overlays_and_resolution_is_audited(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            cars = root / "cars"
+            framework = root / "framework"
+            car_path = cars / "models/diggercars/car"
+            shared_path = framework / "models/diggercars/shared"
+            car_path.mkdir(parents=True)
+            shared_path.mkdir(parents=True)
+            (car_path / "skin.vmt").write_text(
+                'VertexLitGeneric\n{\n "$basetexture" "models/diggercars/car/skin"\n}', encoding="utf-8"
+            )
+            (car_path / "skin.vtf").write_bytes(b"car-skin")
+            (shared_path / "black.vmt").write_text(
+                'VertexLitGeneric\n{\n "$basetexture" "models/diggercars/shared/black"\n}', encoding="utf-8"
+            )
+            (shared_path / "black.vtf").write_bytes(b"framework-black")
+            converted = root / "converted.png"
+            with mock.patch.object(render_previews, "_convert_vtf", return_value=converted) as convert:
+                self.assertEqual(
+                    render_previews._source_texture_png(
+                        "black", (cars, framework), root / "VTFCmd.exe", root / "cache",
+                        search_paths=("models/diggercars/car", "models/diggercars/shared"),
+                    ),
+                    converted,
+                )
+            convert.assert_called_once_with(
+                shared_path / "black.vtf", root / "VTFCmd.exe", root / "cache"
+            )
+            evidence = render_previews._source_material_evidence(
+                "black", (cars, framework),
+                search_paths=("models/diggercars/car", "models/diggercars/shared"),
+            )
+            self.assertEqual(evidence["root_index"], 1)
+            self.assertEqual(
+                evidence["vmt_sha256"], hashlib.sha256((shared_path / "black.vmt").read_bytes()).hexdigest()
+            )
+            self.assertEqual(evidence["vtf_sha256"], hashlib.sha256(b"framework-black").hexdigest())
+
+    def test_vtfcmd_conversion_retries_one_transient_failure(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "paint.vtf"
+            source.write_bytes(b"vtf")
+            tool = root / "VTFCmd.exe"
+            tool.write_bytes(b"tool")
+            calls = []
+
+            def run(command, **_kwargs):
+                calls.append(command)
+                if len(calls) == 2:
+                    output = Path(command[command.index("-output") + 1]) / "paint.png"
+                    output.write_bytes(b"png")
+                    return subprocess.CompletedProcess(command, 0)
+                return subprocess.CompletedProcess(command, 1)
+
+            with mock.patch.object(render_previews.subprocess, "run", side_effect=run):
+                converted = render_previews._convert_vtf(source, tool, root / "cache")
+
+            self.assertIsNotNone(converted)
+            self.assertEqual(len(calls), 2)
 
     def test_textured_material_application_uses_each_objects_source_search_paths(self):
         import render_previews
@@ -1026,7 +1178,8 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                 },
             )
 
-        self.assertTrue(missing)
+        self.assertEqual(missing["missing"], ("models/wheel/wh.smd:slot:0:rim2",))
+        self.assertEqual(missing["resolved"], ())
         texture.assert_called_once_with(
             "rim2",
             Path("materials"),

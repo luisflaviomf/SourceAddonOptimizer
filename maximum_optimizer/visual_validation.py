@@ -25,6 +25,11 @@ GEOMETRY_METRICS = (
 REQUIRED_METRICS = IMAGE_METRICS + GEOMETRY_METRICS
 EXPECTED_PASSES = ("textured", "clay")
 EXPECTED_ANGLES = ("front", "back", "left", "right", "top", "bottom", "iso1", "iso2")
+GEOMETRY_AUDIT_ALGORITHM = {
+    "name": "relative-cross-area-squared-v1",
+    "relative_area_squared_epsilon": 1e-24,
+    "max_filtered_fraction": 0.05,
+}
 
 
 @dataclass(frozen=True)
@@ -295,6 +300,82 @@ def _validate_geometry(
     return indexed
 
 
+def _validate_configuration(
+    manifest: dict, label: str, failures: list[GateFailure]
+) -> dict | None:
+    payload = manifest.get("configuration")
+    if type(payload) is not dict or set(payload) != {"schema", "name", "bodygroups", "lod_index", "source_pairs"}:
+        failures.append(_failure("invalid_configuration", label, "render configuration is invalid"))
+        return None
+    bodygroups = payload.get("bodygroups")
+    pairs = payload.get("source_pairs")
+    if (
+        payload.get("schema") != 1
+        or type(payload.get("name")) is not str
+        or not payload["name"]
+        or type(payload.get("lod_index")) is not int
+        or payload["lod_index"] < 0
+        or type(bodygroups) is not dict
+        or any(
+            type(name) is not str or not name or type(index) is not int or index < 0
+            for name, index in bodygroups.items()
+        )
+        or type(pairs) is not list
+        or not pairs
+        or any(
+            type(pair) is not dict
+            or set(pair) != {"source_identity", "reference_sha256", "candidate_sha256"}
+            or type(pair["source_identity"]) is not str
+            or not pair["source_identity"]
+            or any(
+                type(pair.get(field)) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", pair[field]) is None
+                for field in ("reference_sha256", "candidate_sha256")
+            )
+            for pair in pairs
+        )
+    ):
+        failures.append(_failure("invalid_configuration", label, "render configuration values are invalid"))
+        return None
+    return payload
+
+
+def _validate_geometry_audit(
+    manifest: dict, expected: dict[str, object], label: str, failures: list[GateFailure]
+) -> None:
+    if manifest.get("geometry_audit_algorithm") != GEOMETRY_AUDIT_ALGORITHM:
+        failures.append(_failure("invalid_geometry_audit", label, "geometry audit algorithm is invalid"))
+        return
+    payload = manifest.get("geometry_audit")
+    required = {
+        f"{region}/{pose}"
+        for region in expected["regions"]
+        for pose in expected["poses"]
+    }
+    if type(payload) is not dict or set(payload) != required:
+        failures.append(_failure("invalid_geometry_audit", label, "geometry audit matrix is invalid"))
+        return
+    for scope, audit in payload.items():
+        valid = type(audit) is dict and set(audit) == {
+            "input_triangles", "kept_triangles", "filtered_degenerate_triangles",
+            "filtered_indices_sha256",
+        }
+        if valid:
+            counts = tuple(audit[field] for field in (
+                "input_triangles", "kept_triangles", "filtered_degenerate_triangles"
+            ))
+            valid = (
+                all(type(value) is int and value >= 0 for value in counts)
+                and counts[1] + counts[2] == counts[0]
+                and counts[1] > 0
+                and counts[2] / counts[0] <= GEOMETRY_AUDIT_ALGORITHM["max_filtered_fraction"]
+                and type(audit["filtered_indices_sha256"]) is str
+                and re.fullmatch(r"[0-9a-f]{64}", audit["filtered_indices_sha256"]) is not None
+            )
+        if not valid:
+            failures.append(_failure("invalid_geometry_audit", f"{label}/{scope}", "geometry audit entry is invalid"))
+
+
 def _scope(key: tuple[str, str, str]) -> str:
     render_pass, pose, angle = key
     if pose == "bind":
@@ -461,6 +542,17 @@ def compare_render_sets(
     reference_manifest = _load_manifest(reference_dir, "reference", failures)
     candidate_manifest = _load_manifest(candidate_dir, "candidate", failures)
     if reference_manifest is not None and candidate_manifest is not None:
+        reference_configuration = _validate_configuration(reference_manifest, "reference", failures)
+        candidate_configuration = _validate_configuration(candidate_manifest, "candidate", failures)
+        if (
+            reference_configuration is not None
+            and candidate_configuration is not None
+            and reference_configuration != candidate_configuration
+        ):
+            failures.append(_failure(
+                "configuration_mismatch", "manifest",
+                "reference and candidate bodygroup/LOD configurations differ",
+            ))
         reference_expected = _validate_expected(reference_manifest, "reference", failures)
         candidate_expected = _validate_expected(candidate_manifest, "candidate", failures)
         if (
@@ -480,12 +572,14 @@ def compare_render_sets(
         if reference_expected is not None:
             _validate_entry_matrix(reference_entries, reference_expected, "reference", failures)
             _validate_geometry(reference_manifest, reference_expected, "reference", failures)
+            _validate_geometry_audit(reference_manifest, reference_expected, "reference", failures)
         candidate_geometry = {}
         if candidate_expected is not None:
             _validate_entry_matrix(candidate_entries, candidate_expected, "candidate", failures)
             candidate_geometry = _validate_geometry(
                 candidate_manifest, candidate_expected, "candidate", failures
             )
+            _validate_geometry_audit(candidate_manifest, candidate_expected, "candidate", failures)
         reference_keys = set(reference_entries)
         candidate_keys = set(candidate_entries)
         if reference_keys != candidate_keys:

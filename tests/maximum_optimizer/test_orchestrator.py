@@ -43,6 +43,7 @@ from maximum_optimizer.orchestrator import (
 )
 from maximum_optimizer.reporting import canonical_json, event_line
 from maximum_optimizer.processes import ProcessCancelledError, ProcessResult
+from maximum_optimizer.qc_graph import parse_qc_graph
 from maximum_optimizer.regions import (
     build_region_manifest,
     load_region_manifest_payload,
@@ -1255,6 +1256,49 @@ class OrchestratorTests(unittest.TestCase):
                 "candidate_source_identity": None,
             },
         )
+
+    def test_visual_configurations_use_engine_default_and_bounded_one_at_a_time_bodygroups(self):
+        source = self.root / "bodygroup-states"
+        source.mkdir()
+        for name in ("body.smd", "hood_closed.smd", "hood_open.smd", "wheel_a.smd", "wheel_b.smd"):
+            (source / name).write_text("mesh", encoding="utf-8")
+        qc = source / "car.qc"
+        qc.write_text(
+            '$body body "body.smd"\n'
+            '$bodygroup hood { studio "hood_closed.smd" studio "hood_open.smd" }\n'
+            '$bodygroup wheel { blank studio "wheel_a.smd" studio "wheel_b.smd" }\n',
+            encoding="utf-8",
+        )
+
+        states = orchestrator_module._graph_visual_configurations(
+            parse_qc_graph(qc, source), max_alternatives=2
+        )
+
+        self.assertEqual([state.name for state in states], [
+            "engine-default", "bodygroup-hood-1", "bodygroup-wheel-1"
+        ])
+        self.assertEqual(
+            [[path.name for path in state.sources] for state in states],
+            [
+                ["body.smd", "hood_closed.smd"],
+                ["body.smd", "hood_open.smd"],
+                ["body.smd", "hood_closed.smd", "wheel_a.smd"],
+            ],
+        )
+        self.assertEqual(states[0].bodygroup_indices, (("hood", 0), ("wheel", 0)))
+        self.assertEqual(states[2].bodygroup_indices, (("hood", 0), ("wheel", 1)))
+
+    def test_production_material_roots_keep_addon_first_and_accept_explicit_overlays(self):
+        addon_materials = self.addon / "materials"
+        overlay = self.root / "framework-materials"
+        addon_materials.mkdir(exist_ok=True)
+        overlay.mkdir()
+        adapter = ProductionAdapters(self.config, threading.Event())
+
+        with patch.dict(os.environ, {"MAXIMUM_MATERIAL_ROOTS": str(overlay)}):
+            roots = adapter._materials_roots()
+
+        self.assertEqual(roots, (addon_materials.resolve(), overlay.resolve()))
 
     def test_default_schedule_prefers_blender_when_meshopt_is_not_preferred(self):
         self.adapters.candidate_schedule = None

@@ -1952,20 +1952,66 @@ def run_maximum_addon(
     return report
 
 
-def _graph_visual_states(graph: QcGraph) -> tuple[tuple[Path, ...], ...]:
-    base = tuple(
+@dataclass(frozen=True)
+class VisualConfiguration:
+    name: str
+    sources: tuple[Path, ...]
+    bodygroup_indices: tuple[tuple[str, int], ...]
+    lod_index: int = 0
+
+
+def _graph_visual_configurations(
+    graph: QcGraph, *, max_alternatives: int = 8
+) -> tuple[VisualConfiguration, ...]:
+    if type(max_alternatives) is not int or max_alternatives < 0:
+        raise ValueError("bodygroup alternative bound must be a non-negative integer")
+    fixed = tuple(
         reference.source_path
         for reference in graph.references
-        if reference.role == "visual" and reference.directive != "$lod/replacemodel"
+        if reference.role == "visual"
+        and reference.directive not in {"$lod/replacemodel", "$bodygroup/studio"}
     )
+    groups = graph.bodygroups
+    if len({group.name.casefold() for group in groups}) != len(groups):
+        raise ValueError("duplicate bodygroup names are ambiguous for visual validation")
+    defaults = tuple(group.choices[0] for group in groups)
+    base = fixed + tuple(choice.source_path for choice in defaults if choice is not None)
     if not base:
         raise ValueError("QC graph has no base visual sources")
-    states: list[tuple[Path, ...]] = [base]
-    groups: dict[str, list] = {}
+    default_indices = tuple((group.name, 0) for group in groups)
+    states: list[VisualConfiguration] = [
+        VisualConfiguration("engine-default", base, default_indices)
+    ]
+    alternatives = 0
+    for group_index, group in enumerate(groups):
+        for choice_index, choice in enumerate(group.choices[1:], start=1):
+            if alternatives >= max_alternatives:
+                break
+            selected = list(defaults)
+            selected[group_index] = choice
+            sources = fixed + tuple(
+                selected_choice.source_path
+                for selected_choice in selected
+                if selected_choice is not None
+            )
+            indices = tuple(
+                (item.name, choice_index if index == group_index else 0)
+                for index, item in enumerate(groups)
+            )
+            safe_name = re.sub(r"[^a-z0-9_.-]+", "-", group.name.casefold()).strip("-")
+            states.append(VisualConfiguration(
+                f"bodygroup-{safe_name or group_index}-{choice_index}",
+                sources,
+                indices,
+            ))
+            alternatives += 1
+        if alternatives >= max_alternatives:
+            break
+    lod_groups: dict[str, list] = {}
     for reference in graph.references:
         if reference.directive == "$lod/replacemodel":
-            groups.setdefault(reference.group, []).append(reference)
-    for group, references in groups.items():
+            lod_groups.setdefault(reference.group, []).append(reference)
+    for lod_index, (group, references) in enumerate(lod_groups.items(), start=1):
         if not group or len(references) % 2:
             raise ValueError("LOD replacement graph is ambiguous")
         replacements = {
@@ -1975,8 +2021,15 @@ def _graph_visual_states(graph: QcGraph) -> tuple[tuple[Path, ...], ...]:
         state = tuple(replacements.get(source, source) for source in base)
         if state == base:
             raise ValueError("LOD state does not replace a base source")
-        states.append(state)
+        states.append(VisualConfiguration(
+            f"lod-{lod_index}", state, default_indices, lod_index
+        ))
     return tuple(states)
+
+
+def _graph_visual_states(graph: QcGraph) -> tuple[tuple[Path, ...], ...]:
+    """Compatibility view for callers that only need source tuples."""
+    return tuple(state.sources for state in _graph_visual_configurations(graph))
 
 
 def _smd_animation_frames(path: Path) -> tuple[int, ...]:
@@ -2215,6 +2268,24 @@ class ProductionAdapters:
         )
         return next((path.resolve() for path in candidates if path is not None and path.is_file()), None)
 
+    def _materials_roots(self) -> tuple[Path, ...]:
+        values = [self.config.addon_dir / "materials"]
+        values.extend(
+            Path(value).expanduser()
+            for value in os.environ.get("MAXIMUM_MATERIAL_ROOTS", "").split(os.pathsep)
+            if value.strip()
+        )
+        roots: list[Path] = []
+        for value in values:
+            root = value.resolve(strict=True)
+            if not root.is_dir():
+                raise CandidateBuildError(
+                    f"material overlay root is not a directory: {root}", stage="render"
+                )
+            if root not in roots:
+                roots.append(root)
+        return tuple(roots)
+
     def inventory(self, config: MaximumRunConfig) -> Sequence[FamilyManifest]:
         return build_family_manifests(
             config.addon_dir / "models",
@@ -2318,21 +2389,32 @@ class ProductionAdapters:
         try:
             original_graph = parse_qc_graph(original_qcs[0], manifest.source_dir)
             candidate_graph = parse_qc_graph(candidate.optimized_qc, candidate_source_root)
-            original_states = _graph_visual_states(original_graph)
-            candidate_states = _graph_visual_states(candidate_graph)
+            original_states = _graph_visual_configurations(original_graph)
+            candidate_states = _graph_visual_configurations(candidate_graph)
         except (OSError, ValueError) as exc:
             raise CandidateBuildError(f"render QC graph is invalid: {exc}", stage="render") from exc
         if len(original_states) != len(candidate_states) or any(
-            len(before) != len(after)
+            (
+                before.name,
+                before.bodygroup_indices,
+                before.lod_index,
+                len(before.sources),
+            )
+            != (
+                after.name,
+                after.bodygroup_indices,
+                after.lod_index,
+                len(after.sources),
+            )
             for before, after in zip(original_states, candidate_states)
         ):
-            raise CandidateBuildError("render LOD state pairs are ambiguous", stage="render")
+            raise CandidateBuildError("render bodygroup/LOD state pairs are ambiguous", stage="render")
 
         original_visual_sources = tuple(
-            source for state in original_states for source in state
+            source for state in original_states for source in state.sources
         )
         candidate_visual_sources = tuple(
-            source for state in candidate_states for source in state
+            source for state in candidate_states for source in state.sources
         )
         deformation_required = (
             _smd_deformation_required(original_visual_sources)
@@ -2394,22 +2476,25 @@ class ProductionAdapters:
         pose_arg = f"bind:0,representative:{animation[2]}" if animation else "bind:0"
         vtfcmd = self._vtfcmd()
         state_results: list[tuple[str, ValidationResult]] = []
-        for state_index, (before_sources, after_sources) in enumerate(
+        for state_index, (before_state, after_state) in enumerate(
             zip(original_states, candidate_states)
         ):
             if self.cancel_event.is_set():
                 raise ProcessCancelledError("cancelled before render validation")
-            state_name = "base" if state_index == 0 else f"lod-{state_index}"
+            state_name = before_state.name
             state_root = render_root / state_name
             before = tuple(
                 source_root / source.relative_to(manifest.source_dir.resolve(strict=True))
-                for source in before_sources
+                for source in before_state.sources
             )
-            after = tuple(after_sources)
+            after = tuple(after_state.sources)
             if any(not path.is_file() for path in (*before, *after)):
                 raise CandidateBuildError("render source pairs are missing", stage="render")
             state_region_manifest = region_manifest.with_name(
                 f"maximum_region_manifest.state-{state_index:03d}-{state_name}.json"
+            )
+            configuration_manifest = region_manifest.with_name(
+                f"maximum_configuration.state-{state_index:03d}-{state_name}.json"
             )
             try:
                 copied_source_root = source_root.resolve(strict=True)
@@ -2422,6 +2507,22 @@ class ProductionAdapters:
                 ).to_payload()
                 load_region_manifest_payload(state_manifest_payload)
                 atomic_write_json(state_region_manifest, state_manifest_payload)
+                atomic_write_json(configuration_manifest, {
+                    "schema": 1,
+                    "name": state_name,
+                    "bodygroups": dict(before_state.bodygroup_indices),
+                    "lod_index": before_state.lod_index,
+                    "source_pairs": [
+                        {
+                            "source_identity": path.resolve(strict=True).relative_to(
+                                copied_source_root
+                            ).as_posix(),
+                            "reference_sha256": _sha256_file(path, self.cancel_event),
+                            "candidate_sha256": _sha256_file(candidate_path, self.cancel_event),
+                        }
+                        for path, candidate_path in zip(before, after)
+                    ],
+                })
                 load_region_manifest_payload(json.loads(
                     state_region_manifest.read_text(encoding="utf-8")
                 ))
@@ -2441,9 +2542,11 @@ class ProductionAdapters:
             command.extend((
                 "--out", str(state_root), "--size", "512",
                 "--passes", "textured,clay", "--poses", pose_arg,
-                "--materials-root", str(self.config.addon_dir / "materials"),
                 "--region-manifest", str(state_region_manifest),
+                "--configuration-manifest", str(configuration_manifest),
             ))
+            for materials_root in self._materials_roots():
+                command.extend(("--materials-root", str(materials_root)))
             if animation is not None:
                 original_animation = source_root / animation[0].relative_to(
                     manifest.source_dir.resolve(strict=True)

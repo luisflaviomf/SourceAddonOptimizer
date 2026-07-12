@@ -45,6 +45,11 @@ ANGLE_DIRS = {
     "iso1": Vector((1.0, -1.0, 1.0)),
     "iso2": Vector((-1.0, -1.0, 1.0)),
 }
+GEOMETRY_AUDIT_ALGORITHM = {
+    "name": "relative-cross-area-squared-v1",
+    "relative_area_squared_epsilon": 1e-24,
+    "max_filtered_fraction": 0.05,
+}
 
 
 def _eevee_engine(
@@ -248,6 +253,7 @@ def _parse_args(argv: list[str]):
     ap.add_argument(
         "--materials-root",
         default=None,
+        action="append",
         help=(
             "Source materials directory; short SMD material names are resolved "
             "through $cdmaterials in the QC/QCI occurrences recorded by --region-manifest"
@@ -257,6 +263,10 @@ def _parse_args(argv: list[str]):
     ap.add_argument(
         "--region-manifest", default=None,
         help="Required shared Maximum region manifest for extended validation",
+    )
+    ap.add_argument(
+        "--configuration-manifest", default=None,
+        help="Required paired bodygroup/LOD configuration identity for extended validation",
     )
     return ap.parse_args(argv)
 
@@ -308,6 +318,43 @@ def _required_region_manifest(args) -> Path:
     if not path.is_file():
         raise ValueError(f"region manifest does not exist: {path}")
     return path
+
+
+def _required_configuration_manifest(args) -> dict:
+    if not args.configuration_manifest:
+        raise ValueError("extended Maximum validation requires an explicit configuration manifest")
+    path = Path(args.configuration_manifest).expanduser().resolve()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read configuration manifest: {path}") from exc
+    if type(payload) is not dict or set(payload) != {"schema", "name", "bodygroups", "lod_index", "source_pairs"}:
+        raise ValueError("configuration manifest schema fields are invalid")
+    if payload["schema"] != 1 or type(payload["name"]) is not str or not payload["name"]:
+        raise ValueError("configuration manifest identity is invalid")
+    if type(payload["lod_index"]) is not int or payload["lod_index"] < 0:
+        raise ValueError("configuration manifest LOD index is invalid")
+    bodygroups = payload["bodygroups"]
+    if type(bodygroups) is not dict or any(
+        type(name) is not str or not name or type(index) is not int or index < 0
+        for name, index in bodygroups.items()
+    ):
+        raise ValueError("configuration manifest bodygroup indices are invalid")
+    pairs = payload["source_pairs"]
+    if type(pairs) is not list or not pairs or any(
+        type(pair) is not dict
+        or set(pair) != {"source_identity", "reference_sha256", "candidate_sha256"}
+        or type(pair["source_identity"]) is not str
+        or not pair["source_identity"]
+        or any(
+            type(pair[field]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", pair[field]) is None
+            for field in ("reference_sha256", "candidate_sha256")
+        )
+        for pair in pairs
+    ):
+        raise ValueError("configuration manifest source pair identity is invalid")
+    return payload
 
 
 def _parse_csv(raw: str | None) -> tuple[str, ...]:
@@ -375,6 +422,18 @@ def _extract_base_texture(vmt_text: str) -> str | None:
     return value or None
 
 
+def _vmt_uses_texture_alpha(vmt_text: str) -> bool:
+    uncommented = "\n".join(line.split("//", 1)[0] for line in vmt_text.splitlines())
+    for directive in ("translucent", "alphatest"):
+        match = re.search(
+            rf'(?i)"?\${directive}"?\s+"?(1|true)"?(?=\s|\}}|$)',
+            uncommented,
+        )
+        if match is not None:
+            return True
+    return False
+
+
 def _render_entry(
     root: Path,
     render_pass: str,
@@ -383,6 +442,8 @@ def _render_entry(
     image_path: Path,
     *,
     texture_missing: bool,
+    missing_materials: tuple[str, ...] = (),
+    resolved_materials: tuple[dict, ...] = (),
 ) -> dict:
     return {
         "pass": render_pass,
@@ -391,6 +452,8 @@ def _render_entry(
         "image": image_path.relative_to(root).as_posix(),
         "sha256": hashlib.sha256(image_path.read_bytes()).hexdigest(),
         "texture_missing": bool(texture_missing),
+        "missing_materials": list(missing_materials),
+        "resolved_materials": list(resolved_materials),
     }
 
 
@@ -403,6 +466,8 @@ def _write_render_manifest(
     expected: dict,
     stride: int,
     seed: int,
+    configuration: dict | None = None,
+    geometry_audit: dict | None = None,
 ) -> Path:
     manifest = {
         "schema": 1,
@@ -412,6 +477,11 @@ def _write_render_manifest(
         "bbox": bbox,
         "sampling": {"stride": stride, "seed": seed},
     }
+    if configuration is not None:
+        manifest["configuration"] = configuration
+    if geometry_audit is not None:
+        manifest["geometry_audit"] = geometry_audit
+        manifest["geometry_audit_algorithm"] = GEOMETRY_AUDIT_ALGORITHM
     path = root / "render_manifest.json"
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return path
@@ -584,19 +654,44 @@ def _convert_vtf(vtf_path: Path, vtfcmd: Path | None, cache_root: Path) -> Path 
         "-exportformat",
         "png",
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    return output_path if result.returncode == 0 and output_path.is_file() else None
+    for _attempt in range(2):
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode == 0 and output_path.is_file():
+            return output_path
+    return None
 
 
 def _source_texture_png(
     material_name: str,
-    materials_root: Path | None,
+    materials_root,
     vtfcmd: Path | None,
     cache_root: Path,
     *,
     search_paths: tuple[str, ...] = (),
 ) -> Path | None:
-    if materials_root is None or not materials_root.is_dir():
+    resolved = _source_material_files(
+        material_name, materials_root, search_paths=search_paths
+    )
+    if resolved is None:
+        return None
+    return _convert_vtf(resolved["vtf_path"], vtfcmd, cache_root)
+
+
+def _material_roots(materials_root) -> tuple[Path, ...]:
+    if materials_root is None:
+        return ()
+    values = materials_root if isinstance(materials_root, (tuple, list)) else (materials_root,)
+    return tuple(Path(value) for value in values if Path(value).is_dir())
+
+
+def _source_material_files(
+    material_name: str,
+    materials_root,
+    *,
+    search_paths: tuple[str, ...] = (),
+) -> dict | None:
+    roots = _material_roots(materials_root)
+    if not roots:
         return None
     relative = material_name.replace("\\", "/").strip()
     if relative.casefold().endswith(".vmt"):
@@ -616,27 +711,80 @@ def _source_texture_png(
         if search_paths and len(normalized.parts) == 1
         else (normalized,)
     )
-    matches: list[Path] = []
-    for candidate in candidates:
-        vmt_path = _contained_material_path(materials_root, candidate.as_posix(), ".vmt")
-        if vmt_path is not None and vmt_path.is_file() and vmt_path not in matches:
-            matches.append(vmt_path)
-    if len(matches) != 1:
+    vmt_path = None
+    vmt_root_index = -1
+    for root_index, root in enumerate(roots):
+        for candidate in candidates:
+            match = _contained_material_path(root, candidate.as_posix(), ".vmt")
+            if match is not None and match.is_file():
+                vmt_path = match
+                vmt_root_index = root_index
+                break
+        if vmt_path is not None:
+            break
+    if vmt_path is None:
         return None
-    vmt_path = matches[0]
     try:
         base_texture = _extract_base_texture(vmt_path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return None
     if base_texture is None:
         return None
-    vtf_path = _contained_material_path(materials_root, base_texture, ".vtf")
+    vtf_path = None
+    vtf_root_index = -1
+    for root_index, root in enumerate(roots):
+        match = _contained_material_path(root, base_texture, ".vtf")
+        if match is not None and match.is_file():
+            vtf_path = match
+            vtf_root_index = root_index
+            break
     if vtf_path is None:
         return None
-    return _convert_vtf(vtf_path, vtfcmd, cache_root)
+    return {
+        "vmt_path": vmt_path,
+        "vmt_root_index": vmt_root_index,
+        "vtf_path": vtf_path,
+        "vtf_root_index": vtf_root_index,
+    }
 
 
-def _make_textured_material(name: str, png_path: Path):
+def _source_material_evidence(
+    material_name: str,
+    materials_root,
+    *,
+    search_paths: tuple[str, ...] = (),
+) -> dict | None:
+    resolved = _source_material_files(
+        material_name, materials_root, search_paths=search_paths
+    )
+    if resolved is None:
+        return None
+    vmt_path = resolved["vmt_path"]
+    vtf_path = resolved["vtf_path"]
+    return {
+        "root_index": resolved["vmt_root_index"],
+        "vtf_root_index": resolved["vtf_root_index"],
+        "vmt_sha256": hashlib.sha256(vmt_path.read_bytes()).hexdigest(),
+        "vtf_sha256": hashlib.sha256(vtf_path.read_bytes()).hexdigest(),
+        "uses_texture_alpha": _vmt_uses_texture_alpha(
+            vmt_path.read_text(encoding="utf-8", errors="replace")
+        ),
+    }
+
+
+def _source_uses_texture_alpha(
+    material_name: str,
+    materials_root: Path | None,
+    *,
+    search_paths: tuple[str, ...] = (),
+) -> bool:
+    evidence = _source_material_evidence(
+        material_name, materials_root, search_paths=search_paths
+    )
+    return bool(evidence and evidence["uses_texture_alpha"])
+
+
+def _make_textured_material(name: str, png_path: Path, *, use_texture_alpha: bool):
     mat = bpy.data.materials.new(name=f"MaximumTextured_{name}")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -647,7 +795,10 @@ def _make_textured_material(name: str, png_path: Path):
     texture.image.colorspace_settings.name = "sRGB"
     if bsdf:
         links.new(texture.outputs["Color"], bsdf.inputs["Base Color"])
-        links.new(texture.outputs["Alpha"], bsdf.inputs["Alpha"])
+        if use_texture_alpha:
+            links.new(texture.outputs["Alpha"], bsdf.inputs["Alpha"])
+        else:
+            bsdf.inputs["Alpha"].default_value = 1.0
         bsdf.inputs["Roughness"].default_value = 0.5
     return mat
 
@@ -670,8 +821,9 @@ def _apply_textured_materials(
     cache_root: Path,
     *,
     source_search_paths: dict[str, tuple[str, ...]] | None = None,
-) -> bool:
-    missing = False
+) -> dict:
+    missing_materials: set[str] = set()
+    resolved_materials: dict[str, dict] = {}
     material_cache = {}
     source_search_paths = source_search_paths or {}
     for obj in objs:
@@ -694,16 +846,43 @@ def _apply_textured_materials(
                 search_paths=search_paths,
             )
             if png_path is None:
-                missing = True
+                missing_materials.add(
+                    f"{source_identity}:slot:{index}:{name or '<empty>'}"
+                )
                 obj.data.materials.append(_make_missing_texture_material(f"{obj.name}_{index}"))
                 continue
-            cache_key = str(png_path)
+            use_texture_alpha = _source_uses_texture_alpha(
+                name,
+                materials_root,
+                search_paths=search_paths,
+            )
+            material_identity = f"{source_identity}:slot:{index}:{name or '<empty>'}"
+            evidence = _source_material_evidence(
+                name, materials_root, search_paths=search_paths
+            )
+            if evidence is None:
+                raise ValueError(f"resolved texture has no immutable source evidence: {material_identity}")
+            resolved_materials[material_identity] = {
+                "material_identity": material_identity,
+                **evidence,
+            }
+            cache_key = (str(png_path), use_texture_alpha)
             material = material_cache.get(cache_key)
             if material is None:
-                material = _make_textured_material(name, png_path)
+                material = _make_textured_material(
+                    name,
+                    png_path,
+                    use_texture_alpha=use_texture_alpha,
+                )
                 material_cache[cache_key] = material
             obj.data.materials.append(material)
-    return missing
+    return {
+        "missing": tuple(sorted(missing_materials, key=str.casefold)),
+        "resolved": tuple(
+            resolved_materials[key]
+            for key in sorted(resolved_materials, key=str.casefold)
+        ),
+    }
 
 
 def _count_tris(objs):
@@ -880,11 +1059,11 @@ def _capture_regions(
                         "uvs": tuple(uvs),
                     }
                 )
-            regions[region_key] = {
+            regions[region_key] = _audited_nondegenerate_region({
                 "scope": region_key,
                 "source_object": obj.name,
                 "triangles": triangles,
-            }
+            })
         finally:
             evaluated.to_mesh_clear()
     return regions
@@ -933,6 +1112,46 @@ def _flatten_region(region: dict):
         for index in range(len(region["triangles"]))
     ]
     return positions, polygons
+
+
+def _audited_nondegenerate_region(region: dict) -> dict:
+    kept = []
+    filtered_indices = []
+    for index, triangle in enumerate(region.get("triangles", ())):
+        first, second, third = (
+            tuple(float(component) for component in point)
+            for point in triangle["positions"]
+        )
+        first_edge = tuple(second[axis] - first[axis] for axis in range(3))
+        second_edge = tuple(third[axis] - first[axis] for axis in range(3))
+        cross = (
+            first_edge[1] * second_edge[2] - first_edge[2] * second_edge[1],
+            first_edge[2] * second_edge[0] - first_edge[0] * second_edge[2],
+            first_edge[0] * second_edge[1] - first_edge[1] * second_edge[0],
+        )
+        area_squared = sum(value * value for value in cross)
+        edge_squared = max(
+            sum((second[axis] - first[axis]) ** 2 for axis in range(3)),
+            sum((third[axis] - first[axis]) ** 2 for axis in range(3)),
+            sum((third[axis] - second[axis]) ** 2 for axis in range(3)),
+        )
+        tolerance = (
+            edge_squared * edge_squared
+        ) * GEOMETRY_AUDIT_ALGORITHM["relative_area_squared_epsilon"]
+        if not math.isfinite(area_squared) or area_squared <= tolerance:
+            filtered_indices.append(index)
+        else:
+            kept.append(triangle)
+    encoded = ",".join(str(index) for index in filtered_indices).encode("ascii")
+    result = dict(region)
+    result["triangles"] = kept
+    result["triangle_audit"] = {
+        "input_triangles": len(region.get("triangles", ())),
+        "kept_triangles": len(kept),
+        "filtered_degenerate_triangles": len(filtered_indices),
+        "filtered_indices_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+    return result
 
 
 def _direct_topology_metrics(
@@ -1186,6 +1405,17 @@ def _reference_geometry_entries(
     return entries
 
 
+def _geometry_audit_payload(snapshots: dict[str, dict[str, dict]]) -> dict:
+    payload = {}
+    for pose in sorted(snapshots):
+        for region in sorted(snapshots[pose]):
+            audit = snapshots[pose][region].get("triangle_audit")
+            if not isinstance(audit, dict):
+                raise ValueError(f"missing deterministic triangle audit: {region}/{pose}")
+            payload[f"{region}/{pose}"] = dict(audit)
+    return payload
+
+
 def _bbox_payload(objs) -> dict:
     min_v, max_v = _compute_bbox(objs)
     diagonal = (max_v - min_v).length
@@ -1313,9 +1543,9 @@ def _render_extended_set(
     for render_pass in passes:
         if render_pass == "clay":
             _apply_clay_material(objs)
-            texture_missing = False
+            material_audit = {"missing": (), "resolved": ()}
         else:
-            texture_missing = _apply_textured_materials(
+            material_audit = _apply_textured_materials(
                 objs,
                 blender_source_materials,
                 materials_root,
@@ -1339,7 +1569,9 @@ def _render_extended_set(
                         pose_name,
                         angle,
                         image_path,
-                        texture_missing=texture_missing,
+                        texture_missing=bool(material_audit["missing"]),
+                        missing_materials=material_audit["missing"],
+                        resolved_materials=material_audit["resolved"],
                     )
                 )
     return entries, snapshots, (center, ortho_scale, dist), bbox
@@ -1352,10 +1584,11 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         poses = _parse_poses(args.poses)
     except ValueError as exc:
         raise SystemExit(f"[ERROR] {exc}") from exc
-    materials_root = Path(args.materials_root).resolve() if args.materials_root else None
+    materials_root = tuple(Path(value).resolve(strict=True) for value in (args.materials_root or ()))
     vtfcmd = Path(args.vtfcmd).resolve() if args.vtfcmd else None
     texture_cache = out_dir / ".vtf-cache"
     region_manifest_path = _required_region_manifest(args)
+    configuration = _required_configuration_manifest(args)
     region_manifest = _load_region_manifest(region_manifest_path)
     source_search_paths = _source_cdmaterial_search_paths(
         region_manifest, region_manifest_path.parent
@@ -1443,6 +1676,8 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         expected=expected,
         stride=stride,
         seed=seed,
+        configuration=configuration,
+        geometry_audit=_geometry_audit_payload(reference_snapshots),
     )
     manifest_path = _write_render_manifest(
         candidate_dir,
@@ -1452,6 +1687,8 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         expected=expected,
         stride=stride,
         seed=seed,
+        configuration=configuration,
+        geometry_audit=_geometry_audit_payload(candidate_snapshots),
     )
     print(f"[OK] Render manifest: {manifest_path}")
 
