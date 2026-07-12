@@ -109,8 +109,11 @@ def _canonical_states(
                 raise ValueError("whole-state bodygroups are invalid")
             bodygroup_names.add(item[0])
             bodygroups.append([item[0], item[1]])
+        bodygroups.sort(key=lambda item: (item[0].casefold(), item[0]))
         if (
             not state.poses or len(state.poses) > 2
+            or state.poses[0] != "bind"
+            or state.poses.count("bind") != 1
             or len(set(state.poses)) != len(state.poses)
             or any(type(pose) is not str or _POSE.fullmatch(pose) is None for pose in state.poses)
         ):
@@ -135,6 +138,7 @@ def _canonical_states(
         pairs.sort(key=lambda item: item[0])
 
         rows = []
+        state_row_identities: set[tuple[str, str]] = set()
         for raw in state.geometry_rows:
             if not isinstance(raw, Mapping):
                 raise ValueError("focused geometry row must be an object")
@@ -154,6 +158,7 @@ def _canonical_states(
             if identity in seen_rows:
                 raise ValueError("duplicate focused geometry row")
             seen_rows.add(identity)
+            state_row_identities.add((region_key, pose))
             canonical_row = {
                 "scope": region_key,
                 "pose": pose,
@@ -171,6 +176,19 @@ def _canonical_states(
                 "lod_index": state.lod_index,
                 "source_identity": descriptor.source_identity,
             })
+        eligible_region_keys = {
+            entry.key for entry in manifest.entries
+            if entry.descriptor.source_identity in sources
+        }
+        expected_row_identities = {
+            (region_key, pose)
+            for region_key in eligible_region_keys
+            for pose in state.poses
+        }
+        if state_row_identities != expected_row_identities:
+            raise ValueError(
+                "focused geometry coverage must contain every eligible region and pose"
+            )
         rows.sort(key=lambda item: (item["scope"], item["pose"]))
         canonical_states.append({
             "state_index": state.state_index,

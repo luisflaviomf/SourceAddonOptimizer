@@ -113,15 +113,17 @@ class FidelitySelectionTests(unittest.TestCase):
 
     @staticmethod
     def _focused_profile() -> dict:
+        from maximum_optimizer.calibration_evidence import (
+            TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
+        )
+
         return {
             "schema": 3,
             "version": "lvs-focused-v1",
             "calibrated": True,
             "corpus_hash": "c" * 64,
             "selector": "audited-original-round-family-v1",
-            "focused_evidence_sha256": (
-                "2cc6b330ef97466f4d10986787f2ffd0d35f960c0bd47a32e0159f9559c6615c"
-            ),
+            "focused_evidence_sha256": TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
             "focused_policy": {
                 "schema": 1,
                 "selector": "surface-risk-top-k-v1",
@@ -310,6 +312,26 @@ class FidelitySelectionTests(unittest.TestCase):
         )
         with self.assertRaises(TypeError):
             profiles.focused_profiles[ROUND_RIGID] = profiles.profile_for(ROUND_RIGID)
+
+    def test_schema3_rejects_a_different_resealed_v3_outer_hash(self) -> None:
+        from maximum_optimizer.calibration_evidence import (
+            canonical_calibration_evidence_hash,
+        )
+        from maximum_optimizer.fidelity_selection import load_fidelity_profile_set
+
+        evidence_path = (
+            Path(__file__).resolve().parents[2]
+            / "benchmarks/lvs_models/calibration_evidence_v3.json"
+        )
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["status"] = "resealed-but-different"
+        resealed = canonical_calibration_evidence_hash(evidence)
+        self.assertNotEqual(resealed, self._focused_profile()["focused_evidence_sha256"])
+
+        profile = self._focused_profile()
+        profile["focused_evidence_sha256"] = resealed
+        with self.assertRaisesRegex(ValueError, "trusted focused evidence"):
+            load_fidelity_profile_set(self._write_json("resealed.json", profile))
 
     def test_schema1_and_schema2_do_not_enable_focused_validation(self) -> None:
         from maximum_optimizer.fidelity_selection import (

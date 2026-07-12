@@ -10,6 +10,9 @@ import re
 from types import MappingProxyType
 
 from maximum_optimizer.qc_graph import QcGraph
+from maximum_optimizer.calibration_evidence import (
+    TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
+)
 from maximum_optimizer.domain import FocusedRegionPolicy
 from maximum_optimizer.round_planar_priority import classify_round_component
 from maximum_optimizer.smd_contract import parse_smd_triangles
@@ -20,11 +23,6 @@ ROUND_RIGID = "round-rigid-v1"
 GENERAL_BODY_DETAIL = "general-body-detail-v1"
 LEGACY_GLOBAL = "legacy-global-v1"
 TYPED_SELECTOR = "audited-original-round-family-v1"
-TRUSTED_FOCUSED_EVIDENCE_SHA256 = (
-    "2cc6b330ef97466f4d10986787f2ffd0d35f960c0bd47a32e0159f9559c6615c"
-)
-
-
 @dataclass(frozen=True)
 class SourceFidelityAudit:
     source: str
@@ -71,7 +69,7 @@ class FidelityProfileSet:
             not isinstance(self.focused_policy, FocusedRegionPolicy)
             or set(focused) != {GENERAL_BODY_DETAIL, ROUND_RIGID}
             or any(not isinstance(value, FidelityProfile) for value in focused.values())
-            or self.focused_evidence_sha256 != TRUSTED_FOCUSED_EVIDENCE_SHA256
+            or self.focused_evidence_sha256 != TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256
         ):
             raise ValueError("focused fidelity profile set is invalid")
         object.__setattr__(self, "focused_profiles", MappingProxyType(focused))
@@ -147,7 +145,7 @@ def load_fidelity_profile_set(path: Path) -> FidelityProfileSet:
             )
     if schema == 2:
         return FidelityProfileSet(TYPED_SELECTOR, version, corpus_hash, profiles)
-    if payload.get("focused_evidence_sha256") != TRUSTED_FOCUSED_EVIDENCE_SHA256:
+    if payload.get("focused_evidence_sha256") != TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256:
         raise ValueError("schema-3 profile does not reference trusted focused evidence")
     raw_policy = payload.get("focused_policy")
     if type(raw_policy) is not dict or set(raw_policy) != {"schema", "selector", "top_k"}:
@@ -162,7 +160,7 @@ def load_fidelity_profile_set(path: Path) -> FidelityProfileSet:
         profiles,
         policy,
         focused_profiles,
-        TRUSTED_FOCUSED_EVIDENCE_SHA256,
+        TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
     )
 
 

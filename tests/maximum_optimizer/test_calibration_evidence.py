@@ -8,6 +8,7 @@ from pathlib import Path
 from maximum_optimizer.calibration_evidence import (
     CALIBRATION_FAMILIES,
     CALIBRATION_METRICS,
+    TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
     canonical_calibration_evidence_hash,
     canonical_compiled_hash,
     canonical_lane_binding_hash,
@@ -286,6 +287,16 @@ def _payload_v3() -> dict:
 
 
 class CalibrationEvidenceTests(unittest.TestCase):
+    def test_named_v3_trust_anchor_matches_committed_outer_seal(self) -> None:
+        payload = _payload_v3()
+        self.assertEqual(
+            payload["evidence_sha256"], TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256
+        )
+        self.assertEqual(
+            canonical_calibration_evidence_hash(payload),
+            TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
+        )
+
     def test_v3_recovered_winners_and_diagnostics_are_typed(self) -> None:
         parsed = parse_calibration_evidence(_payload_v3())
         candidates = {

@@ -24,6 +24,9 @@ CALIBRATION_METRICS = (
     "uv_error_p95",
     "skinning_error_p95",
 )
+TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256 = (
+    "2cc6b330ef97466f4d10986787f2ffd0d35f960c0bd47a32e0159f9559c6615c"
+)
 _CANDIDATES = {
     "pontiac_transam_wheel": "r050",
     "dodge_charger": "r030",

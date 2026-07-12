@@ -61,8 +61,18 @@ def _fixture():
         "renders/bodygroup-grille-1/optimized/render_manifest.json",
         "1" * 64,
         (
+            {"scope": keys["body"], "pose": "bind",
+             "surface_bidirectional_p95": 0.01, "surface_max": 0.02},
+            {"scope": keys["body"], "pose": "representative",
+             "surface_bidirectional_p95": 0.01, "surface_max": 0.02},
+            {"scope": keys["grille"], "pose": "bind",
+             "surface_bidirectional_p95": 0.02, "surface_max": 0.03},
             {"scope": keys["grille"], "pose": "representative",
              "surface_bidirectional_p95": 0.07, "surface_max": 0.18},
+            {"scope": keys["wheel"], "pose": "bind",
+             "surface_bidirectional_p95": 0.01, "surface_max": 0.02},
+            {"scope": keys["wheel"], "pose": "representative",
+             "surface_bidirectional_p95": 0.01, "surface_max": 0.02},
         ),
     )
     return manifest, keys, (first, second), FocusedRegionPolicy(
@@ -163,26 +173,81 @@ class FocusedRegionSelectionTests(unittest.TestCase):
             select_focus_targets((duplicated,), manifest, profile, policy)
 
     def test_equal_risk_anchor_uses_earliest_state_then_pose(self):
+        from maximum_optimizer.focused_regions import select_focus_targets
+
+        manifest, _keys, states, policy = _fixture()
+        profile = _profile(surface_bidirectional_p95=0.1, surface_max=0.2)
+        target = select_focus_targets(states, manifest, profile, policy)[0]
+        self.assertEqual(target.state_index, 0)
+        self.assertEqual(target.anchor_pose, "bind")
+
+    def test_selector_requires_exact_region_pose_coverage(self):
         from maximum_optimizer.domain import WholeStateEvidence
         from maximum_optimizer.focused_regions import select_focus_targets
 
         manifest, keys, states, policy = _fixture()
         profile = _profile(surface_bidirectional_p95=0.1, surface_max=0.2)
-        tie_row = {
-            "scope": keys["grille"], "pose": "aaa",
-            "surface_bidirectional_p95": 0.05, "surface_max": 0.19,
-        }
-        late = WholeStateEvidence(
-            1, states[1].state_name, states[1].bodygroups, 0, ("aaa",),
-            states[1].source_pairs, states[1].reference_manifest,
-            states[1].reference_manifest_sha256, states[1].candidate_manifest,
-            states[1].candidate_manifest_sha256, (tie_row,),
+
+        def without_row(state, region_key, pose):
+            rows = tuple(
+                row for row in state.geometry_rows
+                if (row["scope"], row["pose"]) != (region_key, pose)
+            )
+            return WholeStateEvidence(
+                state.state_index, state.state_name, state.bodygroups,
+                state.lod_index, state.poses, state.source_pairs,
+                state.reference_manifest, state.reference_manifest_sha256,
+                state.candidate_manifest, state.candidate_manifest_sha256, rows,
+            )
+
+        missing_worst = without_row(states[0], keys["grille"], "bind")
+        missing_pose = without_row(states[1], keys["body"], "representative")
+        for changed in ((missing_worst, states[1]), (states[0], missing_pose)):
+            with self.subTest(changed=changed), self.assertRaisesRegex(
+                ValueError, "coverage"
+            ):
+                select_focus_targets(changed, manifest, profile, policy)
+
+    def test_selector_requires_bind_first_exactly_once_and_at_most_one_extra_pose(self):
+        from maximum_optimizer.domain import WholeStateEvidence
+        from maximum_optimizer.focused_regions import select_focus_targets
+
+        manifest, _keys, states, policy = _fixture()
+        profile = _profile(surface_bidirectional_p95=0.1, surface_max=0.2)
+        base = states[0]
+        for poses in (
+            ("representative",),
+            ("bind", "bind"),
+            ("representative", "bind"),
+            ("bind", "representative", "extra"),
+        ):
+            changed = WholeStateEvidence(
+                base.state_index, base.state_name, base.bodygroups, base.lod_index,
+                poses, base.source_pairs, base.reference_manifest,
+                base.reference_manifest_sha256, base.candidate_manifest,
+                base.candidate_manifest_sha256, base.geometry_rows,
+            )
+            with self.subTest(poses=poses), self.assertRaisesRegex(ValueError, "poses"):
+                select_focus_targets((changed,), manifest, profile, policy)
+
+    def test_bodygroup_order_is_canonical_for_targets_and_selector_hash(self):
+        from maximum_optimizer.domain import WholeStateEvidence
+        from maximum_optimizer.focused_regions import select_focus_targets
+
+        manifest, _keys, states, policy = _fixture()
+        profile = _profile(surface_bidirectional_p95=0.1, surface_max=0.2)
+        second = states[1]
+        reordered = WholeStateEvidence(
+            second.state_index, second.state_name,
+            tuple(reversed(second.bodygroups)), second.lod_index, second.poses,
+            second.source_pairs, second.reference_manifest,
+            second.reference_manifest_sha256, second.candidate_manifest,
+            second.candidate_manifest_sha256, second.geometry_rows,
         )
-        target = select_focus_targets(
-            (late, states[0]), manifest, profile, policy
-        )[0]
-        self.assertEqual(target.state_index, 0)
-        self.assertEqual(target.anchor_pose, "bind")
+        self.assertEqual(
+            select_focus_targets(states, manifest, profile, policy),
+            select_focus_targets((states[0], reordered), manifest, profile, policy),
+        )
 
     def test_selector_returns_exact_bounded_prefix(self):
         from maximum_optimizer.domain import FocusedRegionPolicy
@@ -212,7 +277,7 @@ class FocusedRegionSelectionTests(unittest.TestCase):
         row["surface_max"] = 0.0
         exact = WholeStateEvidence(
             states[0].state_index, states[0].state_name, states[0].bodygroups,
-            states[0].lod_index, states[0].poses, states[0].source_pairs,
+            states[0].lod_index, states[0].poses, (states[0].source_pairs[0],),
             states[0].reference_manifest, states[0].reference_manifest_sha256,
             states[0].candidate_manifest, states[0].candidate_manifest_sha256,
             (row,),
