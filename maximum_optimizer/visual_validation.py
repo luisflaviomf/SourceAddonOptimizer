@@ -237,6 +237,7 @@ def _validate_resolved_materials(
     label: str,
     failures: list[GateFailure],
 ) -> None:
+    consistent_evidence: dict[str, dict] = {}
     for key, entry in indexed.items():
         scope = _scope(key)
         raw = entry.get("resolved_materials")
@@ -265,6 +266,7 @@ def _validate_resolved_materials(
                         and set(item) == {"directive", "ignored_values"}
                         and type(item["directive"]) is str
                         and bool(item["directive"])
+                        and item["directive"] == item["directive"].casefold()
                         and type(item["ignored_values"]) is list
                         and bool(item["ignored_values"])
                         and all(type(value) is str for value in item["ignored_values"])
@@ -302,6 +304,14 @@ def _validate_resolved_materials(
                 ))
             else:
                 identities.add(evidence["material_identity"])
+                previous = consistent_evidence.setdefault(
+                    evidence["material_identity"], evidence
+                )
+                if previous != evidence:
+                    failures.append(_failure(
+                        "material_evidence_inconsistent", evidence_scope,
+                        "resolved material evidence changes across render entries",
+                    ))
 
 
 def _finite_nonnegative(value: object) -> float | None:
@@ -709,6 +719,11 @@ def compare_render_sets(
             reference_entry = reference_entries[key]
             candidate_entry = candidate_entries[key]
             if key[0] == "textured":
+                if reference_entry.get("resolved_materials") != candidate_entry.get("resolved_materials"):
+                    failures.append(_failure(
+                        "material_evidence_mismatch", scope,
+                        "reference and candidate material evidence differ",
+                    ))
                 for label, entry in (
                     ("reference", reference_entry),
                     ("candidate", candidate_entry),

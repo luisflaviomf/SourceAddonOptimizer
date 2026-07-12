@@ -211,6 +211,17 @@ class VisualValidationTests(unittest.TestCase):
                 "duplicate_root_directives",
                 [{"directive": "$alphatest", "ignored_values": []}],
             ),
+            "noncanonical duplicate directive": lambda evidence: evidence.__setitem__(
+                "duplicate_root_directives",
+                [{"directive": "$AlphaTest", "ignored_values": ["0"]}],
+            ),
+            "casefold duplicate directives": lambda evidence: evidence.__setitem__(
+                "duplicate_root_directives",
+                [
+                    {"directive": "$alphatest", "ignored_values": ["0"]},
+                    {"directive": "$AlphaTest", "ignored_values": ["0"]},
+                ],
+            ),
         }
         for label, mutate in mutations.items():
             payload = json.loads(json.dumps(original))
@@ -221,6 +232,37 @@ class VisualValidationTests(unittest.TestCase):
                 result = compare_render_sets(self.reference, self.candidate, _profile())
                 self.assertFalse(result.passed)
                 self.assertIn("invalid_material_evidence", {failure.gate for failure in result.failures})
+
+    def test_well_formed_material_audit_mutation_must_match_reference(self):
+        self.write_matching()
+        path = self.candidate / "render_manifest.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for entry in payload["entries"]:
+            if entry["pass"] == "textured":
+                entry["resolved_materials"][0]["duplicate_root_directives"] = [
+                    {"directive": "$alphatest", "ignored_values": ["0"]},
+                ]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = compare_render_sets(self.reference, self.candidate, _profile())
+
+        self.assertFalse(result.passed)
+        self.assertIn("material_evidence_mismatch", {failure.gate for failure in result.failures})
+
+    def test_material_audit_must_be_consistent_across_angles(self):
+        self.write_matching()
+        path = self.candidate / "render_manifest.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        textured = [entry for entry in payload["entries"] if entry["pass"] == "textured"]
+        textured[0]["resolved_materials"][0]["duplicate_root_directives"] = [
+            {"directive": "$alphatest", "ignored_values": ["0"]},
+        ]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = compare_render_sets(self.reference, self.candidate, _profile())
+
+        self.assertFalse(result.passed)
+        self.assertIn("material_evidence_inconsistent", {failure.gate for failure in result.failures})
 
     def test_profile_is_deeply_read_only_and_requires_calibrated_finite_limits(self):
         profile = _profile()
