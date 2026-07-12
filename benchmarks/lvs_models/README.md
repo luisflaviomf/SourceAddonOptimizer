@@ -48,3 +48,15 @@ compiler failures in `control.json`. The StudioMDL location is represented by `S
 only its version, size and SHA-256 are committed.
 
 Large compiled binaries and control workspaces are deliberately not committed.
+
+## Fixed-topology smoothing experiment
+
+`smoothing_fixed_v1.json` is the immutable Task 4 lane. The Blender-side runner is
+`run_smoothing_fixed_v1.py`; it operates only on an isolated copy of one family, rebuilds the
+same triangle indices/positions/UV/material/skin payload, reconstructs sharp boundaries from
+canonical positions and intended corner normals, and applies Blender 5 custom normals per loop.
+
+The lane remains `unverified`: the Pontiac wheel compiled byte-for-byte equal to the strict
+control, while Dodge Charger was rejected before compile by the normal-identity gate. Textures,
+Task 8 renders and runtime validation were not available/run, so this record makes no quality
+claim and the strategy is not a winner.

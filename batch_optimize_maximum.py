@@ -53,6 +53,11 @@ from maximum_optimizer.mesh_attributes import (
     normalize_influences,
     recombine_full_attribute_vertices,
 )
+from maximum_optimizer.smoothing import (
+    apply_reconstructed_smoothing,
+    canonicalize_export_normals,
+    canonicalize_normals_by_identity,
+)
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -109,6 +114,7 @@ class SmdAudit:
     influence_sets: tuple[tuple[int, ...], ...] = ()
     uv_seam_positions: int = 0
     hard_normal_positions: int = 0
+    position_normal_keys: int = 0
 
 
 def _strict_number(name: str, value: object, *, minimum: float, maximum: float) -> float:
@@ -476,6 +482,7 @@ def audit_smd_text(text: str) -> SmdAudit:
         tuple(sorted(influence_sets)),
         sum(1 for values in uvs_by_position.values() if len(values) > 1),
         sum(1 for values in normals_by_position.values() if len(values) > 1),
+        sum(len(values) for values in normals_by_position.values()),
     )
 
 
@@ -492,8 +499,166 @@ def validate_smd_audits(before: SmdAudit, after: SmdAudit) -> None:
         raise RuntimeError("export lost all UV seam evidence")
     if before.hard_normal_positions and not after.hard_normal_positions:
         raise RuntimeError("export lost all hard-normal seam evidence")
+    if after.position_normal_keys > before.position_normal_keys:
+        raise RuntimeError("export amplified SMD position-normal keys")
     if after.uv_bounds is None or after.finite_normal_count != after.triangle_count * 3:
         raise RuntimeError("export has incomplete UV or hard-normal evidence")
+
+
+def restore_smd_normal_identity(
+    original_text: str,
+    exported_text: str,
+    *,
+    max_distance: float = 2e-2,
+    position_tolerance: float = 2e-6,
+) -> str:
+    """Undo Blender fan-space normal drift using unambiguous original SMD identities."""
+    if not math.isfinite(max_distance) or max_distance <= 0.0:
+        raise ValueError("normal restore tolerance must be finite and positive")
+    if not math.isfinite(position_tolerance) or position_tolerance <= 0.0:
+        raise ValueError("position identity tolerance must be finite and positive")
+
+    def exact_position(parts: Sequence[str]) -> tuple[float, float, float]:
+        return tuple(round(float(parts[index]), 6) for index in (1, 2, 3))  # type: ignore[return-value]
+
+    def vertex_key(material: str, parts: Sequence[str]) -> tuple[object, ...]:
+        # Source Tools roundtrips float32 positions with occasional last-place SMD
+        # drift (for example 95.664063 -> 95.664062). Five decimals forms the
+        # canonical position identity; material, UV and skin identity remain exact.
+        position = tuple(round(float(parts[index]), 5) for index in (1, 2, 3))
+        uv = tuple(round(float(parts[index]), 6) for index in (7, 8))
+        primary = int(parts[0])
+        influences: tuple[tuple[int, float], ...]
+        if len(parts) > 9:
+            link_count = int(parts[9])
+            if link_count < 0 or len(parts) < 10 + link_count * 2:
+                raise ValueError("SMD normal identity has truncated influences")
+            influences = tuple(sorted(
+                (int(parts[10 + offset * 2]), round(float(parts[11 + offset * 2]), 6))
+                for offset in range(link_count)
+            )) if link_count else ((primary, 1.0),)
+        else:
+            influences = ((primary, 1.0),)
+        return material, position, uv, influences
+
+    def original_identities(text: str) -> dict[
+        tuple[object, ...],
+        dict[
+            tuple[float, float, float],
+            dict[tuple[float, float, float], tuple[str, str, str]],
+        ],
+    ]:
+        identities: dict[
+            tuple[object, ...],
+            dict[
+                tuple[float, float, float],
+                dict[tuple[float, float, float], tuple[str, str, str]],
+            ],
+        ] = defaultdict(dict)
+        section = ""
+        material = ""
+        expect_material = False
+        vertices_in_triangle = 0
+        for raw in text.splitlines():
+            line = raw.strip()
+            folded = line.casefold()
+            if folded == "triangles":
+                section, expect_material = "triangles", True
+                continue
+            if section != "triangles":
+                continue
+            if folded == "end":
+                break
+            if expect_material:
+                material, expect_material, vertices_in_triangle = line, False, 0
+                continue
+            parts = line.split()
+            if len(parts) < 9 or not parts[0].lstrip("-").isdigit():
+                raise ValueError("SMD normal identity has an invalid vertex row")
+            normal = tuple(float(parts[index]) for index in (4, 5, 6))
+            by_position = identities[vertex_key(material, parts)]
+            by_position.setdefault(exact_position(parts), {}).setdefault(
+                normal, (parts[4], parts[5], parts[6])
+            )
+            vertices_in_triangle += 1
+            if vertices_in_triangle == 3:
+                expect_material = True
+        return identities
+
+    identities = original_identities(original_text)
+    output = exported_text.splitlines(keepends=True)
+    section = ""
+    material = ""
+    expect_material = False
+    vertices_in_triangle = 0
+    restored_rows = 0
+    for row, raw in enumerate(output):
+        line = raw.strip()
+        folded = line.casefold()
+        if folded == "triangles":
+            section, expect_material = "triangles", True
+            continue
+        if section != "triangles":
+            continue
+        if folded == "end":
+            break
+        if expect_material:
+            material, expect_material, vertices_in_triangle = line, False, 0
+            continue
+        spans = tuple(re.finditer(r"\S+", raw))
+        parts = [match.group(0) for match in spans]
+        if len(parts) < 9 or not parts[0].lstrip("-").isdigit():
+            raise ValueError("exported SMD normal identity has an invalid vertex row")
+        positions = identities.get(vertex_key(material, parts))
+        if not positions:
+            raise RuntimeError(
+                "exported SMD normal has no original corner identity: "
+                f"key={vertex_key(material, parts)!r}"
+            )
+        if len(positions) != 1:
+            raise RuntimeError(
+                "exported SMD normal canonical position is ambiguous: "
+                f"key={vertex_key(material, parts)!r} positions={sorted(positions)!r}"
+            )
+        source_position, candidates = next(iter(positions.items()))
+        exported_position = exact_position(parts)
+        position_distance = math.sqrt(sum(
+            (a - b) ** 2 for a, b in zip(source_position, exported_position)
+        ))
+        if position_distance > position_tolerance:
+            raise RuntimeError(
+                "exported SMD position is outside original identity tolerance: "
+                f"distance={position_distance:.9g} limit={position_tolerance:.9g}"
+            )
+        exported_normal = tuple(float(parts[index]) for index in (4, 5, 6))
+        ranked = sorted(
+            (
+                sum((a - b) ** 2 for a, b in zip(exported_normal, normal)),
+                normal,
+                tokens,
+            )
+            for normal, tokens in candidates.items()
+        )
+        if ranked[0][0] > max_distance * max_distance:
+            raise RuntimeError(
+                "exported SMD normal is outside original identity tolerance: "
+                f"distance={math.sqrt(ranked[0][0]):.9g} limit={max_distance:.9g} "
+                f"key={vertex_key(material, parts)!r}"
+            )
+        if len(ranked) > 1 and abs(ranked[1][0] - ranked[0][0]) <= 1e-16:
+            raise RuntimeError("exported SMD normal identity is ambiguous")
+        restored = raw
+        for token_index, replacement in reversed(tuple(zip((4, 5, 6), ranked[0][2]))):
+            match = spans[token_index]
+            restored = restored[: match.start()] + replacement + restored[match.end() :]
+        output[row] = restored
+        restored_rows += 1
+        vertices_in_triangle += 1
+        if vertices_in_triangle == 3:
+            expect_material = True
+    if restored_rows == 0:
+        raise ValueError("exported SMD has no normal rows")
+    return "".join(output)
 
 
 def restore_smd_bone_identity(original_text: str, exported_text: str) -> str:
@@ -676,6 +841,80 @@ def find_compatible_projection(
     return nearest[0], face_indices[local_face], distance
 
 
+def rebuild_mesh_smoothing_only(
+    obj: object, normal_identity_keys: Sequence[object] | None = None
+) -> dict[str, object]:
+    """Rebuild an imported triangle mesh without changing its geometry or attributes."""
+    mesh = obj.data
+    mesh.update()
+    mesh.calc_loop_triangles()
+    positions = tuple(tuple(float(value) for value in vertex.co) for vertex in mesh.vertices)
+    faces = tuple(tuple(int(index) for index in triangle.vertices) for triangle in mesh.loop_triangles)
+    loop_normals = tuple(
+        tuple(float(value) for value in mesh.corner_normals[loop_index].vector)
+        for triangle in mesh.loop_triangles
+        for loop_index in triangle.loops
+    )
+    loop_normals = canonicalize_export_normals(loop_normals)
+    if normal_identity_keys is not None:
+        loop_normals = canonicalize_normals_by_identity(loop_normals, normal_identity_keys)
+    uv_layer = mesh.uv_layers.active
+    loop_uvs = tuple(
+        (0.0, 0.0) if uv_layer is None else tuple(float(value) for value in uv_layer.data[loop_index].uv)
+        for triangle in mesh.loop_triangles
+        for loop_index in triangle.loops
+    )
+    material_ids = tuple(int(triangle.material_index) for triangle in mesh.loop_triangles)
+    materials = tuple(mesh.materials)
+    vertex_groups = tuple(
+        tuple(
+            sorted(
+                (
+                    (obj.vertex_groups[int(item.group)].name, float(item.weight))
+                    for item in vertex.groups
+                ),
+                key=lambda item: item[0],
+            )
+        )
+        for vertex in mesh.vertices
+    )
+    if not faces or len(loop_normals) != len(faces) * 3:
+        raise ValueError("smoothing-only rebuild requires a non-empty triangle mesh")
+
+    mesh.clear_geometry()
+    mesh.materials.clear()
+    mesh.from_pydata(positions, (), faces)
+    for material in materials:
+        mesh.materials.append(material)
+    for polygon, material_id in zip(mesh.polygons, material_ids):
+        if material_id < 0 or material_id >= max(1, len(mesh.materials)):
+            raise RuntimeError("smoothing-only material mapping is out of range")
+        polygon.material_index = material_id
+    rebuilt_uv = mesh.uv_layers.new(name="UVMap")
+    for loop, uv in zip(mesh.loops, loop_uvs):
+        rebuilt_uv.data[loop.index].uv = uv
+
+    all_indices = list(range(len(mesh.vertices)))
+    for group in obj.vertex_groups:
+        group.remove(all_indices)
+    groups_by_name = {group.name: group for group in obj.vertex_groups}
+    for vertex_index, entries in enumerate(vertex_groups):
+        for group_name, weight in entries:
+            group = groups_by_name.get(group_name)
+            if group is None:
+                group = obj.vertex_groups.new(name=group_name)
+                groups_by_name[group_name] = group
+            group.add([vertex_index], weight, "REPLACE")
+
+    reconstruction = apply_reconstructed_smoothing(mesh, positions, faces, loop_normals)
+    return {
+        "vertices": len(positions),
+        "triangles": len(faces),
+        "smooth_faces": sum(reconstruction.smooth_faces),
+        "sharp_edges": len(reconstruction.sharp_edges),
+    }
+
+
 def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float) -> dict[str, object]:
     from mathutils import Vector
     from mathutils.bvhtree import BVHTree
@@ -800,8 +1039,12 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
     for loop in mesh.loops:
         uv_layer.data[loop.index].uv = compact_uvs[loop.vertex_index]
     mesh.update()
-    if hasattr(mesh, "normals_split_custom_set_from_vertices"):
-        mesh.normals_split_custom_set_from_vertices(compact_normals)
+    apply_reconstructed_smoothing(
+        mesh,
+        compact_positions,
+        faces,
+        tuple(compact_normals[index] for face in faces for index in face),
+    )
 
     if skinned:
         existing_names = {group.name for group in obj.vertex_groups}

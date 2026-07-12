@@ -1,0 +1,117 @@
+{
+  "corpus_id": "lvs-models-v1",
+  "quality_claim": null,
+  "quality_status": "unverified",
+  "schema_version": 1,
+  "strategy": "smoothing-fixed-v1",
+  "strategy_result": "rejected_not_winning",
+  "settings": {
+    "canonical_position_digits": 5,
+    "normal_identity_max_distance": 0.02,
+    "position_identity_tolerance": 0.000002,
+    "sharp_boundary_basis": "exact_position_and_intended_corner_normal",
+    "split_normals": "per_loop_custom",
+    "smooth_flag_semantics": "all polygons enabled only so Blender Source Tools consumes exact custom loop normals",
+    "topology_changes_allowed": false
+  },
+  "tools": {
+    "blender": {
+      "sha256": "f81d3bca0af0d917e03fdf09255981b2ed0750d3a2815da991ea5425a87f8f7c",
+      "version": "5.0.1"
+    },
+    "runner": {
+      "path": "benchmarks/lvs_models/run_smoothing_fixed_v1.py",
+      "sha256": "66c9bec858a0cc67154d6979bcb766d19d2d29055243c7bd3f96ff391833d6bd"
+    },
+    "studiomdl": {
+      "sha256": "9e40454499890d0de941068f2b47db4d3be69ab7213f95e4d9c09f255a7230cf",
+      "version": "2026.04.29"
+    }
+  },
+  "records": [
+    {
+      "compiled": {
+        "artifacts": {
+          ".dx80.vtx": 205737,
+          ".dx90.vtx": 205737,
+          ".mdl": 2768,
+          ".phy": 3397,
+          ".vvd": 769920
+        },
+        "control_bytes_equal": true,
+        "geometry_comparable_bytes": 978025,
+        "lod0_vertices": 12029,
+        "status": "compiled",
+        "total_bytes": 1187559
+      },
+      "family_id": "pontiac_transam_wheel",
+      "gates": {
+        "compiled_size": "pass_equal_control",
+        "nonvisual_hashes": "pass",
+        "position_normal_keys": "pass_equal",
+        "runtime": "not_run",
+        "task8_renders": "not_run",
+        "textures": "not_verified",
+        "topology": "pass_equal",
+        "visual": "not_run"
+      },
+      "hard_normal_positions": {
+        "after": 2818,
+        "before": 2818
+      },
+      "position_normal_keys": {
+        "after": 11781,
+        "before": 11781
+      },
+      "status": "compiled_unverified",
+      "triangles": {
+        "after": 16180,
+        "before": 16180
+      },
+      "uv_seam_positions": {
+        "after": 432,
+        "before": 432
+      }
+    },
+    {
+      "completed_sources": [
+        {
+          "position_normal_keys": 17953,
+          "source": "body.smd",
+          "triangles": 25489
+        },
+        {
+          "position_normal_keys": 5151,
+          "source": "Steeringwheel.smd",
+          "triangles": 7582
+        },
+        {
+          "position_normal_keys": 8558,
+          "source": "hood_a.smd",
+          "triangles": 9557
+        },
+        {
+          "position_normal_keys": 8467,
+          "source": "hood_d.smd",
+          "triangles": 10152
+        }
+      ],
+      "failure": "unique skin corner exported normal distance 1.41378769 exceeded strict 0.02 identity gate",
+      "family_id": "dodge_charger",
+      "gates": {
+        "compiled_size": "not_run",
+        "normal_identity": "fail",
+        "runtime": "not_run",
+        "task8_renders": "not_run",
+        "textures": "not_verified",
+        "visual": "not_run"
+      },
+      "status": "rejected_precompile"
+    }
+  ],
+  "summary": {
+    "expanded_to_full_corpus": false,
+    "reason": "wheel matched but did not beat control; Dodge Charger failed the strict normal identity gate",
+    "winning_strategy": false
+  }
+}
