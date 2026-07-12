@@ -853,6 +853,36 @@ class FocusedRenderCacheTests(unittest.TestCase):
                 self.key, self.base / "snapshots/reparse", threading.Event()
             ))
 
+    def test_lookup_treats_huge_sealed_png_header_as_cache_miss(self):
+        import hashlib
+        import json
+        import struct
+        import zlib
+        from maximum_optimizer.focused_cache import FocusedRenderCache
+
+        cache = FocusedRenderCache(self.base / "cache")
+        cache.store(self.key, self.directories, self.metadata, self.files, threading.Event())
+        final = self.base / "cache" / self.key.digest
+        image = final / "payload/candidate/textured/bind/front.png"
+        payload = bytearray(image.read_bytes())
+        payload[16:20] = struct.pack(">I", 100_000)
+        payload[20:24] = struct.pack(">I", 100_000)
+        payload[29:33] = struct.pack(">I", zlib.crc32(payload[12:29]) & 0xFFFFFFFF)
+        image.write_bytes(payload)
+        marker_path = final / "complete.json"
+        marker = json.loads(marker_path.read_text())
+        sealed = next(
+            item for item in marker["files"]
+            if item["path"] == "candidate/textured/bind/front.png"
+        )
+        sealed["size"] = len(payload)
+        sealed["sha256"] = hashlib.sha256(payload).hexdigest()
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+        self.assertIsNone(cache.lookup(
+            self.key, self.base / "snapshots/huge-ihdr", threading.Event()
+        ))
+
     def test_store_rejects_unsafe_source_and_cancellation_leaves_no_complete_entry(self):
         from maximum_optimizer.focused_cache import FocusedRenderCache
         from maximum_optimizer.processes import ProcessCancelledError

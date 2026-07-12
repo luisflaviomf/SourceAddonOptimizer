@@ -10,6 +10,7 @@ import stat
 import threading
 import tempfile
 import uuid
+import warnings
 from contextlib import ExitStack, contextmanager
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ _MAX_CAPTURED_VMT_BYTES = 32 * 1024 ** 2
 _MAX_CONTROL_FILE_BYTES = 16 * 1024 ** 2
 _MAX_RENDER_FILES_PER_SIDE = 33
 _MAX_RENDER_BYTES_PER_SIDE = 512 * 1024 ** 2
+_MAX_RENDER_IMAGE_PIXELS = 4096 * 4096
 _MAX_CACHE_TREE_BYTES = (
     2 * _MAX_RENDER_BYTES_PER_SIDE + 2 * _MAX_CONTROL_FILE_BYTES
 )
@@ -1330,10 +1332,26 @@ def _render_file_manifest(
                     )
                     capture.seek(0)
                     try:
-                        with Image.open(capture) as image:
-                            image.load()
-                            width, height = image.size
-                    except (OSError, ValueError, UnidentifiedImageError) as exc:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("error", Image.DecompressionBombWarning)
+                            with Image.open(capture) as image:
+                                width, height = image.size
+                                expected_proof = (
+                                    None if expected_by_path is None
+                                    else expected_by_path[relative]
+                                )
+                                if expected_proof is not None and (
+                                    width != expected_proof.width
+                                    or height != expected_proof.height
+                                ):
+                                    raise ValueError("render image dimensions differ from proof")
+                                if width * height > _MAX_RENDER_IMAGE_PIXELS:
+                                    raise ValueError("render image pixel count exceeds bound")
+                                image.load()
+                    except (
+                        OSError, ValueError, UnidentifiedImageError,
+                        Image.DecompressionBombError, Image.DecompressionBombWarning,
+                    ) as exc:
                         raise ValueError("render image is corrupt") from exc
                 kind = "image"
             else:
