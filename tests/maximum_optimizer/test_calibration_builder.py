@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
 from benchmarks.lvs_models.build_calibration_corpus_v1 import distribution
-from benchmarks.lvs_models.run_visual_states import short_texture_cache_root
+from benchmarks.lvs_models.run_visual_states import (
+    _write_json,
+    short_texture_cache_root,
+    state_region_manifest_path,
+)
+from maximum_optimizer.reporting import canonical_json
 
 
 class CalibrationBuilderTests(unittest.TestCase):
@@ -29,6 +37,21 @@ class CalibrationBuilderTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first.parent.name, "maximum-vtf-cache")
         self.assertEqual(len(first.name), 16)
+
+    def test_visual_runner_region_manifest_stays_with_short_state_root(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            state_root = Path(raw) / "001-bodygroup-front-bumper"
+            selected = state_region_manifest_path(state_root)
+            payload = {"schema": 1, "regions": ["body.smd"]}
+            _write_json(selected, payload)
+
+            self.assertEqual(selected, state_root / "region_manifest.json")
+            self.assertLess(len(str(selected.resolve())), 240)
+            self.assertEqual(json.loads(selected.read_text(encoding="utf-8")), payload)
+            self.assertEqual(
+                hashlib.sha256(selected.read_bytes()).hexdigest(),
+                hashlib.sha256((canonical_json(payload) + "\n").encode("utf-8")).hexdigest(),
+            )
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ def _digest(path: Path) -> str:
 
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(canonical_json(payload) + "\n", encoding="utf-8")
+    path.write_bytes((canonical_json(payload) + "\n").encode("utf-8"))
 
 
 def short_texture_cache_root(run_root: Path) -> Path:
@@ -35,6 +35,10 @@ def short_texture_cache_root(run_root: Path) -> Path:
         str(Path(run_root).resolve()).casefold().encode("utf-8")
     ).hexdigest()[:16]
     return Path(tempfile.gettempdir()).resolve() / "maximum-vtf-cache" / identity
+
+
+def state_region_manifest_path(state_root: Path) -> Path:
+    return Path(state_root) / "region_manifest.json"
 
 
 def main() -> int:
@@ -74,7 +78,7 @@ def main() -> int:
             path.resolve(strict=True).relative_to(source_root).as_posix()
             for path in original.sources
         )
-        state_manifest = source_root / f"maximum_region_manifest.task8a-{index:03d}-{original.name}.json"
+        state_manifest = state_region_manifest_path(state_root)
         _write_json(
             state_manifest,
             filter_region_manifest(full_manifest, identities).to_payload(),
