@@ -611,6 +611,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertIsNone(args.poses)
         self.assertIsNone(args.materials_root)
         self.assertIsNone(args.vtfcmd)
+        self.assertIsNone(args.texture_cache)
         self.assertIsNone(args.region_manifest)
         self.assertFalse(render_previews._is_extended_mode(args))
 
@@ -633,6 +634,8 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                 "materials",
                 "--vtfcmd",
                 "VTFCmd.exe",
+                "--texture-cache",
+                "shared-vtf-cache",
                 "--region-manifest",
                 "maximum_region_manifest.json",
             ]
@@ -643,7 +646,17 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertEqual(render_previews._parse_poses(args.poses), (("bind", 0), ("run", 12)))
         self.assertEqual(args.materials_root, ["materials"])
         self.assertEqual(args.vtfcmd, "VTFCmd.exe")
+        self.assertEqual(args.texture_cache, "shared-vtf-cache")
         self.assertEqual(args.region_manifest, "maximum_region_manifest.json")
+
+    def test_explicit_texture_cache_is_shared_outside_long_state_name(self):
+        import render_previews
+
+        args = type("Args", (), {"texture_cache": "C:/short/cache"})()
+        selected = render_previews._texture_cache_root(
+            args, Path("C:/very/long/bodygroup-state/renders")
+        )
+        self.assertEqual(selected, Path("C:/short/cache").resolve())
 
     def test_invalid_new_pass_or_pose_is_rejected(self):
         import render_previews
@@ -1161,6 +1174,22 @@ class RenderPreviewArgumentTests(unittest.TestCase):
 
             self.assertIsNotNone(converted)
             self.assertEqual(len(calls), 2)
+
+    def test_vtfcmd_rc_zero_without_output_fails_with_diagnostics(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "paint.vtf"
+            source.write_bytes(b"vtf")
+            tool = root / "VTFCmd.exe"
+            tool.write_bytes(b"tool")
+            failed = subprocess.CompletedProcess(
+                [str(tool)], 0, stdout="Error creating png file", stderr="legacy MAX_PATH"
+            )
+            with mock.patch.object(render_previews.subprocess, "run", return_value=failed):
+                with self.assertRaisesRegex(RuntimeError, "Error creating png file.*MAX_PATH"):
+                    render_previews._convert_vtf(source, tool, root / "cache")
 
     def test_textured_material_application_uses_each_objects_source_search_paths(self):
         import render_previews

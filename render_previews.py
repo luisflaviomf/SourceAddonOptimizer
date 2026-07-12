@@ -261,6 +261,10 @@ def _parse_args(argv: list[str]):
     )
     ap.add_argument("--vtfcmd", default=None, help="Optional VTFCmd executable")
     ap.add_argument(
+        "--texture-cache", default=None,
+        help="Shared short cache directory for deterministic VTF conversions",
+    )
+    ap.add_argument(
         "--region-manifest", default=None,
         help="Required shared Maximum region manifest for extended validation",
     )
@@ -407,7 +411,18 @@ def _parse_poses(raw: str | None) -> tuple[tuple[str, int], ...]:
 def _is_extended_mode(args) -> bool:
     return any(
         value is not None
-        for value in (args.passes, args.poses, args.materials_root, args.vtfcmd, args.region_manifest)
+        for value in (
+            args.passes, args.poses, args.materials_root, args.vtfcmd,
+            args.texture_cache, args.region_manifest,
+        )
+    )
+
+
+def _texture_cache_root(args, out_dir: Path) -> Path:
+    return (
+        Path(args.texture_cache).expanduser().resolve()
+        if args.texture_cache
+        else (Path(out_dir) / ".vtf-cache").resolve()
     )
 
 
@@ -654,11 +669,18 @@ def _convert_vtf(vtf_path: Path, vtfcmd: Path | None, cache_root: Path) -> Path 
         "-exportformat",
         "png",
     ]
+    attempts = []
     for _attempt in range(2):
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         if result.returncode == 0 and output_path.is_file():
             return output_path
-    return None
+        attempts.append(
+            f"rc={result.returncode}; stdout={(result.stdout or '')[-500:]!r}; "
+            f"stderr={(result.stderr or '')[-500:]!r}"
+        )
+    raise RuntimeError(
+        f"VTF texture conversion failed for {vtf_path}: " + " | ".join(attempts)
+    )
 
 
 def _source_texture_png(
@@ -1591,7 +1613,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         raise SystemExit(f"[ERROR] {exc}") from exc
     materials_root = tuple(Path(value).resolve(strict=True) for value in (args.materials_root or ()))
     vtfcmd = Path(args.vtfcmd).resolve() if args.vtfcmd else None
-    texture_cache = out_dir / ".vtf-cache"
+    texture_cache = _texture_cache_root(args, out_dir)
     region_manifest_path = _required_region_manifest(args)
     configuration = _required_configuration_manifest(args)
     region_manifest = _load_region_manifest(region_manifest_path)

@@ -103,6 +103,7 @@ def main() -> int:
             "--vtfcmd", str(args.vtfcmd.resolve(strict=True)),
             "--region-manifest", str(state_manifest),
             "--configuration-manifest", str(configuration_path),
+            "--texture-cache", str(args.out / ".vtf-cache"),
         ))
         for materials_root in args.materials_root:
             command.extend(("--materials-root", str(materials_root.resolve(strict=True))))

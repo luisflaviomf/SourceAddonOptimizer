@@ -2544,6 +2544,7 @@ class ProductionAdapters:
                 "--passes", "textured,clay", "--poses", pose_arg,
                 "--region-manifest", str(state_region_manifest),
                 "--configuration-manifest", str(configuration_manifest),
+                "--texture-cache", str(render_root / ".vtf-cache"),
             ))
             for materials_root in self._materials_roots():
                 command.extend(("--materials-root", str(materials_root)))
