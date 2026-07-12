@@ -38,5 +38,4 @@ Versão do MSBuild 17.14.23+b0019275e para .NET Framework
   Gerando Código...
      Criando biblioteca C:/Users/luisf/Music/teste/.worktrees/maximum-optimizer/build/maximum-meshopt-<RUN>/Release/meshopt_bridge.lib e objeto C:/Users/luisf/Music/teste/.worktrees/maximum-optimizer/build/maximum-meshopt-<RUN>/Release/meshopt_bridge.exp
   meshopt_bridge.vcxproj -> <REPO>\build\maximum-meshopt-<RUN>\Release\meshopt_bridge.dll
-Built x64 meshopt bridge: 
-<REPO>\maximum_optimizer\native\bin\win-x64\meshopt_bridge.dll
+Built x64 meshopt bridge: <REPO>/maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll

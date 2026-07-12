@@ -56,7 +56,7 @@ The committed builder independently rehashes every ignored artifact and must rep
 payload byte-for-structure in the focused test.
 
 Final canonical evidence digest:
-`0584ab9d6234dedc55b03fdf251014d5f525c3f766149e9e8b293ad6cda10e2e`.
+`1785024c47380a312cde63c2477043c23eb066888c2c60df0883eadb7bcb8ca4`.
 Final verification after evidence hardening: 5/5 focused delta tests and 372 full-discovery tests
 passed; 12 full-suite skips are the existing environment symlink-privilege skips.
 

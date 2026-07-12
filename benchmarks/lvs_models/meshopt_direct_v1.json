@@ -22,8 +22,8 @@
         "log": {
           "kind": ".log",
           "path": "benchmarks/lvs_models/evidence/meshopt-direct-v1/build1.log",
-          "sha256": "02ed7340c7f5f29b7c357316e2c66fe45b7c779f0f77f67234defdd9857dc86f",
-          "size_bytes": 1752
+          "sha256": "2eb8c1b0c30f55519dcf99703bf78fd86fd7a1337a39a62b4259d027c18a3b8d",
+          "size_bytes": 1749
         },
         "record_id": "clean-build-1"
       },
@@ -39,8 +39,8 @@
         "log": {
           "kind": ".log",
           "path": "benchmarks/lvs_models/evidence/meshopt-direct-v1/build2.log",
-          "sha256": "6c3177b603526a9e03b23c243707495cb68bcb22a42012a210091a090c09f472",
-          "size_bytes": 1752
+          "sha256": "9766ed19d7a7be57043bc275298272bafd6596207aec601654725ebe72b19dd1",
+          "size_bytes": 1749
         },
         "record_id": "clean-build-2"
       }
@@ -54,7 +54,7 @@
     "reason": "direct output improves control but remains larger than the approved Blender wheel and saturates under existing locks",
     "winner": false
   },
-  "evidence_sha256": "0584ab9d6234dedc55b03fdf251014d5f525c3f766149e9e8b293ad6cda10e2e",
+  "evidence_sha256": "1785024c47380a312cde63c2477043c23eb066888c2c60df0883eadb7bcb8ca4",
   "nonvisual": {
     "artifacts": [
       {
