@@ -31,6 +31,7 @@ FULL_FAMILY_IDS = (
 )
 PRESSURE_FAMILY_IDS = FULL_FAMILY_IDS[:5]
 BASELINE_LANES = ("original", "control", "blender", "fidelity", "experiment")
+BENCHMARK_LANES = (*BASELINE_LANES, "dx90_optional")
 COMPILED_KINDS = (".mdl", ".vvd", ".vtx", ".dx80.vtx", ".dx90.vtx", ".ani", ".phy")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
@@ -499,7 +500,7 @@ class BenchmarkRecord:
         _logical_id(corpus_id, "corpus_id", _CORPUS_ID_RE)
         _logical_id(family_id, "family_id")
         _logical_id(strategy, "strategy", _STRATEGY_RE)
-        if lane not in BASELINE_LANES:
+        if lane not in BENCHMARK_LANES:
             raise ValueError(f"unknown benchmark lane: {lane}")
         if not isinstance(cache_key, str) or _SHA256.fullmatch(cache_key) is None:
             raise ValueError("cache_key must be a SHA-256 digest")
@@ -618,7 +619,7 @@ def summarize_records(
             raise ValueError(f"unexpected summary records: {sorted(extra)}")
     lanes: dict[str, Any] = {}
     per_extension: dict[str, dict[str, int]] = {}
-    for lane in BASELINE_LANES:
+    for lane in lanes_to_report:
         lane_records = tuple(record for record in records if record.lane == lane)
         geometry = [record.geometry_comparable_bytes for record in lane_records if record.failure is None]
         extension_totals: dict[str, int] = {}
