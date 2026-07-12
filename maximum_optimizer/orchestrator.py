@@ -1966,7 +1966,9 @@ def _logical_visual_source_identity(graph: QcGraph, path: Path) -> str:
         graph.family_root.resolve(strict=True)
     )
     parts = list(PurePosixPath(relative.as_posix()).parts)
-    if parts and parts[0].casefold() == "output":
+    if len(parts) >= 2 and parts[-2].casefold() == "output":
+        parts.pop(-2)
+    elif parts and parts[0].casefold() == "output":
         parts.pop(0)
     if not parts:
         raise ValueError("visual source has no logical identity")
@@ -1994,7 +1996,9 @@ def _normalized_visual_identity_without_collision_check(
         graph.family_root.resolve(strict=True)
     )
     parts = list(PurePosixPath(relative.as_posix()).parts)
-    if parts and parts[0].casefold() == "output":
+    if len(parts) >= 2 and parts[-2].casefold() == "output":
+        parts.pop(-2)
+    elif parts and parts[0].casefold() == "output":
         parts.pop(0)
     leaf = PurePosixPath(parts[-1])
     parts[-1] = f"{re.sub(r'_opt$', '', leaf.stem, flags=re.IGNORECASE)}{leaf.suffix.casefold()}"

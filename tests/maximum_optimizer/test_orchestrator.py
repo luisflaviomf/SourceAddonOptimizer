@@ -1347,18 +1347,18 @@ class OrchestratorTests(unittest.TestCase):
     def test_visual_pairing_accepts_opt_paths_but_rejects_logical_source_reorder(self):
         original = self.root / "pair-original"
         candidate = self.root / "pair-candidate"
-        original.mkdir()
-        (candidate / "output").mkdir(parents=True)
+        (original / "models").mkdir(parents=True)
+        (candidate / "models" / "output").mkdir(parents=True)
         for name in ("body.smd", "hood.smd"):
-            (original / name).write_text("mesh", encoding="utf-8")
-            (candidate / "output" / name.replace(".smd", "_OPT.smd")).write_text("mesh", encoding="utf-8")
+            (original / "models" / name).write_text("mesh", encoding="utf-8")
+            (candidate / "models" / "output" / name.replace(".smd", "_OPT.smd")).write_text("mesh", encoding="utf-8")
         (original / "car.qc").write_text(
-            '$body body "body.smd"\n$bodygroup hood { studio "hood.smd" }\n', encoding="utf-8"
+            '$body body "models/body.smd"\n$bodygroup hood { studio "models/hood.smd" }\n', encoding="utf-8"
         )
         candidate_qc = candidate / "car_OPT.qc"
         candidate_qc.write_text(
-            '$body body "output/body_OPT.smd"\n'
-            '$bodygroup hood { studio "output/hood_OPT.smd" }\n', encoding="utf-8"
+            '$body body "models/output/body_OPT.smd"\n'
+            '$bodygroup hood { studio "models/output/hood_OPT.smd" }\n', encoding="utf-8"
         )
         before = orchestrator_module._graph_visual_configurations(
             parse_qc_graph(original / "car.qc", original)
@@ -1369,8 +1369,8 @@ class OrchestratorTests(unittest.TestCase):
         orchestrator_module._validate_visual_configuration_pairing(before, after)
 
         candidate_qc.write_text(
-            '$body body "output/hood_OPT.smd"\n'
-            '$bodygroup hood { studio "output/body_OPT.smd" }\n', encoding="utf-8"
+            '$body body "models/output/hood_OPT.smd"\n'
+            '$bodygroup hood { studio "models/output/body_OPT.smd" }\n', encoding="utf-8"
         )
         reordered = orchestrator_module._graph_visual_configurations(
             parse_qc_graph(candidate_qc, candidate)
