@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from benchmarks.lvs_models.build_calibration_corpus_v1 import (
+    _apply_regional_replacements,
     _canonical_payload_hash,
     _validate_monaco_composite,
     build_byte_comparison,
@@ -22,6 +23,24 @@ from maximum_optimizer.reporting import canonical_json
 
 
 class CalibrationBuilderTests(unittest.TestCase):
+    def test_regional_replacement_recomputes_real_donor_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "output/body_opt.smd"
+            target.parent.mkdir()
+            target.write_bytes(b"reviewed donor")
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            regional = {"replacements": [{
+                "target": "output\\body_opt.smd", "donor_sha256": digest,
+            }]}
+            outputs = {"body.smd": "0" * 64}
+            _apply_regional_replacements(root, regional, outputs)
+            self.assertEqual(outputs["body.smd"], digest)
+
+            target.write_bytes(b"changed after review")
+            with self.assertRaisesRegex(ValueError, "declared donor"):
+                _apply_regional_replacements(root, regional, outputs)
+
     def test_monaco_composite_recomputes_inner_seals_before_binding_lane(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / "monaco.json"

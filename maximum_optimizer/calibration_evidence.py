@@ -31,6 +31,12 @@ _CANDIDATES = {
     "nissan_skyline_gtr32": "r020",
     "dodge_monaco_police": "hybrid-stable",
 }
+_CANDIDATES_V3 = {
+    **_CANDIDATES,
+    "dodge_charger": "r030-recovered-exact",
+    "toyota_supra": "r015-recovered-body-r025",
+    "nissan_skyline_gtr32": "r020-recovered-exact",
+}
 _ALTERNATIVES = {
     "pontiac_transam_wheel": (
         ("r035", "strict-visual-rejection"),
@@ -108,6 +114,29 @@ EXPECTED_ALTERNATIVE_BINDING_SEALS = {
     "v4-r0475": "a7ca4775bad1f4ab66048c9426937d3d987667bab6df6ea7b7359a13c95622d5",
     "importance-r035": "60e0b6af16e1b98b70cb69a1ee9457410a79cbd063cf75bd66862ffd422f5682",
 }
+EXPECTED_V3_FAMILY_BINDING_SEALS = {
+    "pontiac_transam_wheel": {
+        "baseline": "d79e659975123b616ecb7b3942cfa1574a86f1c1aabb8288d05c6b40c49e69ae",
+        "candidate": "f9fcfe65f4c596521315e8caa04d800b1c98f73962fc72f576f71457c246772f",
+    },
+    "dodge_charger": {
+        "baseline": "31c8f3160f22fd2879510a3c7d598a0b53493773eeeee0f81a70f67160b3ee49",
+        "candidate": "1ccd5ffc15d1f4bc4711204217f8074a507dd0d3585990faee66483fd26025f0",
+    },
+    "toyota_supra": {
+        "baseline": "bbe2953da126f54269587c5847395becabb0c79d07bdf88c32724ffc1d4b80bb",
+        "candidate": "5e208aa1e6a1acf343f027de854e88a925d62e34b550c9ab41d0b6f4605c3956",
+    },
+    "nissan_skyline_gtr32": {
+        "baseline": "50658fefae9a123872c8bf6dfe8fa218d78d25e17dde07139b2314127627d49a",
+        "candidate": "e63e41f1824daaba38ac35ec0945feabb2ff8de77f4e26ce00eb7420641a06e2",
+    },
+    "dodge_monaco_police": {
+        "baseline": "ba07ac488d71bf33b3cd60e1c47cf95022be307fabfab8ccfec3edce0b73b21a",
+        "candidate": "f43c24d125265e91b2985b88ae1e9b70d2a52007abe28c89d2e56807d8c89cc2",
+    },
+}
+EXPECTED_V3_REGIONAL_RECOVERY_SEAL = "2bb3de07e8a3b447f2bfbf6981d42154b03bd1945c498b4ee6e2cbcf320c75c1"
 
 
 def _exact(value: object, fields: set[str], label: str) -> dict:
@@ -287,7 +316,7 @@ def _compiled(value: object, label: str) -> dict:
 
 def _lane(
     value: object, expected_lane: str, expected_candidate: str,
-    expected_states: tuple[str, ...], label: str,
+    expected_states: tuple[str, ...], label: str, *, regional: bool = False,
 ) -> dict:
     lane = _exact(value, {
         "lane", "candidate_id", "compiled", "configurations",
@@ -308,6 +337,12 @@ def _lane(
     elif expected_candidate == "hybrid-stable":
         expected_kind = "accepted-composite-bundle-v1"
         expected_artifact_kinds = ("accepted-composite", "optimized-qc", "compile-summary")
+    elif regional:
+        expected_kind = "regional-recovery-compile-bundle-v1"
+        expected_artifact_kinds = (
+            "candidate-json", "candidate-metrics", "optimized-qc", "compile-summary",
+            "regional-provenance",
+        )
     else:
         expected_kind = "optimization-compile-bundle-v1"
         expected_artifact_kinds = (
@@ -467,14 +502,18 @@ def _alternative(value: object, expected: tuple[str, str], label: str) -> dict:
 
 
 def parse_calibration_evidence(payload: object) -> dict:
-    root = _exact(payload, {
+    schema_version = payload.get("schema_version") if type(payload) is dict else None
+    root_fields = {
         "schema_version", "strategy", "status", "toolchain", "implementation",
         "external_artifacts", "families", "baseline_distribution", "decision",
         "evidence_sha256",
-    }, "calibration evidence")
+    }
+    if schema_version == 3:
+        root_fields.add("regional_recovery")
+    root = _exact(payload, root_fields, "calibration evidence")
     if (
-        root["schema_version"] != 2
-        or root["strategy"] != "lvs-calibration-corpus-v2"
+        root["schema_version"] not in (2, 3)
+        or root["strategy"] != f"lvs-calibration-corpus-v{root['schema_version']}"
         or root["status"] != "calibration-pending"
     ):
         raise ValueError("calibration evidence identity is invalid")
@@ -504,6 +543,21 @@ def parse_calibration_evidence(payload: object) -> dict:
         raise ValueError("Monaco composite hashes are invalid")
     if composite != _MONACO_EXTERNAL:
         raise ValueError("Monaco composite seal is not the accepted artifact")
+    if schema_version == 3:
+        recovery = _exact(root["regional_recovery"], {
+            "regional_compile_report", "focused_regions", "focused_recovery",
+        }, "regional recovery")
+        report = _exact(recovery["regional_compile_report"], {"path", "sha256"}, "regional compile report")
+        if report["sha256"] != "266b7481cf740cfa347e7067f94d85ee1215ec5be1b1f3af65a869181cd07ae5":
+            raise ValueError("regional compile report differs from the trusted research snapshot")
+        for name in ("focused_regions", "focused_recovery"):
+            artifact = _exact(recovery[name], {"path", "sha256", "payload_sha256"}, name)
+            if any(type(artifact[field]) is not str or not artifact[field] for field in artifact):
+                raise ValueError(f"{name} artifact is invalid")
+            if any(_HASH.fullmatch(artifact[field]) is None for field in ("sha256", "payload_sha256")):
+                raise ValueError(f"{name} hashes are invalid")
+        if _canonical_hash(recovery) != EXPECTED_V3_REGIONAL_RECOVERY_SEAL:
+            raise ValueError("regional recovery differs from the trusted research snapshot")
     families = root["families"]
     if type(families) is not list or tuple(
         item.get("family_id") if type(item) is dict else None for item in families
@@ -525,12 +579,17 @@ def parse_calibration_evidence(payload: object) -> dict:
             _STATE_NAMES[family_id],
             f"{family_id} baseline",
         )
+        candidates = _CANDIDATES_V3 if schema_version == 3 else _CANDIDATES
         candidate = _lane(
-            family["candidate"], "strict-region-paired", _CANDIDATES[family_id],
+            family["candidate"], "strict-region-paired", candidates[family_id],
             _STATE_NAMES[family_id],
             f"{family_id} candidate",
+            regional=(schema_version == 3 and family_id in {
+                "dodge_charger", "toyota_supra", "nissan_skyline_gtr32"
+            }),
         )
-        trusted = EXPECTED_FAMILY_BINDING_SEALS[family_id]
+        trusted_map = EXPECTED_V3_FAMILY_BINDING_SEALS if schema_version == 3 else EXPECTED_FAMILY_BINDING_SEALS
+        trusted = trusted_map[family_id]
         if (
             baseline["lane_binding_sha256"] != trusted["baseline"]
             or candidate["lane_binding_sha256"] != trusted["candidate"]

@@ -1,0 +1,80 @@
+{
+  "evidence_sha256": "b5b83a8ae2e343346e35d2499d768681ea2a93be840f6517f0b7814afeec609a",
+  "quality_status": "manually-reviewed-recovery-supplement",
+  "records": [
+    {
+      "candidate_render_manifest_sha256": "b2e8aa9b89cc26222a67bdd413ee88123daadfa4f3b94e71e28209bdcaa7ef94",
+      "candidate_sha256": "a0b886d5fb3c22079187b0f0d71899ca4d053150f46964a02655a9b7125aa3ad",
+      "configuration_sha256": "ea167415b4583ddd51c3dead1ba5ef060c6d3ed702a31ccf79db327d5c654c3d",
+      "family_id": "dodge_charger",
+      "reason": "exact source restored grille contour and tooth detail",
+      "reference_render_manifest_sha256": "312351e056fdcd7d345d76b00f0b84de26f05d1d2027208c67ec64534e5a35c8",
+      "reference_sha256": "a0b886d5fb3c22079187b0f0d71899ca4d053150f46964a02655a9b7125aa3ad",
+      "region": "grille_a",
+      "region_manifest_sha256": "5292166e8aace55d9d4e26d329d574c7f6abeecfc3ae55a6c2180b075072c3c4",
+      "status": "recovered-exact"
+    },
+    {
+      "candidate_render_manifest_sha256": "e7dd9450a3596cb16bebf15a8e7128167c50ea743565bb11073f62017306326e",
+      "candidate_sha256": "5b2446af65aa26279e640069878b632ca1c3ae10ee057be6ce55af49ac9cf261",
+      "configuration_sha256": "846e6e0f5d537e39ff597ecb3b0058b74a652cbf75c538f03857a4f1d64c01be",
+      "family_id": "dodge_charger",
+      "reason": "exact source restored circular headlight boundaries",
+      "reference_render_manifest_sha256": "22fef89d813d3daed959f105fd9875aa3bffa5fa9935f2cdc62791a8c59b6800",
+      "reference_sha256": "5b2446af65aa26279e640069878b632ca1c3ae10ee057be6ce55af49ac9cf261",
+      "region": "headlight",
+      "region_manifest_sha256": "894badd65fcca0c2244068700b48a176c1b17e196b4381eb40f8220800fe04c5",
+      "status": "recovered-exact"
+    },
+    {
+      "candidate_render_manifest_sha256": "a4ebc47210314ccff367cbcdf4f956bfa3f62c39d8d62ae31e5c109fb5540b55",
+      "candidate_sha256": "f064a36fb13f7cbc2f1728ca3dd70f1b31db5da55ac934010163f664708e2785",
+      "configuration_sha256": "2d36c122137c064d8c19191eda982a3593c50a311a64b2ccf28b37302be0ce8d",
+      "family_id": "toyota_supra",
+      "reason": "r025 donor removed the visible triangular body shading artifact",
+      "reference_render_manifest_sha256": "d1f3d9f6c7010fc891493bdc5714fd649cda2bacbd8a798e1e1f36d8614877fa",
+      "reference_sha256": "a9dd016e8a1dbd85d946b9631aae6a5d214905f9b3c3b4f8027099adcee86e1c",
+      "region": "body",
+      "region_manifest_sha256": "2403eb2e808ac86243ceb38bf013cda91963494b6b6f5dcca9ad0948abed0e93",
+      "status": "recovered-r025"
+    },
+    {
+      "candidate_render_manifest_sha256": "8032efffbc0ce6acec5db571f7ac512b9e35743d606897c0b556ace65fbf7182",
+      "candidate_sha256": "de976699e8063784162ca6aae09ea7c172798a5482a11c65f7ec8c9e6c4c9a64",
+      "configuration_sha256": "5fd947bd019c1d5209446273db66581f760dedefc541dafcb35b62e0da802bbd",
+      "family_id": "toyota_supra",
+      "reason": "accepted r015 region was retained by the minimal recovery",
+      "reference_render_manifest_sha256": "5858683a448ef698e090227787b794bee589db4c44bf87c37e1c5b8949e155b6",
+      "reference_sha256": "55facaaaa9c0cffa68953307bab85b741baa033fe340277d877663099c2fcab3",
+      "region": "body13_model0",
+      "region_manifest_sha256": "d3e7b69c3aa17270706adeab425b0dd64505e3300cf04ab7c20c422d51fd1295",
+      "status": "preserved-r015"
+    },
+    {
+      "candidate_render_manifest_sha256": "6530015417b885b4bc2113af4b4dc78f0412f52f25c30477fb62cd2072aaf953",
+      "candidate_sha256": "796d9ad269add60b9b8c073dff5b1d704b94949afabccd1b3d3bc15768f184f3",
+      "configuration_sha256": "14d3253065461282b5f58ba2d318aec1f2a844a5248866456ac5dc4ad9efc644",
+      "family_id": "nissan_skyline_gtr32",
+      "reason": "exact source restored curved headlight outlines",
+      "reference_render_manifest_sha256": "66696d7d9455310f1436127a0ce2053dbcd6facfa0f502972c6adb1eee4423e6",
+      "reference_sha256": "796d9ad269add60b9b8c073dff5b1d704b94949afabccd1b3d3bc15768f184f3",
+      "region": "headlights_a",
+      "region_manifest_sha256": "07ae74ddf4594169e97f19021484d405d76508814d6ea38e55975957997af2aa",
+      "status": "recovered-exact"
+    },
+    {
+      "candidate_render_manifest_sha256": "d47a0a2c2f78fada57e8a1c4237ec0960707b57809baf84993a199fd72161e32",
+      "candidate_sha256": "9fc7fab055476fb9e455088a27f417ad2cc8b6f42ee3c33390dc22bc2d63fd13",
+      "configuration_sha256": "006ed0196c3f753c8796d68e18928927e74e91b7c02a1602f8dd4e371a1ca664",
+      "family_id": "nissan_skyline_gtr32",
+      "reason": "exact source restored fender cutouts and thin detail",
+      "reference_render_manifest_sha256": "f613bda9cead5a1cd1a525a793002cc2d3c14ea19f124d435dd139dc571da844",
+      "reference_sha256": "9fc7fab055476fb9e455088a27f417ad2cc8b6f42ee3c33390dc22bc2d63fd13",
+      "region": "fenders_a",
+      "region_manifest_sha256": "b84c94511dd8115abd8263b0ae4ee4fa750ed562907e97a985a5c68376d0f3c9",
+      "status": "recovered-exact"
+    }
+  ],
+  "schema_version": 1,
+  "strategy": "focused-regional-recovery-evidence-v1"
+}

@@ -278,7 +278,76 @@ def _payload() -> dict:
     )
 
 
+def _payload_v3() -> dict:
+    return json.loads(
+        (Path(__file__).resolve().parents[2]
+         / "benchmarks/lvs_models/calibration_evidence_v3.json").read_text(encoding="utf-8")
+    )
+
+
 class CalibrationEvidenceTests(unittest.TestCase):
+    def test_v3_recovered_winners_and_diagnostics_are_typed(self) -> None:
+        parsed = parse_calibration_evidence(_payload_v3())
+        candidates = {
+            item["family_id"]: item["candidate"] for item in parsed["families"]
+        }
+        self.assertEqual(candidates["dodge_charger"]["candidate_id"], "r030-recovered-exact")
+        self.assertEqual(candidates["dodge_charger"]["compiled"]["total_bytes"], 11_154_899)
+        self.assertEqual(candidates["toyota_supra"]["candidate_id"], "r015-recovered-body-r025")
+        self.assertEqual(candidates["toyota_supra"]["compiled"]["total_bytes"], 6_324_311)
+        self.assertEqual(candidates["nissan_skyline_gtr32"]["candidate_id"], "r020-recovered-exact")
+        self.assertEqual(candidates["nissan_skyline_gtr32"]["compiled"]["total_bytes"], 5_635_015)
+        self.assertEqual(
+            parsed["regional_recovery"]["regional_compile_report"]["sha256"],
+            "266b7481cf740cfa347e7067f94d85ee1215ec5be1b1f3af65a869181cd07ae5",
+        )
+        focused = json.loads(
+            (Path(__file__).resolve().parents[2]
+             / "benchmarks/lvs_models/focused_recovery_evidence_v1.json").read_text()
+        )
+        supra_body13 = next(
+            item for item in focused["records"]
+            if item["family_id"] == "toyota_supra" and item["region"] == "body13_model0"
+        )
+        self.assertEqual(supra_body13["status"], "preserved-r015")
+        self.assertEqual(
+            supra_body13["candidate_sha256"],
+            "de976699e8063784162ca6aae09ea7c172798a5482a11c65f7ec8c9e6c4c9a64",
+        )
+
+    def test_v3_resealed_regional_and_focused_swaps_are_rejected(self) -> None:
+        for field in ("regional_compile_report", "focused_regions", "focused_recovery"):
+            changed = copy.deepcopy(_payload_v3())
+            changed["regional_recovery"][field]["sha256"] = "9" * 64
+            changed["evidence_sha256"] = canonical_calibration_evidence_hash(changed)
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "trusted"):
+                parse_calibration_evidence(changed)
+
+    def test_v3_resealed_recovered_provenance_swap_is_rejected(self) -> None:
+        changed = copy.deepcopy(_payload_v3())
+        lane = changed["families"][1]["candidate"]
+        self.assertEqual(lane["provenance"]["artifacts"][-1]["kind"], "regional-provenance")
+        lane["provenance"]["artifacts"][-1]["sha256"] = "9" * 64
+        lane["lane_binding_sha256"] = canonical_lane_binding_hash(lane)
+        changed["evidence_sha256"] = canonical_calibration_evidence_hash(changed)
+        with self.assertRaisesRegex(ValueError, "trusted"):
+            parse_calibration_evidence(changed)
+
+    def test_v3_child_and_outer_reseals_cannot_forge_source_or_compiled_artifact(self) -> None:
+        mutations = (
+            lambda lane: lane["configurations"][0]["source_pairs"][0].__setitem__(
+                "candidate_sha256", "8" * 64
+            ),
+            lambda lane: lane["compiled"]["artifacts"][0].__setitem__("sha256", "8" * 64),
+        )
+        for mutate in mutations:
+            changed = copy.deepcopy(_payload_v3())
+            lane = changed["families"][1]["candidate"]
+            mutate(lane)
+            lane["lane_binding_sha256"] = canonical_lane_binding_hash(lane)
+            changed["evidence_sha256"] = canonical_calibration_evidence_hash(changed)
+            with self.subTest(mutate=mutate), self.assertRaisesRegex(ValueError, "trusted"):
+                parse_calibration_evidence(changed)
     def test_schema_requires_five_fixed_families_and_honest_lanes(self) -> None:
         parsed = parse_calibration_evidence(_payload())
         self.assertEqual(

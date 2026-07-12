@@ -1,0 +1,258 @@
+{
+  "toolchain": {
+    "blender": "C:/Program Files/Blender Foundation/Blender 5.0/blender.exe",
+    "vtfcmd": ".superpowers/tools/VTFEdit/VTFEdit/VTFCmd.exe"
+  },
+  "external_artifacts": {
+    "monaco_accepted_composite_v1": "C:/Temp/monaco-direct-prefilter-stable-v1/sealed/monaco_accepted_composite_v1.json"
+  },
+  "families": [
+    {
+      "family_id": "pontiac_transam_wheel",
+      "baseline": {
+        "candidate_id": "roundtrip-control",
+        "run_root": ".superpowers/lvs-task8-calibration/roundtrip-control-final-0927401/pontiac_transam_wheel",
+        "region_manifest": "C:/Temp/lvs-wheel-mini/runs/pontiac-wheel-r050/maximum_region_manifest.json",
+        "compiled_root": ".superpowers/lvs-task2-control-final/pontiac_transam_wheel/game/models",
+        "compiled_files": [
+          "diggercars/pontiac_transam3/wheel.dx80.vtx",
+          "diggercars/pontiac_transam3/wheel.dx90.vtx",
+          "diggercars/pontiac_transam3/wheel.mdl",
+          "diggercars/pontiac_transam3/wheel.phy",
+          "diggercars/pontiac_transam3/wheel.vvd"
+        ]
+      },
+      "candidate": {
+        "candidate_id": "r050",
+        "source_root": "C:/Temp/lvs-wheel-mini/runs/pontiac-wheel-r050",
+        "optimized_qc": "C:/Temp/lvs-wheel-mini/runs/pontiac-wheel-r050/wheel_OPT.qc",
+        "provenance_label": "research://pontiac_transam_wheel/r050",
+        "run_root": ".superpowers/lvs-task8-calibration/final-accepted-v2-0927401/pontiac_transam_wheel",
+        "region_manifest": "C:/Temp/lvs-wheel-mini/runs/pontiac-wheel-r050/maximum_region_manifest.json",
+        "compiled_root": "C:/Temp/lvs-wheel-mini/runs/pontiac-wheel-r050/compiled",
+        "compiled_files": [
+          "models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+          "models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+          "models/diggercars/pontiac_transam3/wheel.mdl",
+          "models/diggercars/pontiac_transam3/wheel.phy",
+          "models/diggercars/pontiac_transam3/wheel.vvd"
+        ]
+      },
+      "alternatives": [
+        {
+          "candidate_id": "r035",
+          "evidence_kind": "strict-visual-rejection",
+          "status": "rejected-research-alternative",
+          "reason": "strict default and rim states showed manual wheel faceting; compiled artifacts are no longer reopenable, so no byte claim is recorded",
+          "artifact_path": ".superpowers/lvs-task8-calibration/pontiac_transam_wheel/candidate-r035-v2/raw-visual-states.json",
+          "artifact_label": ".superpowers/lvs-task8-calibration/pontiac_transam_wheel/candidate-r035-v2/raw-visual-states.json",
+          "artifact_availability": "archived-visual-only",
+          "quality_scope": "strict-region-paired"
+        },
+        {
+          "candidate_id": "v4-r035",
+          "evidence_kind": "strict-visual-rejection",
+          "status": "rejected-research-alternative",
+          "reason": "default back and iso2 visibly polygonized the inner ring and destroyed hub detail",
+          "artifact_path": ".superpowers/lvs-task8-calibration/pontiac_transam_wheel/v4-acc5257/raw-visual-states.json",
+          "artifact_label": "research://wheel/v4-r035/raw-visual-states.json",
+          "artifact_availability": "archived-visual-and-compiled",
+          "quality_scope": "strict-region-paired",
+          "compiled": {
+            "compiled_root": "C:/mcv4-acc5257-compiled",
+            "compiled_files": [
+              "models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+              "models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+              "models/diggercars/pontiac_transam3/wheel.mdl",
+              "models/diggercars/pontiac_transam3/wheel.phy",
+              "models/diggercars/pontiac_transam3/wheel.vvd"
+            ]
+          }
+        },
+        {
+          "candidate_id": "v4-r045",
+          "evidence_kind": "strict-visual-rejection",
+          "status": "rejected-research-alternative",
+          "reason": "iso2 visibly removed the five hub holes and distorted the logo and center detail",
+          "artifact_path": ".superpowers/lvs-task8-calibration/pontiac_transam_wheel/v4-r045-acc5257/raw-visual-states.json",
+          "artifact_label": "research://wheel/v4-r045/raw-visual-states.json",
+          "artifact_availability": "archived-visual-and-compiled",
+          "quality_scope": "strict-region-paired",
+          "compiled": {
+            "compiled_root": "C:/mcv4-r045-acc5257-compiled",
+            "compiled_files": [
+              "models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+              "models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+              "models/diggercars/pontiac_transam3/wheel.mdl",
+              "models/diggercars/pontiac_transam3/wheel.phy",
+              "models/diggercars/pontiac_transam3/wheel.vvd"
+            ]
+          }
+        },
+        {
+          "candidate_id": "v4-r0475",
+          "evidence_kind": "strict-visual-rejection",
+          "status": "rejected-research-alternative",
+          "reason": "iso2 still collapsed the five hub recesses into triangular lobes and altered center detail",
+          "artifact_path": ".superpowers/lvs-task8-calibration/pontiac_transam_wheel/v4-r0475-acc5257/raw-visual-states.json",
+          "artifact_label": "research://wheel/v4-r0475/raw-visual-states.json",
+          "artifact_availability": "archived-visual-and-compiled",
+          "quality_scope": "strict-region-paired",
+          "compiled": {
+            "compiled_root": "C:/mcv4-r0475-acc5257-compiled",
+            "compiled_files": [
+              "models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+              "models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+              "models/diggercars/pontiac_transam3/wheel.mdl",
+              "models/diggercars/pontiac_transam3/wheel.phy",
+              "models/diggercars/pontiac_transam3/wheel.vvd"
+            ]
+          }
+        },
+        {
+          "candidate_id": "importance-r035",
+          "evidence_kind": "uncalibrated-raw-clay-rejection",
+          "status": "rejected-research-alternative",
+          "reason": "same-ratio importance ablation was only 410 bytes smaller and had worse worst-view silhouette and edge error",
+          "artifact_path": "benchmarks/lvs_models/blender_importance_map_v1.json",
+          "artifact_label": "benchmarks/lvs_models/blender_importance_map_v1.json#candidate",
+          "artifact_availability": "committed-raw-clay-and-compiled",
+          "quality_scope": "rim1-bind-8-views"
+        }
+      ]
+    },
+    {
+      "family_id": "dodge_charger",
+      "baseline": {
+        "candidate_id": "roundtrip-control",
+        "run_root": ".superpowers/lvs-task8-calibration/roundtrip-control-final-0927401/dodge_charger",
+        "region_manifest": ".superpowers/lvs-task8-ratio-sweep/dodge-charger-r030/maximum_region_manifest.json",
+        "compiled_root": ".superpowers/lvs-task2-control-final/dodge_charger/game/models",
+        "compiled_files": [
+          "diggercars/dodge_charger/charger.dx80.vtx",
+          "diggercars/dodge_charger/charger.dx90.vtx",
+          "diggercars/dodge_charger/charger.mdl",
+          "diggercars/dodge_charger/charger.phy",
+          "diggercars/dodge_charger/charger.vvd"
+        ]
+      },
+      "candidate": {
+        "candidate_id": "r030",
+        "source_root": ".superpowers/lvs-task8-ratio-sweep/dodge-charger-r030",
+        "optimized_qc": ".superpowers/lvs-task8-ratio-sweep/dodge-charger-r030/charger_OPT.qc",
+        "provenance_label": "research://dodge_charger/r030",
+        "run_root": ".superpowers/lvs-task8-calibration/final-accepted-v2-0927401/dodge_charger",
+        "region_manifest": ".superpowers/lvs-task8-ratio-sweep/dodge-charger-r030/maximum_region_manifest.json",
+        "compiled_root": ".superpowers/lvs-task8-ratio-sweep/dodge-charger-r030/compiled",
+        "compiled_files": [
+          "models/diggercars/dodge_charger/charger.dx80.vtx",
+          "models/diggercars/dodge_charger/charger.dx90.vtx",
+          "models/diggercars/dodge_charger/charger.mdl",
+          "models/diggercars/dodge_charger/charger.phy",
+          "models/diggercars/dodge_charger/charger.vvd"
+        ]
+      },
+      "alternatives": []
+    },
+    {
+      "family_id": "toyota_supra",
+      "baseline": {
+        "candidate_id": "roundtrip-control",
+        "run_root": ".superpowers/lvs-task8-calibration/roundtrip-control-final-0927401/toyota_supra",
+        "region_manifest": "C:/Temp/lvs-general-body-calibration-v1/toyota_supra-r015/maximum_region_manifest.json",
+        "compiled_root": ".superpowers/lvs-task2-control-final/toyota_supra/game/models",
+        "compiled_files": [
+          "diggercars/toyota_supra/supra.dx80.vtx",
+          "diggercars/toyota_supra/supra.dx90.vtx",
+          "diggercars/toyota_supra/supra.mdl",
+          "diggercars/toyota_supra/supra.phy",
+          "diggercars/toyota_supra/supra.vvd"
+        ]
+      },
+      "candidate": {
+        "candidate_id": "r015",
+        "source_root": "C:/Temp/lvs-general-body-calibration-v1/toyota_supra-r015",
+        "optimized_qc": "C:/Temp/lvs-general-body-calibration-v1/toyota_supra-r015/supra_OPT.qc",
+        "provenance_label": "research://toyota_supra/r015",
+        "run_root": ".superpowers/lvs-task8-calibration/final-eval-0927401/toyota_supra_r015",
+        "region_manifest": "C:/Temp/lvs-general-body-calibration-v1/toyota_supra-r015/maximum_region_manifest.json",
+        "compiled_root": "C:/Temp/lvs-general-body-calibration-v1/toyota_supra-r015/compiled",
+        "compiled_files": [
+          "models/diggercars/toyota_supra/supra.dx80.vtx",
+          "models/diggercars/toyota_supra/supra.dx90.vtx",
+          "models/diggercars/toyota_supra/supra.mdl",
+          "models/diggercars/toyota_supra/supra.phy",
+          "models/diggercars/toyota_supra/supra.vvd"
+        ]
+      },
+      "alternatives": []
+    },
+    {
+      "family_id": "nissan_skyline_gtr32",
+      "baseline": {
+        "candidate_id": "roundtrip-control",
+        "run_root": ".superpowers/lvs-task8-calibration/roundtrip-control-final-0927401/nissan_skyline_gtr32",
+        "region_manifest": "C:/Temp/lvs-general-body-calibration-v1/nissan_skyline_gtr32-r020/maximum_region_manifest.json",
+        "compiled_root": ".superpowers/lvs-task2-control-final/nissan_skyline_gtr32/game/models",
+        "compiled_files": [
+          "diggercars/nissan_skyline_gtr32/bnr32.dx80.vtx",
+          "diggercars/nissan_skyline_gtr32/bnr32.dx90.vtx",
+          "diggercars/nissan_skyline_gtr32/bnr32.mdl",
+          "diggercars/nissan_skyline_gtr32/bnr32.phy",
+          "diggercars/nissan_skyline_gtr32/bnr32.vvd"
+        ]
+      },
+      "candidate": {
+        "candidate_id": "r020",
+        "source_root": "C:/Temp/lvs-general-body-calibration-v1/nissan_skyline_gtr32-r020",
+        "optimized_qc": "C:/Temp/lvs-general-body-calibration-v1/nissan_skyline_gtr32-r020/bnr32_OPT.qc",
+        "provenance_label": "research://nissan_skyline_gtr32/r020",
+        "run_root": ".superpowers/lvs-task8-calibration/final-eval-0927401/nissan_skyline_r020",
+        "region_manifest": "C:/Temp/lvs-general-body-calibration-v1/nissan_skyline_gtr32-r020/maximum_region_manifest.json",
+        "compiled_root": "C:/Temp/lvs-general-body-calibration-v1/nissan_skyline_gtr32-r020/compiled",
+        "compiled_files": [
+          "models/diggercars/nissan_skyline_gtr32/bnr32.dx80.vtx",
+          "models/diggercars/nissan_skyline_gtr32/bnr32.dx90.vtx",
+          "models/diggercars/nissan_skyline_gtr32/bnr32.mdl",
+          "models/diggercars/nissan_skyline_gtr32/bnr32.phy",
+          "models/diggercars/nissan_skyline_gtr32/bnr32.vvd"
+        ]
+      },
+      "alternatives": []
+    },
+    {
+      "family_id": "dodge_monaco_police",
+      "baseline": {
+        "candidate_id": "roundtrip-control",
+        "run_root": ".superpowers/lvs-task8-calibration/roundtrip-control-final-0927401/dodge_monaco_police",
+        "region_manifest": ".superpowers/lvs-task8-corpus/monaco-r040-v3/maximum_region_manifest.json",
+        "compiled_root": ".superpowers/lvs-task2-control-final/dodge_monaco_police/game/models",
+        "compiled_files": [
+          "diggercars/dodge_monaco/monaco_police.dx80.vtx",
+          "diggercars/dodge_monaco/monaco_police.dx90.vtx",
+          "diggercars/dodge_monaco/monaco_police.mdl",
+          "diggercars/dodge_monaco/monaco_police.phy",
+          "diggercars/dodge_monaco/monaco_police.vvd"
+        ]
+      },
+      "candidate": {
+        "candidate_id": "hybrid-stable",
+        "source_root": "C:/Temp/monaco-direct-prefilter-stable-v1/hybrid",
+        "optimized_qc": "C:/Temp/monaco-direct-prefilter-stable-v1/hybrid/monaco_police_OPT.qc",
+        "composite_path": "C:/Temp/monaco-direct-prefilter-stable-v1/sealed/monaco_accepted_composite_v1.json",
+        "provenance_label": "research://dodge_monaco_police/hybrid-stable",
+        "run_root": ".superpowers/lvs-task8-calibration/dodge_monaco_police/hybrid-stable-8512e4b",
+        "region_manifest": ".superpowers/lvs-task8-corpus/monaco-r040-v3/maximum_region_manifest.json",
+        "compiled_root": "C:/Temp/monaco-direct-prefilter-stable-v1/hybrid/compiled",
+        "compiled_files": [
+          "models/diggercars/dodge_monaco/monaco_police.dx80.vtx",
+          "models/diggercars/dodge_monaco/monaco_police.dx90.vtx",
+          "models/diggercars/dodge_monaco/monaco_police.mdl",
+          "models/diggercars/dodge_monaco/monaco_police.phy",
+          "models/diggercars/dodge_monaco/monaco_police.vvd"
+        ]
+      },
+      "alternatives": []
+    }
+  ]
+}

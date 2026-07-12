@@ -1,0 +1,49 @@
+{
+  "schema_version": 3,
+  "base_spec": "benchmarks/lvs_models/calibration_spec_v2.json",
+  "regional_recovery": {
+    "regional_compile_report": {
+      "path": "C:/Temp/lvs-regional-recovery-compile-v1/regional_compile_report.json",
+      "label": "research://regional-recovery-v1/regional_compile_report.json"
+    },
+    "focused_regions": {
+      "path": ".superpowers/lvs-task8-calibration/focused-regions-v1/focused_summary.json",
+      "label": "research://focused-regions-v1/focused_summary.json",
+      "sealed_json": true
+    },
+    "focused_recovery": {
+      "path": "benchmarks/lvs_models/focused_recovery_evidence_v1.json",
+      "label": "benchmarks/lvs_models/focused_recovery_evidence_v1.json",
+      "sealed_json": true
+    }
+  },
+  "family_overrides": {
+    "dodge_charger": {
+      "candidate_id": "r030-recovered-exact",
+      "source_root": "C:/Temp/lvs-regional-recovery-compile-v1/dodge_charger/grille-exact--headlight-exact",
+      "optimized_qc": "C:/Temp/lvs-regional-recovery-compile-v1/dodge_charger/grille-exact--headlight-exact/charger_OPT.qc",
+      "provenance_label": "research://dodge_charger/r030-recovered-exact",
+      "run_root": ".superpowers/lvs-task8-calibration/final-recovered-v3/dodge_charger",
+      "compiled_root": "C:/Temp/lvs-regional-recovery-compile-v1/dodge_charger/grille-exact--headlight-exact/compiled",
+      "regional_provenance": "C:/Temp/lvs-regional-recovery-compile-v1/dodge_charger/grille-exact--headlight-exact/regional_provenance.json"
+    },
+    "toyota_supra": {
+      "candidate_id": "r015-recovered-body-r025",
+      "source_root": "C:/Temp/lvs-regional-recovery-compile-v1/toyota_supra/body-r025--body13-base-r015",
+      "optimized_qc": "C:/Temp/lvs-regional-recovery-compile-v1/toyota_supra/body-r025--body13-base-r015/supra_OPT.qc",
+      "provenance_label": "research://toyota_supra/r015-recovered-body-r025",
+      "run_root": ".superpowers/lvs-task8-calibration/final-recovered-v3/toyota_supra",
+      "compiled_root": "C:/Temp/lvs-regional-recovery-compile-v1/toyota_supra/body-r025--body13-base-r015/compiled",
+      "regional_provenance": "C:/Temp/lvs-regional-recovery-compile-v1/toyota_supra/body-r025--body13-base-r015/regional_provenance.json"
+    },
+    "nissan_skyline_gtr32": {
+      "candidate_id": "r020-recovered-exact",
+      "source_root": "C:/Temp/lvs-regional-recovery-compile-v1/nissan_skyline_gtr32/headlights-exact--fenders-exact",
+      "optimized_qc": "C:/Temp/lvs-regional-recovery-compile-v1/nissan_skyline_gtr32/headlights-exact--fenders-exact/bnr32_OPT.qc",
+      "provenance_label": "research://nissan_skyline_gtr32/r020-recovered-exact",
+      "run_root": ".superpowers/lvs-task8-calibration/final-recovered-v3/nissan_skyline_gtr32",
+      "compiled_root": "C:/Temp/lvs-regional-recovery-compile-v1/nissan_skyline_gtr32/headlights-exact--fenders-exact/compiled",
+      "regional_provenance": "C:/Temp/lvs-regional-recovery-compile-v1/nissan_skyline_gtr32/headlights-exact--fenders-exact/regional_provenance.json"
+    }
+  }
+}

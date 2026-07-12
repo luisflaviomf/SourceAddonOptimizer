@@ -335,14 +335,37 @@ def _control_provenance(repo_root: Path, family_id: str, compiled: dict) -> dict
     }
 
 
+def _apply_regional_replacements(
+    source_root: Path, regional: dict, outputs: dict[str, str],
+) -> None:
+    for replacement in regional.get("replacements", ()):
+        relative = Path(replacement["target"].replace("\\", "/"))
+        target = (source_root / relative).resolve(strict=True)
+        target.relative_to(source_root)
+        donor_sha256 = replacement["donor_sha256"]
+        if _digest(target) != donor_sha256:
+            raise ValueError("regional replacement does not match the declared donor")
+        identity = relative.name.removesuffix("_opt.smd").casefold() + ".smd"
+        outputs[identity] = donor_sha256
+
+
 def _candidate_provenance(
     spec: dict, compiled: dict, configurations: list[dict], repo_root: Path,
 ) -> dict:
     source_root = Path(spec["source_root"]).resolve(strict=True)
     compiled_root = Path(spec["compiled_root"]).resolve(strict=True)
-    compiled_root.relative_to(source_root)
     optimized_qc = Path(spec["optimized_qc"]).resolve(strict=True)
-    optimized_qc.relative_to(source_root)
+    regional_path = (
+        Path(spec["regional_provenance"]).resolve(strict=True)
+        if spec.get("regional_provenance") else None
+    )
+    if regional_path is None:
+        compiled_root.relative_to(source_root)
+        optimized_qc.relative_to(source_root)
+    else:
+        compiled_root.relative_to(source_root)
+        regional_path.relative_to(source_root)
+        optimized_qc.relative_to(source_root)
     is_composite = spec["candidate_id"] == "hybrid-stable"
     paths = ({
         "accepted-composite": Path(spec["composite_path"]),
@@ -353,10 +376,11 @@ def _candidate_provenance(
         "candidate-metrics": source_root / "candidate_metrics.json",
         "optimized-qc": optimized_qc,
         "compile-summary": compiled_root / "compile_summary.json",
+        **({"regional-provenance": regional_path} if regional_path else {}),
     })
     for path in paths.values():
         resolved = path.resolve(strict=True)
-        if not is_composite or path != paths["accepted-composite"]:
+        if regional_path is None and (not is_composite or path != paths["accepted-composite"]):
             resolved.relative_to(source_root)
 
     composite = (
@@ -375,6 +399,17 @@ def _candidate_provenance(
         if identity in outputs or type(digest) is not str:
             raise ValueError("candidate metrics output identity is invalid")
         outputs[identity] = digest
+    if regional_path is not None:
+        regional = json.loads(regional_path.read_text(encoding="utf-8-sig"))
+        if regional.get("status") != "compiled" or regional.get("compile_exit_code") != 0:
+            raise ValueError("regional provenance is not a successful build")
+        if regional.get("qc_sha256") != _digest(optimized_qc):
+            raise ValueError("regional provenance does not bind the optimized QC")
+        if regional.get("base_candidate_sha256") != _digest(paths["candidate-json"]):
+            raise ValueError("regional provenance does not bind the base candidate")
+        if regional.get("compile_summary_sha256") != _digest(paths["compile-summary"]):
+            raise ValueError("regional provenance does not bind the compile summary")
+        _apply_regional_replacements(source_root, regional, outputs)
     for configuration in configurations:
         for pair in configuration["source_pairs"]:
             identity = Path(pair["source_identity"]).name.casefold()
@@ -399,8 +434,9 @@ def _candidate_provenance(
         raise ValueError("compile summary does not bind the optimized QC and artifacts")
     return {
         "kind": (
-            "accepted-composite-bundle-v1"
-            if is_composite else "optimization-compile-bundle-v1"
+            "accepted-composite-bundle-v1" if is_composite
+            else "regional-recovery-compile-bundle-v1" if regional_path
+            else "optimization-compile-bundle-v1"
         ),
         "artifacts": [
             {
@@ -505,9 +541,10 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
         ])
         for metric in CALIBRATION_METRICS
     }
+    schema_version = spec.get("schema_version", 2)
     payload = {
-        "schema_version": 2,
-        "strategy": "lvs-calibration-corpus-v2",
+        "schema_version": schema_version,
+        "strategy": f"lvs-calibration-corpus-v{schema_version}",
         "status": "calibration-pending",
         "toolchain": {
             name: _digest(Path(path).resolve(strict=True))
@@ -525,6 +562,16 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
             "reason": "raw corpus distributions are not calibrated acceptance thresholds",
         },
     }
+    if schema_version == 3:
+        recovery = {}
+        for name, artifact_spec in spec["regional_recovery"].items():
+            path = Path(artifact_spec["path"]).resolve(strict=True)
+            item = {"path": artifact_spec["label"], "sha256": _digest(path)}
+            if artifact_spec.get("sealed_json"):
+                sealed = json.loads(path.read_text(encoding="utf-8"))
+                item["payload_sha256"] = sealed["evidence_sha256"]
+            recovery[name] = item
+        payload["regional_recovery"] = recovery
     monaco = next(item for item in families if item["family_id"] == "dodge_monaco_police")
     payload["external_artifacts"]["monaco_accepted_composite_v1"] = (
         _validate_monaco_composite(
@@ -543,6 +590,15 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     spec = json.loads(args.spec.read_text(encoding="utf-8"))
+    if "base_spec" in spec:
+        base = json.loads((_REPO_ROOT / spec["base_spec"]).read_text(encoding="utf-8"))
+        base["schema_version"] = spec["schema_version"]
+        base["regional_recovery"] = spec["regional_recovery"]
+        overrides = spec.get("family_overrides", {})
+        for family in base["families"]:
+            if family["family_id"] in overrides:
+                family["candidate"].update(overrides[family["family_id"]])
+        spec = base
     payload = build_payload(spec, _REPO_ROOT)
     args.out.write_text(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
