@@ -178,10 +178,31 @@ class MaximumBlenderPureTests(unittest.TestCase):
             maximum._surviving_priority_vertices(obj, group)
 
     def test_round_evidence_records_admission_planar_and_priority_counts(self) -> None:
-        from maximum_optimizer.round_planar_priority import RoundComponentDecision
+        from maximum_optimizer.round_planar_priority import (
+            RoundComponentAudit,
+            RoundComponentDecision,
+        )
 
         payload = maximum._round_evidence_payload(
-            RoundComponentDecision(True, "eligible", 2, (1, 3, 5)),
+            RoundComponentDecision(
+                True,
+                "eligible",
+                2,
+                (1, 3, 5),
+                components=(RoundComponentAudit(
+                    index=0,
+                    canonical_vertices=16,
+                    source_vertices=32,
+                    triangles=24,
+                    area_fraction=1.0,
+                    extent_fraction=1.0,
+                    significant=True,
+                    eligible=True,
+                    reason="eligible",
+                    axis=2,
+                    priority_vertices=3,
+                ),),
+            ),
             {
                 "planar_angle_degrees": 1.0,
                 "planar_triangles_after": 40,
@@ -193,6 +214,20 @@ class MaximumBlenderPureTests(unittest.TestCase):
         self.assertEqual(payload, {
             "round_admission": "eligible",
             "round_axis": 2,
+            "round_position_tolerance": 2e-6,
+            "round_components": [{
+                "index": 0,
+                "canonical_vertices": 16,
+                "source_vertices": 32,
+                "triangles": 24,
+                "area_fraction": 1.0,
+                "extent_fraction": 1.0,
+                "significant": True,
+                "eligible": True,
+                "reason": "eligible",
+                "axis": 2,
+                "priority_vertices": 3,
+            }],
             "round_planar_angle_degrees": 1.0,
             "round_planar_triangles_after": 40,
             "round_priority_vertices_requested": 3,

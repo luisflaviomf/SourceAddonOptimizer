@@ -335,9 +335,27 @@ def _surviving_priority_vertices(obj: object, group: object) -> tuple[int, ...]:
 def _round_evidence_payload(
     decision: object, modifier_evidence: dict[str, object]
 ) -> dict[str, object]:
+    components = [
+        {
+            "index": component.index,
+            "canonical_vertices": component.canonical_vertices,
+            "source_vertices": component.source_vertices,
+            "triangles": component.triangles,
+            "area_fraction": component.area_fraction,
+            "extent_fraction": component.extent_fraction,
+            "significant": component.significant,
+            "eligible": component.eligible,
+            "reason": component.reason,
+            "axis": component.axis,
+            "priority_vertices": component.priority_vertices,
+        }
+        for component in decision.components
+    ]
     return {
         "round_admission": str(decision.reason),
         "round_axis": decision.axis,
+        "round_position_tolerance": decision.position_tolerance,
+        "round_components": components,
         "round_planar_angle_degrees": modifier_evidence["planar_angle_degrees"],
         "round_planar_triangles_after": modifier_evidence["planar_triangles_after"],
         "round_priority_vertices_requested": modifier_evidence["priority_vertices_requested"],
