@@ -2,14 +2,20 @@
 
 ## Status and execution gate
 
-This design is approved for planning only. Implementation must not start until the
-committed LVS calibration evidence v3 has passed independent review and the root
-agent explicitly approves execution. Evidence v3, production profiles, and runtime
-defaults are outside this design commit.
+This design is approved for planning only. The committed LVS calibration evidence v3
+is a sealed research input whose own status is `calibration-pending` and whose own
+decision is `winner: false`; it cannot directly authorize schema 3. Task 8 may enable
+only an explicit backend LVS research profile after a new independently reviewed,
+committed approval artifact binds that exact input, the exact proposed profile, all
+formerly external artifacts, and real fresh/resume validation. Product defaults,
+the WPF surface, packaging, release, and broad production claims remain outside Task
+8 and blocked on their later dedicated tasks.
 
-The feature is opt-in through a calibrated schema-3 fidelity profile. Schema-1 and
-schema-2 profiles retain their current behavior byte-for-byte: no focused renders,
-no composite recovery, and no new candidate schedule.
+The feature is opt-in only through the explicit existing `--maximum-profile` backend
+argument pointing at the exact trusted research profile. The uncalibrated
+`maximum-experimental-v1.json` sentinel remains the default. Schema-1 and schema-2
+profiles retain their current behavior byte-for-byte: no focused renders, no
+composite recovery, and no new candidate schedule.
 
 ## Objective
 
@@ -76,10 +82,55 @@ Schema 3 has the exact top-level fields:
 }
 ```
 
-The real limits come only from approved evidence v3. The loader requires exact
-fields, finite non-negative values for every required metric, `top_k` from 1 through
-4, and an evidence seal equal to the independently trusted v3 seal. Merely writing
-`schema: 3` or copying an unreviewed evidence hash cannot enable the feature.
+The pending v3 payload is not an approval and its raw distributions are not accepted
+as thresholds. The real limits come only from a separately committed
+`maximum-focused-lvs-v1.approval.json` whose exact status is
+`approved-lvs-research-profile-v1`. Its exact schema binds:
+
+- raw-file SHA-256 and canonical seal of
+  `benchmarks/lvs_models/calibration_evidence_v3.json`, including its preserved
+  `calibration-pending`/`winner: false` source decision;
+- raw-file SHA-256 and canonical SHA-256 of
+  `maximum_optimizer/profiles/maximum-focused-lvs-v1.json`;
+- canonical contained repository paths, raw-file hashes, and canonical payload hashes
+  where applicable for the focused summary, regional compile report, focused
+  recovery evidence, Monaco composite evidence, and every other referenced input;
+- independent reviewer identity, UTC review time, decision, and immutable review
+  record hash;
+- exact Python, Blender, Blender Source Tools, StudioMDL, VTFCmd, renderer,
+  optimizer, dependency, and native-bridge identities;
+- exact corpus, calibration-family, holdout-family, source-tree, original-model, and
+  tool input manifests; and
+- the real validation runner hash plus fresh/resume report and output-manifest hashes
+  for every declared family.
+
+The approval artifact has a canonical `approval_sha256` excluding only itself.
+Trust constants distinguish raw-file hashes from canonical seals for the evidence,
+profile, and approval artifact. `load_fidelity_profile_set` accepts schema 3 only
+when the sibling approval artifact, exact profile bytes, canonical profile payload,
+evidence raw bytes/seal, approval raw bytes/seal, and every cross-binding equal the
+reviewed constants. Finite fields, valid ranges, a copied evidence seal, a copied
+approval seal, or a self-resealed pending profile are insufficient. Any missing,
+extra, stale, path-aliased, or mismatched field fails before decompile or output
+mutation.
+
+The real backend gate covers these five calibration families:
+`pontiac_transam_wheel`, `dodge_charger`, `toyota_supra`,
+`nissan_skyline_gtr32`, and `dodge_monaco_police`. The existing LVS corpus also
+provides five disjoint holdouts: `ford_fairlane`, `vw_beetle`, `vw_touareg`,
+`ferrari_365_fullrig`, and `caterham_620r`. All ten run with real Blender and
+StudioMDL first from an empty work/cache and then with resume. Fresh and resume must
+produce identical authorization, selected compiled bytes, final contained output
+manifest, and terminal report semantics; cache diagnostics alone may differ. A
+non-roundtrippable or failing holdout is preserved/rejected without promotion and is
+still a valid safety result, but it cannot be reported as an optimized quality pass.
+
+This evidence supports only the claim `LVS-calibrated backend research profile`.
+It does not authorize a general addon, non-LVS, product-default, packaged-worker, or
+release-quality claim. If any declared artifact is unavailable outside the original
+workstation, it must be committed at a canonical bounded repository path or
+reproduced byte-for-byte by a committed runner; otherwise Task 8 stops without trust
+constant or profile activation changes.
 
 `FidelityProfileSet.profile_for()` remains the whole-model interface.
 `FidelityProfileSet.focused_profile_for()` returns the focused profile only in
@@ -191,9 +242,10 @@ metric never replaces or weakens a worse whole-model metric in reporting.
 
 The real Models bridge validates schema-1, schema-2, and schema-3 profile sets with
 `load_fidelity_profile_set`; it does not call the schema-1-only `load_profile` and
-does not add or change any CLI field. Focus activation is determined only by
-`FidelityProfileSet.focused_policy is not None`, because schema-2 and schema-3 share
-the typed family selector mode.
+does not add or change any CLI field. Task 8 uses only the existing explicit
+`--maximum-profile` argument; it does not change the default profile. Focus
+activation is determined only by `FidelityProfileSet.focused_policy is not None`,
+because schema-2 and schema-3 share the typed family selector mode.
 
 For each schema-3 search candidate the authorization order is fixed:
 
@@ -759,6 +811,10 @@ and exactly one final-whole pass exists. Schema-2 parsing is introduced only in 
 Profile-schema-1/2 runs preserve the existing canonical Maximum report and progress
 schema 1 byte-for-byte. Trusted profile schema 3 uses a conditional exact report
 schema 2; adding recovery fields to the legacy dataclass serializer is forbidden.
+This schema bump applies only to the durable terminal/progress JSON files. Every
+stdout line prefixed by `MAXIMUM_EVENT ` remains the existing schema-1 event envelope
+and field types so the current WPF parser remains compatible. A schema-2 durable
+report is never emitted as a schema-2 stdout event, and Task 8 makes no WPF change.
 The terminal schema-2 report contains exactly `schema`, `report_kind="terminal"`,
 status, original/control/selected/final sizes, tool versions, family summaries,
 bounded events, declared event count/bound, cancellation flag, and a canonical report
@@ -883,10 +939,24 @@ Create:
 - `tests/maximum_optimizer/test_focused_cache.py`
 - `tests/maximum_optimizer/test_composite.py`
 - `tests/maximum_optimizer/test_reporting.py`
+- `maximum_optimizer/profiles/maximum-focused-lvs-v1.json`: exact research-only
+  schema-3 thresholds.
+- `maximum_optimizer/profiles/maximum-focused-lvs-v1.approval.json`: independently
+  reviewed evidence/profile/toolchain/input/validation cross-binding.
+- `benchmarks/lvs_models/focused_summary_v1.json`: byte-exact import of the formerly
+  ignored focused summary.
+- `benchmarks/lvs_models/regional_compile_report_v1.json`: byte-exact import of the
+  formerly workstation-local compile report.
+- `benchmarks/lvs_models/monaco_accepted_composite_v1.json`: byte-exact import of the
+  formerly workstation-local accepted Monaco research composite.
+- `benchmarks/lvs_models/run_focused_profile_gate_v1.py`: independently reviewed,
+  approval-bound real ten-family calibration/holdout fresh-plus-resume runner.
+- `tests/maximum_optimizer/test_task8_activation.py`
 
 Modify:
 
 - `maximum_optimizer/domain.py`
+- `maximum_optimizer/calibration_evidence.py`
 - `maximum_optimizer/fidelity_selection.py`
 - `maximum_optimizer/regions.py`
 - `render_previews.py`
@@ -902,14 +972,23 @@ Modify:
 - `tests/maximum_optimizer/test_search.py`
 - `tests/maximum_optimizer/test_orchestrator.py`
 - `tests/maximum_optimizer/test_cache.py`
+- `tests/maximum_optimizer/test_calibration_evidence.py`
 
-No WPF or CLI field is required. The trusted schema-3 profile is the sole activation
-mechanism.
+No WPF or CLI field changes in this design. The existing explicit backend profile
+argument plus the exact trusted profile/approval pair is the sole Task-8 activation
+mechanism. The default sentinel remains uncalibrated.
 
 ## Acceptance criteria
 
 - Schema 1 and 2 retain current behavior and test outputs.
-- Schema 3 cannot load without independently approved evidence v3.
+- Schema 3 cannot load from the pending evidence-v3 seal alone; it requires exact
+  independently approved evidence/profile/approval raw and canonical hashes.
+- Every formerly external Task-8 artifact is committed at its canonical path or
+  reproduced byte-for-byte by the committed runner; absence blocks activation.
+- The five calibration and five disjoint LVS holdout families pass the real bounded
+  fresh/resume backend gate, with failures preserved rather than promoted.
+- Task-8 scope is explicitly `LVS-calibrated backend research profile`; the default,
+  WPF, packaged worker, release, and broader quality claims remain unchanged.
 - Target selection is deterministic under shuffled input.
 - Every selected focus is rendered alone with exact matrix cardinality.
 - A candidate cannot pass with a missing, corrupt, or skipped focus.
@@ -931,6 +1010,8 @@ mechanism.
   sealing.
 - Legacy reports remain byte-identical schema 1; trusted schema-3 reports use exact
   bounded schema 2 with hashes/summaries rather than embedded evidence.
+- `MAXIMUM_EVENT` stdout remains schema 1 for WPF compatibility; schema 2 is durable
+  report/progress JSON only.
 - Cancellation observed after a fully valid atomic cache promotion may retain that
   reusable cache entry, but cannot produce a best update or output promotion.
 - Cancellation and every hard resource bound fail safely without output promotion.

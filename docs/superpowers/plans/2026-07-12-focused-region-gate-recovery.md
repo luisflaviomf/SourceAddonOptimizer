@@ -1582,42 +1582,185 @@ enable schema 3 receive the current defaults and behavior.
 
 ---
 
-### Task 8: Evidence-v3 activation and full compatibility gate
+### Task 8: Calibrated LVS backend research-profile gate
 
 **Files:**
-- Modify only if approved evidence requires its trust anchor: `maximum_optimizer/calibration_evidence.py`
-- Modify only for trusted profile activation: `maximum_optimizer/profiles/maximum-focused-lvs-v1.json`
-- Modify tests only for approved immutable hashes: `tests/maximum_optimizer/test_calibration_evidence.py`, `tests/maximum_optimizer/test_fidelity_selection.py`
-- Do not modify the evidence-v3 builder or evidence payload in this implementation task.
+- Create from independently supplied, reviewed bytes:
+  `maximum_optimizer/profiles/maximum-focused-lvs-v1.json`
+- Create from independently supplied, reviewed bytes:
+  `maximum_optimizer/profiles/maximum-focused-lvs-v1.approval.json`
+- Create by byte-exact import, never regeneration in this task:
+  `benchmarks/lvs_models/focused_summary_v1.json`
+- Create by byte-exact import, never regeneration in this task:
+  `benchmarks/lvs_models/regional_compile_report_v1.json`
+- Create by byte-exact import, never regeneration in this task:
+  `benchmarks/lvs_models/monaco_accepted_composite_v1.json`
+- Create from independently supplied, reviewed bytes:
+  `benchmarks/lvs_models/run_focused_profile_gate_v1.py`
+- Create: `tests/maximum_optimizer/test_task8_activation.py`
+- Modify: `maximum_optimizer/calibration_evidence.py`
+- Modify: `maximum_optimizer/fidelity_selection.py`
+- Modify: `tests/maximum_optimizer/test_calibration_evidence.py`
+- Modify: `tests/maximum_optimizer/test_fidelity_selection.py`
+- Modify only for schema-1 stdout/schema-2 durable-report compatibility tests:
+  `tests/maximum_optimizer/test_orchestrator.py`
+- Modify: `tests/maximum_optimizer/test_reporting.py`
+- Do not modify `benchmarks/lvs_models/calibration_evidence_v3.json`, its builder,
+  `maximum_optimizer/profiles/maximum-experimental-v1.json`, any WPF/CLI source,
+  PyInstaller/package scripts, embedded resources, or release scripts.
 
 **Interfaces:**
-- Activates schema 3 only after independently reviewed evidence and profile hashes are known.
-- Leaves `maximum-experimental-v1.json` uncalibrated unless the user separately approves replacing the production sentinel.
+- Produces an explicit backend-only profile selected through the existing
+  `--maximum-profile` argument. It does not change the default profile or add a CLI
+  field.
+- Leaves `maximum-experimental-v1.json` uncalibrated and leaves Normal/Fidelity/WPF
+  behavior unchanged. Product UI, worker packaging, and release remain blockers for
+  their later dedicated tasks.
+- Keeps every `MAXIMUM_EVENT ` stdout envelope schema 1. Only trusted-schema-3
+  durable terminal/progress JSON uses report schema 2.
+- The pending v3 payload is a bound research input, never its own authority. Only the
+  exact profile plus exact independently trusted sibling approval artifact can
+  activate schema 3.
 
-- [ ] **Step 1: Verify the approved evidence externally**
+  `maximum-focused-lvs-v1.approval.json` has exact root keys `schema`, `kind`,
+  `status`, `scope`, `evidence`, `profile`, `artifacts`, `review`, `toolchain`,
+  `inputs`, `validation`, and `approval_sha256`. Exact fixed values are `schema=1`,
+  `kind="lvs-focused-research-profile-approval-v1"`,
+  `status="approved-lvs-research-profile-v1"`, and
+  `scope="lvs-cars-backend-research-only"`. `approval_sha256` seals every other
+  field canonically.
 
-  Recompute the committed evidence-v3 file SHA-256, canonical evidence seal, trusted
-  focused lane bindings, family/state/source/provenance/compiled bindings, and
-  mutation regressions. Record exact reviewed hashes in the trust-anchor test.
+  `evidence` has exactly `path`, `file_sha256`, `canonical_sha256`, `source_status`,
+  and `source_winner`, binding the committed v3 raw file hash
+  `7bf78af398ae33f817dbae8b7d734801dfafdad4ec21ab5869cb77f8d3792c7e`,
+  canonical seal
+  `2cc6b330ef97466f4d10986787f2ffd0d35f960c0bd47a32e0159f9559c6615c`,
+  `source_status="calibration-pending"`, and `source_winner=false`. The approval
+  explicitly supersedes that source's lack of authority; changing the pending source
+  decision is forbidden.
 
-- [ ] **Step 2: Add the approved profile and run RED trust tests**
+  `profile` has exactly `path`, `file_sha256`, and `canonical_sha256` for the exact
+  proposed profile. `artifacts` is a canonical kind/path-sorted array of exact
+  `{kind,path,file_sha256,canonical_sha256}` records; canonical hash is JSON null only
+  for a typed binary/non-JSON artifact. It includes the focused summary raw/payload
+  hashes `82d0f8f41f247dc7e7562a315e4a599c60f23962cb7206082b0295673f979b72` /
+  `dc00a37b2db07555970afc2fa0069c79f3c7804bc74b540ab207e4fb71c378f4`,
+  regional compile report raw hash
+  `266b7481cf740cfa347e7067f94d85ee1215ec5be1b1f3af65a869181cd07ae5`,
+  focused recovery raw/payload hashes
+  `b312581e2ce5a6f308df0e19a826866578f05aecd0c6f15157bb3783b0820d55` /
+  `b5b83a8ae2e343346e35d2499d768681ea2a93be840f6517f0b7814afeec609a`,
+  and Monaco raw/payload/metrics hashes already bound by v3.
 
-  The profile must fail before the trust anchor is updated. This proves a copied
-  schema-3 file cannot self-authorize.
+  `review` has exactly `reviewer_id`, `reviewed_at_utc`, `decision`, and
+  `review_record_sha256`. `toolchain` is a kind-sorted exact array of
+  `{kind,version,artifact_sha256}` for Python, Blender, Blender Source Tools,
+  StudioMDL, VTFCmd, renderer, optimizer, native bridge, and dependency proof.
+  `inputs` has exactly `corpus_file_sha256`, `corpus_canonical_sha256`,
+  `calibration_manifest_sha256`, `holdout_manifest_sha256`,
+  `source_tree_manifest_sha256`, and `original_models_manifest_sha256`.
+  `validation` has exactly `runner_file_sha256`, `calibration_family_ids`,
+  `holdout_family_ids`, `fresh_report_sha256`, `resume_report_sha256`,
+  `fresh_output_manifest_sha256`, `resume_output_manifest_sha256`, and
+  `family_result_sha256s`.
 
-- [ ] **Step 3: Update only reviewed trust constants**
+- [ ] **Step 1: Fail closed unless every reviewed input is portable**
 
-  Change no thresholds, policy values, evidence content, renderer, or optimizer in
-  this step. Recompute profile and evidence hashes after the edit.
+  Require the exact externally approved profile, approval, validation runner, and
+  referenced artifact bytes before changing runtime code. Import the runner, formerly
+  ignored focused summary, workstation-local regional compile report, and Monaco
+  composite into the canonical paths above without rewriting bytes. Recompute raw and
+  canonical hashes and compare every value with the approval artifact. Reject missing
+  bytes, changed whitespace/raw bytes, wrong canonical payload, absolute/research-only
+  path, reparse content, or a reviewer/toolchain/input/validation binding mismatch.
+  If any artifact cannot be committed or reproduced byte-for-byte by the committed
+  reviewed runner, mark Task 8 blocked and make no trust/profile change.
 
-- [ ] **Step 4: Run focused compatibility suites**
+- [ ] **Step 2: Write activation RED tests**
+
+  In `test_task8_activation.py`, require the pending v3 file alone, a schema-3 profile
+  containing only its canonical seal, a copied approval seal, and the proposed exact
+  profile before trusted constants are updated all to fail before decompile. Mutate
+  independently every whole/focused threshold, `corpus_hash`, version, selector,
+  top-K, evidence raw/canonical hash, profile raw/canonical hash, approval raw/seal,
+  reviewer field, toolchain row, input manifest, validation report/output hash,
+  artifact path/hash, family membership/order, and fresh/resume pair. Reseal every
+  mutable layer and still require rejection. Assert the bridge default continues to
+  select the uncalibrated sentinel and fails before decompile, while only the exact
+  explicit `--maximum-profile` path can become accepted after trust installation.
+  Preserve golden schema-1/schema-2 profile behavior.
+
+- [ ] **Step 3: Run trust tests and verify RED**
 
   Run:
+  `python -m unittest tests.maximum_optimizer.test_calibration_evidence tests.maximum_optimizer.test_fidelity_selection tests.maximum_optimizer.test_task8_activation -v`
+
+  Expected: the approved exact profile is rejected because raw/canonical profile and
+  approval cross-binding are not yet enforced/trusted.
+
+- [ ] **Step 4: Implement exact research-profile trust**
+
+  Add separately named evidence-file, evidence-canonical, profile-file,
+  profile-canonical, approval-file, and approval-canonical constants. Never reuse one
+  hash type for another. Extend `load_fidelity_profile_set` so schema 3 requires the
+  exact sibling approval file, bounded canonical/raw reads, exact nested schemas,
+  contained canonical repository paths, the reviewed constants, and all bidirectional
+  evidence/profile/artifact cross-bindings before constructing
+  `FidelityProfileSet`. The current pending/winner-false v3 seal without that exact
+  approval remains rejected. Schema 1/2 branches and the default sentinel remain
+  byte-for-byte unchanged.
+
+- [ ] **Step 5: Validate the supplied bounded real-family runner contract**
+
+  Reject the supplied runner unless its raw hash equals the approval binding and its
+  tests prove it accepts only the committed corpus/profile/approval, absolute verified
+  environment roots, explicit Blender/StudioMDL/VTFCmd tools, and an empty contained
+  work root. It runs exactly these calibration families in order:
+  `pontiac_transam_wheel`, `dodge_charger`, `toyota_supra`,
+  `nissan_skyline_gtr32`, `dodge_monaco_police`; then these disjoint holdouts:
+  `ford_fairlane`, `vw_beetle`, `vw_touareg`, `ferrari_365_fullrig`,
+  `caterham_620r`. It uses real adapters and gates, never mocks/skips an unavailable
+  tool/family, writes one bounded sealed report per family, runs once from empty
+  cache/work and once with resume, and fails unless authorization, selected compiled
+  bytes, final contained output manifests, and terminal semantics match. Cache-hit
+  diagnostics alone may differ. A safely rejected/preserved holdout is recorded as
+  such and cannot be relabeled a quality pass.
+
+- [ ] **Step 6: Run the mandatory real fresh/resume gate**
+
+  Run:
+
+  ```powershell
+  python benchmarks/lvs_models/run_focused_profile_gate_v1.py `
+    --corpus benchmarks/lvs_models/corpus.json `
+    --profile maximum_optimizer/profiles/maximum-focused-lvs-v1.json `
+    --approval maximum_optimizer/profiles/maximum-focused-lvs-v1.approval.json `
+    --source-root $env:LVS_SOURCE_ROOT `
+    --original-models-root $env:LVS_ORIGINAL_MODELS_ROOT `
+    --blender $env:BLENDER_EXE `
+    --studiomdl $env:STUDIOMDL_EXE `
+    --vtfcmd $env:VTFCMD_EXE `
+    --work $env:TASK8_VALIDATION_WORK
+  ```
+
+  Expected: ten terminal family records; five calibration plus five holdout; no skip;
+  fresh/resume authorization and output hashes equal; every promoted family passes
+  structural, whole, every selected focus, and final whole authorization; every
+  failure remains preserved/unpromoted. The consolidated hashes equal the approval
+  artifact. Missing tools, roots, family bytes, or expected reports are hard failure,
+  not a platform skip.
+
+- [ ] **Step 7: Lock stdout/report compatibility and run focused suites**
+
+  Require every emitted `MAXIMUM_EVENT ` line, including trusted-schema-3 stages and
+  cancellation, to remain schema 1 with the established WPF field types. Require only
+  durable trusted terminal/progress files to use exact report schema 2. Run:
 
   ```powershell
   python -m unittest `
     tests.maximum_optimizer.test_calibration_evidence `
     tests.maximum_optimizer.test_fidelity_selection `
+    tests.maximum_optimizer.test_task8_activation `
     tests.maximum_optimizer.test_focused_regions `
     tests.maximum_optimizer.test_focused_cache `
     tests.maximum_optimizer.test_regions `
@@ -1625,18 +1768,19 @@ enable schema 3 receive the current defaults and behavior.
     tests.maximum_optimizer.test_composite `
     tests.maximum_optimizer.test_search `
     tests.maximum_optimizer.test_cache `
-    tests.maximum_optimizer.test_orchestrator -v
+    tests.maximum_optimizer.test_orchestrator `
+    tests.maximum_optimizer.test_reporting -v
   ```
 
-  Expected: zero failures; only established platform privilege skips.
+  Expected: zero failures; only established no-follow privilege tests may skip.
 
-- [ ] **Step 5: Run the complete backend suite**
+- [ ] **Step 8: Run the complete backend suite**
 
-  Run: `python -m unittest discover -s tests\maximum_optimizer`
+  Run: `python -m unittest discover -s tests\maximum_optimizer -t . -p "test_*.py" -v`
 
-  Expected: zero failures.
+  Expected: zero failures; only established no-follow privilege tests may skip.
 
-- [ ] **Step 6: Inspect process and repository scope**
+- [ ] **Step 9: Enforce research-only repository scope and blockers**
 
   Run:
 
@@ -1646,20 +1790,26 @@ enable schema 3 receive the current defaults and behavior.
   git status --short
   ```
 
-  Confirm no process remains, no unreviewed evidence changed, no WPF/CLI file changed,
-  and only the approved schema-3 profile/trust files plus implementation files are in
-  scope.
+  Confirm no process remains and no evidence-v3/builder, sentinel, WPF, CLI,
+  PyInstaller, embedded-resource, package, or release file changed. Do not run or
+  claim `build_release_wpf.ps1`. Tasks 12 (WPF exposure), 13 (stale-worker detection,
+  required ZIP contents, and packaged-worker smoke), and 14 (product validation and
+  official WPF release) in
+  `docs/superpowers/plans/2026-07-11-models-maximum-optimizer-implementation.md` are
+  explicit blockers and are not executed by this Task 8. The only claim permitted by
+  this checkpoint is
+  `LVS-calibrated backend research profile`; no product-default, general-addon,
+  packaged-worker, or release claim is allowed.
 
-- [ ] **Step 7: Request independent review**
+- [ ] **Step 10: Request independent review and commit the research gate**
 
-  Require separate reviewers for: trusted evidence/profile activation; isolated
-  renderer correctness; donor/composition provenance; cache/path safety; schema-1/2
-  compatibility; cancellation and DoS bounds.
+  Require separate approval of profile/evidence/attestation raw and canonical hashes,
+  real ten-family fresh/resume results, isolated renderer correctness,
+  donor/composition provenance, cache/path safety, schema-1/2 compatibility,
+  schema-1 stdout/schema-2 durable reporting, cancellation, and DoS bounds. Only
+  after all reviewers approve, commit:
 
-- [ ] **Step 8: Commit activation checkpoint only after approval**
-
-  Commit:
-  `git commit -m "feat: activate trusted focused fidelity profile"`
+  `git commit -m "feat: activate calibrated LVS backend research profile"`
 
 ## Checkpoint review order
 
@@ -1670,7 +1820,7 @@ enable schema 3 receive the current defaults and behavior.
 5. Donor/exact recovery composition.
 6. Monaco bounded composite.
 7. Lifecycle/report/DoS integration.
-8. Independent evidence-v3 activation and full verification.
+8. Independent LVS backend research-profile approval and real verification.
 
 No checkpoint may be folded into evidence activation. A rejection at any checkpoint
 is fixed and re-reviewed before the next task begins.
@@ -1680,8 +1830,8 @@ is fixed and re-reviewed before the next task begins.
 - Spec coverage: profile gate, ranking, isolation, recovery, Monaco composition,
   cache, evidence, cardinality, cancellation, compiled-byte winner, and every hard
   resource bound each have an implementation task and test command.
-- Scope: no UI, CLI, unrelated refactor, evidence regeneration, or production enable
-  is included before Task 8.
+- Scope: no UI, CLI, unrelated refactor, evidence regeneration, default change,
+  packaging, release, or production enable is included in Task 8.
 - Type consistency: `FocusedRegionPolicy`, `FocusTarget`, `FocusedGateResult`,
   `SourceOverlay`, and `CompositeRecipe` are introduced before downstream use.
 - Test discipline: every behavior task begins with RED tests, names the exact command,
