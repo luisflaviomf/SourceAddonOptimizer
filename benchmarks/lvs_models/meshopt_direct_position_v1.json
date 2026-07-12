@@ -1,77 +1,1441 @@
 {
-  "schema_version": 1,
-  "corpus_id": "lvs-models-v1",
-  "strategy": "meshopt-direct-position-v1",
-  "quality_status": "unverified",
-  "quality_claim": null,
-  "tools": {
-    "meshoptimizer": "v1.2@9d9890c73011d75920af614485296d1e03e95448",
-    "bridge_abi": 3,
-    "bridge_sha256": "173e1b86dad4e553d702ab3586ac8d4f77e167090f4f5abada2f09f3f3594c3c",
-    "native_source_sha256": "3df1cbdbd93ab9228a271da845c3cf01ae2f4f43c268a450d4eda50c15b07f11",
-    "runner_sha256": "1334c2ba8e540099ba92d62b8b7a88b316e74ac61f3402f8199cf3d480bdf444",
-    "direct_smd_serializer_sha256": "ebd944c558c9b5836f060845603f8e24d531fe9a5a6b7807e114c1b5bb1335f3"
+  "blender_baseline": {
+    "available": false,
+    "reason": "imported baseline artifacts are not present in this portable workspace; no hashes claimed",
+    "total_bytes": 633089
   },
-  "reproducible_build_sha256": [
-    "173e1b86dad4e553d702ab3586ac8d4f77e167090f4f5abada2f09f3f3594c3c",
-    "173e1b86dad4e553d702ab3586ac8d4f77e167090f4f5abada2f09f3f3594c3c"
-  ],
-  "baselines": {
-    "control_bytes": 1187559,
-    "meshopt_direct_v1_best_bytes": 1034283,
-    "blender_best_bytes": 633089
-  },
-  "records": [
-    {
-      "requested_ratio": 0.25,
-      "achieved_ratio": 0.5991347342398022,
-      "triangles": [16180, 9694],
-      "locks": [421, 12090],
-      "output_vertices": 8121,
-      "compiled_vertices": 8060,
-      "compiled_bytes": 784269,
-      "metrics_sha256": "3c894e028bd1d161d942f256f1b19e071eef1854c87ec6f05997db26737bb40d",
-      "compiled_sha256": {
-        "wheel.mdl": "d4e564762216aab022ca0fae55ae46ff312a7f5e920f06de2fac20c53cdf0699",
-        "wheel.vvd": "8c505a2439f764f0b5ac1652223e062ab5a2aa592b8eb59ee1f3c44f0183bd20",
-        "wheel.dx80.vtx": "995af5f8bb2e0144d35d78873cf81aee5bf1cc69154be77e03f01a0b1aff5f7c",
-        "wheel.dx90.vtx": "eeffca53c1f110bd9b3a07add5c7e03e6cfad6fff620daf23a42c8895a6714eb",
-        "wheel.phy": "c045ecd53c9f9d1ddc76f8078605c16767acdf105e37a37eadb0eb9ad957919e"
+  "build_attestation": {
+    "native_digest": "b03ffaddc1a032c7d0432b2bb2afdadabc1e1b929238e711c9eed711fec59f57",
+    "native_inputs": [
+      {
+        "path": "maximum_optimizer/native/build.ps1",
+        "sha256": "970b242d82719ca59417f9397ab95eab8be21fe96f3ef27207c4d56e0e9b583e",
+        "size_bytes": 3802
+      },
+      {
+        "path": "maximum_optimizer/native/CMakeLists.txt",
+        "sha256": "ce9a9cade0e023c16c96805075cc0af3e1310b8436e630d44e6d3a1d58e94fce",
+        "size_bytes": 1731
+      },
+      {
+        "path": "maximum_optimizer/native/meshopt_bridge.cpp",
+        "sha256": "3df1cbdbd93ab9228a271da845c3cf01ae2f4f43c268a450d4eda50c15b07f11",
+        "size_bytes": 28152
       }
+    ],
+    "outputs_equal": true,
+    "records": [
+      {
+        "dll": {
+          "path": "benchmarks/lvs_models/evidence/meshopt-direct-position-v1/meshopt_bridge.build1.dll",
+          "sha256": "173e1b86dad4e553d702ab3586ac8d4f77e167090f4f5abada2f09f3f3594c3c",
+          "size_bytes": 210944
+        },
+        "log": {
+          "path": "benchmarks/lvs_models/evidence/meshopt-direct-position-v1/build1.log",
+          "sha256": "54b13cc1ff73fa15a39bf44c2a40d4d0599d2008d4744e4cabc439d9758f27b9",
+          "size_bytes": 3692
+        },
+        "record_id": "clean-build-1"
+      },
+      {
+        "dll": {
+          "path": "benchmarks/lvs_models/evidence/meshopt-direct-position-v1/meshopt_bridge.build2.dll",
+          "sha256": "173e1b86dad4e553d702ab3586ac8d4f77e167090f4f5abada2f09f3f3594c3c",
+          "size_bytes": 210944
+        },
+        "log": {
+          "path": "benchmarks/lvs_models/evidence/meshopt-direct-position-v1/build2.log",
+          "sha256": "7a39896c979aea0b03c2d62eeb4916c1c09b41065e6b34d4d5daf631ffa64d7b",
+          "size_bytes": 3692
+        },
+        "record_id": "clean-build-2"
+      }
+    ],
+    "vendor_digest": "e594073446ef0261b62a80abbea0e95126a250615d5b04e71f53f31ce24b0edf",
+    "vendor_inputs": [
+      {
+        "path": "third_party/meshoptimizer/LICENSE.md",
+        "sha256": "2c420c79ff65dea863ce1990a173ebd1e6e5778116d498e54738ae5002799509",
+        "size_bytes": 1100
+      },
+      {
+        "path": "third_party/meshoptimizer/src/allocator.cpp",
+        "sha256": "9c88aa946b0232367ed4ce18ed38a9544ffafd5d90d15ad50eac351686b74670",
+        "size_bytes": 628
+      },
+      {
+        "path": "third_party/meshoptimizer/src/clusterizer.cpp",
+        "sha256": "746c14469925bfc732eb914d77503b84e0dc01f152d9809def112fb7140b26b8",
+        "size_bytes": 48875
+      },
+      {
+        "path": "third_party/meshoptimizer/src/indexanalyzer.cpp",
+        "sha256": "c02c50cc51d55fa8bd6f86ccf6bcd141512d4e14da8797ecc264788e52d168a4",
+        "size_bytes": 3945
+      },
+      {
+        "path": "third_party/meshoptimizer/src/indexcodec.cpp",
+        "sha256": "439ba263ecad2d0c2c5388f82762e50c00cb94828b322edfb4b13c533d01571b",
+        "size_bytes": 21516
+      },
+      {
+        "path": "third_party/meshoptimizer/src/indexgenerator.cpp",
+        "sha256": "c46ab02e3f0d19aa87258afaa4a454b1e96335f55d936149afa77c2621dc46dd",
+        "size_bytes": 25330
+      },
+      {
+        "path": "third_party/meshoptimizer/src/meshletcodec.cpp",
+        "sha256": "ed78340ec76a46228b3694c99d3be365271b78e64081e355d0ab96058a6178ef",
+        "size_bytes": 34858
+      },
+      {
+        "path": "third_party/meshoptimizer/src/meshletutils.cpp",
+        "sha256": "042f59a3a1e7c1981dea6674e101d2e5d4b07bb06e632f4ce6b06b96e222faf9",
+        "size_bytes": 21254
+      },
+      {
+        "path": "third_party/meshoptimizer/src/meshoptimizer.h",
+        "sha256": "fa3373e1017f186518bf9b16728e05ef7b85bdd4560e817b8e81fc41b429da3b",
+        "size_bytes": 106462
+      },
+      {
+        "path": "third_party/meshoptimizer/src/opacitymap.cpp",
+        "sha256": "d37a0802c35e36e74e6aa818fee6ccf37c0d8d975fd5b13af5a2b1ed35a1cb54",
+        "size_bytes": 19124
+      },
+      {
+        "path": "third_party/meshoptimizer/src/overdrawoptimizer.cpp",
+        "sha256": "124365169dd194facb525e266473e9a5d17de0ea867ee74bb85c542e3d067ab5",
+        "size_bytes": 12004
+      },
+      {
+        "path": "third_party/meshoptimizer/src/partition.cpp",
+        "sha256": "bd33d21861218146c415abbea4db8d079fcc82b6944322eb985c1de580c0c41c",
+        "size_bytes": 19824
+      },
+      {
+        "path": "third_party/meshoptimizer/src/quantization.cpp",
+        "sha256": "424c4b8b6032ffd083c3d5dfe3a70c18af78ea8e0f707ce2195330f06c87df5e",
+        "size_bytes": 3630
+      },
+      {
+        "path": "third_party/meshoptimizer/src/rasterizer.cpp",
+        "sha256": "d2b08658ba7199d8fc19905c1ab4455694856f12e3f2bc75e7fc6a4af31c3d42",
+        "size_bytes": 9028
+      },
+      {
+        "path": "third_party/meshoptimizer/src/simplifier.cpp",
+        "sha256": "dc002f4035f34fd6a31aeaddff7ccc6548aeb6903300f7bdc4b877f1c870b645",
+        "size_bytes": 107031
+      },
+      {
+        "path": "third_party/meshoptimizer/src/spatialorder.cpp",
+        "sha256": "d8ee0dc15600ad2187c0598bf70fe596d9bbce173f2af130a593e8fd7a83f0e4",
+        "size_bytes": 11434
+      },
+      {
+        "path": "third_party/meshoptimizer/src/stripifier.cpp",
+        "sha256": "931f10a017bb931cf6089663e749c96d82980b00c61d85bd78c317ca0a3685e1",
+        "size_bytes": 8048
+      },
+      {
+        "path": "third_party/meshoptimizer/src/tangentspace.cpp",
+        "sha256": "d58358e1ae53ac9e0c09c6d4e81c5292a4bca6e2340b6ebf6ce8452dd7c22b6b",
+        "size_bytes": 17700
+      },
+      {
+        "path": "third_party/meshoptimizer/src/vcacheoptimizer.cpp",
+        "sha256": "18f73036eb30bab434ef2059a44274fd65fcd9bd5906af293f1ea6a949db48b7",
+        "size_bytes": 14638
+      },
+      {
+        "path": "third_party/meshoptimizer/src/vertexcodec.cpp",
+        "sha256": "a6f20f493e62831e78d85567a34dddca6ce8b74f3114a19a9fb937d9314d191d",
+        "size_bytes": 62374
+      },
+      {
+        "path": "third_party/meshoptimizer/src/vertexfilter.cpp",
+        "sha256": "5f1d0eaeca7045d9f09991370a9a8e368476697745495b14ed358a71dbfbcda5",
+        "size_bytes": 56832
+      },
+      {
+        "path": "third_party/meshoptimizer/src/vfetchoptimizer.cpp",
+        "sha256": "b5c85c5ade9c62aa96135a2de29e43abd116b0e2257e6cea6060e2757f7d65aa",
+        "size_bytes": 1986
+      },
+      {
+        "path": "third_party/meshoptimizer/VERSION",
+        "sha256": "5ad292afc35de59f368a24072a69d691205178963b06b813234a83b61b6dfac8",
+        "size_bytes": 46
+      }
+    ]
+  },
+  "charger_probe": {
+    "compiled_available": false,
+    "direct_smd_available": false,
+    "failure": "ambiguous hard-normal provenance exceeds the fixed 15-degree disambiguation ceiling",
+    "last_imported_triangle": 2105,
+    "metrics_available": false,
+    "status": "rejected_before_candidate_generation"
+  },
+  "corpus_id": "lvs-models-v1",
+  "decision": {
+    "pressure_set_run": false,
+    "reason": "wheel loses to Blender baseline and hardened Charger provenance fails closed",
+    "winner": false
+  },
+  "evidence_sha256": "c90109ba6607ec157f6a906a95966071337420c2899565cdc6225e536b716028",
+  "quality_claim": null,
+  "quality_status": "unverified",
+  "schema_version": 2,
+  "sources": {
+    "charger": [
+      {
+        "path": "Blower.smd",
+        "sha256": "bb0a3b7d21d9c13845515e0ced0271a10d8ce13c9cf48a7b33b86333416c1552",
+        "size_bytes": 6293999
+      },
+      {
+        "path": "Blowoff.smd",
+        "sha256": "8aadac30623a1abaaca543b77d51330545f5cc4908891bf89c2a6d401f619ac4",
+        "size_bytes": 682080
+      },
+      {
+        "path": "body.smd",
+        "sha256": "e23f3e7ec8481e70953db21a2c3e7ce06a7392f4478b074cdc5795aaa076240f",
+        "size_bytes": 7447348
+      },
+      {
+        "path": "body27_model0.smd",
+        "sha256": "bce8bbe204e338a1f7d37434051d1a825871fb25bc03f8eb11b88c4e5241192c",
+        "size_bytes": 7079686
+      },
+      {
+        "path": "body28_model0.smd",
+        "sha256": "07d48cde5201cbd3d692512eff6767ab0092aa54b3dc715b0816cd36302239a5",
+        "size_bytes": 7800337
+      },
+      {
+        "path": "body29_model0.smd",
+        "sha256": "d725cb4fa415c6999d05a41cc07caa834a2d0b4bd49929251e331d403e3485bf",
+        "size_bytes": 5465361
+      },
+      {
+        "path": "body30_model0.smd",
+        "sha256": "a78476a03ff62783441b13db8c61854201ef82c8a40202de4de746378c214661",
+        "size_bytes": 6142912
+      },
+      {
+        "path": "body31_model0.smd",
+        "sha256": "48cbeb5bfbcf0b76c02203fb455c35fe42ca92f1d1cd2aa1d2de4c9c114080bc",
+        "size_bytes": 4957453
+      },
+      {
+        "path": "bumperf_a.smd",
+        "sha256": "8ce1f9444d7cec6f8b804c45043d2cced2b57ab0cea0171ef39342dd481bb53b",
+        "size_bytes": 1105623
+      },
+      {
+        "path": "bumperf_historic.smd",
+        "sha256": "5d8fd4f861a837045a8e69bd67dc4ad157313f2d8b9262a0015e59cf9fc7e4b8",
+        "size_bytes": 191037
+      },
+      {
+        "path": "bumperr_a.smd",
+        "sha256": "aa12ef6b8c3a7a240147d04f94341e3726499aed9eb392149ee1a806a18d4fdf",
+        "size_bytes": 1216971
+      },
+      {
+        "path": "charger.qc",
+        "sha256": "f15082ff5c1a879154ebdd806e37c5c2af09a1634c2b939b55d2659072e1d9b6",
+        "size_bytes": 49432
+      },
+      {
+        "path": "charger_anims/alt1.smd",
+        "sha256": "aa54ef64e99479621334da63c0e3e039985f7cedaa898cd5d66996719bdc160b",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/alt1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/alt2.smd",
+        "sha256": "f75085ee5d040c65d0faa30f572142adfa50ad4bb0dfa9dfac936a83b9dcd301",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/alt2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/b1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/b1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/b2.smd",
+        "sha256": "e5fa11b1deda54e13ee6acc08f621cef8f7c9bace8613f93aa65b00f2c509b5d",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/b2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/c1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/c1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/c2.smd",
+        "sha256": "d8a845c31a2a390517d593c6550665d204f442bf732393ccc4d9979e1e760ee7",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/c2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/engine_spin1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/engine_spin1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/engine_spin2.smd",
+        "sha256": "f6759ecb7e7f9fd0cca9064ca40746e5e30a4217bd4eaac4c54a9ce04a29637b",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/engine_spin2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/engine_spin3.smd",
+        "sha256": "f9e353002105731392ac8ebe5d20801d1f962996672d950abce7c52c4f17154e",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/engine_spin3_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/engine_spin4.smd",
+        "sha256": "7a646ece505c16a8c5f3d24b60a6cd9eb7875f179ddc3caf5ceb238f90f16b03",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/engine_spin4_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/engine_spin5.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/engine_spin5_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/fuel1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/fuel1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/fuel2.smd",
+        "sha256": "9ce07024b534f48277e8fedd9f1a425eb6edb19c34ff87f6069070d8f1218b78",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/fuel2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/g1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/g1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/g2.smd",
+        "sha256": "61e913af37bced0b19dbcb5aa15a0080f992d3bcf8c47e950fb8b538fe15d88f",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/g2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/h1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/h1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/h2.smd",
+        "sha256": "bd04f705d3b69a901dcca246c3058ae1be220ee1ff3f16ea55acea16bb1f9461",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/h2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/h3.smd",
+        "sha256": "e1a15009713e5228c1b04a9b0507f0c8bded302d0d337e54594ee0008b139f47",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/h3_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/h4.smd",
+        "sha256": "12d8149f3c487d931c81bbd7507d515f9b96df5b92f16d6a2cb0373f2d2bcdd4",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/h4_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/h5.smd",
+        "sha256": "e8302df8f5bb6448271655f2a167e76dbd9e317a6ffdeddcbcfcdce55dae7747",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/h5_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/hood1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/hood1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/hood2.smd",
+        "sha256": "2aeaa7e9018bc13fc908df0675fea451716de268d18c0e9540b0d0a75b93acbd",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/hood2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/hour1.smd",
+        "sha256": "51bb9e6ba5c9293cfa4e22583757649f0b11c754cd1204afd867cdb37bca521d",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/hour1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/hour2.smd",
+        "sha256": "f946f0a4d52b7bf85e01215ab91a158cfdf2398c13448a606410930fb9e186af",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/hour2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/hour3.smd",
+        "sha256": "572ea004daae804d6d50df5ad4ef8e322abdc8bf203b8f22f26f015d970a4507",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/hour3_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/hour4.smd",
+        "sha256": "1e6328e893ad34d88be54b7affb84ab6e159dff7c09b5cae99c1061cd4ad1c16",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/hour4_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/hour5.smd",
+        "sha256": "51bb9e6ba5c9293cfa4e22583757649f0b11c754cd1204afd867cdb37bca521d",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/hour5_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/idle.smd",
+        "sha256": "381454597c8dfd3d3689e228d1f78d651952c12d39cf251bde8a974b728efd88",
+        "size_bytes": 4852
+      },
+      {
+        "path": "charger_anims/k1.smd",
+        "sha256": "b24047c53d355fce8be31c6b15758700d69619155001134f5730060ce10f795e",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/k10.smd",
+        "sha256": "9a018c204b104bf8b5c7410c91018c8bbc4d431ebbd10e5221b72d80efcd049a",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/k10_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/k11.smd",
+        "sha256": "29e836f09564324144fdcec3196f1558cad7dcc81ef37264729e15229e482ffe",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/k11_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/k1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/k2.smd",
+        "sha256": "cecef2811f140c72d82dd8c1172e7eb214eb981c57f8793ee113435c2999a784",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/k2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/k3.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/k3_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/k4.smd",
+        "sha256": "c0cccab0aefe3a6af2a6d071464c4dc25eff4224c0846e9a3a2ed9c91d161ea3",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/k4_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/k5.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/k5_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/k6.smd",
+        "sha256": "5934a2c8988298711ae4cb870537ffee5c11e3da4b38e4dad7f5ee75424c8e0c",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/k6_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/k7.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/k7_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/k8.smd",
+        "sha256": "9a018c204b104bf8b5c7410c91018c8bbc4d431ebbd10e5221b72d80efcd049a",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/k8_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/k9.smd",
+        "sha256": "1b741d376814dad8a48bc30a87c19f56a70b149445bb7620222343352ac9d08c",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/k9_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/l10.smd",
+        "sha256": "a02ebda5d858e07b8049d1e3e62579afb64730adacaa02ed6c8a0a790799ba2f",
+        "size_bytes": 2635
+      },
+      {
+        "path": "charger_anims/l10_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l11.smd",
+        "sha256": "9373be3538affb5073c0df9cb357b0ede3237ccd61c4ba34a96adc930eb3ca9d",
+        "size_bytes": 2633
+      },
+      {
+        "path": "charger_anims/l11_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l2.smd",
+        "sha256": "74a513b87f750b7595f45b9bf77a64743192ddbb9837297febd33f50b4b5cffb",
+        "size_bytes": 2633
+      },
+      {
+        "path": "charger_anims/l2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l3.smd",
+        "sha256": "8d00007c5650a6f74e735343c402bc8c3829609d461aaf249b3f406da17050be",
+        "size_bytes": 2634
+      },
+      {
+        "path": "charger_anims/l3_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l4.smd",
+        "sha256": "b11b3723fd34a5e82da4c61cc203f6fda8340746282977d1205da65815d54f3a",
+        "size_bytes": 2634
+      },
+      {
+        "path": "charger_anims/l4_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l5.smd",
+        "sha256": "7ae75b354298efa931669281fbb769733571c06f12ea48b093a602308b1d4b4e",
+        "size_bytes": 2634
+      },
+      {
+        "path": "charger_anims/l5_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l6.smd",
+        "sha256": "a68f1f60c042601b42e964b9e19058d8ce359d4dddd3b3cd06bdc9db3663c4e5",
+        "size_bytes": 2635
+      },
+      {
+        "path": "charger_anims/l6_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l7.smd",
+        "sha256": "ed712f501bb4c3d120594e5938453ae642503864bb9fb169615c531e26c411f1",
+        "size_bytes": 2635
+      },
+      {
+        "path": "charger_anims/l7_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l8.smd",
+        "sha256": "82f93a60bddfafdbee758adc29c95e45917598c97ee4c4841f11f50ee386fd01",
+        "size_bytes": 2634
+      },
+      {
+        "path": "charger_anims/l8_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/l9.smd",
+        "sha256": "9aaee14fd78906d5609c29f032d6dd04e86a6593a2b9df7fea793a030729a6da",
+        "size_bytes": 2634
+      },
+      {
+        "path": "charger_anims/l9_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/left_door1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/left_door1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/left_door2.smd",
+        "sha256": "69a550b95ba094a04f373d2a58b71237127995a727ef6782633b6286c543c549",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/left_door2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/minute1.smd",
+        "sha256": "f3c177131db9aa912c11cb7ab5a686d042862e89185d8e4b481649f146e4fd73",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/minute1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/minute2.smd",
+        "sha256": "f4ede21dbd957377d7ac27e9e4cbc92a6369ebdbeeeff450a73fe6cdcec0d43e",
+        "size_bytes": 2633
+      },
+      {
+        "path": "charger_anims/minute2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/minute3.smd",
+        "sha256": "1a9321beeb3b5669b161e3fefb4ddf599117695d50446cb4f844b1ebb5018d55",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/minute3_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/minute4.smd",
+        "sha256": "3dfeb72d562bb67f9faf22e5b8016530d9e1b5dcc4c9cd086fc1abf96c160f11",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/minute4_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/minute5.smd",
+        "sha256": "f3c177131db9aa912c11cb7ab5a686d042862e89185d8e4b481649f146e4fd73",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/minute5_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/neutral.smd",
+        "sha256": "7d81b6824fa4666e5e704ae40095ba5df2d7157994332a86f157032f4e6efb65",
+        "size_bytes": 2751
+      },
+      {
+        "path": "charger_anims/om1.smd",
+        "sha256": "bd6f7b080970bf8a239e6ac50e61265f113c6574f71cd196cfbc4bc1a18bbfec",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/om1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/om2.smd",
+        "sha256": "1760816c8409d26741eff4fbf07c7eaccb2ccfaa67fc5d6d4b95ecea3fb52157",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/om2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/right_door1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/right_door1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/right_door2.smd",
+        "sha256": "c1bc3430d773054633eab5ef8d5b5330c1900b31f0d3e85e5a50e9f5f906cc77",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/right_door2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/s1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/s1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/s2.smd",
+        "sha256": "bcfd7ccd43132af33d2f4d6483bd9b3df085d4d8c6b6302c3d4bcd074f4946ec",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/s2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/s3.smd",
+        "sha256": "8e5da28f38757a105c15609de41ecc3b9909ef76d2e68f95e6554b12a8fa344c",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/s3_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/s4.smd",
+        "sha256": "02424cc2ea1bc0b1f826bbb655abdf5aef0435dec546392d23ff436a8e4a63b4",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/s4_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/second1.smd",
+        "sha256": "6b22df413d1b483252933fe65a321bfd92007547b233a9096185a9747258f592",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/second1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/second2.smd",
+        "sha256": "3183f75791cf08d94ab41c062077d45ca325285d245fa13453ee1a1abfb7ace8",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/second2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/second3.smd",
+        "sha256": "a521da9b540a6d2da62277e8844e6cfde96cb777592c32ba90b555230b97e5e3",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/second3_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/second4.smd",
+        "sha256": "b364e07332c6941778b911649f1f0107fbbad877e89a294e1f870ed177a53763",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/second4_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/second5.smd",
+        "sha256": "6b22df413d1b483252933fe65a321bfd92007547b233a9096185a9747258f592",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/second5_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/t1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/t1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/t2.smd",
+        "sha256": "c7826e66d935af753b7247830a8164f16c72520906854c998c675fda8a1f612b",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/t2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/t3.smd",
+        "sha256": "5eb36fcc289849b819749722146fcb48e0f814eeea12ea1af17c54216079414d",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/t3_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/t4.smd",
+        "sha256": "8a8d7355efa31cd68fcf69e43bde8f1f47c438a9eae655b6a553633080c218b7",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/t4_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/t5.smd",
+        "sha256": "fff0243b08d39ee0941869756c475e853692dd26a68af60c87c361d0e6d4cf11",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/t5_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/tm1.smd",
+        "sha256": "bf9ce4d476803f84bf4137c428a97d1b14c86ba843c4775f5c9d3d004d9ebbb9",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/tm1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/tm2.smd",
+        "sha256": "502c9763f7636ba99b7282b257c78185d0d6d5f9f1650c2a83aaf81ddd2b6cf4",
+        "size_bytes": 2632
+      },
+      {
+        "path": "charger_anims/tm2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/trunk1.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/trunk1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/trunk2.smd",
+        "sha256": "6c33912820df776b819d6470137f6040800d48b128dc0d18e32350c3b19da92a",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/trunk2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/turn_1.smd",
+        "sha256": "e49dd552dfc8a3a0e1c7e6b26143a31f399be41bb77ef85b88ba66d911fb8618",
+        "size_bytes": 2631
+      },
+      {
+        "path": "charger_anims/turn_1_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/turn_2.smd",
+        "sha256": "72193af0879c7012a7b0e87c2b2a7347c03c9ff0a58849757a2730cf9b0efb24",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/turn_2_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_anims/turn_3.smd",
+        "sha256": "f35d09effacb6d1b4ecb70f5ca257113b8acc78ca7242e12a0573f9bd7528fdf",
+        "size_bytes": 2630
+      },
+      {
+        "path": "charger_anims/turn_3_corrective_animation.smd",
+        "sha256": "5eff103f16e7a8c9a3b6c890cd5e88be47bd956f618a807b9185b04b14950e30",
+        "size_bytes": 778
+      },
+      {
+        "path": "charger_physics.smd",
+        "sha256": "e2999e326ef7075224f136c1f208aa32073559cce14ffef0ab5ffd90f7f462cd",
+        "size_bytes": 115533
+      },
+      {
+        "path": "exhaust_a.smd",
+        "sha256": "6c44c8b6e228a1ab7ee83110a8a10bef06070fa057f9af69e2566f990b84cf0b",
+        "size_bytes": 468027
+      },
+      {
+        "path": "foglightl_a.smd",
+        "sha256": "9d04a2fd71f3b5b6dc2357832ae05db05aa8894010b0b69613305fce453b7119",
+        "size_bytes": 807134
+      },
+      {
+        "path": "gaugecluster_a.smd",
+        "sha256": "67758fbb4ba14ba86927ded9d95c2ee02ef4d6e0980bd3e0972ae393292fb15c",
+        "size_bytes": 1492612
+      },
+      {
+        "path": "glass.smd",
+        "sha256": "da1584d9a5d53531dfbb1d1b14839b51b0d9efb9b9261d1d3c0e32bb2ea4975a",
+        "size_bytes": 356983
+      },
+      {
+        "path": "grille_a.smd",
+        "sha256": "a0b886d5fb3c22079187b0f0d71899ca4d053150f46964a02655a9b7125aa3ad",
+        "size_bytes": 489010
+      },
+      {
+        "path": "headlight.smd",
+        "sha256": "5b2446af65aa26279e640069878b632ca1c3ae10ee057be6ce55af49ac9cf261",
+        "size_bytes": 760048
+      },
+      {
+        "path": "headlightlcover.smd",
+        "sha256": "4dfb4aafb27156c2ba9ec364ae33a5f6147d6c985fa0cf1968cd09e2d5cf7fb9",
+        "size_bytes": 1380504
+      },
+      {
+        "path": "hood_a.smd",
+        "sha256": "55b0322cf034ae5eb8edd74dafd9affbae355a2304bb6852132a496f027e3100",
+        "size_bytes": 2776419
+      },
+      {
+        "path": "hood_d.smd",
+        "sha256": "31041725605951b121d3a4753095811f04560474a58974415071edfc52b0d803",
+        "size_bytes": 2948227
+      },
+      {
+        "path": "ld.smd",
+        "sha256": "6df2689ae3607f1d04206554829c996126853f32633f475297439fc0e7897a5a",
+        "size_bytes": 5828059
+      },
+      {
+        "path": "parcelshelf_a.smd",
+        "sha256": "9ce76d31495c68fd03da0c65bfafb9e20a4443cf45ebdd2b5fd1924da0cd5666",
+        "size_bytes": 2188468
+      },
+      {
+        "path": "pedals_a.smd",
+        "sha256": "9663ace5b0dcd2bd55121e326432c3896b90899c5e5487f1aee136d72c65beae",
+        "size_bytes": 199094
+      },
+      {
+        "path": "pillartrim_a.smd",
+        "sha256": "c10214c3501de1c953ffe023a2fc69fda826a7f8438cb85f9c06eaab403bb7fe",
+        "size_bytes": 1294334
+      },
+      {
+        "path": "rd.smd",
+        "sha256": "991daeeda42841a6c833c9ed6ed613b3a658f0e216c80ebeaae42715aa4d8028",
+        "size_bytes": 5875630
+      },
+      {
+        "path": "roof_paint.smd",
+        "sha256": "0643d472e4b275e9d742fa9ea7846a3c7e0d306956dd36c12040402758570cc0",
+        "size_bytes": 1070309
+      },
+      {
+        "path": "roof_vinyl.smd",
+        "sha256": "c03e4e20bbaf018f38a0521d9f80a285e64a95125799b30b313063dad6b1663b",
+        "size_bytes": 1299749
+      },
+      {
+        "path": "rt.smd",
+        "sha256": "957312a9b5bc28e0d5c6554f1fab24ddf8ebc72c117ed29a9199d2f0f6996f02",
+        "size_bytes": 318243
+      },
+      {
+        "path": "seatbeltl_a.smd",
+        "sha256": "f9f1b5b43d63c9272766955b0b5c1bf8aa6e5583cd4a3813ead600d26730bdd4",
+        "size_bytes": 3107326
+      },
+      {
+        "path": "steeringcolumn_a.smd",
+        "sha256": "fce3400d533da0b44fc95e15548593e07204fb5640dde58ad043706d78c83a4e",
+        "size_bytes": 340929
+      },
+      {
+        "path": "Steeringwheel.smd",
+        "sha256": "7be3a346bf5785960977602bd3b54853649eb2ee530f5441117a1bc94f2aa696",
+        "size_bytes": 2214310
+      },
+      {
+        "path": "tailightl_a.smd",
+        "sha256": "67bdec3827942cae31b88ee54f11c12e95217901f3f25c83a6f46db47a53504e",
+        "size_bytes": 928635
+      },
+      {
+        "path": "trunk_a.smd",
+        "sha256": "241dc711ff565e476f753d9650e52e8d6c5aac8cc7a27f1abe3c111ab539bb2b",
+        "size_bytes": 1796334
+      },
+      {
+        "path": "wing_historic.smd",
+        "sha256": "0948d3a73574cece9f3d9e04921c3d1af46315d31cefa2a845278af1372cf6f4",
+        "size_bytes": 621004
+      },
+      {
+        "path": "wipers_a.smd",
+        "sha256": "319f25d5c72c3d31508e53096de277c7e9760c863deb7830684d48cd8221f24c",
+        "size_bytes": 397969
+      }
+    ],
+    "wheel": [
+      {
+        "path": "wh.smd",
+        "sha256": "e3e53b8a66a72d4263d5ec19708ffdeed95455fb9159830b5e7e42b2a2f078e5",
+        "size_bytes": 579499
+      },
+      {
+        "path": "wh1.smd",
+        "sha256": "fcda64b3b26af521eefd6490508609d3c18409dfa2213df45753993be45ac38f",
+        "size_bytes": 2075553
+      },
+      {
+        "path": "wh2.smd",
+        "sha256": "a9a2a10b6803218c9238302bf250dde343d6bf3948a02dff8a11f5b329b30076",
+        "size_bytes": 2005279
+      },
+      {
+        "path": "wheel.qc",
+        "sha256": "6066206afe1c7084c0250e0acdfd7f52883e44980e47245eeec1cd265e956e62",
+        "size_bytes": 930
+      },
+      {
+        "path": "wheel_anims/idle.smd",
+        "sha256": "4ef9631312c0e17b2ecf37569b47adaba7e84f8752a8576940c4468f2e8c962a",
+        "size_bytes": 153
+      },
+      {
+        "path": "wheel_anims/neutral.smd",
+        "sha256": "4ef9631312c0e17b2ecf37569b47adaba7e84f8752a8576940c4468f2e8c962a",
+        "size_bytes": 153
+      },
+      {
+        "path": "wheel_physics.smd",
+        "sha256": "b085c7108b6335c5490dfb56cf3fd7ae8f980cc2fa6c1f50623a620bbd90f00f",
+        "size_bytes": 26663
+      }
+    ]
+  },
+  "strategy": "meshopt-direct-position-v1",
+  "tools": {
+    "bridge": {
+      "path": "maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll",
+      "sha256": "173e1b86dad4e553d702ab3586ac8d4f77e167090f4f5abada2f09f3f3594c3c",
+      "size_bytes": 210944
+    },
+    "bridge_abi": 3,
+    "mesh_attributes": {
+      "path": "maximum_optimizer/mesh_attributes.py",
+      "sha256": "19f6657d64e9ee2ee21895dafb952c3e224e4a39a9ce17632aac96a3b7c32fef",
+      "size_bytes": 17168
+    },
+    "meshoptimizer_version": "v1.2 9d9890c73011d75920af614485296d1e03e95448",
+    "runner": {
+      "path": "batch_optimize_maximum.py",
+      "sha256": "dde2d342f84868a3df875c1f83b1d040f9a4a0f094b0f883934b7e9fa40e8405",
+      "size_bytes": 66255
+    },
+    "serializer": {
+      "path": "maximum_optimizer/smd_contract.py",
+      "sha256": "8249fc3aad85af3cc480fb70682843d638576c55a34ca1f906dabf1b1662ae37",
+      "size_bytes": 26850
+    }
+  },
+  "wheel_records": [
+    {
+      "candidate": [
+        {
+          "path": "candidate-r025/models/diggercars/pontiac_transam3/wheel.mdl",
+          "sha256": "d4e564762216aab022ca0fae55ae46ff312a7f5e920f06de2fac20c53cdf0699",
+          "size_bytes": 2768
+        },
+        {
+          "path": "candidate-r025/models/diggercars/pontiac_transam3/wheel.vvd",
+          "sha256": "8c505a2439f764f0b5ac1652223e062ab5a2aa592b8eb59ee1f3c44f0183bd20",
+          "size_bytes": 515904
+        },
+        {
+          "path": "candidate-r025/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+          "sha256": "995af5f8bb2e0144d35d78873cf81aee5bf1cc69154be77e03f01a0b1aff5f7c",
+          "size_bytes": 131100
+        },
+        {
+          "path": "candidate-r025/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+          "sha256": "eeffca53c1f110bd9b3a07add5c7e03e6cfad6fff620daf23a42c8895a6714eb",
+          "size_bytes": 131100
+        },
+        {
+          "path": "candidate-r025/models/diggercars/pontiac_transam3/wheel.phy",
+          "sha256": "c045ecd53c9f9d1ddc76f8078605c16767acdf105e37a37eadb0eb9ad957919e",
+          "size_bytes": 3397
+        }
+      ],
+      "control": [
+        {
+          "path": "control/models/diggercars/pontiac_transam3/wheel.mdl",
+          "sha256": "ed14f39e518a148fd9b9977aded6613269bcec840c23b4a7ae3a49dfee1f9081",
+          "size_bytes": 2768
+        },
+        {
+          "path": "control/models/diggercars/pontiac_transam3/wheel.vvd",
+          "sha256": "eee6d88c0715c16ec3ac785522b23ec7246aa65f75a8f4ed7899ef4fdf7f7819",
+          "size_bytes": 769920
+        },
+        {
+          "path": "control/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+          "sha256": "60ecff78c6b83298a306c2780158f95898a9ad391b5db96df09a142cae8b988c",
+          "size_bytes": 205737
+        },
+        {
+          "path": "control/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+          "sha256": "5db270e614a4c26f8ce4661eda822df68ac209a054e4c0b3382592ab68fbddeb",
+          "size_bytes": 205737
+        },
+        {
+          "path": "control/models/diggercars/pontiac_transam3/wheel.phy",
+          "sha256": "6589355722447d7c45bab21ea12f99344d9142b2b621ccfa350be82cf7929099",
+          "size_bytes": 3397
+        }
+      ],
+      "counts": {
+        "compiled_bytes": 784269,
+        "compiled_vertices": 8060,
+        "locked_vertices": 421,
+        "output_vertices": 8121,
+        "triangles_after": 9694,
+        "triangles_before": 16180,
+        "wedge_vertices": 12090
+      },
+      "direct_smd": [
+        {
+          "path": "candidate-r025/direct/wh_opt.smd",
+          "sha256": "398f99a35e6097c38da946600a9e6c59efb1330632c12cca54812ee1062fbc54",
+          "size_bytes": 201421
+        },
+        {
+          "path": "candidate-r025/direct/wh1_opt.smd",
+          "sha256": "06c5218e635f2352984904ae8b06656d53e9f1bdd1979c1226d342c09301f0b4",
+          "size_bytes": 1256480
+        },
+        {
+          "path": "candidate-r025/direct/wh2_opt.smd",
+          "sha256": "930a44bf43514f3fca6da821ed8c6fc9ac82036cc1d6400a478b1028e6c74657",
+          "size_bytes": 1232657
+        }
+      ],
+      "metrics": {
+        "path": "candidate-r025/candidate_metrics.json",
+        "sha256": "8160d25b406569b974117e69e71d211ea8451b9dc30110d7fc9ab6f58991c01b",
+        "size_bytes": 11178
+      },
+      "requested_ratio": 0.25
     },
     {
-      "requested_ratio": 0.4,
-      "achieved_ratio": 0.5987639060568604,
-      "triangles": [16180, 9688],
-      "locks": [421, 12090],
-      "output_vertices": 8125,
-      "compiled_vertices": 8064,
-      "compiled_bytes": 784525,
-      "metrics_sha256": "9d6eeea9636c53b77ca4a01a89df35d0800b408e70a66ef1b899c314b149e933",
-      "compiled_sha256": {
-        "wheel.mdl": "ca47435844492d0bb236677682b2ea170a589583d3cc9e7073d1234a04560370",
-        "wheel.vvd": "133a5dda86e4607e189067ceafd0c0ca98664d7f094f9c54271904637953e6a6",
-        "wheel.dx80.vtx": "e567fe8b771265d52c1b970e5434d746215caba44f857c479f70f1269c88512e",
-        "wheel.dx90.vtx": "d964aafebd43064682bba9ee8fe84fb0746e51c078c551f2d6816d13345f49f8",
-        "wheel.phy": "071a736aa7e51bab0299d8f6d0c28b45663ad96b6409eac02607b547c66f6846"
-      }
+      "candidate": [
+        {
+          "path": "candidate-r040/models/diggercars/pontiac_transam3/wheel.mdl",
+          "sha256": "ca47435844492d0bb236677682b2ea170a589583d3cc9e7073d1234a04560370",
+          "size_bytes": 2768
+        },
+        {
+          "path": "candidate-r040/models/diggercars/pontiac_transam3/wheel.vvd",
+          "sha256": "c7cf744a14b85a7228b4abc00c853f254d50c91cf408039c066babc681117f8d",
+          "size_bytes": 516160
+        },
+        {
+          "path": "candidate-r040/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+          "sha256": "e567fe8b771265d52c1b970e5434d746215caba44f857c479f70f1269c88512e",
+          "size_bytes": 131100
+        },
+        {
+          "path": "candidate-r040/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+          "sha256": "d964aafebd43064682bba9ee8fe84fb0746e51c078c551f2d6816d13345f49f8",
+          "size_bytes": 131100
+        },
+        {
+          "path": "candidate-r040/models/diggercars/pontiac_transam3/wheel.phy",
+          "sha256": "071a736aa7e51bab0299d8f6d0c28b45663ad96b6409eac02607b547c66f6846",
+          "size_bytes": 3397
+        }
+      ],
+      "control": [
+        {
+          "path": "control/models/diggercars/pontiac_transam3/wheel.mdl",
+          "sha256": "ed14f39e518a148fd9b9977aded6613269bcec840c23b4a7ae3a49dfee1f9081",
+          "size_bytes": 2768
+        },
+        {
+          "path": "control/models/diggercars/pontiac_transam3/wheel.vvd",
+          "sha256": "eee6d88c0715c16ec3ac785522b23ec7246aa65f75a8f4ed7899ef4fdf7f7819",
+          "size_bytes": 769920
+        },
+        {
+          "path": "control/models/diggercars/pontiac_transam3/wheel.dx80.vtx",
+          "sha256": "60ecff78c6b83298a306c2780158f95898a9ad391b5db96df09a142cae8b988c",
+          "size_bytes": 205737
+        },
+        {
+          "path": "control/models/diggercars/pontiac_transam3/wheel.dx90.vtx",
+          "sha256": "5db270e614a4c26f8ce4661eda822df68ac209a054e4c0b3382592ab68fbddeb",
+          "size_bytes": 205737
+        },
+        {
+          "path": "control/models/diggercars/pontiac_transam3/wheel.phy",
+          "sha256": "6589355722447d7c45bab21ea12f99344d9142b2b621ccfa350be82cf7929099",
+          "size_bytes": 3397
+        }
+      ],
+      "counts": {
+        "compiled_bytes": 784525,
+        "compiled_vertices": 8064,
+        "locked_vertices": 421,
+        "output_vertices": 8125,
+        "triangles_after": 9688,
+        "triangles_before": 16180,
+        "wedge_vertices": 12090
+      },
+      "direct_smd": [
+        {
+          "path": "candidate-r040/direct/wh_opt.smd",
+          "sha256": "f1cdda909c4a3f84493ebaaaeac249e0f780abad2b73fd054050f26c3115b627",
+          "size_bytes": 223602
+        },
+        {
+          "path": "candidate-r040/direct/wh1_opt.smd",
+          "sha256": "8ec66f2936418cdf60f815b74e1fcfca8b6df6a2dade37ed2aa2a7e3030d6830",
+          "size_bytes": 1238654
+        },
+        {
+          "path": "candidate-r040/direct/wh2_opt.smd",
+          "sha256": "2145b9a4ffb59deaacce6b81b0131f4474fe39f49e6d0e0ef9d3748a1fb4ad6e",
+          "size_bytes": 1227095
+        }
+      ],
+      "metrics": {
+        "path": "candidate-r040/candidate_metrics.json",
+        "sha256": "085322224df334c945ab18b187fb36ffbc3dab2c4ed92e8508c6b7e77110f257",
+        "size_bytes": 11182
+      },
+      "requested_ratio": 0.4
     }
-  ],
-  "car_probe": {
-    "family": "dodge_charger",
-    "requested_ratio": 0.4,
-    "body_achieved_ratio": 0.3999372278237671,
-    "body_locks": [4859, 22130],
-    "nonmanifold_edges": 2,
-    "triangles": [295861, 136541],
-    "compiled_vertices": 158648,
-    "compiled_bytes": 14797755,
-    "status": "compiled_raw_structural_pass",
-    "reason": "compiled 2,893 bytes below Fidelity but 58,771 bytes above Blender; visual quality unverified"
-  },
-  "decision": {
-    "winner": false,
-    "pressure_set_run": false,
-    "reason": "wheel improves direct-v1 and control but remains larger than Blender; the first car also remains larger than Blender and textures are unavailable"
-  }
+  ]
 }

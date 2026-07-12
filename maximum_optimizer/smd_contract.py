@@ -3,10 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import re
+import struct
+from itertools import permutations
 from typing import Sequence
 
 
 POSITION_SERIALIZATION_TOLERANCE = 2e-6
+# Source Tools recalculates smoothing on import. Accept at most one degree of normalized
+# direction drift (chord length 2*sin(0.5 degree)); exact position/UV/skin and the
+# ambiguity gate still identify the source corner.
+IMPORT_NORMAL_EQUIVALENCE_TOLERANCE = 2.0 * math.sin(math.radians(0.5))
+# Normal is used only to distinguish source rows that already have identical material,
+# position, UV and skin. Reject an opposite-hemisphere association and near ties; the
+# serializer always copies the exact source normal and never emits the imported value.
+IMPORT_NORMAL_DISAMBIGUATION_CEILING = 2.0 * math.sin(math.radians(7.5))
+IMPORT_NORMAL_DISAMBIGUATION_MARGIN = 1e-4
 
 
 @dataclass(frozen=True)
@@ -100,6 +111,179 @@ def _direct_float(value: float) -> str:
     if value == 0.0:
         return "0"
     return format(value, ".9g")
+
+
+def _f32_word(value: float) -> int:
+    word = struct.unpack("=I", struct.pack("=f", float(value)))[0]
+    return 0 if word == 0x80000000 else word
+
+
+def _influence_key(values: Sequence[tuple[str, float]]) -> tuple[tuple[str, int], ...]:
+    combined: dict[str, float] = {}
+    for name, weight in values:
+        if type(name) is not str or not name or not math.isfinite(float(weight)):
+            raise ValueError("corner influence is invalid")
+        if float(weight) > 0.0:
+            combined[name.casefold()] = combined.get(name.casefold(), 0.0) + float(weight)
+    total = sum(combined.values())
+    if not combined or total <= 1e-12:
+        raise ValueError("corner influence is empty")
+    return tuple(sorted((name, _f32_word(weight / total)) for name, weight in combined.items()))
+
+
+def map_imported_corners_to_smd(
+    original_text: str,
+    positions: Sequence[Sequence[float]],
+    triangles: Sequence[Sequence[int]],
+    loop_normals: Sequence[Sequence[float]],
+    loop_uvs: Sequence[Sequence[float]],
+    material_ids: Sequence[int],
+    material_names: Sequence[str],
+    vertex_influences: Sequence[Sequence[tuple[str, float]]],
+    *,
+    excluded_source_triangles: frozenset[int] = frozenset(),
+) -> tuple[int, ...]:
+    """Map imported loops to source corners by exact float32 tuple identity, never by ordinal."""
+    parsed = parse_smd_triangles(original_text)
+    if len(loop_normals) != len(triangles) * 3 or len(loop_uvs) != len(triangles) * 3:
+        raise ValueError("imported loop attribute counts are invalid")
+    if len(material_ids) != len(triangles) or len(vertex_influences) != len(positions):
+        raise ValueError("imported topology attribute counts are invalid")
+    node_names: dict[int, str] = {}
+    in_nodes = False
+    for raw in parsed.lines:
+        folded = raw.strip().casefold()
+        if folded == "nodes":
+            in_nodes = True
+            continue
+        if in_nodes and folded == "end":
+            break
+        if in_nodes:
+            match = re.match(r'^\s*(-?\d+)\s+"([^"]*)"\s+-?\d+', raw)
+            if match:
+                node_names[int(match.group(1))] = match.group(2)
+
+    def source_influences(corner: SmdCorner) -> tuple[tuple[str, float], ...]:
+        if len(corner.tokens) > 9:
+            count = int(corner.tokens[9])
+            values = tuple(
+                (node_names[int(corner.tokens[10 + i * 2])], float(corner.tokens[11 + i * 2]))
+                for i in range(count)
+            )
+        else:
+            values = ((node_names[int(corner.tokens[0])], 1.0),)
+        return values
+
+    def identity(position, normal, uv, influences) -> tuple[object, ...]:
+        if len(position) != 3 or len(normal) != 3 or len(uv) != 2:
+            raise ValueError("corner tuple width is invalid")
+        normal_length = math.sqrt(sum(float(value) ** 2 for value in normal))
+        if not math.isfinite(normal_length) or normal_length <= 1e-12:
+            raise ValueError("corner normal is invalid")
+        return (
+            tuple(_f32_word(value) for value in position),
+            tuple(float(value) / normal_length for value in normal),
+            tuple(_f32_word(value) for value in uv),
+            _influence_key(influences),
+        )
+
+    def equivalent(left: tuple[object, ...], right: tuple[object, ...]) -> bool:
+        return (
+            left[0] == right[0] and left[2:] == right[2:]
+            and math.sqrt(sum((a - b) ** 2 for a, b in zip(left[1], right[1])))
+            <= IMPORT_NORMAL_EQUIVALENCE_TOLERANCE
+        )
+
+    source_identities = tuple(
+        tuple(identity(c.position, c.normal, c.uv, source_influences(c)) for c in triangle.corners)
+        for triangle in parsed.triangles
+    )
+    result: list[int] = []
+    used: set[int] = set(excluded_source_triangles)
+    orders = tuple(permutations(range(3)))
+    def coarse(value: tuple[object, ...]) -> tuple[object, ...]:
+        return (value[0], value[2], value[3])
+
+    source_lookup: dict[tuple[object, ...], list[tuple[int, tuple[int, int, int]]]] = {}
+    for source_triangle_index, source_triangle in enumerate(parsed.triangles):
+        if source_triangle_index in excluded_source_triangles:
+            continue
+        for order in orders:
+            key = (
+                source_triangle.material.casefold(),
+                *(coarse(source_identities[source_triangle_index][order[i]]) for i in range(3)),
+            )
+            source_lookup.setdefault(key, []).append((source_triangle_index, order))
+    for triangle_index, triangle in enumerate(triangles):
+        if len(triangle) != 3 or any(type(vertex) is not int or vertex < 0 or vertex >= len(positions) for vertex in triangle):
+            raise ValueError("imported triangle is invalid")
+        material_slot = material_ids[triangle_index]
+        if type(material_slot) is not int or material_slot < 0 or material_slot >= len(material_names):
+            raise ValueError("imported material slot is invalid")
+        imported = tuple(
+            identity(
+                positions[vertex], loop_normals[triangle_index * 3 + corner],
+                loop_uvs[triangle_index * 3 + corner], vertex_influences[vertex],
+            )
+            for corner, vertex in enumerate(triangle)
+        )
+        matches: list[tuple[int, tuple[int, int, int]]] = []
+        key = (material_names[material_slot].casefold(), *(coarse(value) for value in imported))
+        for candidate_source, order in source_lookup.get(key, ()):
+            if candidate_source not in used and all(
+                equivalent(imported[i], source_identities[candidate_source][order[i]]) for i in range(3)
+            ):
+                matches.append((candidate_source, order))
+        if not matches:
+            available = tuple(
+                (source, order) for source, order in source_lookup.get(key, ()) if source not in used
+            )
+            ranked = sorted(
+                (
+                    max(math.sqrt(sum((a-b)**2 for a,b in zip(imported[i][1], source_identities[source][order[i]][1]))) for i in range(3)),
+                    source, order,
+                )
+                for source, order in available
+            )
+            if len(available) == 1:
+                matches.append(available[0])
+            elif (
+                ranked and ranked[0][0] <= IMPORT_NORMAL_DISAMBIGUATION_CEILING
+                and (len(ranked) == 1 or ranked[1][0] - ranked[0][0] > IMPORT_NORMAL_DISAMBIGUATION_MARGIN)
+            ):
+                matches.append((ranked[0][1], ranked[0][2]))
+        if not matches:
+            coarse_candidates = source_lookup.get(key, ())
+            nearest_normal = min((
+                max(math.sqrt(sum((a-b)**2 for a,b in zip(imported[i][1], source_identities[source][order[i]][1]))) for i in range(3))
+                for source, order in coarse_candidates if source not in used
+            ), default=None)
+            diagnostics = {"position": 0, "normal": 0, "uv": 0, "skin": 0}
+            for diagnostic_source, source_triangle in enumerate(parsed.triangles):
+                if source_triangle.material.casefold() != material_names[material_slot].casefold():
+                    continue
+                for order in orders:
+                    for i in range(3):
+                        left, right = imported[i], source_identities[diagnostic_source][order[i]]
+                        diagnostics["position"] += int(left[0] == right[0])
+                        diagnostics["normal"] += int(math.sqrt(sum((a-b)**2 for a,b in zip(left[1], right[1]))) <= IMPORT_NORMAL_EQUIVALENCE_TOLERANCE)
+                        diagnostics["uv"] += int(left[2] == right[2])
+                        diagnostics["skin"] += int(left[3] == right[3])
+            raise RuntimeError(
+                f"imported triangle {triangle_index} has no source-corner mapping; "
+                f"coarse_candidates={len(coarse_candidates)} nearest_normal={nearest_normal} component_matches={diagnostics}"
+            )
+        if len(matches) > 1:
+            token_rows = {
+                tuple(parsed.triangles[source].corners[order[i]].tokens for i in range(3))
+                for source, order in matches
+            }
+            if len(token_rows) != 1:
+                raise RuntimeError(f"imported triangle {triangle_index} source-corner mapping is ambiguous")
+        matched_source, order = min(matches)
+        used.add(matched_source)
+        result.extend(matched_source * 3 + order[i] for i in range(3))
+    return tuple(result)
 
 
 def serialize_direct_smd(

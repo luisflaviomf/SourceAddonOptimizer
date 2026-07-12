@@ -30,7 +30,11 @@ class PositionTopology:
 def _float32_signature(values: Sequence[float], width: int) -> bytes:
     if len(values) != width or not all(math.isfinite(float(value)) for value in values):
         raise ValueError(f"attribute must contain finite float{width} values")
-    return struct.pack("=" + "f" * width, *(float(value) for value in values))
+    words = []
+    for value in values:
+        word = struct.unpack("=I", struct.pack("=f", float(value)))[0]
+        words.append(0 if word == 0x80000000 else word)
+    return struct.pack("=" + "I" * width, *words)
 
 
 def classify_position_topology(
@@ -121,18 +125,15 @@ def classify_position_topology(
         for bone, weight in zip(bone_indices[vertex], weights[vertex]):
             if type(bone) is not int or bone < 0 or not math.isfinite(float(weight)):
                 raise ValueError("skin attribute is invalid")
-            packed = struct.pack("=f", float(weight))
-            if struct.unpack("=f", packed)[0] > 0.0:
+            packed = _float32_signature((weight,), 1)
+            if float(weight) > 0.0:
                 result.append((bone, packed))
         return tuple(sorted(result))
 
     skin_positions: set[int] = set()
     for position, wedges in wedges_by_position.items():
-        bone_sets = {
-            tuple(bone for bone, _weight in influence_signature(wedge))
-            for wedge in wedges
-        }
-        if len(bone_sets) > 1:
+        signatures = {influence_signature(wedge) for wedge in wedges}
+        if len(signatures) > 1:
             skin_positions.add(position)
 
     for position in uv_positions | normal_positions | material_positions | skin_positions:
@@ -308,12 +309,18 @@ def build_wedge_mesh(
     vertex_influences: Sequence[Sequence[tuple[str, float]]],
     *,
     exact_float32: bool = False,
+    source_corner_indices: Sequence[int] | None = None,
 ) -> WedgeMesh:
     corner_count = len(triangles) * 3
     if len(loop_normals) != corner_count or len(loop_uvs) != corner_count:
         raise ValueError("loop attributes must contain three corners per triangle")
     if len(material_ids) != len(triangles) or len(vertex_influences) != len(positions):
         raise ValueError("mesh attribute counts do not match topology")
+    if source_corner_indices is not None and (
+        len(source_corner_indices) != corner_count
+        or any(type(value) is not int or value < 0 for value in source_corner_indices)
+    ):
+        raise ValueError("source corner mapping does not match topology")
     normalized_influences = tuple(normalize_influences(values) for values in vertex_influences)
     bone_names = tuple(sorted({name for influences in normalized_influences for name, _weight in influences}))
     bone_ids = {name: index for index, name in enumerate(bone_names)}
@@ -341,7 +348,7 @@ def build_wedge_mesh(
             uv = tuple(float(value) for value in loop_uvs[loop_index])
             influences = normalized_influences[source_vertex]
             if exact_float32:
-                signature = tuple((name, struct.pack("=f", float(weight))) for name, weight in influences)
+                signature = tuple((name, _float32_signature((weight,), 1)) for name, weight in influences)
                 key = (
                     _float32_signature(position, 3), _float32_signature(normal, 3),
                     _float32_signature(uv, 2), int(material), signature,
@@ -361,7 +368,9 @@ def build_wedge_mesh(
                 out_weights.append(weights)  # type: ignore[arg-type]
                 out_bones.append(bones)  # type: ignore[arg-type]
                 out_source_vertices.append(source_vertex)
-                out_source_loops.append(loop_index)
+                out_source_loops.append(
+                    source_corner_indices[loop_index] if source_corner_indices is not None else loop_index
+                )
                 out_influences.append(influences)
             indices.append(wedge)
     return WedgeMesh(

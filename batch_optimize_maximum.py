@@ -60,7 +60,10 @@ from maximum_optimizer.smoothing import (
     canonicalize_export_normals,
     canonicalize_normals_by_identity,
 )
-from maximum_optimizer.smd_contract import restore_direct_smd_normals, restore_ordered_smd_normals, serialize_direct_smd
+from maximum_optimizer.smd_contract import (
+    map_imported_corners_to_smd, restore_direct_smd_normals, restore_ordered_smd_normals,
+    serialize_direct_smd,
+)
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -72,6 +75,7 @@ _SEARCH_CANDIDATE_FIELDS = {
     "candidate_id", "engine", "target_ratio", "target_error", "repair_profile", "region_overrides",
     "strategy", "update_vertices", "transfer",
 }
+_DIRECT_SOURCE_CORNER_MAP: dict[int, tuple[int, ...]] = {}
 
 
 @dataclass(frozen=True)
@@ -808,6 +812,7 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
     wedges = build_wedge_mesh(
         positions, triangles, loop_normals, loop_uvs, material_ids, vertex_influences,
         exact_float32=candidate.strategy == "meshopt-direct-position-v1",
+        source_corner_indices=_DIRECT_SOURCE_CORNER_MAP.get(id(obj)),
     )
     wedge_triangles = tuple(
         tuple(wedges.indices[offset : offset + 3]) for offset in range(0, len(wedges.indices), 3)
@@ -1029,8 +1034,8 @@ def _describe_source_file(
 
 
 def require_direct_single_object(candidate: CandidateConfig, mesh_objects: Sequence[object]) -> None:
-    if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"} and len(mesh_objects) != 1:
-        raise RuntimeError(f"{candidate.strategy} requires one unambiguous source object per occurrence")
+    if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"} and not mesh_objects:
+        raise RuntimeError(f"{candidate.strategy} requires at least one mapped source object")
 
 
 def _process_source_file(
@@ -1051,13 +1056,32 @@ def _process_source_file(
     if not mesh_objects:
         raise RuntimeError(f"Source Tools imported no mesh from {source}")
     require_direct_single_object(candidate, mesh_objects)
-    object_metrics = optimize_region_objects(
-        source_identity,
-        mesh_objects,
-        candidate,
-        region_manifest,
-        before_audit.materials,
-    )
+    if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"}:
+        used_source_triangles: set[int] = set()
+        for obj in mesh_objects:
+            positions, triangles, loop_normals, loop_uvs, material_ids, vertex_influences = _vertex_source_attributes(obj)
+            datablock_names = tuple(str(material.name) if material else "none" for material in obj.data.materials)
+            slot_identities = source_material_slot_identities(
+                source_identity, before_audit.materials, datablock_names
+            )
+            material_names = tuple(
+                before_audit.materials[int(identity.split(":", 2)[1])]
+                for identity in slot_identities
+            )
+            mapping = map_imported_corners_to_smd(
+                original_text, positions, triangles, loop_normals, loop_uvs, material_ids,
+                material_names, vertex_influences,
+                excluded_source_triangles=frozenset(used_source_triangles),
+            )
+            _DIRECT_SOURCE_CORNER_MAP[id(obj)] = mapping
+            used_source_triangles.update(ordinal // 3 for ordinal in mapping)
+    try:
+        object_metrics = optimize_region_objects(
+            source_identity, mesh_objects, candidate, region_manifest, before_audit.materials,
+        )
+    finally:
+        for obj in mesh_objects:
+            _DIRECT_SOURCE_CORNER_MAP.pop(id(obj), None)
     direct_corner_ordinals = tuple(
         ordinal for item in object_metrics for ordinal in item.pop("_direct_corner_ordinals", ())
     )
@@ -1072,9 +1096,13 @@ def _process_source_file(
     destination = safe_output_path(source.parent, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if direct_payloads:
-        if len(direct_payloads) != 1:
-            raise RuntimeError("direct SMD serialization requires one payload")
-        payload = direct_payloads[0]
+        combined = {"positions": [], "normals": [], "uvs": [], "influences": [], "indices": [], "materials": [], "source_corner_ordinals": []}
+        for payload in direct_payloads:
+            offset = len(combined["positions"])
+            for name in ("positions", "normals", "uvs", "influences", "materials", "source_corner_ordinals"):
+                combined[name].extend(payload[name])
+            combined["indices"].extend(offset + index for index in payload["indices"])
+        payload = combined
         serialized = serialize_direct_smd(
             original_text, payload["positions"], payload["normals"], payload["uvs"],
             payload["influences"], payload["indices"], payload["materials"],

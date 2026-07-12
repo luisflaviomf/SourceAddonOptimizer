@@ -383,9 +383,9 @@ def _default_schedule() -> tuple[CandidateSpec, ...]:
     )
     meshopt = tuple(
         CandidateSpec(
-            f"meshopt-direct-position-r{str(ratio).replace('.', '')}",
-            "meshoptimizer", ratio, 0.01, "meshopt-direct-position-v1",
-            strategy="meshopt-direct-position-v1", update_vertices=False, transfer="direct-v1",
+            f"meshopt-direct-r{str(ratio).replace('.', '')}",
+            "meshoptimizer", ratio, 0.01, "meshopt-direct-v1",
+            strategy="meshopt-direct-v1", update_vertices=False, transfer="direct-v1",
         )
         for ratio in (0.85, 0.70, 0.55, 0.40, 0.25)
     )

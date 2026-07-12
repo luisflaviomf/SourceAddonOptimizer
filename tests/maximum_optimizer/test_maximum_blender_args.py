@@ -352,14 +352,15 @@ class MaximumBlenderPureTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 maximum.load_candidate_payload(mutation)
 
-    def test_direct_multi_object_source_occurrence_fails_closed(self) -> None:
+    def test_direct_multi_object_source_occurrence_is_allowed_for_explicit_corner_mapping(self) -> None:
         candidate = maximum.CandidateConfig(
             "direct", "meshoptimizer", 0.5, 0.01, False, (),
             strategy="meshopt-direct-v1", transfer="direct-v1",
         )
-        with self.assertRaisesRegex(RuntimeError, "one unambiguous source object"):
-            maximum.require_direct_single_object(candidate, (object(), object()))
+        maximum.require_direct_single_object(candidate, (object(), object()))
         maximum.require_direct_single_object(candidate, (object(),))
+        with self.assertRaisesRegex(RuntimeError, "at least one"):
+            maximum.require_direct_single_object(candidate, ())
 
     def test_unknown_or_ambiguous_region_override_fails(self) -> None:
         observations = (("body.smd", "Body", ("paint",)),)

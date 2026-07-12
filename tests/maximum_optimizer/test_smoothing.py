@@ -43,6 +43,37 @@ class SmoothingReconstructionTests(unittest.TestCase):
                 ((0.0, 0.0),) * 3, ((('root', 1.0),),) * 3, (0, 1, 2), ("paint",),
             )
 
+    def test_direct_corner_mapping_survives_permuted_import_order_and_hard_edges(self):
+        self.assertTrue(hasattr(smd_contract, "map_imported_corners_to_smd"))
+        original = self._two_triangle_smd()
+        mapping = smd_contract.map_imported_corners_to_smd(
+            original,
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+             (0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+            ((5, 4, 3), (2, 0, 1)),
+            ((0.0, 1.0, 0.0),) * 3 + ((0.0, 0.0, 1.0),) * 3,
+            ((1.0, 1.0), (0.0, 1.0), (0.5, 0.5), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0)),
+            (1, 0), ("paint", "glass"), ((('root', 1.0),),) * 3 + ((('tip', 1.0),),) * 3,
+        )
+        self.assertEqual(mapping, (5, 4, 3, 2, 0, 1))
+
+    def test_direct_corner_mapping_rejects_normal_near_tie_and_has_15_degree_ceiling(self):
+        self.assertAlmostEqual(
+            smd_contract.IMPORT_NORMAL_DISAMBIGUATION_CEILING,
+            2.0 * math.sin(math.radians(7.5)), places=12,
+        )
+        original = (
+            'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\n'
+            'paint\n0 0 0 0 0.00001 0 1 0 0\n0 1 0 0 0.00001 0 1 1 0\n0 0 1 0 0.00001 0 1 0 1\n'
+            'paint\n0 0 0 0 -0.00001 0 1 0 0\n0 1 0 0 -0.00001 0 1 1 0\n0 0 1 0 -0.00001 0 1 0 1\nend\n'
+        )
+        with self.assertRaisesRegex(RuntimeError, "ambiguous"):
+            smd_contract.map_imported_corners_to_smd(
+                original, ((0, 0, 0), (1, 0, 0), (0, 1, 0)), ((0, 1, 2),),
+                ((0, 0, 1),) * 3, ((0, 0), (1, 0), (0, 1)),
+                (0,), ("paint",), ((('root', 1.0),),) * 3,
+            )
+
     @staticmethod
     def _two_triangle_smd() -> str:
         return """version 1

@@ -104,6 +104,32 @@ class MeshoptBridgeTests(unittest.TestCase):
         self.assertGreater(result.normal_seam_vertices, 0)
         self.assertGreater(result.material_seam_vertices, 0)
 
+    def test_position_topology_treats_signed_zero_as_one_meshopt_position(self) -> None:
+        result = mesh_attributes.classify_position_topology(
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+             (-0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0),
+             (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0),
+             (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 0.0)),
+            ((0.0, 0.0, 1.0),) * 12, ((0.0, 0.0),) * 12,
+            tuple(range(12)), (0, 0, 0, 0), ((1.0, -0.0, 0.0, 0.0),) * 12,
+            ((0, 0, 0, 0),) * 12,
+        )
+        self.assertEqual(result.canonical_position_count, 4)
+        self.assertEqual(result.open_edge_count, 0)
+
+    def test_skin_same_bones_different_float32_weights_protects_shared_position(self) -> None:
+        positions = ((0.0, 0.0, 0.0),) * 2 + ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+                    (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+        result = mesh_attributes.classify_position_topology(
+            positions, ((0.0, 0.0, 1.0),) * 6, ((0.0, 0.0),) * 6,
+            (0, 2, 3, 1, 4, 5), (0, 0),
+            ((0.75, 0.25, 0.0, 0.0), (0.5, 0.5, 0.0, 0.0)) + ((1.0, 0.0, 0.0, 0.0),) * 4,
+            ((0, 1, 0, 0),) * 2 + ((0, 0, 0, 0),) * 4,
+        )
+        self.assertGreater(result.skin_transition_vertices, 0)
+        self.assertTrue(result.vertex_flags[0] & PROTECT)
+        self.assertTrue(result.vertex_flags[1] & PROTECT)
+
     def test_position_topology_locks_real_open_edges_and_nonmanifold_fail_closed(self) -> None:
         self.assertTrue(hasattr(mesh_attributes, "classify_position_topology"))
         common = dict(

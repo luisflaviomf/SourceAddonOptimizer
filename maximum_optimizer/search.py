@@ -57,18 +57,29 @@ def initial_candidates() -> list[CandidateSpec]:
     ]
     candidates.extend(
         CandidateSpec(
-            _candidate_id("meshoptimizer", ratio, "meshopt-direct-position-v1"),
+            _candidate_id("meshoptimizer", ratio, "meshopt-direct-v1"),
             "meshoptimizer",
             ratio,
             0.01,
-            "meshopt-direct-position-v1",
-            strategy="meshopt-direct-position-v1",
+            "meshopt-direct-v1",
+            strategy="meshopt-direct-v1",
             update_vertices=False,
             transfer="direct-v1",
         )
         for ratio in _INITIAL_RATIOS
     )
     return candidates
+
+
+def position_remap_candidates() -> tuple[CandidateSpec, ...]:
+    return tuple(
+        CandidateSpec(
+            _candidate_id("meshoptimizer", ratio, "meshopt-direct-position-v1"),
+            "meshoptimizer", ratio, 0.01, "meshopt-direct-position-v1",
+            strategy="meshopt-direct-position-v1", update_vertices=False, transfer="direct-v1",
+        )
+        for ratio in _INITIAL_RATIOS
+    )
 
 
 def _fidelity_score(evaluation: CandidateEvaluation) -> float:
