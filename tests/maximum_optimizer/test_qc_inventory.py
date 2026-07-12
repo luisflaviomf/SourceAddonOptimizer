@@ -11,9 +11,58 @@ from maximum_optimizer.qc_inventory import (
 
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "maximum"
+MONACO_QC = Path(
+    r"C:\Users\luisf\Music\teste\experiments\wpf-mainapp-validation"
+    r"\20260312_110200_models_planar\planar_on_work\src\diggercars"
+    r"\dodge_monaco\monaco_police\monaco_police.qc"
+)
 
 
 class QcFingerprintTests(unittest.TestCase):
+    def test_adjacent_directives_survive_whitespace_comments_quoted_args_and_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            qc = root / "adjacent.qc"
+            qc.write_text(
+                '$modelname "vehicles/quoted model.mdl" // keep quoted whitespace\n'
+                '\n'
+                '// a comment between adjacent directives\n'
+                '$cdmaterials "models\\quoted path\\"\n'
+                '$texturegroup "skin families"\n'
+                '{\n'
+                '    { "skin one" }\n'
+                '    { "skin two" }\n'
+                '}\n'
+                '$attachment "first light" "first bone" 0 0 0\n'
+                '$attachment "second light" "second bone" 0 0 0 // trailing comment\n'
+                '$sequence "idle sequence"\n'
+                '{\n'
+                '    "idle animation.smd"\n'
+                '}\n'
+                '$collisionmodel "physics mesh.smd"\n'
+                '{\n'
+                '    $mass 1000\n'
+                '}\n',
+                encoding="utf-8",
+            )
+
+            fp = parse_qc_fingerprint(qc)
+
+            self.assertEqual(fp.model_name, "vehicles/quoted model.mdl")
+            self.assertEqual(fp.skin_families, (("skin one",), ("skin two",)))
+            self.assertEqual(fp.attachments, ("first light", "second light"))
+            self.assertEqual(fp.sequences, ("idle sequence",))
+            self.assertEqual(fp.physics_mesh, "physics mesh.smd")
+
+    @unittest.skipUnless(MONACO_QC.is_file(), f"real Monaco QC not available: {MONACO_QC}")
+    def test_real_monaco_qc_inventories_all_structural_directives(self):
+        fp = parse_qc_fingerprint(MONACO_QC)
+
+        self.assertEqual(len(fp.skin_families), 9)
+        self.assertEqual(len(fp.attachments), 12)
+        self.assertEqual(len(fp.sequences), 22)
+        self.assertEqual(fp.physics_mesh, "monaco_police_physics.smd")
+
     def test_fingerprint_keeps_source_order_without_case_duplicates(self):
         fp = parse_qc_fingerprint(FIXTURES / "family.qc")
 

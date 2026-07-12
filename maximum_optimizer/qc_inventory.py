@@ -64,9 +64,6 @@ def _tokenize(text: str) -> list[str]:
             if char == '"':
                 quoted = False
                 flush()
-            elif char == "\\" and index + 1 < len(text) and text[index + 1] == '"':
-                current.append('"')
-                index += 1
             else:
                 current.append(char)
         elif char == '"':
