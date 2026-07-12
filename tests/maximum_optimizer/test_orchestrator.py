@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -11,13 +12,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from maximum_optimizer import orchestrator as orchestrator_module
-from maximum_optimizer.candidates import CandidateBuild, CandidateBuildError
+from maximum_optimizer.candidates import CandidateBuild, CandidateBuildError, CandidateTools
 from maximum_optimizer.domain import (
     GateFailure,
     CandidateEvaluation,
     CandidateSpec,
     FamilyManifest,
     FocusRegionResult,
+    FocusedRegionPolicy,
     FocusedGateResult,
     SearchBudget,
     StructuralFingerprint,
@@ -268,8 +270,11 @@ class FakeAdapters:
         mdl = compiled / manifest.model_rel
         mdl.parent.mkdir(parents=True, exist_ok=True)
         mdl.write_bytes(b"x" * self.sizes[spec.candidate_id])
-        qc = workspace / "optimized.qc"
-        qc.write_text("// optimized", encoding="utf-8")
+        source_root = workspace / "src"
+        source_root.mkdir()
+        (source_root / "test_OPT.smd").write_bytes(b"candidate-source")
+        qc = source_root / "optimized.qc"
+        qc.write_text('$body body "test_OPT.smd"\n', encoding="utf-8")
         logical = mdl.relative_to(compiled).as_posix()
         provenance = {logical: "candidate-compile"}
         if self.extra_collision:
@@ -433,6 +438,251 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual(order, ["build", "structural", "whole", "focused", "store"])
         self.assertEqual(report.families[0].selected_candidate, "candidate-100")
+        records = list((self.config.work_dir / "cache").glob("*/payload/maximum_cache_record.json"))
+        self.assertEqual(len(records), 1)
+        cache_record = json.loads(records[0].read_text(encoding="utf-8"))
+        self.assertEqual(cache_record["schema"], 3)
+        self.assertEqual(cache_record["source_snapshot"]["candidate_id"], "candidate-100")
+
+    def test_production_recovery_adapter_returns_typed_composition_failure(self):
+        from tests.maximum_optimizer.test_composite import recipe as recovery_recipe
+        from maximum_optimizer.cache import CacheKey
+        from maximum_optimizer.orchestrator import ProductionAdapters
+
+        adapter = ProductionAdapters(self.config, threading.Event())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            recipe_value = recovery_recipe(root)
+            base_spec = CandidateSpec(
+                "base", "blender", 0.4, 0.0, "blender-adaptive-v1",
+                strategy="blender-adaptive-v1", transfer="blender-native-v1",
+            )
+            base = CandidateBuild(
+                base_spec, root / "base-work", root / "missing.qc",
+                root / "compiled", {}, {}, (), None,
+            )
+            composite_spec = CandidateSpec(
+                "recovery-" + recipe_value.recipe_sha256,
+                "blender", 0.4, 0.0, "blender-adaptive-v1",
+                strategy="blender-adaptive-v1", transfer="blender-native-v1",
+                composite_recipe=recipe_value,
+            )
+            result = adapter.recover_focused_candidate(
+                manifest=self.family, control_build=base, base_build=base,
+                base_evaluation=None, recipe=recipe_value, spec=composite_spec,
+                cache_key=CacheKey("1" * 64), snapshots_by_sha256={},
+                workspace=root / "recovery", whole_profile=load_profile(self.config.profile_path),
+                focused_profile=load_profile(self.config.profile_path),
+                policy=FocusedRegionPolicy(1, "surface-risk-top-k-v1", 1),
+                structural_validator=self.structural,
+                tools=CandidateTools(
+                    Path(sys.executable), self.config.blender_path,
+                    self.config.studiomdl_path, self.config.repo_root,
+                ),
+                prior_recoveries=(), cancel_event=threading.Event(),
+            )
+        self.assertEqual(result.evidence.terminal_status, "composition_failed")
+        self.assertIsNone(result.authorization)
+
+    def test_production_recovery_adapter_reaches_authorized_terminal_path(self):
+        from tests.maximum_optimizer.test_composite import H, recipe, snapshot
+        from tests.maximum_optimizer.test_focused_cache import (
+            _cache_payload, _material_proof, _validation_metrics,
+        )
+        from maximum_optimizer.cache import CacheKey
+        from maximum_optimizer.domain import FocusRegionResult
+        from maximum_optimizer.focused_cache import FocusedEvidenceContext
+        from maximum_optimizer.focused_regions import FocusSelection
+
+        adapter = ProductionAdapters(self.config, threading.Event())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            recipe_value = recipe(root)
+            base_snapshot = snapshot(root)
+            base_spec = CandidateSpec(
+                "candidate-a", "blender", 0.4, 0.0, "blender-adaptive-v1",
+                strategy="blender-adaptive-v1", transfer="blender-native-v1",
+            )
+            base_workspace = root / "base-work"
+            base_workspace.mkdir()
+            base_build = CandidateBuild(
+                base_spec, base_workspace, root / "base.qc", root / "base-compiled",
+                {}, {}, (), base_snapshot,
+            )
+            metrics = _validation_metrics(0.0)
+            whole = ValidationResult(True, metrics=metrics)
+            target = _focus_target()
+            selection = FocusSelection(
+                target.selector_input_sha256, (target,), (target,)
+            )
+            payload = _cache_payload()
+            context = FocusedEvidenceContext(
+                1, recipe_value.family_id, base_spec.candidate_id,
+                FocusedRegionPolicy(1, "surface-risk-top-k-v1", 1),
+                payload["whole_profile"], payload["focused_profile"],
+                payload["trusted_evidence_v3_sha256"],
+                recipe_value.dependency_proof_sha256,
+                {target.region_key: _material_proof()},
+            )
+            record = SimpleNamespace(
+                target=target, evidence_sha256="6" * 64, validation=whole,
+            )
+            adapter._focused_runtime[base_workspace.resolve()] = (
+                context, selection, (record,), {"authorization_sha256": "7" * 64},
+            )
+            composite_spec = CandidateSpec(
+                "recovery-" + recipe_value.recipe_sha256,
+                "blender", 0.4, 0.0, "blender-adaptive-v1",
+                strategy="blender-adaptive-v1", transfer="blender-native-v1",
+                composite_recipe=recipe_value,
+            )
+            recovery_workspace = root / "recovery"
+            source = recovery_workspace / "src"
+            source.mkdir(parents=True)
+            (recovery_workspace / "logs").mkdir()
+            compiled = recovery_workspace / "compiled" / "models"
+            compiled.mkdir(parents=True)
+            (compiled / "test.mdl").write_bytes(b"compiled-model")
+            compiled_build = CandidateBuild(
+                composite_spec, recovery_workspace, source / "main_OPT.qc",
+                compiled, {}, {}, (), None,
+            )
+            composed = SimpleNamespace(
+                workspace=recovery_workspace,
+                optimized_qc=source / "main_OPT.qc",
+                composition=SimpleNamespace(
+                    evidence_sha256="8" * 64, changed_sources=(),
+                ),
+                source_manifest=base_snapshot.source_manifest,
+            )
+            focused_gate = FocusedGateResult(
+                whole, (target,),
+                {target.region_key: FocusRegionResult(
+                    target, whole, record.evidence_sha256, False,
+                )},
+                "9" * 64,
+            )
+
+            def focused_visual(*_args, **_kwargs):
+                adapter._focused_runtime[recovery_workspace.resolve()] = (
+                    context, selection, (record,), {"schema": 1},
+                )
+                return focused_gate
+
+            def final_visual(*_args, **_kwargs):
+                index = recovery_workspace / "logs/whole-visual-index.json"
+                index.parent.mkdir(parents=True, exist_ok=True)
+                index.write_text("{}", encoding="utf-8")
+                adapter._whole_index_seals[recovery_workspace.resolve()] = hashlib.sha256(
+                    index.read_bytes()
+                ).hexdigest()
+                return whole
+
+            authorized_round = SimpleNamespace(
+                terminal_status="authorized", evidence_sha256="a" * 64,
+            )
+            authorization = {
+                "schema": 2, "candidate_id": composite_spec.candidate_id,
+                "authorization_sha256": "b" * 64,
+            }
+            base_evaluation = CandidateEvaluation(
+                base_spec,
+                orchestrator_module._family_snapshot(
+                    orchestrator_module.scan_compiled_models(compiled), "test.mdl"
+                ),
+                ValidationResult(True), whole, compiled, whole,
+                focused_gate.regions,
+            )
+            with patch.object(
+                orchestrator_module, "compose_candidate_sources", return_value=composed,
+            ), patch.object(
+                orchestrator_module, "_matching_qcs", return_value=(root / "main.qc",),
+            ), patch.object(
+                orchestrator_module, "parse_qc_graph", return_value=object(),
+            ), patch.object(
+                orchestrator_module, "_validate_complete_recovery_graph_pairing",
+            ), patch.object(
+                orchestrator_module, "_compile_composed_candidate",
+                return_value=compiled_build,
+            ), patch.object(
+                adapter, "_seed_recovery_focus_index",
+            ), patch.object(
+                adapter, "focused_visual", side_effect=focused_visual,
+            ), patch.object(
+                adapter, "visual", side_effect=final_visual,
+            ), patch.object(
+                orchestrator_module, "build_focused_recovery_evidence",
+                return_value=authorized_round,
+            ), patch.object(
+                orchestrator_module, "focused_recovery_evidence_payload",
+                return_value=authorization,
+            ), patch.object(
+                orchestrator_module, "validate_focused_gate_evidence_payload",
+            ), patch.object(
+                orchestrator_module, "FocusedRecoveryAdapterResult",
+                side_effect=lambda build, evaluation, evidence, auth: SimpleNamespace(
+                    build=build, evaluation=evaluation, evidence=evidence,
+                    authorization=auth,
+                ),
+            ):
+                result = adapter.recover_focused_candidate(
+                    manifest=self.family, control_build=base_build,
+                    base_build=base_build, base_evaluation=base_evaluation,
+                    recipe=recipe_value, spec=composite_spec,
+                    cache_key=CacheKey("1" * 64),
+                    snapshots_by_sha256={base_snapshot.snapshot_sha256: base_snapshot},
+                    workspace=recovery_workspace,
+                    whole_profile=load_profile(self.config.profile_path),
+                    focused_profile=load_profile(self.config.profile_path),
+                    policy=FocusedRegionPolicy(1, "surface-risk-top-k-v1", 1),
+                    structural_validator=lambda *_args: ValidationResult(True),
+                    tools=CandidateTools(
+                        Path(sys.executable), self.config.blender_path,
+                        self.config.studiomdl_path, self.config.repo_root,
+                    ),
+                    prior_recoveries=(), cancel_event=threading.Event(),
+                )
+
+        self.assertEqual(result.evidence.terminal_status, "authorized")
+        self.assertEqual(result.authorization, authorization)
+        self.assertTrue(result.evaluation.visual.passed)
+        self.assertEqual(result.build.source_snapshot.candidate_id, composite_spec.candidate_id)
+
+    def test_original_recovery_snapshot_is_authoritative_and_never_none(self):
+        from dataclasses import replace
+        from maximum_optimizer.composite import (
+            build_recovery_source_snapshot, build_source_tree_manifest,
+            optimizer_contract_sha256,
+        )
+        from maximum_optimizer.orchestrator import _build_original_recovery_snapshot
+
+        source = self.root / "authoritative-original"
+        source.mkdir()
+        (source / "body.smd").write_bytes(b"original")
+        qc = source / "main.qc"
+        qc.write_text(
+            '$modelname "test.mdl"\n$body body "body.smd"\n',
+            encoding="utf-8",
+        )
+        manifest = replace(self.family, source_dir=source)
+        spec = CandidateSpec("candidate", "blender", 0.5, 0.01, "transfer-v1")
+        graph = parse_qc_graph(qc, source)
+        tree = build_source_tree_manifest(source, graph, "candidate-source-v1", None)
+        base = build_recovery_source_snapshot(
+            kind="candidate", family_id=manifest.family_id,
+            family_input_sha256=manifest.input_hash,
+            optimizer_contract_sha256=optimizer_contract_sha256(spec),
+            whole_profile_sha256="1" * 64, focused_profile_sha256="2" * 64,
+            dependency_proof_sha256="3" * 64, candidate_id="candidate",
+            candidate_cache_digest="4" * 64, source_root=source,
+            source_manifest=tree, focused_evidence=(),
+        )
+        original = _build_original_recovery_snapshot(
+            manifest, base, threading.Event()
+        )
+        self.assertEqual(original.kind, "original")
+        self.assertEqual(original.source_root, source)
+        self.assertEqual(original.source_manifest.files[0].file_identity, "body.smd")
 
     def test_models_bridge_preflights_schema3_with_profile_set_loader_without_cli_changes(self):
         from maximum_optimizer.orchestrator import run_maximum_from_existing_args
@@ -690,7 +940,8 @@ class OrchestratorTests(unittest.TestCase):
             )
         store.assert_not_called()
         self.assertIsNone(report.families[0].selected_candidate)
-        self.assertEqual(report.families[0].status, "preserved")
+        self.assertEqual(report.families[0].status, "failed")
+        self.assertIn("byte-exact focused recovery", report.families[0].reason)
 
     def test_schema3_cancellation_after_focused_adapter_never_stores_promotes_or_updates_best(self):
         cancel = threading.Event()

@@ -12,7 +12,7 @@ from typing import Protocol
 
 from vehicle_steer_turn_basis_fix import apply_under_root
 
-from .domain import CandidateSpec, FamilyManifest
+from .domain import CandidateSpec, FamilyManifest, RecoverySourceSnapshot
 from .processes import ProcessResult, run_process
 from .qc_inventory import _inventory_qc
 
@@ -64,10 +64,15 @@ class CandidateBuild:
     compile_record: Mapping[str, object]
     provenance: Mapping[str, str]
     commands: tuple[tuple[str, ...], ...]
+    source_snapshot: RecoverySourceSnapshot | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "compile_record", _freeze(self.compile_record))
         object.__setattr__(self, "provenance", _freeze(self.provenance))
+        if self.source_snapshot is not None and not isinstance(
+            self.source_snapshot, RecoverySourceSnapshot
+        ):
+            raise TypeError("candidate source snapshot is invalid")
 
 
 class CandidateBuildError(RuntimeError):

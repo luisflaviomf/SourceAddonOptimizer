@@ -21,11 +21,24 @@ from maximum_optimizer.calibration_evidence import (
     TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
 )
 from maximum_optimizer.domain import (
+    ChangedSourceProof,
+    CompileFileProof,
+    CompositeRecipe,
+    CompositionProof,
+    FocusedEvidenceRef,
     FocusedRegionPolicy,
     FocusRegionResult,
     FocusTarget,
     GateFailure,
     ValidationResult,
+    changed_source_proof_payload,
+    compile_file_proof_payload,
+    composite_recipe_payload,
+    composition_proof_payload,
+    structural_authorization_evidence_payload,
+    StructuralAuthorizationEvidence,
+    validate_compile_file_proofs,
+    validation_result_payload,
 )
 from maximum_optimizer.reporting import canonical_json, canonical_payload, deep_freeze
 from maximum_optimizer.regions import RegionDescriptor
@@ -739,6 +752,269 @@ class FocusedRenderEvidence:
     def __post_init__(self) -> None:
         object.__setattr__(self, "expected", deep_freeze(json.loads(canonical_json(self.expected))))
         object.__setattr__(self, "files", tuple(self.files))
+
+
+@dataclass(frozen=True)
+class FocusedRecoveryContext:
+    schema: int
+    base_context: FocusedEvidenceContext
+    base_cache_digest: str
+    initial_authorization_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.schema) is not int or self.schema != 2:
+            raise ValueError("focused recovery context schema must be 2")
+        if not isinstance(self.base_context, FocusedEvidenceContext):
+            raise TypeError("focused recovery base context is invalid")
+        _hash(self.base_cache_digest, "focused recovery base cache")
+        _hash(self.initial_authorization_sha256, "focused recovery initial authorization")
+
+
+@dataclass(frozen=True)
+class FinalWholeAuthorizationEvidence:
+    candidate_id: str
+    candidate_cache_digest: str
+    recipe_sha256: str
+    composition_evidence_sha256: str
+    compile_manifest_sha256: str
+    whole_index_path: str
+    whole_index_sha256: str
+    whole_render_evidence_sha256: str
+    validation: ValidationResult
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        _text(self.candidate_id, "final whole candidate")
+        for label, value in (
+            ("final whole candidate cache", self.candidate_cache_digest),
+            ("final whole recipe", self.recipe_sha256),
+            ("final whole composition", self.composition_evidence_sha256),
+            ("final whole compile manifest", self.compile_manifest_sha256),
+            ("final whole index", self.whole_index_sha256),
+            ("final whole render evidence", self.whole_render_evidence_sha256),
+        ):
+            _hash(value, label)
+        _relative(self.whole_index_path, "final whole index path")
+        validation_result_payload(self.validation)
+        if self.evidence_sha256 != _final_whole_digest(self):
+            raise ValueError("final whole authorization seal mismatch")
+
+
+def _final_whole_payload(
+    value: FinalWholeAuthorizationEvidence, *, include_seal: bool
+) -> dict[str, object]:
+    payload = {
+        "candidate_id": value.candidate_id,
+        "candidate_cache_digest": value.candidate_cache_digest,
+        "recipe_sha256": value.recipe_sha256,
+        "composition_evidence_sha256": value.composition_evidence_sha256,
+        "compile_manifest_sha256": value.compile_manifest_sha256,
+        "whole_index_path": value.whole_index_path,
+        "whole_index_sha256": value.whole_index_sha256,
+        "whole_render_evidence_sha256": value.whole_render_evidence_sha256,
+        "validation": validation_result_payload(value.validation),
+    }
+    if include_seal:
+        payload["evidence_sha256"] = value.evidence_sha256
+    return payload
+
+
+def _final_whole_digest(value: FinalWholeAuthorizationEvidence) -> str:
+    return hashlib.sha256(
+        canonical_json(_final_whole_payload(value, include_seal=False)).encode("utf-8")
+    ).hexdigest()
+
+
+@dataclass(frozen=True)
+class FocusedRecoveryEvidence:
+    round_index: int
+    terminal_status: str
+    recipe: CompositeRecipe
+    composition: CompositionProof | None
+    changed_sources: tuple[ChangedSourceProof, ...]
+    reused_region_evidence: tuple[FocusedEvidenceRef, ...]
+    compile_files: tuple[CompileFileProof, ...]
+    structural: StructuralAuthorizationEvidence | None
+    rerun_records: tuple[FocusedRenderEvidence, ...]
+    final_whole: FinalWholeAuthorizationEvidence | None
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        statuses = {
+            "composition_failed", "compile_failed", "structural_failed",
+            "focused_failed", "final_whole_failed", "authorized",
+        }
+        if type(self.round_index) is not int or not 0 <= self.round_index < 3:
+            raise ValueError("focused recovery round index is invalid")
+        if self.terminal_status not in statuses:
+            raise ValueError("focused recovery status is invalid")
+        if not isinstance(self.recipe, CompositeRecipe) or self.recipe.kind != "focused-recovery-v1" or self.recipe.round_index != self.round_index:
+            raise ValueError("focused recovery recipe is invalid")
+        changed = tuple(self.changed_sources)
+        reused = tuple(self.reused_region_evidence)
+        compile_files = validate_compile_file_proofs(tuple(self.compile_files))
+        reruns = tuple(self.rerun_records)
+        if any(not isinstance(item, ChangedSourceProof) for item in changed):
+            raise ValueError("focused recovery changed proof is invalid")
+        if any(not isinstance(item, FocusedEvidenceRef) for item in reused):
+            raise ValueError("focused recovery reused evidence is invalid")
+        reused_keys = [(item.region_key.casefold(), item.region_key) for item in reused]
+        if reused_keys != sorted(reused_keys) or len({item[0] for item in reused_keys}) != len(reused_keys):
+            raise ValueError("focused recovery reused evidence is not canonical")
+        if any(not isinstance(item, FocusedRenderEvidence) for item in reruns):
+            raise ValueError("focused recovery rerun record is invalid")
+        if len({item.target.region_key for item in reruns}) != len(reruns):
+            raise ValueError("focused recovery rerun records are duplicated")
+        for item in reruns:
+            _validate_focused_render_record(item, verify_seal=True)
+        if self.composition is not None:
+            if not isinstance(self.composition, CompositionProof) or self.composition.recipe_sha256 != self.recipe.recipe_sha256:
+                raise ValueError("focused recovery composition binding is invalid")
+            if changed != self.composition.changed_sources:
+                raise ValueError("focused recovery changed proofs differ from composition")
+        present = {
+            "composition": self.composition is not None,
+            "changed": bool(changed), "compile": bool(compile_files),
+            "structural": self.structural is not None, "reruns": bool(reruns),
+            "final": self.final_whole is not None,
+        }
+        expected = {
+            "composition_failed": (False, False, False, False, False, False),
+            "compile_failed": (True, True, False, False, False, False),
+            "structural_failed": (True, True, True, True, False, False),
+            "focused_failed": (True, True, True, True, True, False),
+            "final_whole_failed": (True, True, True, True, True, True),
+            "authorized": (True, True, True, True, True, True),
+        }[self.terminal_status]
+        if tuple(present.values()) != expected:
+            raise ValueError("focused recovery optional-field matrix is invalid")
+        if self.structural is not None:
+            if self.structural.composition_evidence_sha256 != self.composition.evidence_sha256:
+                raise ValueError("focused recovery structural composition mismatch")
+            structural_should_pass = self.terminal_status not in {"structural_failed"}
+            if self.structural.validation.passed != structural_should_pass:
+                raise ValueError("focused recovery structural status mismatch")
+        if self.final_whole is not None:
+            if (
+                self.final_whole.candidate_id != "recovery-" + self.recipe.recipe_sha256
+                or
+                self.final_whole.recipe_sha256 != self.recipe.recipe_sha256
+                or self.final_whole.composition_evidence_sha256 != self.composition.evidence_sha256
+                or self.final_whole.compile_manifest_sha256 != self.structural.compile_manifest_sha256
+                or self.final_whole.candidate_cache_digest != self.structural.candidate_cache_digest
+            ):
+                raise ValueError("focused recovery final-whole binding mismatch")
+            if self.final_whole.validation.passed != (self.terminal_status == "authorized"):
+                raise ValueError("focused recovery final-whole status mismatch")
+        if self.evidence_sha256 != _focused_recovery_digest(self):
+            raise ValueError("focused recovery evidence seal mismatch")
+        object.__setattr__(self, "changed_sources", changed)
+        object.__setattr__(self, "reused_region_evidence", reused)
+        object.__setattr__(self, "compile_files", compile_files)
+        object.__setattr__(self, "rerun_records", reruns)
+
+
+def _focused_recovery_payload(
+    value: FocusedRecoveryEvidence, *, include_seal: bool
+) -> dict[str, object]:
+    payload = {
+        "round_index": value.round_index,
+        "terminal_status": value.terminal_status,
+        "recipe": composite_recipe_payload(value.recipe),
+        "composition": None if value.composition is None else composition_proof_payload(value.composition),
+        "changed_sources": [changed_source_proof_payload(item) for item in value.changed_sources],
+        "reused_region_evidence": [
+            {"region_key": item.region_key, "evidence_sha256": item.evidence_sha256}
+            for item in value.reused_region_evidence
+        ],
+        "compile_files": [compile_file_proof_payload(item) for item in value.compile_files],
+        "structural": None if value.structural is None else structural_authorization_evidence_payload(value.structural),
+        "rerun_records": [
+            _record_payload(item, include_cache=True, include_seal=True)
+            for item in value.rerun_records
+        ],
+        "final_whole": None if value.final_whole is None else _final_whole_payload(value.final_whole, include_seal=True),
+    }
+    if include_seal:
+        payload["evidence_sha256"] = value.evidence_sha256
+    return payload
+
+
+def _focused_recovery_digest(value: FocusedRecoveryEvidence) -> str:
+    return hashlib.sha256(
+        canonical_json(_focused_recovery_payload(value, include_seal=False)).encode("utf-8")
+    ).hexdigest()
+
+
+def build_final_whole_authorization_evidence(
+    candidate_id: str,
+    candidate_cache_digest: str,
+    recipe_sha256: str,
+    composition_evidence_sha256: str,
+    compile_manifest_sha256: str,
+    whole_index_path: str,
+    whole_index_sha256: str,
+    whole_render_evidence_sha256: str,
+    validation: ValidationResult,
+) -> FinalWholeAuthorizationEvidence:
+    payload = {
+        "candidate_id": candidate_id,
+        "candidate_cache_digest": candidate_cache_digest,
+        "recipe_sha256": recipe_sha256,
+        "composition_evidence_sha256": composition_evidence_sha256,
+        "compile_manifest_sha256": compile_manifest_sha256,
+        "whole_index_path": whole_index_path,
+        "whole_index_sha256": whole_index_sha256,
+        "whole_render_evidence_sha256": whole_render_evidence_sha256,
+        "validation": validation_result_payload(validation),
+    }
+    evidence = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    return FinalWholeAuthorizationEvidence(
+        candidate_id, candidate_cache_digest, recipe_sha256,
+        composition_evidence_sha256, compile_manifest_sha256,
+        whole_index_path, whole_index_sha256, whole_render_evidence_sha256,
+        validation, evidence,
+    )
+
+
+def build_focused_recovery_evidence(
+    round_index: int,
+    terminal_status: str,
+    recipe: CompositeRecipe,
+    composition: CompositionProof | None,
+    changed_sources,
+    reused_region_evidence,
+    compile_files,
+    structural: StructuralAuthorizationEvidence | None,
+    rerun_records,
+    final_whole: FinalWholeAuthorizationEvidence | None,
+) -> FocusedRecoveryEvidence:
+    changed = tuple(changed_sources)
+    reused = tuple(reused_region_evidence)
+    compiled = tuple(compile_files)
+    reruns = tuple(rerun_records)
+    payload = {
+        "round_index": round_index,
+        "terminal_status": terminal_status,
+        "recipe": composite_recipe_payload(recipe),
+        "composition": None if composition is None else composition_proof_payload(composition),
+        "changed_sources": [changed_source_proof_payload(item) for item in changed],
+        "reused_region_evidence": [
+            {"region_key": item.region_key, "evidence_sha256": item.evidence_sha256}
+            for item in reused
+        ],
+        "compile_files": [compile_file_proof_payload(item) for item in compiled],
+        "structural": None if structural is None else structural_authorization_evidence_payload(structural),
+        "rerun_records": [
+            _record_payload(item, include_cache=True, include_seal=True) for item in reruns
+        ],
+        "final_whole": None if final_whole is None else _final_whole_payload(final_whole, include_seal=True),
+    }
+    evidence = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    return FocusedRecoveryEvidence(
+        round_index, terminal_status, recipe, composition, changed, reused,
+        compiled, structural, reruns, final_whole, evidence,
+    )
 
 
 def _cancel(cancel_event: threading.Event | None, message: str) -> None:
@@ -2270,6 +2546,221 @@ def focused_gate_evidence_payload(
     return deep_freeze(outer)
 
 
+def compile_manifest_sha256(files: tuple[CompileFileProof, ...]) -> str:
+    canonical = validate_compile_file_proofs(tuple(files))
+    return hashlib.sha256(canonical_json({
+        "schema": 1,
+        "files": [compile_file_proof_payload(item) for item in canonical],
+    }).encode("utf-8")).hexdigest()
+
+
+def _profile_proof_sha256(profile: Mapping[str, object]) -> str:
+    copied = json.loads(canonical_json(profile))
+    _validate_profile(copied, "recovery profile")
+    return hashlib.sha256(canonical_json(copied).encode("utf-8")).hexdigest()
+
+
+def _recovery_authorization_payload(record: FocusedRecoveryEvidence) -> dict[str, object]:
+    payload = _focused_recovery_payload(record, include_seal=False)
+    payload["rerun_records"] = [
+        _record_payload(item, include_cache=False, include_seal=False)
+        for item in record.rerun_records
+    ]
+    if record.final_whole is not None:
+        payload["final_whole"] = _final_whole_payload(
+            record.final_whole, include_seal=False
+        )
+    if record.structural is not None:
+        structural = structural_authorization_evidence_payload(record.structural)
+        structural.pop("evidence_sha256")
+        payload["structural"] = structural
+    if record.composition is not None:
+        composition = composition_proof_payload(record.composition)
+        composition.pop("evidence_sha256")
+        payload["composition"] = composition
+    return payload
+
+
+def focused_recovery_evidence_payload(
+    context: FocusedRecoveryContext,
+    selection,
+    initial_records,
+    recoveries,
+) -> Mapping[str, object]:
+    from maximum_optimizer.focused_regions import FocusSelection
+
+    if not isinstance(context, FocusedRecoveryContext) or not isinstance(selection, FocusSelection):
+        raise TypeError("focused recovery evidence arguments are invalid")
+    records = tuple(initial_records)
+    rounds = tuple(recoveries)
+    if not rounds:
+        raise ValueError("focused recovery evidence requires a non-empty recovery sequence")
+    if len(rounds) > context.base_context.policy.max_recovery_rounds:
+        raise ValueError("focused recovery evidence exceeds round bound")
+    if any(not isinstance(item, FocusedRecoveryEvidence) for item in rounds):
+        raise TypeError("focused recovery evidence contains an invalid round")
+    if tuple(item.round_index for item in rounds) != tuple(range(len(rounds))):
+        raise ValueError("focused recovery round indices are not contiguous")
+
+    initial = focused_gate_evidence_payload(
+        context.base_context, selection, records, recoveries=()
+    )
+    if initial["authorization_sha256"] != context.initial_authorization_sha256:
+        raise ValueError("focused recovery initial authorization mismatch")
+    selected = tuple(selection.selected)
+    folded = {record.target.region_key: record for record in records}
+    if set(folded) != {target.region_key for target in selected}:
+        raise ValueError("focused recovery initial fold is incomplete")
+    whole_profile_hash = _profile_proof_sha256(context.base_context.whole_profile)
+    focused_profile_hash = _profile_proof_sha256(context.base_context.focused_profile)
+    previous_recipe: CompositeRecipe | None = None
+    final_authorized = 0
+    for index, recovery in enumerate(rounds):
+        if recovery.evidence_sha256 != _focused_recovery_digest(recovery):
+            raise ValueError("focused recovery round seal mismatch")
+        recipe = recovery.recipe
+        if (
+            recipe.round_index != index
+            or recipe.family_id != context.base_context.family_id
+            or recipe.base_candidate_id != context.base_context.candidate_id
+            or recipe.base_cache_digest != context.base_cache_digest
+            or recipe.whole_profile_sha256 != whole_profile_hash
+            or recipe.focused_profile_sha256 != focused_profile_hash
+            or recipe.dependency_proof_sha256 != context.base_context.dependency_proof_sha256
+            or recipe.selector_version != context.base_context.policy.selector
+        ):
+            raise ValueError("focused recovery recipe continuity binding is invalid")
+        if previous_recipe is not None:
+            for field_name in (
+                "family_id", "family_input_sha256", "base_candidate_id",
+                "base_spec_sha256", "base_cache_digest",
+                "base_source_manifest_sha256", "optimizer_contract_sha256",
+                "whole_profile_sha256", "focused_profile_sha256",
+                "dependency_proof_sha256", "selector_version",
+            ):
+                if getattr(recipe, field_name) != getattr(previous_recipe, field_name):
+                    raise ValueError("focused recovery cumulative base contract changed")
+            previous = {item.source_identity: item for item in previous_recipe.overlays}
+            current = {item.source_identity: item for item in recipe.overlays}
+            if not set(previous).issubset(current):
+                raise ValueError("focused recovery cumulative recipe removed an overlay")
+            changed_overlays = sum(current[key] != previous.get(key) for key in current)
+            if changed_overlays != 1:
+                raise ValueError("focused recovery round must advance exactly one source overlay")
+            if any(
+                key in previous and current[key].base_source_sha256 != previous[key].base_source_sha256
+                for key in previous
+            ):
+                raise ValueError("focused recovery changed immutable base source proof")
+        previous_recipe = recipe
+        if recovery.composition is not None:
+            if recovery.composition.base_manifest_sha256 != recipe.base_source_manifest_sha256:
+                raise ValueError("focused recovery composition base mismatch")
+            if {item.source_identity for item in recovery.changed_sources} != {
+                item.source_identity for item in recipe.overlays
+            }:
+                raise ValueError("focused recovery composition does not prove cumulative overlays")
+        if recovery.structural is not None:
+            expected_compile = compile_manifest_sha256(recovery.compile_files)
+            if recovery.structural.compile_manifest_sha256 != expected_compile:
+                raise ValueError("focused recovery compile manifest binding mismatch")
+        reaches_focus = recovery.terminal_status in {
+            "focused_failed", "final_whole_failed", "authorized",
+        }
+        if reaches_focus:
+            rerun_by_region = {item.target.region_key: item for item in recovery.rerun_records}
+            reused_by_region = {
+                item.region_key: item.evidence_sha256
+                for item in recovery.reused_region_evidence
+            }
+            # The locked schema-2 context seals only the aggregate dependency
+            # proof, not the per-region closure membership needed to prove a
+            # target unaffected. Fail closed: every selected target is rerun.
+            if reused_by_region:
+                raise ValueError(
+                    "focused recovery cannot authorize reuse without explicit dependency closure"
+                )
+            if set(rerun_by_region) & set(reused_by_region) or set(rerun_by_region) | set(reused_by_region) != set(folded):
+                raise ValueError("focused recovery rerun/reuse partition is invalid")
+            for region_key, evidence_sha256 in reused_by_region.items():
+                if evidence_sha256 != folded[region_key].evidence_sha256:
+                    raise ValueError("focused recovery reused evidence is not immediately prior")
+            target_by_region = {target.region_key: target for target in selected}
+            for region_key, rerun in rerun_by_region.items():
+                if rerun.target != target_by_region[region_key]:
+                    raise ValueError("focused recovery rerun target mismatch")
+                _validate_profile_coherence(
+                    rerun.validation, context.base_context.focused_profile
+                )
+                proof = context.base_context.material_proofs[region_key]
+                if rerun.material_proof_sha256 != proof["digest"]:
+                    raise ValueError("focused recovery rerun material proof mismatch")
+                folded[region_key] = rerun
+            all_focused_pass = all(item.validation.passed for item in folded.values())
+            if recovery.terminal_status == "focused_failed" and all_focused_pass:
+                raise ValueError("focused_failed round unexpectedly folds to pass")
+            if recovery.terminal_status in {"final_whole_failed", "authorized"} and not all_focused_pass:
+                raise ValueError("final-whole round requires a passing focused fold")
+        if recovery.terminal_status == "authorized":
+            final_authorized += 1
+            if index != len(rounds) - 1:
+                raise ValueError("only the last recovery round may authorize")
+        elif index == len(rounds) - 1:
+            raise ValueError("last recovery round must be authorized")
+        if recovery.final_whole is not None:
+            _validate_validation(
+                recovery.final_whole.validation,
+                "passed" if recovery.final_whole.validation.passed else "failed",
+            )
+            _validate_profile_coherence(
+                recovery.final_whole.validation,
+                context.base_context.whole_profile,
+            )
+    if final_authorized != 1:
+        raise ValueError("focused recovery requires exactly one final authorization")
+
+    last = rounds[-1]
+    terminal_candidate = "recovery-" + last.recipe.recipe_sha256
+    if last.final_whole.candidate_id != terminal_candidate:
+        raise ValueError("focused recovery terminal candidate is not recipe-derived")
+    context_payload = _context_payload(context.base_context)
+    selection_payload = canonical_payload(selection)
+    authorization = {
+        "schema": 2,
+        "family_id": context.base_context.family_id,
+        "candidate_id": terminal_candidate,
+        "context": context_payload,
+        "selection": selection_payload,
+        "records": tuple(
+            _record_payload(folded[target.region_key], include_cache=False, include_seal=False)
+            for target in selected
+        ),
+        "recoveries": tuple(_recovery_authorization_payload(item) for item in rounds),
+    }
+    authorization_sha256 = hashlib.sha256(
+        canonical_json(authorization).encode("utf-8")
+    ).hexdigest()
+    outer = {
+        "schema": 2,
+        "family_id": context.base_context.family_id,
+        "candidate_id": terminal_candidate,
+        "context": context_payload,
+        "selection": selection_payload,
+        "records": tuple(
+            _record_payload(folded[target.region_key], include_cache=True, include_seal=True)
+            for target in selected
+        ),
+        "recoveries": tuple(
+            _focused_recovery_payload(item, include_seal=True) for item in rounds
+        ),
+        "authorization_sha256": authorization_sha256,
+    }
+    outer["evidence_sha256"] = hashlib.sha256(
+        canonical_json(outer).encode("utf-8")
+    ).hexdigest()
+    return deep_freeze(outer)
+
+
 def validate_focused_gate_evidence_payload(
     value: object,
     *,
@@ -2278,6 +2769,9 @@ def validate_focused_gate_evidence_payload(
     eligible_targets,
     targets,
     regions: Mapping[str, FocusRegionResult],
+    recovery_context: FocusedRecoveryContext | None = None,
+    initial_records=(),
+    recoveries=(),
 ) -> Mapping[str, object]:
     from maximum_optimizer.focused_regions import FocusSelection
 
@@ -2316,6 +2810,38 @@ def validate_focused_gate_evidence_payload(
         "schema", "family_id", "candidate_id", "context", "selection", "records",
         "recoveries", "authorization_sha256", "evidence_sha256",
     }, "focused gate evidence")
+    if payload["schema"] == 2:
+        if not isinstance(recovery_context, FocusedRecoveryContext):
+            raise ValueError("schema-2 focused evidence requires typed recovery context")
+        eligible_tuple = tuple(eligible_targets)
+        target_tuple = tuple(targets)
+        if not eligible_tuple or not target_tuple:
+            raise ValueError("schema-2 focused evidence targets are invalid")
+        selection = FocusSelection(
+            eligible_tuple[0].selector_input_sha256, eligible_tuple, target_tuple
+        )
+        rebuilt = focused_recovery_evidence_payload(
+            recovery_context, selection, tuple(initial_records), tuple(recoveries)
+        )
+        if (
+            family_id != recovery_context.base_context.family_id
+            or candidate_id != rebuilt["candidate_id"]
+            or canonical_json(rebuilt) != canonical_json(payload)
+        ):
+            raise ValueError("schema-2 focused evidence differs from typed authorization")
+        final_records = rebuilt["records"]
+        region_map = dict(regions)
+        if set(region_map) != {target.region_key for target in target_tuple}:
+            raise ValueError("schema-2 focused region cardinality differs")
+        for target, raw in zip(target_tuple, final_records):
+            result = region_map[target.region_key]
+            if (
+                canonical_json(raw["target"]) != canonical_json(canonical_payload(target))
+                or canonical_json(raw["validation"]) != canonical_json(canonical_payload(result.validation))
+                or raw["evidence_sha256"] != result.evidence_sha256
+            ):
+                raise ValueError("schema-2 focused terminal record differs from result")
+        return deep_freeze(payload)
     if payload["schema"] != 1 or payload["family_id"] != family_id or payload["candidate_id"] != candidate_id:
         raise ValueError("focused gate evidence identity is invalid")
     if payload["recoveries"] != []:

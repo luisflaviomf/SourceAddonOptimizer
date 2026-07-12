@@ -1,0 +1,815 @@
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+import stat
+import threading
+import re
+from pathlib import Path
+from typing import Mapping
+
+from .domain import (
+    CandidateEvaluation,
+    ChangedSourceProof,
+    CandidateSpec,
+    CompositeRecipe,
+    ComposedSourceTree,
+    CompositionProof,
+    FocusedEvidenceRef,
+    RecoverySourceSnapshot,
+    SourceFileProof,
+    SourceOverlay,
+    SourceTreeManifest,
+    composite_recipe_payload,
+    changed_source_proof_payload,
+    composition_proof_payload,
+    source_overlay_payload,
+    source_tree_manifest_payload,
+)
+from .processes import ProcessCancelledError
+from .focused_cache import (
+    _copy_file_no_follow,
+    _file_proof,
+    _has_reparse_ancestor,
+    _is_reparse as _focused_is_reparse,
+)
+from .qc_graph import QcGraph, parse_qc_graph
+from .reporting import canonical_json
+
+
+_MAX_SOURCE_FILES = 4096
+_MAX_SOURCE_BYTES = 2 * 1024 ** 3
+_CHUNK = 1024 * 1024
+_REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _cancel(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelledError("source recovery cancelled")
+
+
+def _is_reparse(info: os.stat_result) -> bool:
+    return bool(getattr(info, "st_file_attributes", 0) & _REPARSE_ATTRIBUTE)
+
+
+def _contained(path: Path, root: Path) -> str:
+    path = Path(os.path.abspath(path))
+    root = Path(os.path.abspath(root))
+    try:
+        relative = path.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise ValueError("source path escapes source root") from exc
+    if not relative or relative == "." or "\\" in relative or ".." in relative.split("/"):
+        raise ValueError("source path is not canonical")
+    return relative
+
+
+def _safe_tree_files(root: Path, cancel_event: threading.Event | None) -> tuple[Path, ...]:
+    root = Path(os.path.abspath(root))
+    if _has_reparse_ancestor(root):
+        raise ValueError("source root has a reparse ancestor")
+    root_info = os.lstat(root)
+    if not stat.S_ISDIR(root_info.st_mode) or _is_reparse(root_info):
+        raise ValueError("source root must be a regular non-reparse directory")
+    pending = [root]
+    files: list[Path] = []
+    while pending:
+        _cancel(cancel_event)
+        directory = pending.pop()
+        directory_info = os.lstat(directory)
+        if not stat.S_ISDIR(directory_info.st_mode) or _is_reparse(directory_info):
+            raise ValueError("source tree contains an unsafe directory")
+        with os.scandir(directory) as entries:
+            ordered = sorted(entries, key=lambda item: (item.name.casefold(), item.name))
+        for entry in ordered:
+            _cancel(cancel_event)
+            path = Path(entry.path)
+            info = entry.stat(follow_symlinks=False)
+            if _is_reparse(info) or stat.S_ISLNK(info.st_mode):
+                raise ValueError("source tree contains a reparse point or symlink")
+            if stat.S_ISDIR(info.st_mode):
+                pending.append(path)
+            elif stat.S_ISREG(info.st_mode):
+                files.append(path)
+                if len(files) > _MAX_SOURCE_FILES:
+                    raise ValueError("source tree exceeds file bound")
+            else:
+                raise ValueError("source tree contains a special file")
+    files.sort(key=lambda item: (_contained(item, root).casefold(), _contained(item, root)))
+    relatives = [_contained(item, root) for item in files]
+    if len({item.casefold() for item in relatives}) != len(relatives):
+        raise ValueError("source tree contains a case-colliding path")
+    return tuple(files)
+
+
+def _hash_current_file(
+    path: Path,
+    root: Path,
+    cancel_event: threading.Event | None,
+    *,
+    max_bytes: int,
+) -> tuple[int, str]:
+    path = Path(path)
+    return _file_proof(
+        path, cancel_event, max_bytes=max_bytes,
+        contained_root=root,
+    )
+
+
+def _manifest_digest(
+    root_identity: str, files: tuple[SourceFileProof, ...], total_bytes: int
+) -> str:
+    payload = {
+        "schema": 1,
+        "root_identity": root_identity,
+        "files": [{
+            "file_identity": item.file_identity,
+            "kind": item.kind,
+            "relative_path": item.relative_path,
+            "size": item.size,
+            "sha256": item.sha256,
+        } for item in files],
+        "total_files": len(files),
+        "total_bytes": total_bytes,
+    }
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def build_source_tree_manifest(
+    root: Path,
+    graph: QcGraph,
+    root_identity: str,
+    cancel_event: threading.Event | None,
+) -> SourceTreeManifest:
+    root = Path(os.path.abspath(root))
+    if not isinstance(graph, QcGraph) or Path(os.path.abspath(graph.family_root)) != root:
+        raise ValueError("QC graph does not belong to source root")
+    qc_paths = {Path(os.path.abspath(item.path)) for item in graph.files}
+    roles: dict[Path, set[str]] = {}
+    identities: dict[Path, set[str]] = {}
+    for reference in graph.references:
+        resolved = Path(os.path.abspath(reference.source_path))
+        _contained(resolved, root)
+        roles.setdefault(resolved, set()).add(reference.role)
+        relative = _contained(resolved, root)
+        parts = list(Path(*relative.split("/")).parts)
+        if reference.role == "visual":
+            if len(parts) >= 2 and parts[-2].casefold() == "output":
+                parts.pop(-2)
+            elif parts and parts[0].casefold() == "output":
+                parts.pop(0)
+            leaf = Path(parts[-1])
+            stem = re.sub(r"_(?:optimized|opt)$", "", leaf.stem, flags=re.IGNORECASE)
+            parts[-1] = stem + leaf.suffix.casefold()
+        identity = "/".join(part.casefold() for part in parts)
+        identities.setdefault(resolved, set()).add(identity)
+    if any(len(values) != 1 for values in identities.values()):
+        raise ValueError("QC graph source has ambiguous logical identities")
+    flattened = [next(iter(values)) for values in identities.values()]
+    if len(set(flattened)) != len(flattened):
+        raise ValueError("QC graph source identities collide")
+    for qc in qc_paths:
+        _contained(qc, root)
+    proofs: list[SourceFileProof] = []
+    total_bytes = 0
+    for path in _safe_tree_files(root, cancel_event):
+        relative = _contained(path, root)
+        size, digest = _hash_current_file(
+            path, root, cancel_event, max_bytes=_MAX_SOURCE_BYTES - total_bytes
+        )
+        total_bytes += size
+        if total_bytes > _MAX_SOURCE_BYTES:
+            raise ValueError("source tree exceeds byte bound")
+        resolved = Path(os.path.abspath(path))
+        if resolved in qc_paths:
+            kind = "qc"
+        else:
+            source_roles = roles.get(resolved, set())
+            if any(role in {"collision", "physics"} for role in source_roles):
+                kind = "physics-source"
+            elif "animation" in source_roles:
+                kind = "animation-source"
+            elif "visual" in source_roles:
+                kind = "visual-source"
+            else:
+                kind = "auxiliary"
+        identity = next(iter(identities[resolved])) if resolved in identities else (
+            relative if kind == "qc" else f"auxiliary/{relative}"
+        )
+        proofs.append(SourceFileProof(identity, kind, relative, size, digest))
+    proofs_tuple = tuple(sorted(
+        proofs, key=lambda item: (item.file_identity.casefold(), item.file_identity)
+    ))
+    return SourceTreeManifest(
+        1, root_identity, proofs_tuple, len(proofs_tuple), total_bytes,
+        _manifest_digest(root_identity, proofs_tuple, total_bytes),
+    )
+
+
+def revalidate_recovery_snapshot(
+    snapshot: RecoverySourceSnapshot,
+    cancel_event: threading.Event | None,
+) -> SourceTreeManifest:
+    if not isinstance(snapshot, RecoverySourceSnapshot):
+        raise TypeError("recovery snapshot is invalid")
+    root = Path(snapshot.source_root)
+    current_paths = _safe_tree_files(root, cancel_event)
+    by_relative = {item.relative_path: item for item in snapshot.source_manifest.files}
+    current_by_relative = {_contained(path, root): path for path in current_paths}
+    if set(current_by_relative) != set(by_relative):
+        raise ValueError("recovery snapshot tree cardinality or path set changed")
+    current: list[SourceFileProof] = []
+    total = 0
+    for expected in snapshot.source_manifest.files:
+        relative = expected.relative_path
+        path = current_by_relative[relative]
+        expected = by_relative[relative]
+        size, digest = _hash_current_file(
+            path, root, cancel_event, max_bytes=_MAX_SOURCE_BYTES - total
+        )
+        total += size
+        current.append(SourceFileProof(
+            expected.file_identity, expected.kind, relative, size, digest
+        ))
+    files = tuple(current)
+    manifest = SourceTreeManifest(
+        1, snapshot.source_manifest.root_identity, files, len(files), total,
+        _manifest_digest(snapshot.source_manifest.root_identity, files, total),
+    )
+    if manifest != snapshot.source_manifest:
+        raise ValueError("recovery snapshot bytes no longer match sealed manifest")
+    return manifest
+
+
+def build_recovery_source_snapshot(
+    *,
+    kind: str,
+    family_id: str,
+    family_input_sha256: str,
+    optimizer_contract_sha256: str,
+    whole_profile_sha256: str,
+    focused_profile_sha256: str,
+    dependency_proof_sha256: str,
+    candidate_id: str | None,
+    candidate_cache_digest: str | None,
+    source_root: Path,
+    source_manifest: SourceTreeManifest,
+    focused_evidence,
+) -> RecoverySourceSnapshot:
+    refs = tuple(focused_evidence)
+    payload = {
+        "schema": 1, "kind": kind, "family_id": family_id,
+        "family_input_sha256": family_input_sha256,
+        "optimizer_contract_sha256": optimizer_contract_sha256,
+        "whole_profile_sha256": whole_profile_sha256,
+        "focused_profile_sha256": focused_profile_sha256,
+        "dependency_proof_sha256": dependency_proof_sha256,
+        "candidate_id": candidate_id,
+        "candidate_cache_digest": candidate_cache_digest,
+        "source_manifest": source_tree_manifest_payload(source_manifest),
+        "focused_evidence": [
+            {"region_key": item.region_key, "evidence_sha256": item.evidence_sha256}
+            for item in refs
+        ],
+    }
+    digest = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    return RecoverySourceSnapshot(
+        1, kind, family_id, family_input_sha256, optimizer_contract_sha256,
+        whole_profile_sha256, focused_profile_sha256, dependency_proof_sha256,
+        candidate_id, candidate_cache_digest, Path(source_root), source_manifest,
+        refs, digest,
+    )
+
+
+def optimizer_contract_sha256(spec: CandidateSpec) -> str:
+    if not isinstance(spec, CandidateSpec):
+        raise TypeError("optimizer contract requires a candidate spec")
+    payload = {
+        "engine": spec.engine,
+        "target_error": spec.target_error,
+        "repair_profile": spec.repair_profile,
+        "strategy": spec.strategy,
+        "update_vertices": spec.update_vertices,
+        "transfer": spec.transfer,
+    }
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def candidate_spec_sha256(spec: CandidateSpec) -> str:
+    if not isinstance(spec, CandidateSpec):
+        raise TypeError("candidate spec proof requires a candidate spec")
+    return hashlib.sha256(canonical_json(spec.cache_payload()).encode("utf-8")).hexdigest()
+
+
+def _effective_ratio(spec: CandidateSpec, region_key: str) -> float:
+    overrides = dict(spec.region_overrides)
+    value = overrides.get(region_key, spec.target_ratio)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("candidate effective ratio is invalid")
+    result = float(value)
+    if not 0 < result <= 1:
+        raise ValueError("candidate effective ratio is invalid")
+    return result
+
+
+def _file_by_identity(snapshot: RecoverySourceSnapshot, identity: str) -> SourceFileProof | None:
+    return next(
+        (item for item in snapshot.source_manifest.files if item.file_identity == identity),
+        None,
+    )
+
+
+def _snapshot_contract_matches(
+    candidate: RecoverySourceSnapshot,
+    base: RecoverySourceSnapshot,
+) -> bool:
+    return all((
+        candidate.family_id == base.family_id,
+        candidate.family_input_sha256 == base.family_input_sha256,
+        candidate.optimizer_contract_sha256 == base.optimizer_contract_sha256,
+        candidate.whole_profile_sha256 == base.whole_profile_sha256,
+        candidate.focused_profile_sha256 == base.focused_profile_sha256,
+        candidate.dependency_proof_sha256 == base.dependency_proof_sha256,
+    ))
+
+
+def _overlay_digest(overlay: SourceOverlay) -> str:
+    return hashlib.sha256(
+        canonical_json(source_overlay_payload(overlay)).encode("utf-8")
+    ).hexdigest()
+
+
+def select_recovery_overlays(
+    failed: CandidateEvaluation,
+    selection: object,
+    evaluations: object,
+    snapshots_by_candidate: Mapping[str, RecoverySourceSnapshot],
+    original_snapshot: RecoverySourceSnapshot,
+    current_recipe: CompositeRecipe | None,
+    attempted_overlay_sha256: object,
+    round_index: int,
+) -> tuple[SourceOverlay, ...]:
+    if not isinstance(failed, CandidateEvaluation):
+        raise TypeError("failed recovery evaluation is invalid")
+    if type(round_index) is not int or not 0 <= round_index < 3:
+        raise ValueError("recovery round index is invalid")
+    selected = tuple(getattr(selection, "selected", ()))
+    if not selected or len(selected) > 4:
+        raise ValueError("recovery focus selection is invalid")
+    evaluations_tuple = tuple(evaluations)
+    if len(evaluations_tuple) > 4096 or any(
+        not isinstance(item, CandidateEvaluation) for item in evaluations_tuple
+    ):
+        raise ValueError("recovery evaluations are invalid")
+    attempted = frozenset(attempted_overlay_sha256)
+    if any(type(item) is not str for item in attempted):
+        raise ValueError("attempted overlay hashes are invalid")
+    base_candidate_id = (
+        failed.spec.candidate_id
+        if current_recipe is None else current_recipe.base_candidate_id
+    )
+    base_snapshot = snapshots_by_candidate.get(base_candidate_id)
+    if base_snapshot is None or base_snapshot.kind != "candidate":
+        raise ValueError("failed candidate source snapshot is unavailable")
+    if base_snapshot.optimizer_contract_sha256 != optimizer_contract_sha256(failed.spec):
+        raise ValueError("failed candidate optimizer contract mismatch")
+    existing = {
+        item.source_identity: item for item in (() if current_recipe is None else current_recipe.overlays)
+    }
+    failures = []
+    for target in selected:
+        result = failed.focused_by_region.get(target.region_key)
+        if result is None or result.target != target:
+            raise ValueError("failed evaluation does not cover selected focus")
+        if not result.validation.passed:
+            failures.append(target)
+    if not failures:
+        return ()
+    failures.sort(key=lambda item: (item.source_identity.casefold(), item.source_identity, item.region_key))
+    changed = False
+    for target in failures:
+        identity = target.source_identity
+        if identity in existing and existing[identity].mode == "exact-original":
+            continue
+        base_file = _file_by_identity(base_snapshot, identity)
+        if base_file is None:
+            raise ValueError("failed focus source is absent from base snapshot")
+        current_overlay = existing.get(identity)
+        current_hash = (
+            base_file.sha256 if current_overlay is None else current_overlay.replacement_sha256
+        )
+        current_ratio = (
+            _effective_ratio(failed.spec, target.region_key)
+            if current_overlay is None else current_overlay.effective_ratio
+        )
+        if current_ratio is None:
+            continue
+        ordered: list[tuple[float, str, str, CandidateEvaluation, RecoverySourceSnapshot]] = []
+        for evaluation in evaluations_tuple:
+            snapshot = snapshots_by_candidate.get(evaluation.spec.candidate_id)
+            if snapshot is None or snapshot.kind != "candidate":
+                continue
+            ratio = _effective_ratio(evaluation.spec, target.region_key)
+            if ratio <= current_ratio:
+                continue
+            ordered.append((ratio, evaluation.spec.candidate_id, snapshot.snapshot_sha256, evaluation, snapshot))
+        ordered.sort(key=lambda item: (item[0], item[1], item[2]))
+        replacement: SourceOverlay | None = None
+        for ratio, candidate_id, _snapshot_hash, evaluation, snapshot in ordered[:8]:
+            if candidate_id == failed.spec.candidate_id or evaluation.spec.composite_recipe is not None:
+                continue
+            if not evaluation.structural.passed or not evaluation.whole_visual.passed:
+                continue
+            if snapshot.candidate_id != candidate_id or snapshot.optimizer_contract_sha256 != optimizer_contract_sha256(evaluation.spec):
+                continue
+            if not _snapshot_contract_matches(snapshot, base_snapshot):
+                continue
+            focused = evaluation.focused_by_region.get(target.region_key)
+            evidence_by_region = {item.region_key: item.evidence_sha256 for item in snapshot.focused_evidence}
+            if (
+                focused is None or focused.target != target or not focused.validation.passed
+                or evidence_by_region.get(target.region_key) != focused.evidence_sha256
+            ):
+                continue
+            donor_file = _file_by_identity(snapshot, identity)
+            if donor_file is None or donor_file.sha256 == current_hash:
+                continue
+            proposal = SourceOverlay(
+                identity, "donor", target.region_key, base_file.sha256,
+                donor_file.sha256, donor_file.size, snapshot.snapshot_sha256,
+                candidate_id, snapshot.candidate_cache_digest, ratio,
+                (FocusedEvidenceRef(target.region_key, focused.evidence_sha256),), None,
+            )
+            if _overlay_digest(proposal) in attempted:
+                continue
+            replacement = proposal
+            break
+        if replacement is None:
+            if original_snapshot.kind != "original" or not _snapshot_contract_matches(original_snapshot, base_snapshot):
+                raise ValueError("authoritative original snapshot contract mismatch")
+            original_file = _file_by_identity(original_snapshot, identity)
+            if original_file is None:
+                raise ValueError("failed focus source is absent from original snapshot")
+            if original_file.sha256 == current_hash:
+                continue
+            proposal = SourceOverlay(
+                identity, "exact-original", target.region_key, base_file.sha256,
+                original_file.sha256, original_file.size, original_snapshot.snapshot_sha256,
+                None, None, None, (), "donors-exhausted-v1",
+            )
+            if _overlay_digest(proposal) in attempted:
+                continue
+            replacement = proposal
+        existing[identity] = replacement
+        changed = True
+        if len(existing) > 4:
+            raise ValueError("recovery exceeds changed-source bound")
+        # One reserved round advances exactly one canonical source. Remaining
+        # failed sources are handled by later cumulative recipes.
+        break
+    if not changed:
+        return ()
+    return tuple(sorted(existing.values(), key=lambda item: (item.source_identity.casefold(), item.source_identity)))
+
+
+def recovery_candidate_spec(base_spec: CandidateSpec, recipe: CompositeRecipe) -> CandidateSpec:
+    if not isinstance(base_spec, CandidateSpec) or not isinstance(recipe, CompositeRecipe):
+        raise TypeError("recovery candidate contract is invalid")
+    if base_spec.composite_recipe is not None:
+        raise ValueError("recovery base must be an ordinary candidate")
+    if recipe.kind != "focused-recovery-v1":
+        raise ValueError("Task 5 recovery requires focused-recovery-v1")
+    if recipe.base_candidate_id != base_spec.candidate_id:
+        raise ValueError("recovery recipe base candidate mismatch")
+    if recipe.base_spec_sha256 != candidate_spec_sha256(base_spec):
+        raise ValueError("recovery recipe base spec mismatch")
+    if recipe.optimizer_contract_sha256 != optimizer_contract_sha256(base_spec):
+        raise ValueError("recovery recipe optimizer contract mismatch")
+    return CandidateSpec(
+        "recovery-" + recipe.recipe_sha256,
+        base_spec.engine,
+        base_spec.target_ratio,
+        base_spec.target_error,
+        base_spec.repair_profile,
+        base_spec.region_overrides,
+        strategy=base_spec.strategy,
+        update_vertices=base_spec.update_vertices,
+        transfer=base_spec.transfer,
+        composite_recipe=recipe,
+    )
+
+
+def focused_recovery_recipe(
+    base_spec: CandidateSpec,
+    base_snapshot: RecoverySourceSnapshot,
+    overlays,
+    *,
+    round_index: int,
+    selector_version: str,
+) -> CompositeRecipe:
+    if not isinstance(base_spec, CandidateSpec) or base_spec.composite_recipe is not None:
+        raise ValueError("focused recovery recipe requires an ordinary base spec")
+    if not isinstance(base_snapshot, RecoverySourceSnapshot) or base_snapshot.kind != "candidate":
+        raise ValueError("focused recovery recipe requires a candidate base snapshot")
+    if (
+        base_snapshot.candidate_id != base_spec.candidate_id
+        or base_snapshot.optimizer_contract_sha256 != optimizer_contract_sha256(base_spec)
+    ):
+        raise ValueError("focused recovery base snapshot does not match spec")
+    overlay_tuple = tuple(overlays)
+    payload = {
+        "schema": 1, "kind": "focused-recovery-v1",
+        "family_id": base_snapshot.family_id,
+        "family_input_sha256": base_snapshot.family_input_sha256,
+        "base_candidate_id": base_spec.candidate_id,
+        "base_spec_sha256": candidate_spec_sha256(base_spec),
+        "base_cache_digest": base_snapshot.candidate_cache_digest,
+        "base_source_manifest_sha256": base_snapshot.source_manifest.digest,
+        "optimizer_contract_sha256": base_snapshot.optimizer_contract_sha256,
+        "whole_profile_sha256": base_snapshot.whole_profile_sha256,
+        "focused_profile_sha256": base_snapshot.focused_profile_sha256,
+        "dependency_proof_sha256": base_snapshot.dependency_proof_sha256,
+        "round_index": round_index, "direct_ratio": None,
+        "overlays": [source_overlay_payload(item) for item in overlay_tuple],
+        "selector_version": selector_version, "prefilter_version": None,
+    }
+    digest = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    return CompositeRecipe(
+        1, "focused-recovery-v1", base_snapshot.family_id,
+        base_snapshot.family_input_sha256, base_spec.candidate_id,
+        candidate_spec_sha256(base_spec), base_snapshot.candidate_cache_digest,
+        base_snapshot.source_manifest.digest, base_snapshot.optimizer_contract_sha256,
+        base_snapshot.whole_profile_sha256, base_snapshot.focused_profile_sha256,
+        base_snapshot.dependency_proof_sha256, round_index, None, overlay_tuple,
+        selector_version, None, digest,
+    )
+
+
+def _overlaps(first: Path, second: Path) -> bool:
+    first_text = os.path.normcase(os.path.abspath(first))
+    second_text = os.path.normcase(os.path.abspath(second))
+    try:
+        common = os.path.commonpath((first_text, second_text))
+    except ValueError:
+        return False
+    return common in {first_text, second_text}
+
+
+def _inventory_with_kinds(
+    root: Path,
+    root_identity: str,
+    kinds: Mapping[str, str],
+    cancel_event: threading.Event | None,
+) -> SourceTreeManifest:
+    root = Path(os.path.abspath(root))
+    proofs: list[SourceFileProof] = []
+    total = 0
+    for path in _safe_tree_files(root, cancel_event):
+        relative = _contained(path, root)
+        kind = kinds.get(relative)
+        if kind is None:
+            kind = "qc" if relative.casefold().endswith(".qc") else "auxiliary"
+        size, digest = _file_proof(
+            path, cancel_event, max_bytes=_MAX_SOURCE_BYTES - total, contained_root=root
+        )
+        total += size
+        if total > _MAX_SOURCE_BYTES:
+            raise ValueError("source tree exceeds byte bound")
+        proofs.append(SourceFileProof(relative, kind, relative, size, digest))
+    files = tuple(proofs)
+    return SourceTreeManifest(
+        1, root_identity, files, len(files), total,
+        _manifest_digest(root_identity, files, total),
+    )
+
+
+def _matching_graph_manifest(
+    root: Path,
+    expected_digest: str,
+    root_identity: str,
+    cancel_event: threading.Event | None,
+) -> tuple[Path, QcGraph, SourceTreeManifest]:
+    root = Path(os.path.abspath(root))
+    matches: list[tuple[Path, QcGraph, SourceTreeManifest]] = []
+    for path in _safe_tree_files(root, cancel_event):
+        if path.suffix.casefold() != ".qc":
+            continue
+        try:
+            graph = parse_qc_graph(path, root)
+            manifest = build_source_tree_manifest(root, graph, root_identity, cancel_event)
+        except (OSError, UnicodeError, ValueError):
+            continue
+        if manifest.digest == expected_digest:
+            matches.append((path, graph, manifest))
+    if len(matches) != 1:
+        raise ValueError("source tree does not have one exact QC graph manifest")
+    return matches[0]
+
+
+def _composition_proof(
+    recipe: CompositeRecipe,
+    base_manifest: SourceTreeManifest,
+    composed_manifest: SourceTreeManifest,
+    snapshots_by_sha256: Mapping[str, RecoverySourceSnapshot],
+) -> CompositionProof:
+    base_by_id = {item.file_identity: item for item in base_manifest.files}
+    composed_by_id = {item.file_identity: item for item in composed_manifest.files}
+    if set(base_by_id) != set(composed_by_id):
+        raise ValueError("composition added or removed a source file")
+    overlays = {item.source_identity: item for item in recipe.overlays}
+    changed: list[ChangedSourceProof] = []
+    for identity, before in base_by_id.items():
+        after = composed_by_id[identity]
+        overlay = overlays.get(identity)
+        if overlay is None:
+            if before.relative_path != after.relative_path or before.size != after.size or before.sha256 != after.sha256 or before.kind != after.kind:
+                raise ValueError("composition changed an undeclared source")
+            continue
+        if before.sha256 != overlay.base_source_sha256:
+            raise ValueError("overlay base hash does not match immutable base")
+        if after.sha256 != overlay.replacement_sha256 or after.size != overlay.replacement_size:
+            raise ValueError("composed replacement bytes do not match overlay")
+        snapshot = snapshots_by_sha256.get(overlay.replacement_snapshot_sha256)
+        if snapshot is None or snapshot.snapshot_sha256 != overlay.replacement_snapshot_sha256:
+            raise ValueError("overlay replacement snapshot is unavailable")
+        if any((
+            snapshot.family_id != recipe.family_id,
+            snapshot.family_input_sha256 != recipe.family_input_sha256,
+            snapshot.optimizer_contract_sha256 != recipe.optimizer_contract_sha256,
+            snapshot.whole_profile_sha256 != recipe.whole_profile_sha256,
+            snapshot.focused_profile_sha256 != recipe.focused_profile_sha256,
+            snapshot.dependency_proof_sha256 != recipe.dependency_proof_sha256,
+        )):
+            raise ValueError("overlay replacement snapshot crosses recipe contract")
+        snapshot_refs = {
+            item.region_key: item.evidence_sha256 for item in snapshot.focused_evidence
+        }
+        overlay_refs = {
+            item.region_key: item.evidence_sha256 for item in overlay.focused_evidence
+        }
+        if overlay.mode == "donor":
+            if (
+                snapshot.kind != "candidate"
+                or snapshot.candidate_id != overlay.replacement_candidate_id
+                or snapshot.candidate_cache_digest != overlay.replacement_cache_digest
+                or not overlay_refs
+                or any(snapshot_refs.get(key) != value for key, value in overlay_refs.items())
+            ):
+                raise ValueError("donor overlay does not match candidate snapshot evidence")
+        elif overlay.mode == "exact-original":
+            if snapshot.kind != "original":
+                raise ValueError("exact-original overlay does not use original snapshot")
+        elif overlay.mode == "direct-position":
+            if (
+                snapshot.kind != "candidate"
+                or snapshot.candidate_id != overlay.replacement_candidate_id
+                or snapshot.candidate_cache_digest != overlay.replacement_cache_digest
+            ):
+                raise ValueError("direct-position overlay does not match candidate snapshot")
+        replacement = _file_by_identity(snapshot, identity)
+        if replacement is None or replacement.sha256 != after.sha256 or replacement.size != after.size:
+            raise ValueError("composed bytes do not match sealed replacement snapshot")
+        changed.append(ChangedSourceProof(
+            identity, after.relative_path, before.size, before.sha256,
+            after.size, after.sha256, _overlay_digest(overlay), snapshot.snapshot_sha256,
+        ))
+    if set(overlays) != {item.source_identity for item in changed}:
+        raise ValueError("composition did not prove every overlay")
+    changed_tuple = tuple(sorted(changed, key=lambda item: (item.source_identity.casefold(), item.source_identity)))
+    payload = {
+        "schema": 1, "recipe_sha256": recipe.recipe_sha256,
+        "base_manifest_sha256": base_manifest.digest,
+        "composed_manifest_sha256": composed_manifest.digest,
+        "changed_sources": [changed_source_proof_payload(item) for item in changed_tuple],
+    }
+    evidence = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    return CompositionProof(
+        1, recipe.recipe_sha256, base_manifest.digest, composed_manifest.digest,
+        changed_tuple, evidence,
+    )
+
+
+def validate_composition_proof(
+    recipe: CompositeRecipe,
+    snapshots_by_sha256: Mapping[str, RecoverySourceSnapshot],
+    base_root: Path,
+    composed_root: Path,
+    cancel_event: threading.Event | None,
+) -> CompositionProof:
+    if not isinstance(recipe, CompositeRecipe):
+        raise TypeError("composition recipe is invalid")
+    base_root = Path(os.path.abspath(base_root))
+    composed_root = Path(os.path.abspath(composed_root))
+    if _overlaps(base_root, composed_root):
+        raise ValueError("composition roots overlap")
+    for overlay in recipe.overlays:
+        snapshot = snapshots_by_sha256.get(overlay.replacement_snapshot_sha256)
+        if snapshot is None:
+            raise ValueError("replacement snapshot is unavailable")
+        revalidate_recovery_snapshot(snapshot, cancel_event)
+        item = _file_by_identity(snapshot, overlay.source_identity)
+        if item is None:
+            raise ValueError("replacement source is absent from snapshot")
+    base_qc, _base_graph, base_manifest = _matching_graph_manifest(
+        base_root, recipe.base_source_manifest_sha256,
+        "candidate-source-v1", cancel_event,
+    )
+    qc_relative = base_qc.relative_to(base_root)
+    composed_graph = parse_qc_graph(composed_root / qc_relative, composed_root)
+    composed_manifest = build_source_tree_manifest(
+        composed_root, composed_graph, "composite-source-v1", cancel_event
+    )
+    return _composition_proof(recipe, base_manifest, composed_manifest, snapshots_by_sha256)
+
+
+def compose_candidate_sources(
+    base_build: object,
+    recipe: CompositeRecipe,
+    snapshots_by_sha256: Mapping[str, RecoverySourceSnapshot],
+    workspace: Path,
+    cancel_event: threading.Event | None,
+) -> ComposedSourceTree:
+    from .candidates import CandidateBuild
+
+    if not isinstance(base_build, CandidateBuild) or not isinstance(recipe, CompositeRecipe):
+        raise TypeError("composition input is invalid")
+    base_snapshot = base_build.source_snapshot
+    if base_snapshot is None or base_snapshot.kind != "candidate":
+        raise ValueError("composition base has no candidate snapshot")
+    if recipe.base_candidate_id != base_build.spec.candidate_id:
+        raise ValueError("composition recipe base candidate mismatch")
+    if recipe.base_spec_sha256 != candidate_spec_sha256(base_build.spec):
+        raise ValueError("composition recipe base spec mismatch")
+    if recipe.base_cache_digest != base_snapshot.candidate_cache_digest:
+        raise ValueError("composition recipe base cache mismatch")
+    if recipe.base_source_manifest_sha256 != base_snapshot.source_manifest.digest:
+        raise ValueError("composition recipe base source mismatch")
+    if recipe.optimizer_contract_sha256 != optimizer_contract_sha256(base_build.spec):
+        raise ValueError("composition recipe optimizer mismatch")
+    if any((
+        recipe.family_id != base_snapshot.family_id,
+        recipe.family_input_sha256 != base_snapshot.family_input_sha256,
+        recipe.optimizer_contract_sha256 != base_snapshot.optimizer_contract_sha256,
+        recipe.whole_profile_sha256 != base_snapshot.whole_profile_sha256,
+        recipe.focused_profile_sha256 != base_snapshot.focused_profile_sha256,
+        recipe.dependency_proof_sha256 != base_snapshot.dependency_proof_sha256,
+    )):
+        raise ValueError("composition recipe crosses immutable base contract")
+    base_root = Path(base_snapshot.source_root)
+    workspace = Path(os.path.abspath(workspace))
+    if os.path.lexists(workspace):
+        raise ValueError("composition workspace must not exist")
+    if _overlaps(workspace, base_root) or _overlaps(workspace, base_build.compiled_models_dir):
+        raise ValueError("composition workspace overlaps an input")
+    if _has_reparse_ancestor(workspace.parent):
+        raise ValueError("composition workspace parent has a reparse ancestor")
+    # This function is called only after the orchestrator atomically reserves both
+    # the recovery-round and candidate slots. Reopening current bytes starts here.
+    revalidate_recovery_snapshot(base_snapshot, cancel_event)
+    for overlay in recipe.overlays:
+        snapshot = snapshots_by_sha256.get(overlay.replacement_snapshot_sha256)
+        if snapshot is None:
+            raise ValueError("composition replacement snapshot is unavailable")
+        revalidate_recovery_snapshot(snapshot, cancel_event)
+    source_root = workspace / "src"
+    try:
+        workspace.mkdir(parents=False, exist_ok=False)
+        source_root.mkdir()
+        for proof in base_snapshot.source_manifest.files:
+            _cancel(cancel_event)
+            source = base_root / Path(*proof.relative_path.split("/"))
+            destination = source_root / Path(*proof.relative_path.split("/"))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _copy_file_no_follow(source, destination, cancel_event, contained_root=base_root)
+        for overlay in recipe.overlays:
+            snapshot = snapshots_by_sha256[overlay.replacement_snapshot_sha256]
+            replacement = _file_by_identity(snapshot, overlay.source_identity)
+            base_file = _file_by_identity(base_snapshot, overlay.source_identity)
+            if replacement is None or base_file is None:
+                raise ValueError("composition source identity is unavailable")
+            if base_file.sha256 != overlay.base_source_sha256 or replacement.sha256 != overlay.replacement_sha256 or replacement.size != overlay.replacement_size:
+                raise ValueError("composition overlay proof does not match snapshots")
+            source = Path(snapshot.source_root) / Path(*replacement.relative_path.split("/"))
+            destination = source_root / Path(*base_file.relative_path.split("/"))
+            temporary = destination.with_name(destination.name + ".replacement.tmp")
+            _copy_file_no_follow(
+                source, temporary, cancel_event, contained_root=Path(snapshot.source_root)
+            )
+            os.replace(temporary, destination)
+        optimized_relative = Path(base_build.optimized_qc).relative_to(base_root)
+        optimized_qc = source_root / optimized_relative
+        composed_graph = parse_qc_graph(optimized_qc, source_root)
+        composed_manifest = build_source_tree_manifest(
+            source_root, composed_graph, "composite-source-v1", cancel_event
+        )
+        composition = _composition_proof(
+            recipe, base_snapshot.source_manifest, composed_manifest, snapshots_by_sha256
+        )
+        if not optimized_qc.is_file() or _focused_is_reparse(optimized_qc):
+            raise ValueError("composed optimized QC is unavailable")
+        return ComposedSourceTree(workspace, optimized_qc, composed_manifest, composition)
+    except BaseException:
+        if os.path.lexists(workspace):
+            shutil.rmtree(workspace, ignore_errors=True)
+        raise

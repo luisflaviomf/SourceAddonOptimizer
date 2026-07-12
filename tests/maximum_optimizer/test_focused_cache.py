@@ -1451,6 +1451,154 @@ class FocusedValidationAndEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cardinality"):
             focused_gate_evidence_payload(self.context, self.selection, ())
 
+    def test_schema2_recovery_context_binds_initial_base_authorization(self):
+        from dataclasses import replace
+        from maximum_optimizer.focused_cache import FocusedRecoveryContext
+
+        context = FocusedRecoveryContext(2, self.context, HASHES["1"], HASHES["2"])
+        self.assertEqual(context.base_context.candidate_id, "candidate")
+        with self.assertRaises(ValueError):
+            replace(context, schema=1)
+        with self.assertRaises(ValueError):
+            replace(context, initial_authorization_sha256="A" * 64)
+
+    def test_schema2_requires_nonempty_typed_recovery_sequence(self):
+        from maximum_optimizer.focused_cache import (
+            FocusedRecoveryContext,
+            focused_gate_evidence_payload,
+            focused_recovery_evidence_payload,
+        )
+        from maximum_optimizer.domain import ValidationResult
+        from maximum_optimizer.focused_cache import build_focused_render_evidence
+
+        validation = ValidationResult(True, metrics=_validation_metrics(0.0))
+        record = build_focused_render_evidence(
+            self.target, validation, self.metadata.expected, self.files,
+            self.payload["material_proof"]["digest"], False,
+        )
+        initial = focused_gate_evidence_payload(self.context, self.selection, (record,))
+        recovery_context = FocusedRecoveryContext(
+            2, self.context, HASHES["1"], initial["authorization_sha256"]
+        )
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            focused_recovery_evidence_payload(
+                recovery_context, self.selection, (record,), ()
+            )
+
+    def test_schema2_authorized_round_folds_rerun_and_derives_terminal_candidate(self):
+        from maximum_optimizer.domain import (
+            ChangedSourceProof, CompileFileProof, CompositeRecipe, CompositionProof,
+            FocusRegionResult, FocusedRegionPolicy, SourceOverlay, StructuralAuthorizationEvidence,
+            ValidationResult, changed_source_proof_payload, composition_proof_payload,
+            source_overlay_payload, structural_authorization_evidence_payload,
+        )
+        from maximum_optimizer.focused_cache import (
+            FocusedEvidenceContext, FocusedRecoveryContext,
+            build_final_whole_authorization_evidence,
+            build_focused_recovery_evidence, build_focused_render_evidence,
+            compile_manifest_sha256, focused_gate_evidence_payload,
+            focused_recovery_evidence_payload, validate_focused_gate_evidence_payload,
+        )
+        from maximum_optimizer.reporting import canonical_json
+
+        def digest(value):
+            return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+        validation = ValidationResult(True, metrics=_validation_metrics(0.0))
+        record = build_focused_render_evidence(
+            self.target, validation, self.metadata.expected, self.files,
+            self.payload["material_proof"]["digest"], False,
+        )
+        base_context = FocusedEvidenceContext(
+            1, HASHES["3"], "base", FocusedRegionPolicy(1, "surface-risk-top-k-v1", 1),
+            self.payload["whole_profile"], self.payload["focused_profile"],
+            self.payload["trusted_evidence_v3_sha256"],
+            self.payload["dependency_proof_sha256"],
+            {self.target.region_key: self.payload["material_proof"]},
+        )
+        initial = focused_gate_evidence_payload(base_context, self.selection, (record,))
+        overlay = SourceOverlay(
+            "body.smd", "exact-original", self.target.region_key,
+            HASHES["1"], HASHES["2"], 12, HASHES["4"],
+            None, None, None, (), "donors-exhausted-v1",
+        )
+        recipe_raw = {
+            "schema": 1, "kind": "focused-recovery-v1", "family_id": HASHES["3"],
+            "family_input_sha256": HASHES["4"], "base_candidate_id": "base",
+            "base_spec_sha256": HASHES["5"], "base_cache_digest": HASHES["1"],
+            "base_source_manifest_sha256": HASHES["2"],
+            "optimizer_contract_sha256": HASHES["6"],
+            "whole_profile_sha256": digest(self.payload["whole_profile"]),
+            "focused_profile_sha256": digest(self.payload["focused_profile"]),
+            "dependency_proof_sha256": self.payload["dependency_proof_sha256"],
+            "round_index": 0, "direct_ratio": None,
+            "overlays": [source_overlay_payload(overlay)],
+            "selector_version": "surface-risk-top-k-v1", "prefilter_version": None,
+        }
+        recipe_value = CompositeRecipe(
+            1, "focused-recovery-v1", HASHES["3"], HASHES["4"], "base",
+            HASHES["5"], HASHES["1"], HASHES["2"], HASHES["6"],
+            digest(self.payload["whole_profile"]), digest(self.payload["focused_profile"]),
+            self.payload["dependency_proof_sha256"], 0, None, (overlay,),
+            "surface-risk-top-k-v1", None, digest(recipe_raw),
+        )
+        changed = ChangedSourceProof(
+            "body.smd", "body.smd", 10, HASHES["1"], 12, HASHES["2"],
+            digest(source_overlay_payload(overlay)), HASHES["4"],
+        )
+        composition_raw = {
+            "schema": 1, "recipe_sha256": recipe_value.recipe_sha256,
+            "base_manifest_sha256": HASHES["2"],
+            "composed_manifest_sha256": HASHES["7"],
+            "changed_sources": [changed_source_proof_payload(changed)],
+        }
+        composition = CompositionProof(
+            1, recipe_value.recipe_sha256, HASHES["2"], HASHES["7"],
+            (changed,), digest(composition_raw),
+        )
+        compile_files = (CompileFileProof("models/car.mdl", ".mdl", 100, HASHES["8"]),)
+        compile_hash = compile_manifest_sha256(compile_files)
+        structural_raw = {
+            "candidate_cache_digest": HASHES["9"],
+            "composition_evidence_sha256": composition.evidence_sha256,
+            "compile_manifest_sha256": compile_hash, "fingerprint_sha256": HASHES["a"],
+            "validation": {"passed": True, "failures": [], "metrics": {}, "worst_scope": ""},
+        }
+        structural = StructuralAuthorizationEvidence(
+            HASHES["9"], composition.evidence_sha256, compile_hash, HASHES["a"],
+            ValidationResult(True), digest(structural_raw),
+        )
+        terminal_id = "recovery-" + recipe_value.recipe_sha256
+        final = build_final_whole_authorization_evidence(
+            terminal_id, HASHES["9"], recipe_value.recipe_sha256,
+            composition.evidence_sha256, compile_hash, "logs/whole-index.json",
+            HASHES["b"], HASHES["c"], validation,
+        )
+        recovery = build_focused_recovery_evidence(
+            0, "authorized", recipe_value, composition, (changed,), (),
+            compile_files, structural, (record,), final,
+        )
+        evidence = focused_recovery_evidence_payload(
+            FocusedRecoveryContext(2, base_context, HASHES["1"], initial["authorization_sha256"]),
+            self.selection, (record,), (recovery,),
+        )
+        self.assertEqual(evidence["schema"], 2)
+        self.assertEqual(evidence["candidate_id"], terminal_id)
+        self.assertEqual(evidence["recoveries"][0]["terminal_status"], "authorized")
+        validated = validate_focused_gate_evidence_payload(
+            evidence, family_id=HASHES["3"], candidate_id=terminal_id,
+            eligible_targets=self.selection.eligible_ranking,
+            targets=self.selection.selected,
+            regions={self.target.region_key: FocusRegionResult(
+                self.target, validation, record.evidence_sha256, False
+            )},
+            recovery_context=FocusedRecoveryContext(
+                2, base_context, HASHES["1"], initial["authorization_sha256"]
+            ),
+            initial_records=(record,), recoveries=(recovery,),
+        )
+        self.assertEqual(validated["evidence_sha256"], evidence["evidence_sha256"])
+
     def test_schema1_evidence_rejects_rank_target_terminal_and_seal_mutations(self):
         from dataclasses import replace
         from maximum_optimizer.domain import ValidationResult
