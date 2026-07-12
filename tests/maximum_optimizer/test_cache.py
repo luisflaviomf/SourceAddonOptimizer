@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -409,6 +410,71 @@ class CandidateCacheTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertTrue(first_owned)
         self.assertFalse(second_owned)
+
+    def test_validated_store_finalizes_private_staging_before_complete_marker(self):
+        observed = []
+
+        def finalize(staging):
+            observed.append((staging.name, (staging / "complete.json").exists()))
+            self.assertTrue((staging / "payload/model.mdl").is_file())
+            (staging / "maximum_integrity.json").write_text(
+                '{"sealed":true}', encoding="utf-8"
+            )
+
+        final, owned = self.cache.store_validated(
+            self.key, self.source, {"candidate": "recovery"},
+            finalize_staging=finalize,
+            validate_existing=lambda _entry: self.fail("no existing entry expected"),
+        )
+
+        self.assertTrue(owned)
+        self.assertEqual(observed, [(observed[0][0], False)])
+        self.assertTrue((final / "complete.json").is_file())
+        self.assertTrue((final / "maximum_integrity.json").is_file())
+
+    def test_validated_store_failure_never_publishes_or_leaves_staging(self):
+        with self.assertRaisesRegex(ValueError, "semantic failure"):
+            self.cache.store_validated(
+                self.key, self.source, {},
+                finalize_staging=lambda _staging: (_ for _ in ()).throw(
+                    ValueError("semantic failure")
+                ),
+                validate_existing=lambda _entry: None,
+            )
+
+        self.assertIsNone(self.cache.lookup(self.key))
+        self.assertFalse(any(".tmp-" in item.name for item in self.root.iterdir()))
+
+    def test_validated_store_concurrent_valid_winner_is_never_replaced(self):
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                barrier.wait()
+                result = self.cache.store_validated(
+                    self.key, self.source, {},
+                    finalize_staging=lambda staging: (
+                        staging / "maximum_integrity.json"
+                    ).write_text('{"sealed":true}', encoding="utf-8"),
+                    validate_existing=lambda entry: self.assertTrue(
+                        (entry / "complete.json").is_file()
+                    ),
+                )
+                results.append(result)
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(owned for _path, owned in results), [False, True])
+        self.assertEqual(len({path for path, _owned in results}), 1)
 
     def test_store_quarantines_invalid_final_and_promotes_without_merging(self):
         final = self.create_final_entry(None)

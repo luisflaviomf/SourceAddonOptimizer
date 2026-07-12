@@ -510,6 +510,116 @@ class OrchestratorTests(unittest.TestCase):
                 self.family, build, threading.Event()
             )
 
+    def test_authorized_recovery_output_rejects_mutation_during_copy(self):
+        workspace = self.root / "authorized-output-copy"
+        compiled = workspace / "compiled/models"
+        compiled.mkdir(parents=True)
+        (compiled / "test.mdl").write_bytes(b"authorized-model")
+        build = CandidateBuild(
+            CandidateSpec("candidate", "blender", 1.0, 0.01, "transfer-v1"),
+            workspace, workspace / "src/main.qc", compiled, {},
+            {"test.mdl": "candidate-compile"}, (), None,
+        )
+        proofs = orchestrator_module._current_recovery_compile_files(
+            self.family, build, threading.Event()
+        )
+        output_models = self.root / "authorized-output/models"
+        output_models.mkdir(parents=True)
+        original_copy = orchestrator_module._copy_file_cancellable
+
+        def mutating_copy(source, destination, cancel_event, *args, **kwargs):
+            result = original_copy(source, destination, cancel_event, *args, **kwargs)
+            path = Path(destination)
+            path.write_bytes(b"X" * path.stat().st_size)
+            return result
+
+        with patch.object(
+            orchestrator_module, "_copy_file_cancellable",
+            side_effect=mutating_copy,
+        ), self.assertRaisesRegex(ValueError, "differs from authorization"):
+            orchestrator_module._copy_authorized_recovery_family(
+                build, output_models, self.family, proofs, threading.Event()
+            )
+
+    def test_outer_recovery_boundary_rehashes_focused_rerun_snapshots(self):
+        from tests.maximum_optimizer.test_focused_cache import (
+            _cache_payload, _render_file_proofs, _target, _validation_metrics,
+            _write_render_side,
+        )
+        from maximum_optimizer.focused_cache import build_focused_render_evidence
+
+        workspace = self.root / "focused-rerun-current-bytes"
+        target = _target()
+        snapshot = (
+            workspace / "focused-authorized/round-000"
+            / f"{target.rank:03d}-{target.region_key}"
+        )
+        reference = snapshot / "reference"
+        candidate = snapshot / "candidate"
+        _write_render_side(reference)
+        _write_render_side(candidate)
+        payload = _cache_payload()
+        record = build_focused_render_evidence(
+            target, ValidationResult(True, metrics=_validation_metrics(0.0)),
+            payload["expected"], _render_file_proofs(reference, candidate),
+            payload["material_proof"]["digest"], False,
+        )
+        result = SimpleNamespace(recoveries=(
+            SimpleNamespace(round_index=0, rerun_records=(record,)),
+        ))
+
+        orchestrator_module._validate_current_focused_rerun_files(
+            result, workspace, threading.Event()
+        )
+        image = candidate / "textured/bind/front.png"
+        original = image.read_bytes()
+        image.write_bytes(b"X" * len(original))
+        with self.assertRaisesRegex(ValueError, "focused render bytes changed|render image is corrupt"):
+            orchestrator_module._validate_current_focused_rerun_files(
+                result, workspace, threading.Event()
+            )
+
+    def test_recovery_focus_artifacts_normalize_fresh_hit_and_prior_rounds(self):
+        from tests.maximum_optimizer.test_focused_cache import (
+            _cache_payload, _render_file_proofs, _target, _validation_metrics,
+            _write_render_side,
+        )
+        from maximum_optimizer.focused_cache import build_focused_render_evidence
+
+        target = _target()
+        identity = f"{target.rank:03d}-{target.region_key}"
+        payload = _cache_payload()
+        adapter = ProductionAdapters(self.config, threading.Event())
+
+        first = self.root / "recovery-fresh"
+        fresh_reference = first / "focused-renders" / identity / "original"
+        fresh_candidate = first / "focused-renders" / identity / "optimized"
+        _write_render_side(fresh_reference)
+        _write_render_side(fresh_candidate)
+        record = build_focused_render_evidence(
+            target, ValidationResult(True, metrics=_validation_metrics(0.0)),
+            payload["expected"],
+            _render_file_proofs(fresh_reference, fresh_candidate),
+            payload["material_proof"]["digest"], False,
+        )
+        first_root = adapter._materialize_recovery_focused_artifacts(
+            first, 0, (record,), (), threading.Event()
+        )
+        prior = SimpleNamespace(round_index=0, evidence_sha256="8" * 64)
+        adapter._recovery_artifact_roots[prior.evidence_sha256] = first_root
+
+        second = self.root / "recovery-hit"
+        hit_reference = second / "focused-snapshots" / identity / "reference"
+        hit_candidate = second / "focused-snapshots" / identity / "candidate"
+        _write_render_side(hit_reference)
+        _write_render_side(hit_candidate)
+        second_root = adapter._materialize_recovery_focused_artifacts(
+            second, 1, (record,), (prior,), threading.Event()
+        )
+
+        self.assertTrue((second_root / "round-000" / identity).is_dir())
+        self.assertTrue((second_root / "round-001" / identity).is_dir())
+
     def test_outer_recovery_boundary_rejects_minimal_forged_authorization(self):
         forged = SimpleNamespace(
             evidence=SimpleNamespace(terminal_status="authorized"),
@@ -648,6 +758,9 @@ class OrchestratorTests(unittest.TestCase):
                 return_value=compiled_build,
             ), patch.object(
                 adapter, "_seed_recovery_focus_index",
+            ), patch.object(
+                adapter, "_materialize_recovery_focused_artifacts",
+                return_value=recovery_workspace / "focused-authorized",
             ), patch.object(
                 adapter, "focused_visual", side_effect=focused_visual,
             ), patch.object(

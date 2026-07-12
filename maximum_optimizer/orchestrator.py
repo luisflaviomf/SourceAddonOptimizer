@@ -867,6 +867,38 @@ def _verify_cache_entry(
         return False
 
 
+def _verify_recovery_cache_entry(
+    cache_entry: Path,
+    key: CacheKey,
+    cancel_event: threading.Event | None = None,
+) -> bool:
+    if not _verify_cache_entry(cache_entry, cancel_event):
+        return False
+    try:
+        complete = json.loads(_read_regular_no_follow(
+            cache_entry / "complete.json", cancel_event,
+            contained_root=cache_entry,
+        ).decode("utf-8"))
+        if type(complete) is not dict or set(complete) != {
+            "schema", "digest", "metadata_sha256", "integrity_sha256",
+        }:
+            return False
+        if complete["schema"] != 2 or complete["digest"] != key.digest:
+            return False
+        for name, path in (
+            ("metadata_sha256", cache_entry / "metadata.json"),
+            ("integrity_sha256", cache_entry / "maximum_integrity.json"),
+        ):
+            raw = _read_regular_no_follow(
+                path, cancel_event, contained_root=cache_entry,
+            )
+            if hashlib.sha256(raw).hexdigest() != complete[name]:
+                return False
+        return True
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
 def _cache_record_path(workspace: Path) -> Path:
     return workspace / "maximum_cache_record.json"
 
@@ -1177,6 +1209,38 @@ def _copy_selected_family(
     return promoted
 
 
+def _copy_authorized_recovery_family(
+    build: CandidateBuild,
+    output_models: Path,
+    manifest: FamilyManifest,
+    proofs: tuple[CompileFileProof, ...],
+    cancel_event: threading.Event | None,
+) -> dict[str, str]:
+    source_root = build.compiled_models_dir.resolve(strict=True)
+    output_root = output_models.resolve(strict=True)
+    promoted: dict[str, str] = {}
+    for proof in proofs:
+        if not _is_exact_family_artifact(proof.relative_path, manifest.model_rel):
+            raise ValueError("authorized compile proof contains a non-family artifact")
+        source = source_root / PurePosixPath(proof.relative_path)
+        destination = output_root / PurePosixPath(proof.relative_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _copy_file_cancellable(source, destination, cancel_event)
+        size, digest = _focused_file_proof(
+            destination, cancel_event, contained_root=output_root,
+            max_bytes=2 * 1024 ** 3,
+        )
+        if size != proof.size or digest != proof.sha256:
+            raise ValueError("staged recovery artifact differs from authorization")
+        promoted[proof.relative_path] = build.provenance[proof.relative_path]
+    staged_build = replace(build, compiled_models_dir=output_root)
+    if _current_recovery_compile_files(
+        manifest, staged_build, cancel_event
+    ) != proofs:
+        raise ValueError("staged recovery family manifest differs from authorization")
+    return promoted
+
+
 def _is_exact_family_artifact(logical: str, model_rel: str) -> bool:
     normalized = PurePosixPath(logical.replace("\\", "/")).as_posix().casefold()
     base = PurePosixPath(model_rel.replace("\\", "/")).with_suffix("").as_posix().casefold()
@@ -1237,6 +1301,27 @@ def _current_recovery_compile_files(
     return tuple(values)
 
 
+def _validate_current_focused_rerun_files(
+    result: FocusedRecoveryAdapterResult,
+    workspace: Path,
+    cancel_event: threading.Event | None,
+) -> None:
+    root = workspace.resolve(strict=True)
+    for recovery in result.recoveries:
+        for record in recovery.rerun_records:
+            target_root = (
+                root / "focused-authorized"
+                / f"round-{recovery.round_index:03d}"
+                / f"{record.target.rank:03d}-{record.target.region_key}"
+            )
+            directories = FocusRenderDirectories(
+                target_root / "reference", target_root / "candidate"
+            )
+            current = _focused_render_file_manifest(directories, cancel_event)
+            if current != record.files:
+                raise ValueError("authorized recovery focused render bytes changed")
+
+
 def _validate_authorized_recovery_boundary(
     *,
     result: FocusedRecoveryAdapterResult,
@@ -1263,6 +1348,11 @@ def _validate_authorized_recovery_boundary(
         raise ValueError("authorized recovery boundary inputs are incomplete")
     if not evaluation.structural.passed or not evaluation.visual.passed:
         raise ValueError("authorized recovery evaluation does not pass all gates")
+    if (
+        evaluation.structural != structural.validation
+        or evaluation.whole_visual != final.validation
+    ):
+        raise ValueError("authorized recovery evaluation differs from typed gates")
     if build.source_snapshot is None:
         raise ValueError("authorized recovery source snapshot is missing")
     snapshot = build.source_snapshot
@@ -1279,6 +1369,7 @@ def _validate_authorized_recovery_boundary(
     ):
         raise ValueError("authorized recovery byte contracts differ")
     revalidate_recovery_snapshot(snapshot, cancel_event)
+    _validate_current_focused_rerun_files(result, build.workspace, cancel_event)
     current_compile = _current_recovery_compile_files(
         manifest, build, cancel_event
     )
@@ -1323,6 +1414,30 @@ def _validate_authorized_recovery_boundary(
         initial_records=result.initial_records,
         recoveries=result.recoveries,
     )
+    final_records = result.recoveries[-1].rerun_records
+    record_by_region = {record.target.region_key: record for record in final_records}
+    if set(record_by_region) != set(evaluation.focused_by_region):
+        raise ValueError("authorized recovery focused evaluation cardinality differs")
+    for region_key, region in evaluation.focused_by_region.items():
+        record = record_by_region[region_key]
+        if (
+            region.target != record.target
+            or region.validation != record.validation
+            or region.evidence_sha256 != record.evidence_sha256
+        ):
+            raise ValueError("authorized recovery focused evaluation differs")
+    focused_gate = FocusedGateResult(
+        ValidationResult(all(record.validation.passed for record in final_records)),
+        tuple(record.target for record in final_records),
+        dict(evaluation.focused_by_region), result.evidence.evidence_sha256,
+    )
+    if evaluation.visual != _aggregate_focused_gate(final.validation, focused_gate):
+        raise ValueError("authorized recovery aggregate evaluation differs")
+    current_size = _family_snapshot(
+        scan_compiled_models(build.compiled_models_dir), manifest.model_rel
+    )
+    if current_size != evaluation.size:
+        raise ValueError("authorized recovery size evaluation differs from current bytes")
     return validated
 
 
@@ -1814,6 +1929,9 @@ def run_maximum_addon(
     control_snapshots: list[CompiledSizeSnapshot] = []
     selected_snapshots: list[CompiledSizeSnapshot] = []
     selected_builds: dict[str, CandidateBuild] = {}
+    selected_recovery_authorizations: dict[
+        str, tuple[FocusedRecoveryAdapterResult, object, CacheKey, Path]
+    ] = {}
     selection_audit_path = config.work_dir / "logs" / "fidelity-profile-selection.json"
     selection_records: list[dict[str, Any]] = []
     cache = CandidateCache(config.work_dir / "cache")
@@ -2173,6 +2291,9 @@ def run_maximum_addon(
             continue
         evaluations: list[CandidateEvaluation] = []
         candidate_builds: dict[str, CandidateBuild] = {}
+        recovery_authorizations: dict[
+            str, tuple[FocusedRecoveryAdapterResult, object, CacheKey, Path]
+        ] = {}
         retained_candidates: dict[
             str, tuple[CandidateBuild, CandidateEvaluation, RecoverySourceSnapshot]
         ] = {}
@@ -2566,70 +2687,99 @@ def run_maximum_addon(
                             validated_authorization,
                             "focused recovery authoritative evidence",
                         )
-                        stored, recovery_cache_owned = cache.store_with_ownership(
+                        cache_state: dict[str, object] = {}
+
+                        def validate_private_entry(
+                            entry: Path, *, publish_integrity: bool,
+                        ) -> None:
+                            cached_workspace = entry / "payload"
+                            cached_build = _load_cached_build(
+                                entry, recovery_spec, key=recovery_key,
+                                manifest=manifest,
+                                dependency_digest=str(dependency["digest"]),
+                                materialized_workspace=cached_workspace,
+                                cancel_event=cancel,
+                                optimizer_contract_digest=recipe.optimizer_contract_sha256,
+                                whole_profile_digest=recipe.whole_profile_sha256,
+                                focused_profile_digest=recipe.focused_profile_sha256,
+                            )
+                            cached_authorization = json.loads(
+                                _read_regular_no_follow(
+                                    cached_workspace / "logs/focused-region-gate.json",
+                                    cancel, contained_root=cached_workspace,
+                                ).decode("utf-8")
+                            )
+                            cached_evaluation = replace(
+                                evaluation,
+                                size=_family_snapshot(
+                                    scan_compiled_models(cached_build.compiled_models_dir),
+                                    manifest.model_rel,
+                                ),
+                                compiled_models_dir=cached_build.compiled_models_dir,
+                            )
+                            cached_result = replace(
+                                result, build=cached_build,
+                                evaluation=cached_evaluation,
+                                authorization=cached_authorization,
+                            )
+                            _validate_authorized_recovery_boundary(
+                                result=cached_result, manifest=manifest, recipe=recipe,
+                                cache_key=recovery_key, cancel_event=cancel,
+                            )
+                            if publish_integrity:
+                                _seal_cache_entry(entry, None)
+                            if not _verify_cache_entry(entry, None):
+                                raise ValueError("focused recovery cache integrity is invalid")
+                            cache_state.update({
+                                "result": cached_result, "build": cached_build,
+                                "evaluation": cached_evaluation,
+                            })
+
+                        stored, recovery_cache_owned = cache.store_validated(
                             recovery_key, build.workspace,
                             {"candidate": recovery_spec.candidate_id, "profile": profile.version},
+                            finalize_staging=lambda staging: validate_private_entry(
+                                staging, publish_integrity=True
+                            ),
+                            validate_existing=lambda entry: validate_private_entry(
+                                entry, publish_integrity=False
+                            ),
                             copy_function=lambda source, destination: _copy_file_cancellable(
                                 source, destination, cancel
                             ),
                         )
-                        cached_workspace = stored / "payload"
-                        cached_build = _load_cached_build(
-                            stored, recovery_spec, key=recovery_key,
-                            manifest=manifest,
-                            dependency_digest=str(dependency["digest"]),
-                            materialized_workspace=cached_workspace,
-                            cancel_event=cancel,
-                            optimizer_contract_digest=recipe.optimizer_contract_sha256,
-                            whole_profile_digest=recipe.whole_profile_sha256,
-                            focused_profile_digest=recipe.focused_profile_sha256,
+                        recovery_cache_sealed = True
+                        # The atomic rename invalidates paths rooted in private
+                        # staging. Reopen and reauthorize only from final/payload.
+                        validate_private_entry(stored, publish_integrity=False)
+                        cached_result = cache_state["result"]
+                        cached_build = cache_state["build"]
+                        cached_evaluation = cache_state["evaluation"]
+                        _check_cancelled(
+                            cancel, "cancelled before focused recovery promotion"
                         )
-                        cached_evidence_path = (
-                            cached_workspace / "logs/focused-region-gate.json"
-                        )
-                        cached_authorization = json.loads(
-                            _read_regular_no_follow(
-                                cached_evidence_path, cancel,
-                                contained_root=cached_workspace,
-                            ).decode("utf-8")
-                        )
-                        cached_result = replace(
-                            result,
-                            build=cached_build,
-                            evaluation=replace(
-                                evaluation,
-                                compiled_models_dir=cached_build.compiled_models_dir,
-                            ),
-                            authorization=cached_authorization,
-                        )
+                        if not _verify_recovery_cache_entry(
+                            stored, recovery_key, cancel
+                        ):
+                            raise ValueError("sealed focused recovery cache changed")
                         _validate_authorized_recovery_boundary(
                             result=cached_result, manifest=manifest, recipe=recipe,
                             cache_key=recovery_key, cancel_event=cancel,
                         )
-                        # Cache publication is a marker-last transaction. Once
-                        # store returns, finish its integrity seal without an
-                        # interrupt; cancellation may prevent promotion, but it
-                        # must not destroy a valid new or concurrent cache entry.
-                        _seal_cache_entry(stored, None)
-                        recovery_cache_sealed = True
-                        _check_cancelled(
-                            cancel, "cancelled before focused recovery promotion"
+                        evaluations.append(cached_evaluation)
+                        candidate_builds[recovery_spec.candidate_id] = cached_build
+                        recovery_authorizations[recovery_spec.candidate_id] = (
+                            cached_result, recipe, recovery_key, stored,
                         )
-                        _validate_authorized_recovery_boundary(
-                            result=result, manifest=manifest, recipe=recipe,
-                            cache_key=recovery_key, cancel_event=cancel,
-                        )
-                        evaluations.append(evaluation)
-                        candidate_builds[recovery_spec.candidate_id] = build
                         attempts.append(AttemptReport(
                             recovery_spec.candidate_id, recovery_spec.engine, "passed",
-                            evaluation.size, evaluation.structural, evaluation.visual,
-                            False, "", build.provenance,
+                            cached_evaluation.size, cached_evaluation.structural,
+                            cached_evaluation.visual, False, "", cached_build.provenance,
                         ))
                         emit(
                             "candidate_finished", family=manifest.model_rel,
                             candidate=recovery_spec.candidate_id, status="passed",
-                            compiled_bytes=evaluation.size.total_bytes, cache_hit=False,
+                            compiled_bytes=cached_evaluation.size.total_bytes, cache_hit=False,
                         )
                         break
                     except ProcessCancelledError as exc:
@@ -2726,6 +2876,10 @@ def run_maximum_addon(
             status, reason, selected = "optimized", "smallest passing compiled candidate selected", winner.size
             selected_id = winner.spec.candidate_id
             selected_builds[manifest.family_id] = candidate_builds[selected_id]
+            if selected_id in recovery_authorizations:
+                selected_recovery_authorizations[manifest.family_id] = (
+                    recovery_authorizations[selected_id]
+                )
             chosen_attempt = next(item for item in attempts if item.candidate_id == selected_id)
             provenance = dict(chosen_attempt.provenance)
         selected_snapshots.append(selected)
@@ -2871,7 +3025,33 @@ def run_maximum_addon(
             build = selected_builds.get(outcome.family_id)
             if build is None:
                 raise RuntimeError(f"selected build is unavailable for {outcome.model_rel}")
-            _copy_selected_family(build, staging / "models", outcome.model_rel, cancel)
+            recovery_authorization = selected_recovery_authorizations.get(
+                outcome.family_id
+            )
+            if recovery_authorization is not None:
+                recovery_result, recovery_recipe, recovery_key, cache_entry = (
+                    recovery_authorization
+                )
+                if not _verify_recovery_cache_entry(
+                    cache_entry, recovery_key, cancel
+                ):
+                    raise ValueError("selected recovery cache changed before staging")
+                manifest = next(
+                    item for item in manifests if item.family_id == outcome.family_id
+                )
+                _validate_authorized_recovery_boundary(
+                    result=recovery_result, manifest=manifest,
+                    recipe=recovery_recipe, cache_key=recovery_key,
+                    cancel_event=cancel,
+                )
+                _copy_authorized_recovery_family(
+                    build, staging / "models", manifest,
+                    recovery_result.evidence.compile_files, cancel,
+                )
+            else:
+                _copy_selected_family(
+                    build, staging / "models", outcome.model_rel, cancel
+                )
         if cancel.is_set():
             raise ProcessCancelledError("cancelled before output promotion")
         _promote_verified_tree(
@@ -3819,6 +3999,67 @@ class ProductionAdapters:
         self._focused_runtime: dict[
             Path, tuple[FocusedEvidenceContext, FocusSelection, tuple[object, ...], Mapping[str, object]]
         ] = {}
+        self._recovery_artifact_roots: dict[str, Path] = {}
+
+    def _materialize_recovery_focused_artifacts(
+        self,
+        workspace: Path,
+        round_index: int,
+        records: tuple[FocusedRenderEvidence, ...],
+        prior_recoveries: tuple[FocusedRecoveryEvidence, ...],
+        cancel_event: threading.Event,
+    ) -> Path:
+        destination_root = workspace / "focused-authorized"
+        if os.path.lexists(destination_root):
+            _remove_workspace_owned_tree(
+                workspace, destination_root, "focused authorization root"
+            )
+        destination_root.mkdir(parents=True)
+        for prior in prior_recoveries:
+            prior_root = self._recovery_artifact_roots.get(prior.evidence_sha256)
+            if prior_root is None or not prior_root.is_dir():
+                raise CandidateBuildError(
+                    "prior focused recovery artifacts are unavailable",
+                    stage="focused-recovery",
+                )
+            source_round = prior_root / f"round-{prior.round_index:03d}"
+            _copytree_cancellable(
+                source_round,
+                destination_root / source_round.name,
+                cancel_event,
+            )
+        round_root = destination_root / f"round-{round_index:03d}"
+        round_root.mkdir()
+        for record in records:
+            identity = f"{record.target.rank:03d}-{record.target.region_key}"
+            snapshot = workspace / "focused-snapshots" / identity
+            rendered = workspace / "focused-renders" / identity
+            if snapshot.is_dir():
+                sides = ((snapshot / "reference", "reference"),
+                         (snapshot / "candidate", "candidate"))
+            elif rendered.is_dir():
+                sides = ((rendered / "original", "reference"),
+                         (rendered / "optimized", "candidate"))
+            else:
+                raise CandidateBuildError(
+                    "focused recovery render artifacts are unavailable",
+                    stage="focused-recovery",
+                )
+            target_root = round_root / identity
+            for source, side in sides:
+                _copytree_cancellable(source, target_root / side, cancel_event)
+            current = _focused_render_file_manifest(
+                FocusRenderDirectories(
+                    target_root / "reference", target_root / "candidate"
+                ),
+                cancel_event,
+            )
+            if current != record.files:
+                raise CandidateBuildError(
+                    "focused recovery render changed while snapshotting",
+                    stage="focused-recovery",
+                )
+        return destination_root
 
     def bind_candidate_cache_digest(self, candidate: CandidateBuild, digest: str) -> None:
         if not isinstance(candidate, CandidateBuild) or _SHA256_RE.fullmatch(digest) is None:
@@ -4932,12 +5173,17 @@ class ProductionAdapters:
             raise CandidateBuildError(
                 "recovery changed the trusted focus selection", stage="focused-recovery"
             )
+        artifact_root = self._materialize_recovery_focused_artifacts(
+            build.workspace, recipe.round_index, tuple(candidate_records),
+            tuple(prior_recoveries), cancel_event,
+        )
         if not focused_gate.validation.passed:
             evidence = build_focused_recovery_evidence(
                 recipe.round_index, "focused_failed", recipe,
                 composed.composition, composed.composition.changed_sources,
                 (), compile_files, structural_evidence, candidate_records, None,
             )
+            self._recovery_artifact_roots[evidence.evidence_sha256] = artifact_root
             size = _family_snapshot(
                 scan_compiled_models(build.compiled_models_dir), manifest.model_rel
             )
@@ -5003,6 +5249,7 @@ class ProductionAdapters:
             (), compile_files, structural_evidence, candidate_records,
             final_evidence,
         )
+        self._recovery_artifact_roots[current.evidence_sha256] = artifact_root
         if not final_whole.passed:
             return FocusedRecoveryAdapterResult(None, None, current, None)
 

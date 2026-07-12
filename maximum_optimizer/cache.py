@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,13 @@ from typing import Any, Callable
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_VALIDATED_LOCK_GUARD = threading.Lock()
+_VALIDATED_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _validated_lock(digest: str) -> threading.RLock:
+    with _VALIDATED_LOCK_GUARD:
+        return _VALIDATED_LOCKS.setdefault(digest, threading.RLock())
 
 
 class AtomicReplaceError(RuntimeError):
@@ -245,6 +253,106 @@ class CandidateCache:
                 os.replace,
             )
         return final, True
+
+    def store_validated(
+        self,
+        key: CacheKey,
+        source_dir: os.PathLike[str] | str,
+        metadata: object,
+        *,
+        finalize_staging: Callable[[Path], None],
+        validate_existing: Callable[[Path], None],
+        copy_function: Callable[[str, str], str | os.PathLike[str]] = shutil.copy2,
+    ) -> tuple[Path, bool]:
+        """Publish a recovery entry only after private-staging semantic validation."""
+        with _validated_lock(key.digest):
+            return self._store_validated_locked(
+                key, source_dir, metadata,
+                finalize_staging=finalize_staging,
+                validate_existing=validate_existing,
+                copy_function=copy_function,
+            )
+
+    def _store_validated_locked(
+        self,
+        key: CacheKey,
+        source_dir: os.PathLike[str] | str,
+        metadata: object,
+        *,
+        finalize_staging: Callable[[Path], None],
+        validate_existing: Callable[[Path], None],
+        copy_function: Callable[[str, str], str | os.PathLike[str]] = shutil.copy2,
+    ) -> tuple[Path, bool]:
+        source = Path(source_dir)
+        if _is_symlink(source) or not source.is_dir():
+            raise ValueError("source_dir must be an existing non-symlink directory")
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._cleanup_pending(key)
+        final = self.root / key.digest
+        existing = self.lookup(key)
+        if existing is not None:
+            validate_existing(existing)
+            return existing, False
+        _raise_if_cache_symlink(final)
+        staging = _unique_sibling(self.root, f"{key.digest}.tmp-{os.getpid()}-")
+        staging.mkdir()
+        try:
+            shutil.copytree(source, staging / "payload", copy_function=copy_function)
+            _write_json(staging / "metadata.json", metadata)
+            finalize_staging(staging)
+            if (staging / "complete.json").exists():
+                raise ValueError("validated cache finalizer published complete marker early")
+
+            # Give a concurrent valid publisher precedence; never quarantine it.
+            existing = self.lookup(key)
+            if existing is not None:
+                validate_existing(existing)
+                _remove_direct_child(staging, self.root)
+                return existing, False
+
+            metadata_sha256 = hashlib.sha256(
+                (staging / "metadata.json").read_bytes()
+            ).hexdigest()
+            integrity_path = staging / "maximum_integrity.json"
+            if not integrity_path.is_file() or _is_symlink(integrity_path):
+                raise ValueError("validated cache finalizer did not publish integrity")
+            integrity_sha256 = hashlib.sha256(integrity_path.read_bytes()).hexdigest()
+            _write_json(staging / "complete.json", {
+                "schema": 2,
+                "digest": key.digest,
+                "metadata_sha256": metadata_sha256,
+                "integrity_sha256": integrity_sha256,
+            })
+            quarantine: Path | None = None
+            if _lexists(final):
+                quarantine = _unique_sibling(self.root, f"{key.digest}.quarantine-")
+                os.replace(final, quarantine)
+            try:
+                os.replace(staging, final)
+            except BaseException as promotion_error:
+                if quarantine is not None:
+                    try:
+                        if _lexists(final):
+                            _remove_direct_child(final, self.root)
+                        os.replace(quarantine, final)
+                    except BaseException as restore_error:
+                        raise AtomicReplaceError(
+                            final, quarantine, promotion_error, restore_error
+                        ) from restore_error
+                raise
+            if quarantine is not None:
+                _cleanup_after_commit(
+                    quarantine, self.root,
+                    f"{key.digest}.cleanup-pending-", os.replace,
+                )
+            return final, True
+        except BaseException:
+            if _lexists(staging):
+                try:
+                    _remove_direct_child(staging, self.root)
+                except (OSError, ValueError):
+                    pass
+            raise
 
     def cleanup_incomplete(self) -> int:
         if not self.root.is_dir():
