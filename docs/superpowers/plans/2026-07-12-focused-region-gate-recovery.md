@@ -1111,8 +1111,12 @@ enable schema 3 receive the current defaults and behavior.
   IneligibleAdaptiveSourceProof`, `AdaptiveCandidateMetricsProof`,
   `DirectPrefilterProof`, `DirectSourceBuildRequest`, and `DirectSourceSnapshot`. A direct snapshot contains
   exactly one contained regular `.smd` output and is not a `RecoverySourceSnapshot`.
+- `maximum_optimizer.domain` also produces `AdaptiveDirectCoverageOccurrenceWitness`,
+  `AdaptiveDirectCoverageSourceProof`, and `AdaptiveDirectCoverageManifest` during the
+  complete retained-inventory preflight.
 - `maximum_optimizer.focused_cache` produces `AdaptiveDirectVisibilityProof`,
-  `AdaptiveDirectSourceUnionFocusProof`, and `AdaptiveDirectEvidence` beside
+  `AdaptiveDirectSourceUnionTarget`, `AdaptiveDirectSourceUnionRecord`, and
+  `AdaptiveDirectEvidence` beside
   `FocusedRenderEvidence`, avoiding a
   `domain <-> focused_cache` import cycle.
   `AdaptiveDirectEvidence` has exact kind `adaptive-direct-fallback-v1`, schema 2, and
@@ -1206,6 +1210,61 @@ enable schema 3 receive the current defaults and behavior.
       evidence_sha256: str
 
   @dataclass(frozen=True)
+  class AdaptiveDirectCoverageOccurrenceWitness:
+      occurrence_key: str
+      source_identity: str
+      graph_relative_path: str
+      directive: str
+      line: int
+      state_key: str
+      bodygroup_key: str
+      lod_key: str
+      skin_key: str
+      source_size: int
+      source_sha256: str
+      component_manifest_sha256: str
+      material_contract_sha256: str
+      skeleton_contract_sha256: str
+      pose_contract_sha256: str
+      equivalence_class_sha256: str
+      status: Literal["covered-by-source-union-v1"]
+      evidence_sha256: str
+
+  @dataclass(frozen=True)
+  class AdaptiveDirectCoverageSourceProof:
+      source_identity: str
+      eligibility_kind: Literal["eligible-exact-v1", "ineligible-changed-v1"]
+      source_size: int
+      source_sha256: str
+      occurrence_keys: tuple[str, ...]
+      state_keys: tuple[str, ...]
+      component_keys: tuple[str, ...]
+      material_region_keys: tuple[str, ...]
+      skeleton_contract_sha256: str
+      pose_keys: tuple[str, ...]
+      equivalence_class_sha256: str
+      witnesses: tuple[AdaptiveDirectCoverageOccurrenceWitness, ...]
+      source_coverage_sha256: str
+
+  @dataclass(frozen=True)
+  class AdaptiveDirectCoverageManifest:
+      schema: Literal[1]
+      family_id: str
+      family_input_sha256: str
+      base_candidate_id: str
+      base_spec_sha256: str
+      base_cache_digest: str
+      base_source_manifest_sha256: str
+      base_source_snapshot_sha256: str
+      complete_source_identities: tuple[str, ...]
+      sources: tuple[AdaptiveDirectCoverageSourceProof, ...]
+      occurrence_count: int
+      component_count: int
+      state_count: int
+      maximum_candidate_images: int
+      coverage_manifest_sha256: str
+
+  @dataclass(frozen=True)
   class DirectDroppedTriangleProof:
       ordinal: int
       material: str
@@ -1236,6 +1295,7 @@ enable schema 3 receive the current defaults and behavior.
       base_source_manifest_sha256: str
       base_source_snapshot_sha256: str
       base_strategy: Literal["blender-adaptive-v1"]
+      coverage_manifest_sha256: str
       optimizer_contract_sha256: str
       whole_profile_sha256: str
       focused_profile_sha256: str
@@ -1274,21 +1334,27 @@ enable schema 3 receive the current defaults and behavior.
       component_key: str
       pose_key: str
       camera_key: str
-      visible_mask_pixels: int
+      reference_visible_mask_pixels: int
+      candidate_visible_mask_pixels: int
       evidence_sha256: str
 
   @dataclass(frozen=True)
-  class AdaptiveDirectSourceUnionFocusProof:
+  class AdaptiveDirectSourceUnionTarget:
       source_identity: str
       union_key: str
-      occurrence_keys: tuple[str, ...]
+      coverage_manifest_sha256: str
+      source_coverage_sha256: str
       component_keys: tuple[str, ...]
       material_region_keys: tuple[str, ...]
-      state_dependency_keys: tuple[str, ...]
       pose_keys: tuple[str, ...]
-      coverage_manifest_sha256: str
-      union_target: FocusTarget
-      records: tuple[FocusedRenderEvidence, ...]
+      image_count: int
+      target_sha256: str
+
+  @dataclass(frozen=True)
+  class AdaptiveDirectSourceUnionRecord:
+      target: AdaptiveDirectSourceUnionTarget
+      validation: ValidationResult
+      files: tuple[RenderFileProof, ...]
       visibility: tuple[AdaptiveDirectVisibilityProof, ...]
       evidence_sha256: str
 
@@ -1303,7 +1369,8 @@ enable schema 3 receive the current defaults and behavior.
       compile_files: tuple[CompileFileProof, ...]
       structural: StructuralAuthorizationEvidence | None
       base_focus_records: tuple[FocusedRenderEvidence, ...]
-      direct_focus_records: tuple[AdaptiveDirectSourceUnionFocusProof, ...]
+      coverage_manifest_sha256: str
+      direct_focus_records: tuple[AdaptiveDirectSourceUnionRecord, ...]
       final_whole: FinalWholeAuthorizationEvidence | None
       terminal_status: Literal[
           "composition_failed", "compile_failed", "structural_failed",
@@ -1324,14 +1391,31 @@ enable schema 3 receive the current defaults and behavior.
   exact-original modes continue to require `RecoverySourceSnapshot`.
   `AdaptiveDirectEvidence.evidence_sha256` seals exact base-focus and source-union
   matrices; its direct-source identities equal the changed-source identities exactly.
-  A source-union proof is derived from every canonical QC occurrence/object/material
-  region and selected state/dependency that resolves to the changed SMD. Geometry is
-  deduplicated into one isolated source-local union and rendered for each required pose
-  (maximum two), eight cameras, and both passes. Every canonical connected component
-  must produce nonzero mask coverage in at least one fixed camera for every pose. If
+  `AdaptiveDirectCoverageManifest` is built and sealed once from the bounded current
+  QC/state/source inventory already retained for base selection, before ratio
+  reservation or any direct snapshot/cache/copy/hash/process I/O. It contains every
+  visual source identity and every occurrence/state/bodygroup/LOD/skin/material/
+  skeleton/pose dependency. Each occurrence has exactly one equivalence witness and
+  every source must have exactly one equivalence class; a dependency difference that
+  splits the class rejects adaptive-direct entirely. Its digest is mandatory in every
+  direct request, the request-set digest, recipe/spec/cache identity, and adaptive
+  evidence.
+
+  A source-union record renders directly from the entire changed SMD in source-local
+  space; bodygroup/LOD/state visibility never selects or drops geometry. Repeated graph
+  occurrences are represented by typed equivalence witnesses rather than duplicate
+  renders. The state-independent target has exactly one record per changed source and
+  pose keys exactly `("bind",)` or `("bind", <one canonical anchor>)`. Its exact image
+  count is `2 sides * pose_count * 8 cameras * 2 passes`, therefore 32 or 64 per source
+  and at most 512 per candidate. Every canonical connected component
+  must produce nonzero mask coverage in both reference and candidate in at least one
+  fixed camera for every pose. `files` is the exact canonical Cartesian product at
+  `source-union/<union-key>/<side>/<pose>/<pass>/<camera>.png`; no extra/missing path
+  parses. Visibility contains exactly one component/pose witness using the
+  lexicographically first camera with nonzero pixels in both sides. If
   any disconnected, enclosed, or occluded component cannot be proved visible within
   that fixed matrix, the candidate fails closed; there is no partial or unbounded
-  component fallback. `union_key` is exactly
+  component fallback and no unconstrained extra record is accepted. `union_key` is exactly
   `source-union-<first-32-hex(sha256(canonical coverage manifest))>`; the manifest
   seals source identity plus sorted occurrence/component/material/state-dependency/
   pose keys and profile/dependency bindings, so shuffled discovery cannot change it.
@@ -1357,6 +1441,13 @@ enable schema 3 receive the current defaults and behavior.
   enums. Reject eligible-only/incomplete inventory, cross-kind optional fields,
   arbitrary diagnostic text, focused-recovery with five changes, and adaptive-direct
   with zero or nine changes; accept adaptive-direct with eight.
+  Construct the coverage manifest and mutate every family/base/source/occurrence/state/
+  bodygroup/LOD/skin/material/skeleton/pose/equivalence field, count, and seal. Require
+  exact canonical ordering, one witness per QC occurrence, one equivalence class per
+  source, complete source identity equality with adaptive metrics, exact repetition of
+  each source's eligible/ineligible metrics kind, and image totals over the eligible
+  subset derived from pose cardinality. Reject missing/extra witnesses and any
+  dependency-induced split.
 
 - [ ] **Step 2: Write deterministic base and fallback-selector RED tests**
 
@@ -1366,8 +1457,11 @@ enable schema 3 receive the current defaults and behavior.
   schema-1/2 activation, environment-only activation, filename tokens, failed gates,
   missing retained build/snapshot, and stale base evidence.
 
-  Parse the sealed base candidate-metrics proof and both QC graphs. First prove the
-  inventory equals their complete canonical visual union, then select only paired
+  Parse the sealed base candidate-metrics proof, retained bounded QC/state/source
+  inventory, and both QC graphs. First build/seal `AdaptiveDirectCoverageManifest` and
+  prove its identities equal their complete canonical visual union. This preflight
+  performs no new filesystem/direct-cache access beyond the current inventory already
+  opened for base selection. Then select only paired
   visual `.smd` identities with `preserved_exact == true` and fixed reason
   `ratio-preserved-exact-v1` or `approved-exact-source-fallback-v1`. Group repeated
   byte-identical graph occurrences, but reject conflicting duplicate provenance,
@@ -1376,6 +1470,16 @@ enable schema 3 receive the current defaults and behavior.
   ninth eligible source. Instrument reservation, snapshot/direct-cache open, copy,
   hash, and process launch; assert zero and nine reject before all of them and consume
   no budget. Assert eight returns all eight identities without truncation.
+  Omit each occurrence/state/bodygroup/LOD/skin/material/skeleton/pose witness in turn;
+  assert rejection before reservation/direct I/O. With bind plus one anchor, assert a
+  shared source used by multiple states/bodygroups/LODs remains one equivalence class,
+  one source-union target, one 64-image record, and a witness for every occurrence.
+  Changed material/skeleton/pose/source dependency bytes split the class and reject
+  adaptive-direct.
+  Apply occurrence 4,096, component/material 256, state 16, pose 2, per-source image
+  64/witness 512, and candidate image 512/witness 4,096 bounds while sealing this
+  manifest. The first excess item rejects before budget reservation or any direct
+  snapshot/cache/copy/hash/process operation.
 
 - [ ] **Step 3: Write fixed-ratio terminal schedule RED tests**
 
@@ -1385,7 +1489,7 @@ enable schema 3 receive the current defaults and behavior.
   stable candidate IDs under shuffled metrics, graph occurrences, and snapshot-map
   insertion order. Candidate/recipe/cache hashes must change with either base or direct
   strategy/transfer, base spec/cache/source manifest/snapshot, request/snapshot set,
-  prefilter proof, ratio, or source mutation.
+  coverage-manifest digest, prefilter proof, ratio, or source mutation.
 
   Feed pass/fail results for all four adaptive-direct specs back to `choose_next` and
   instrument `_narrowest_bracket`, donor recovery, and legacy `_regional_recovery`.
@@ -1412,6 +1516,10 @@ enable schema 3 receive the current defaults and behavior.
   after the existing typed exact-fallback predicate accepts the failure class/reason.
   Build and seal the complete discriminated `AdaptiveCandidateMetricsProof` against
   current no-follow bytes, both reparsed QC graph digests, and the base snapshot.
+  Before creating the ratio prefix, build and seal `AdaptiveDirectCoverageManifest`
+  from the already retained bounded base QC/state/source inventory, validate its exact
+  identity/equivalence/cardinality contracts, and reject any excess before reservation.
+  This step performs no new direct snapshot/cache/copy/hash/process I/O.
 
   Implement exact direct parsers/builders rather than adding optional fields to the generic
   search JSON. Each request binds family/input, immutable base candidate ID,
@@ -1421,6 +1529,9 @@ enable schema 3 receive the current defaults and behavior.
   fixed direct strategy/transfer/prefilter, and request digest. Build each selected
   source in a fresh non-overlapping canonical mini-QC workspace through no-follow
   handles and cancellation barriers.
+  Require `coverage_manifest_sha256` equality in each request, sorted request-set
+  payload, recipe, candidate spec/cache payload, cache record, and adaptive evidence;
+  no caller may substitute or omit it.
 
   Recompute `direct-degenerate-prefilter-v1` from the exact input bytes and require
   exact equality with the complete reported proof: schema, strategy, threshold,
@@ -1465,12 +1576,14 @@ enable schema 3 receive the current defaults and behavior.
   Compile the complete composed QC and seal every current contained StudioMDL
   artifact, including required `.mdl/.vvd/.vtx/.ani/.phy` sidecars. Run structural
   authorization, rerender every selected base top-K focus without reuse, then build
-  exactly one deterministic isolated source-wide union proof for every changed source,
-  even when it overlaps a base target. Derive its canonical occurrence/component/
-  material/state-dependency closure from the QC graph, render the deduplicated union
-  for at most two poses with eight cameras and both passes, and require every component
-  to be visibly covered in at least one camera per pose. Reject an unrepresentable or
-  occluded union; never silently fall back to one object region. Fold both exact current-file matrices over the selected
+  exactly one deterministic state-independent `AdaptiveDirectSourceUnionRecord` for
+  every changed source, even when it overlaps a base target. Consume only the sealed
+  preflight coverage source proof; render the entire SMD union without state/bodygroup/
+  LOD visibility filtering. Pose keys are exactly bind plus at most one canonical
+  anchor, so record files are exactly 32 or 64 images. Require every component to be
+  visibly covered in both sides in at least one camera per pose. Reject an
+  unrepresentable or occluded union; never silently fall back to one object region or
+  add an unconstrained record. Fold both exact current-file matrices over the selected
   base's sealed schema-1 context in discriminated `AdaptiveDirectEvidence` schema 2
   with one record at round 0. The base prefix and direct-source set are immutable; no
   ranking can drop either.
@@ -1572,7 +1685,7 @@ enable schema 3 receive the current defaults and behavior.
   | `legacy-ordinary-v1` | `schema`, `kind` | `schema`, `whole_visual_sha256` |
   | `schema3-ordinary-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256` | `schema`, `whole_index_sha256`, `focused_authorization_sha256` |
   | `focused-recovery-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256`, `recipe_sha256`, `composition_evidence_sha256`, `compile_manifest_sha256` | `schema`, `initial_focused_authorization_sha256`, `recovery_schema2_evidence_sha256`, `final_whole_evidence_sha256` |
-  | `adaptive-direct-fallback-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256`, `recipe_sha256`, `composition_evidence_sha256`, `compile_manifest_sha256`, `direct_request_set_sha256`, `direct_snapshot_set_sha256` | `schema`, `initial_focused_authorization_sha256`, `recovery_schema2_evidence_sha256`, `final_whole_evidence_sha256` |
+  | `adaptive-direct-fallback-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256`, `coverage_manifest_sha256`, `recipe_sha256`, `composition_evidence_sha256`, `compile_manifest_sha256`, `direct_request_set_sha256`, `direct_snapshot_set_sha256` | `schema`, `initial_focused_authorization_sha256`, `recovery_schema2_evidence_sha256`, `final_whole_evidence_sha256` |
 
   All common keys are present for every kind. Only legacy ordinary sets
   `source_manifest_sha256` and `source_snapshot_sha256` to JSON null; every kind
@@ -1598,7 +1711,7 @@ enable schema 3 receive the current defaults and behavior.
   revalidation. There is no post-promotion sealing step.
 
   Enforce the physical whitelist: exact record and typed source/compile/composition/
-  direct manifest files; contained `src/`, `compiled/`, and, for adaptive-direct only,
+  direct/coverage manifest files; contained `src/`, `compiled/`, and, for adaptive-direct only,
   typed `direct/<ratio>/<identity>/output.smd` snapshot outputs. Restore these files to
   a fresh private same-volume root before constructing snapshots. Reject `logs/`, renders, focused snapshots,
   texture caches, temporary/quarantine names, extra images, and any unmanifested
@@ -1623,7 +1736,7 @@ enable schema 3 receive the current defaults and behavior.
 
   Every schema-3 attempt uses a bounded exact summary with candidate ID/kind/engine,
   status, compiled bytes, cache diagnostic, base candidate, nullable reserved round
-  and direct ratio, selected-focus states, changed source identities, reused region
+  and direct ratio, nullable coverage-manifest digest, selected-focus states, changed source identities, reused region
   keys, and nullable composition/compile/structural/schema-2/final-whole hashes.
   Require one base-focus state per selected top-K target and, for adaptive-direct, one
   separate source-union focus state per changed source identity. Report-only state is exactly
@@ -1683,9 +1796,10 @@ enable schema 3 receive the current defaults and behavior.
   On resume, dispatch by exact candidate kind. Legacy/ordinary rerun current
   structural, whole, and focused gates as applicable. Focused-recovery and
   adaptive-direct entries first revalidate source/direct snapshots, both strategy
-  identities, complete inventory, recipe, composition, and compile bytes, then rerun
-  structural, **all selected base top-K focuses and every changed-source isolated
-  direct focus**, rebuild the correct discriminated schema 2 from the sealed base context, and run
+  identities, the complete coverage manifest/equivalence witnesses, recipe,
+  composition, and compile bytes, then rerun structural, **all selected base top-K
+  focuses and every changed-source source-union record**, rebuild the correct
+  discriminated schema 2 from the sealed base context, and run
   exactly one fresh final whole after focus pass. Stored prior hashes remain
   diagnostics and cannot enter the new authorization payload. Fresh and resume must
   return the same pass/fail and authorization semantics; cache-hit diagnostics alone

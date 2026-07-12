@@ -478,6 +478,23 @@ complete is the eligible set counted. Zero eligible sources returns no proposal;
 than eight rejects the complete proposal. Both happen before candidate reservation,
 source/direct-cache open, copy/hash, or process launch. The set is never truncated.
 
+During that same complete in-memory preflight, before ratio reservation, Task 6 builds
+and seals one exact `AdaptiveDirectCoverageManifest` from the bounded current QC/state/
+source inventory already opened and retained for ordinary-base selection. It binds
+family/input and base candidate/spec/cache/source-manifest/source-snapshot identities,
+the complete visual source identity sequence, and one canonical source proof per
+identity. Each source proof inventories every occurrence, state, bodygroup, LOD, skin,
+material, skeleton, pose dependency, and connected component. Every QC occurrence has
+exactly one `covered-by-source-union-v1` witness binding current source bytes plus its
+component/material/skeleton/pose contract. All witnesses for one source must resolve to
+exactly one equivalence-class digest. Each source proof also repeats its exact
+eligible/ineligible metrics variant; image/witness candidate totals cover the complete
+eligible subset. Missing occurrences or a dependency difference
+that splits the class rejects adaptive-direct entirely; state variation is never
+silently ignored. Occurrence 4,097, component/material 257, state 17, or pose 3 rejects
+before budget reservation or any new direct I/O/process. The preflight reads no path
+beyond the retained base-selection inventory.
+
 Task 6 introduces a bounded `DirectSourceBuildRequest` and `DirectSourceSnapshot`; an
 isolated mini-source is not misrepresented as a complete `RecoverySourceSnapshot`.
 The request seals family/input, immutable base candidate/spec/cache/source
@@ -486,13 +503,15 @@ manifest/snapshot, optimizer/profile/dependency contracts, explicit base strateg
 current input proof, one global ratio, explicit direct strategy/transfer
 `meshopt-direct-position-v1`/`direct-position-v1`, prefilter
 `direct-degenerate-prefilter-v1`, the exact expected prefilter proof recomputed from
-the request input bytes, and its own digest. The snapshot carries the request, derived
+the request input bytes, the exact coverage-manifest digest, and its own digest. The snapshot carries the request, derived
 direct candidate/cache identity, one contained regular `.smd` output proof, input and
 output triangle counts, the exact recomputed prefilter proof, fixed reason
 `approved-direct-position-v1`, and a seal over every canonical field except its
 runtime absolute root. Per-ratio request/snapshot set digests bind every sorted source;
-composite identity binds both strategies, immutable base, ratio, recipe, and both set
-digests. Across one ratio the at-most eight one-output snapshots remain within the
+composite identity binds both strategies, immutable base, coverage manifest, ratio,
+recipe, and both set digests. The coverage digest is repeated exactly in each request,
+the request-set digest, recipe, candidate spec/cache payload, cache record, and
+adaptive evidence; mismatch or omission fails closed. Across one ratio the at-most eight one-output snapshots remain within the
 4,096-file/2-GiB direct bound.
 
 The prefilter proof is independent authorization data, not a self-signed log and not
@@ -540,22 +559,29 @@ copies the immutable base, replaces exactly the declared SMDs, proves every QC a
 undeclared source byte unchanged, and rejects same-size mutation.
 
 Every composed ratio runs structural authorization and two mandatory fresh focused
-sets without reuse: every selected base top-K focus, plus one deterministic isolated
-source-wide union proof for every changed source identity. For a source, the proof
-contains the canonical union of every QC occurrence, object/component, material region,
-selected state dependency, and required pose that resolves to that SMD. Repeated
-geometry is deduplicated in source-local space; the complete union is rendered for at
-most two poses with exactly eight cameras and both passes. A sealed visibility matrix
-requires every canonical connected component to contribute nonzero isolated mask
-pixels in at least one fixed camera for every required pose. The proof is required even
+sets without reuse: every selected base top-K focus, plus exactly one state-independent
+`AdaptiveDirectSourceUnionRecord` for every changed source identity. Its
+`AdaptiveDirectSourceUnionTarget` is derived only from the sealed preflight source
+proof, not from a bodygroup/LOD/state `FocusTarget`. The renderer loads the entire SMD
+union in source-local space, so state visibility never selects or drops geometry;
+typed equivalence witnesses cover repeated QC occurrences without duplicate renders.
+Pose keys are exactly bind plus an optional single canonical anchor. Each source record
+therefore contains exactly `2 sides * pose_count(1..2) * 8 cameras * 2 passes`, i.e.
+32 or 64 current image proofs, with no additional record. A sealed visibility matrix
+requires every canonical component to contribute nonzero isolated mask pixels in both
+reference and candidate in at least one fixed camera for every pose. Files are exactly
+the canonical Cartesian product
+`source-union/<union-key>/<side>/<pose>/<pass>/<camera>.png`. Visibility contains one
+witness per component/pose and chooses the lexicographically first camera with
+nonzero pixels in both sides, making record↔pose↔camera cardinality deterministic. The record is required even
 when the source overlaps a base target. If any disconnected, enclosed, or occluded
 component cannot be represented and visibly proved within this fixed matrix, the
 candidate fails closed; there is no object-only, partial, or unbounded per-component
 fallback. The exact union key is
-`source-union-<first-32-hex(sha256(canonical coverage manifest))>`; that manifest seals
-source identity, sorted occurrence/component/material/state-dependency/pose keys, and
+`source-union-<first-32-hex(sha256(canonical source-coverage proof))>`; the source
+proof seals sorted occurrence/component/material/state-dependency/pose keys and
 profile/dependency bindings. Shuffled graph or object discovery therefore produces the
-same key and manifest. `AdaptiveDirectEvidence` seals both exact matrices, the union coverage
+same key. `AdaptiveDirectEvidence` seals both exact matrices, the complete coverage
 manifest, visibility proofs, and current render-file manifests over the immutable base
 schema-1 context. The base prefix and canonical direct-source set are immutable; fresh
 ranking cannot remove either. Only after every record passes does exactly one fresh
@@ -646,7 +672,7 @@ candidate kind and corresponding nested matrices are:
 | `legacy-ordinary-v1` | `schema`, `kind` | `schema`, `whole_visual_sha256` |
 | `schema3-ordinary-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256` | `schema`, `whole_index_sha256`, `focused_authorization_sha256` |
 | `focused-recovery-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256`, `recipe_sha256`, `composition_evidence_sha256`, `compile_manifest_sha256` | `schema`, `initial_focused_authorization_sha256`, `recovery_schema2_evidence_sha256`, `final_whole_evidence_sha256` |
-| `adaptive-direct-fallback-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256`, `recipe_sha256`, `composition_evidence_sha256`, `compile_manifest_sha256`, `direct_request_set_sha256`, `direct_snapshot_set_sha256` | `schema`, `initial_focused_authorization_sha256`, `recovery_schema2_evidence_sha256`, `final_whole_evidence_sha256` |
+| `adaptive-direct-fallback-v1` | `schema`, `kind`, `source_manifest_sha256`, `source_snapshot_sha256`, `coverage_manifest_sha256`, `recipe_sha256`, `composition_evidence_sha256`, `compile_manifest_sha256`, `direct_request_set_sha256`, `direct_snapshot_set_sha256` | `schema`, `initial_focused_authorization_sha256`, `recovery_schema2_evidence_sha256`, `final_whole_evidence_sha256` |
 
 All common keys are present for every kind. Only legacy ordinary sets the two common
 source hashes to JSON null; all kinds require `compile_manifest_sha256`. Wherever a
@@ -673,7 +699,7 @@ or corrupt content is a read-only miss followed only by safe direct-child no-fol
 invalidation.
 
 An adaptive-direct cache entry additionally binds both explicit strategy identities,
-the complete adaptive source inventory, every canonical
+the complete `AdaptiveDirectCoverageManifest` and its digest, every canonical
 `DirectSourceBuildRequest`, `DirectSourceSnapshot`, recomputed prefilter proof, and
 the exact independent ratio recipe, request/snapshot set digests, and discriminated
 round-0 evidence shape. Direct snapshots never enter the donor registry
@@ -875,9 +901,12 @@ composition/candidate/cache digests.
 The record matrix above is exact for `FocusedRecoveryEvidence`. Adaptive-direct never
 adds optional direct fields to that record. It uses exact `AdaptiveDirectEvidence`
 with `schema == 2`, `kind == "adaptive-direct-fallback-v1"`, `round_index == 0`,
-`base_focus_records`, and `direct_focus_records`. Its direct records are in canonical
-changed-source order, contain exactly one isolated record per changed identity, and
-have neither missing nor duplicate identities. Its terminal-status presence matrix is
+`coverage_manifest_sha256`, `base_focus_records`, and `direct_focus_records`. Its
+direct records are in canonical changed-source order, contain exactly one
+state-independent source-union record per changed identity, and have neither missing
+nor duplicate identities. Every target repeats the manifest/source-proof digest and
+has exactly one record whose file count equals its 32/64 image formula; extra state- or
+object-specific records are forbidden. Its terminal-status presence matrix is
 otherwise the same fail-closed progression through composition, compile, structural,
 focused, final whole, and authorized.
 
@@ -914,7 +943,8 @@ contained atomic helper that rejects a reparse `logs` leaf or ancestor.
 
 Schema-3 attempt summaries are exact bounded diagnostics, not copies of evidence.
 They name candidate ID/kind/engine/status, actual compiled bytes, cache-hit status,
-base candidate, nullable reserved round and direct ratio, base-focus states,
+base candidate, nullable reserved round and direct ratio, nullable coverage-manifest
+digest, base-focus states,
 changed source identities, adaptive-direct isolated source-focus states, reused region
 keys, and nullable composition, compile,
 structural, schema-2, and final-whole hashes. They never embed full material/source/
@@ -982,7 +1012,8 @@ The following are hard validation limits, not tunable environment variables:
   2 poses; excess rejects the ratio before render;
 - source-union render images: maximum 64 per changed source and 512 per candidate
   (`2 sides * 2 poses * 8 cameras * 2 passes`); visibility witnesses: maximum 512 per
-  source and 4,096 per candidate (`256 components * 2 poses`);
+  source and 4,096 per candidate (`256 components * 2 poses`). Exact totals are
+  computed and sealed during coverage preflight before ratio reservation/direct I/O;
 - recovery rounds per base candidate: maximum 3;
 - changed sources per focused-recovery composition: maximum 4;
 - donor candidates inspected per changed source: maximum 8;
