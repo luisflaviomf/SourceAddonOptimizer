@@ -1452,6 +1452,26 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "link/reparse"):
                 render_previews._safe_contained_directory(linked)
 
+    def test_vtfcmd_cache_directory_rejects_reparse_ancestor(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            unsafe_parent = root / "redirected"
+            leaf = unsafe_parent / "cache" / "digest"
+            real_check = render_previews._path_is_link_or_reparse
+
+            def ancestor_is_reparse(path):
+                return Path(path) == unsafe_parent or real_check(path)
+
+            with mock.patch.object(
+                render_previews,
+                "_path_is_link_or_reparse",
+                side_effect=ancestor_is_reparse,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "ancestor.*link/reparse"):
+                    render_previews._safe_contained_directory(leaf)
+
     def test_textured_material_application_uses_each_objects_source_search_paths(self):
         import render_previews
 

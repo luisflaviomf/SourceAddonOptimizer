@@ -774,12 +774,21 @@ def _path_is_link_or_reparse(path: Path) -> bool:
     )
 
 
+def _reject_reparse_ancestors(path: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    for component in (*reversed(absolute.parents), absolute):
+        if _path_is_link_or_reparse(component):
+            raise RuntimeError(
+                f"texture cache ancestor is a link/reparse point: {component}"
+            )
+
+
 def _safe_contained_directory(path: Path, *, parent: Path | None = None) -> Path:
     path = Path(path)
-    if _path_is_link_or_reparse(path):
-        raise RuntimeError(f"texture cache directory is a link/reparse point: {path}")
+    _reject_reparse_ancestors(path)
     path.mkdir(parents=True, exist_ok=True)
-    if _path_is_link_or_reparse(path) or not path.is_dir():
+    _reject_reparse_ancestors(path)
+    if not path.is_dir():
         raise RuntimeError(f"texture cache directory is unsafe: {path}")
     resolved = path.resolve(strict=True)
     if parent is not None:
@@ -793,6 +802,7 @@ def _safe_contained_directory(path: Path, *, parent: Path | None = None) -> Path
 
 def _valid_regular_cache_file(path: Path) -> bool:
     path = Path(path)
+    _reject_reparse_ancestors(path.parent)
     if _path_is_link_or_reparse(path):
         raise RuntimeError(f"texture cache output is a link/reparse point: {path}")
     try:
