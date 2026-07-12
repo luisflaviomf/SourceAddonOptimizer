@@ -41,6 +41,7 @@ from maximum_optimizer.compiler_aware import (
     move_modifier_first, preserve_whole_source, provenance_status, require_triangular_mesh,
 )
 from maximum_optimizer.importance_map import MeshImportanceInput, build_importance_weights
+from maximum_optimizer.round_planar_priority import classify_round_component
 from maximum_optimizer.regions import (
     RegionManifest,
     build_region_manifest,
@@ -81,6 +82,11 @@ _SEARCH_CANDIDATE_FIELDS = {
     "strategy", "update_vertices", "transfer",
 }
 _DIRECT_SOURCE_CORNER_MAP: dict[int, tuple[int, ...]] = {}
+_BLENDER_STRATEGIES = frozenset({
+    "blender-adaptive-v1",
+    "blender-importance-map-v1",
+    "round-planar-priority-v1",
+})
 
 
 @dataclass(frozen=True)
@@ -174,9 +180,10 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
         ("meshoptimizer", "meshopt-project-v1", True, "projection-v1"),
         ("blender", "blender-adaptive-v1", True, "blender-native-v1"),
         ("blender", "blender-importance-map-v1", True, "blender-native-v1"),
+        ("blender", "round-planar-priority-v1", True, "blender-native-v1"),
     }:
         raise ValueError("unknown or inconsistent optimizer strategy")
-    if strategy in {"blender-adaptive-v1", "blender-importance-map-v1"} and target_error != 0.0:
+    if strategy in _BLENDER_STRATEGIES and target_error != 0.0:
         raise ValueError("Blender research target_error must be zero")
     if from_search and strategy.startswith("meshopt-direct-") and payload["repair_profile"] != strategy:
         raise ValueError("repair_profile must identify the direct strategy")
@@ -269,7 +276,7 @@ def optimize_region_objects(
     if optimizer is None:
         optimizer = (
             _optimize_blender_object
-            if candidate.strategy in {"blender-adaptive-v1", "blender-importance-map-v1"}
+            if candidate.strategy in _BLENDER_STRATEGIES
             else _optimize_mesh_object
         )
     observations = _object_region_observations(source_identity, objects, source_materials)
@@ -292,6 +299,47 @@ def optimize_region_objects(
     ]
 
 
+def _apply_round_planar_modifiers(
+    obj: object,
+    *,
+    ratio: float,
+    priority_vertices: Sequence[int],
+    planar_angle_degrees: float = 1.0,
+) -> None:
+    if bpy is None:
+        raise RuntimeError("round planar strategy requires Blender")
+    if not priority_vertices:
+        raise SmdAuditValidationError("round-planar-priority has no silhouette ring")
+    if obj.vertex_groups.get("__maximum_round_priority_v1__") is not None:
+        raise RuntimeError("reserved round priority vertex group already exists")
+    group = obj.vertex_groups.new(name="__maximum_round_priority_v1__")
+    group.add(list(priority_vertices), 1.0, "REPLACE")
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    try:
+        planar = obj.modifiers.new(name="MaximumRoundPlanar", type="DECIMATE")
+        move_modifier_first(obj.modifiers, planar)
+        planar.decimate_type = "DISSOLVE"
+        planar.angle_limit = math.radians(float(planar_angle_degrees))
+        planar.use_dissolve_boundaries = False
+        planar.delimit = {"UV", "SHARP", "NORMAL", "MATERIAL", "SEAM"}
+        bpy.ops.object.modifier_apply(modifier=planar.name)
+
+        collapse = obj.modifiers.new(name="MaximumRoundPriority", type="DECIMATE")
+        move_modifier_first(obj.modifiers, collapse)
+        collapse.decimate_type = "COLLAPSE"
+        collapse.ratio = float(ratio)
+        collapse.use_collapse_triangulate = True
+        collapse.vertex_group = group.name
+        collapse.invert_vertex_group = True
+        collapse.vertex_group_factor = 1.0
+        bpy.ops.object.modifier_apply(modifier=collapse.name)
+    finally:
+        remaining = obj.vertex_groups.get("__maximum_round_priority_v1__")
+        if remaining is not None:
+            obj.vertex_groups.remove(remaining)
+
+
 def _optimize_blender_object(
     obj: object, candidate: CandidateConfig, ratio: float
 ) -> dict[str, object]:
@@ -303,7 +351,7 @@ def _optimize_blender_object(
     """
     if bpy is None:
         raise RuntimeError("Blender adaptive strategy requires Blender")
-    if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"}:
+    if candidate.strategy not in _BLENDER_STRATEGIES:
         raise ValueError("Blender optimizer received a non-Blender strategy")
     mesh = obj.data
     mesh.calc_loop_triangles()
@@ -311,13 +359,28 @@ def _optimize_blender_object(
     vertices_before = len(mesh.vertices)
     if triangles_before <= 0:
         raise ValueError("imported mesh has no triangles")
-    modifier = obj.modifiers.new(name="MaximumCompilerAware", type="DECIMATE")
-    move_modifier_first(obj.modifiers, modifier)
-    modifier.decimate_type = "COLLAPSE"
-    modifier.ratio = float(ratio)
-    modifier.use_collapse_triangulate = True
     importance = None
     importance_group = None
+    if candidate.strategy == "round-planar-priority-v1":
+        positions = tuple(tuple(float(value) for value in vertex.co) for vertex in mesh.vertices)
+        faces = tuple(tuple(int(index) for index in tri.vertices) for tri in mesh.loop_triangles)
+        influences = tuple(
+            tuple((int(item.group), float(item.weight)) for item in vertex.groups)
+            for vertex in mesh.vertices
+        )
+        decision = classify_round_component(positions, faces, influences)
+        if not decision.eligible:
+            raise SmdAuditValidationError(f"round-planar-priority rejected: {decision.reason}")
+        _apply_round_planar_modifiers(
+            obj, ratio=ratio, priority_vertices=decision.priority_vertices
+        )
+        modifier = None
+    else:
+        modifier = obj.modifiers.new(name="MaximumCompilerAware", type="DECIMATE")
+        move_modifier_first(obj.modifiers, modifier)
+        modifier.decimate_type = "COLLAPSE"
+        modifier.ratio = float(ratio)
+        modifier.use_collapse_triangulate = True
     if candidate.strategy == "blender-importance-map-v1":
         uv_layer = mesh.uv_layers.active
         if uv_layer is None:
@@ -355,9 +418,10 @@ def _optimize_blender_object(
         # Inversion is therefore required to protect high-importance weights.
         modifier.invert_vertex_group = True
         modifier.vertex_group_factor = 1.0
-    bpy.context.view_layer.objects.active = obj
-    obj.select_set(True)
-    bpy.ops.object.modifier_apply(modifier=modifier.name)
+    if modifier is not None:
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.modifier_apply(modifier=modifier.name)
     if importance_group is not None:
         remaining_group = obj.vertex_groups.get("__maximum_importance_v1__")
         if remaining_group is not None:
@@ -1208,7 +1272,7 @@ def _process_source_file(
         source_manifest, source_observations, source_overrides, candidate.ratio
     )
     preserve_exact = (
-        candidate.strategy in {"blender-adaptive-v1", "blender-importance-map-v1"}
+        candidate.strategy in _BLENDER_STRATEGIES
         and preserve_whole_source(source_ratios.values())
     )
     fallback_reason: str | None = None
@@ -1254,7 +1318,7 @@ def _process_source_file(
                 source_identity, mesh_objects, candidate, region_manifest, before_audit.materials,
             )
     except (ValueError, RuntimeError) as exc:
-        if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"} or not allows_exact_fallback(exc):
+        if candidate.strategy not in _BLENDER_STRATEGIES or not allows_exact_fallback(exc):
             raise
         preserve_exact = True
         fallback_reason = str(exc)
@@ -1336,7 +1400,7 @@ def _process_source_file(
         )
         validate_smd_audits(before_audit, after_audit)
     except RuntimeError as exc:
-        if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"} or not allows_exact_fallback(exc):
+        if candidate.strategy not in _BLENDER_STRATEGIES or not allows_exact_fallback(exc):
             raise
         preserve_exact = True
         fallback_reason = str(exc)
@@ -1626,7 +1690,7 @@ def run_blender(settings: Settings) -> dict[str, object]:
                             matched_regions[key] += 1
                 destination, _item = processed[reference.source_path]
                 optimized_sources[reference.source_path] = destination
-                if settings.candidate.strategy in {"blender-adaptive-v1", "blender-importance-map-v1"}:
+                if settings.candidate.strategy in _BLENDER_STRATEGIES:
                     status, reason = provenance_status(
                         _item.get("fallback_reason"), strategy=settings.candidate.strategy
                     )

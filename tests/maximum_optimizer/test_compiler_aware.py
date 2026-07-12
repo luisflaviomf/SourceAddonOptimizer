@@ -84,6 +84,10 @@ class CompilerAwareTests(unittest.TestCase):
             provenance_status(None, strategy="blender-importance-map-v1"),
             ("optimized", "blender-importance-map-v1"),
         )
+        self.assertEqual(
+            provenance_status(None, strategy="round-planar-priority-v1"),
+            ("optimized", "round-planar-priority-v1"),
+        )
         with self.assertRaisesRegex(ValueError, "strategy"):
             provenance_status(None, strategy="made-up")
 

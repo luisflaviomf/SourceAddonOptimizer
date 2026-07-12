@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -8,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from unittest import mock
+from types import SimpleNamespace
 
 import batch_optimize_maximum as maximum
 from maximum_optimizer.domain import CandidateSpec
@@ -25,6 +27,95 @@ from maximum_optimizer.mesh_attributes import (
 
 
 class MaximumBlenderPureTests(unittest.TestCase):
+    def test_round_planar_candidate_is_explicit_opt_in_blender_contract(self) -> None:
+        payload = {
+            "candidate_id": "round-planar-priority-r035",
+            "engine": "blender",
+            "ratio": 0.35,
+            "target_error": 0.0,
+            "update_vertices": True,
+            "region_overrides": [],
+            "strategy": "round-planar-priority-v1",
+            "transfer": "blender-native-v1",
+        }
+
+        candidate = maximum.load_candidate_payload(payload)
+
+        self.assertEqual(candidate.strategy, "round-planar-priority-v1")
+        self.assertEqual(candidate.ratio, 0.35)
+
+    def test_round_planar_modifiers_dissolve_before_priority_collapse(self) -> None:
+        applied = []
+
+        class Modifiers(list):
+            def new(self, *, name, type):
+                modifier = SimpleNamespace(name=name, type=type)
+                self.append(modifier)
+                return modifier
+
+            def find(self, name):
+                return next((index for index, item in enumerate(self) if item.name == name), -1)
+
+            def move(self, source, target):
+                self.insert(target, self.pop(source))
+
+        class Group:
+            name = "__maximum_round_priority_v1__"
+
+            def __init__(self):
+                self.assignments = []
+
+            def add(self, indices, weight, mode):
+                self.assignments.append((tuple(indices), weight, mode))
+
+        class Groups:
+            def __init__(self):
+                self.group = None
+
+            def get(self, name):
+                return self.group if self.group and self.group.name == name else None
+
+            def new(self, *, name):
+                self.group = Group()
+                self.group.name = name
+                return self.group
+
+            def remove(self, group):
+                self.group = None
+
+        obj = SimpleNamespace(modifiers=Modifiers(), vertex_groups=Groups())
+
+        def apply(*, modifier):
+            item = next(item for item in obj.modifiers if item.name == modifier)
+            applied.append(item)
+            obj.modifiers.remove(item)
+
+        fake_bpy = SimpleNamespace(
+            context=SimpleNamespace(
+                view_layer=SimpleNamespace(objects=SimpleNamespace(active=None)),
+            ),
+            ops=SimpleNamespace(object=SimpleNamespace(modifier_apply=apply)),
+        )
+        obj.select_set = lambda selected: None
+
+        with mock.patch.object(maximum, "bpy", fake_bpy):
+            maximum._apply_round_planar_modifiers(
+                obj, ratio=0.35, priority_vertices=(0, 2, 4), planar_angle_degrees=1.0
+            )
+
+        self.assertEqual([item.type for item in applied], ["DECIMATE", "DECIMATE"])
+        planar, collapse = applied
+        self.assertEqual(planar.decimate_type, "DISSOLVE")
+        self.assertFalse(planar.use_dissolve_boundaries)
+        self.assertEqual(planar.delimit, {"UV", "SHARP", "NORMAL", "MATERIAL", "SEAM"})
+        self.assertAlmostEqual(planar.angle_limit, math.radians(1.0))
+        self.assertEqual(collapse.decimate_type, "COLLAPSE")
+        self.assertEqual(collapse.ratio, 0.35)
+        self.assertTrue(collapse.use_collapse_triangulate)
+        self.assertEqual(collapse.vertex_group, "__maximum_round_priority_v1__")
+        self.assertTrue(collapse.invert_vertex_group)
+        self.assertEqual(obj.vertex_groups.group, None)
+
     def test_atomic_output_is_exclusive_cleans_failure_and_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
