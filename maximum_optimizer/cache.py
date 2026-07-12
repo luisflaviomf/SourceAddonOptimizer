@@ -467,7 +467,7 @@ class CandidateCache:
         if existing is not None:
             try:
                 validate_existing(existing)
-            except BaseException as exc:
+            except Exception as exc:
                 if is_cancellation(exc):
                     raise
             else:
@@ -487,7 +487,7 @@ class CandidateCache:
             if existing is not None:
                 try:
                     validate_existing(existing)
-                except BaseException as exc:
+                except Exception as exc:
                     if is_cancellation(exc):
                         raise
                 else:

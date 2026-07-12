@@ -467,6 +467,65 @@ class CandidateCacheTests(unittest.TestCase):
         self.assertEqual((final / "payload/model.mdl").read_bytes(), b"compiled")
         self.assertFalse(any(".quarantine-" in item.name for item in self.root.iterdir()))
 
+    def test_validated_store_replaces_corrupted_schema2_but_preserves_valid_incumbent(self):
+        def finalize(staging):
+            (staging / "maximum_integrity.json").write_text(
+                '{"sealed":true}', encoding="utf-8"
+            )
+
+        first, owned = self.cache.store_validated(
+            self.key, self.source, {"generation": 1},
+            finalize_staging=finalize, validate_existing=lambda _entry: None,
+        )
+        self.assertTrue(owned)
+        original_complete = (first / "complete.json").read_bytes()
+        same, owned = self.cache.store_validated(
+            self.key, self.source, {"generation": 2},
+            finalize_staging=lambda _staging: self.fail("valid incumbent replaced"),
+            validate_existing=lambda _entry: None,
+        )
+        self.assertFalse(owned)
+        self.assertEqual(same, first)
+        self.assertEqual((same / "complete.json").read_bytes(), original_complete)
+
+        (first / "payload/model.mdl").write_bytes(b"corrupted-schema2")
+        rebuilt, owned = self.cache.store_validated(
+            self.key, self.source, {"generation": 3},
+            finalize_staging=finalize,
+            validate_existing=lambda _entry: (_ for _ in ()).throw(
+                ValueError("schema2 integrity mismatch")
+            ),
+        )
+        self.assertTrue(owned)
+        self.assertEqual((rebuilt / "payload/model.mdl").read_bytes(), b"compiled")
+
+    def test_validated_store_preserves_incumbent_on_typed_cancellation(self):
+        incumbent = self.cache.store(self.key, self.source, {"generation": "old"})
+
+        class SyntheticCancellation(Exception):
+            pass
+
+        with self.assertRaises(SyntheticCancellation):
+            self.cache.store_validated(
+                self.key, self.source, {},
+                finalize_staging=lambda _staging: None,
+                validate_existing=lambda _entry: (_ for _ in ()).throw(
+                    SyntheticCancellation("cancelled")
+                ),
+                is_cancellation=lambda exc: isinstance(exc, SyntheticCancellation),
+            )
+        self.assertEqual(self.cache.lookup(self.key), incumbent)
+        self.assertEqual((incumbent / "payload/model.mdl").read_bytes(), b"compiled")
+        with self.assertRaises(KeyboardInterrupt):
+            self.cache.store_validated(
+                self.key, self.source, {},
+                finalize_staging=lambda _staging: None,
+                validate_existing=lambda _entry: (_ for _ in ()).throw(
+                    KeyboardInterrupt()
+                ),
+            )
+        self.assertEqual(self.cache.lookup(self.key), incumbent)
+
     def test_validated_store_concurrent_valid_winner_is_never_replaced(self):
         barrier = threading.Barrier(2)
         results = []
