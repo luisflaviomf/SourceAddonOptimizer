@@ -18,7 +18,7 @@ Production visual validation writes one subset manifest per render state beside 
 
 Animation requirement is based on source evidence, not merely `$sequence` or a bone list. A visual SMD is deformable only when it defines at least two bones and its triangle vertices show meaningful positive influence from at least two distinct bones, either on one multi-weight vertex or across separately controlled vertices. Invalid or ambiguous weight syntax does not authorize animation bypass.
 
-A representative pose is available only when the paired original/candidate animation reference has identical canonical family-relative identity and identical frame evidence containing a positive frame. Outcomes are:
+A representative pose is available only when the paired original/candidate animation reference has identical canonical QC-graph/provenance identity and identical frame evidence containing a positive frame. Optimized QC/QCI filenames may carry `_OPT`; that graph naming difference must not break identity for preserved animation references. Outcomes are:
 
 - deformable mesh plus paired positive animation frame: validate bind and representative poses;
 - rigid mesh or bind-only one-frame sequence: validate bind only and record `rigid-or-bind-only` explicitly;
@@ -47,7 +47,7 @@ Crash injection hooks exist after marker creation and each rename/phase update. 
 - multiple matching backups or invalid marker/path/reparse state: fail closed;
 - staging is never promoted by recovery.
 
-Legacy orphan backups without a marker are recoverable only when exactly one safe direct sibling matches the exact destination prefix. All filesystem operations remain within the validated parent.
+Legacy orphan backups without a valid marker are never restored or deleted automatically because a filename prefix does not prove ownership. They are detected and cause a fail-closed diagnostic; any quarantine operation must be explicitly authorized and non-destructive. All filesystem operations remain within the validated parent.
 
 ## Cancellation
 
