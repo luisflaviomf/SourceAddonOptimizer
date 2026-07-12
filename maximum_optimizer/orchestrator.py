@@ -2263,6 +2263,11 @@ def run_maximum_addon(
                     # Availability is checked before original/donor snapshot I/O.
                     if len(attempted_ids) >= config.budget.max_candidates:
                         break
+                    recovery_evidence_path: Path | None = None
+                    recovery_cache_owned = False
+                    recovery_cache_sealed = False
+                    workspace: Path | None = None
+                    recovery_key: CacheKey | None = None
                     try:
                         if original_snapshot is None:
                             original_snapshot = _build_original_recovery_snapshot(
@@ -2291,26 +2296,6 @@ def run_maximum_addon(
                         cancel.set()
                         break
                     except Exception as exc:
-                        if recovery_cache_stored:
-                            try:
-                                cache.invalidate(recovery_key)
-                            except Exception:
-                                pass
-                        if recovery_evidence_path is not None:
-                            try:
-                                _safe_workspace_leaf(
-                                    workspace,
-                                    recovery_evidence_path,
-                                    "failed focused recovery evidence",
-                                )
-                                if (
-                                    os.path.lexists(recovery_evidence_path)
-                                    and recovery_evidence_path.is_file()
-                                    and not _is_reparse(recovery_evidence_path)
-                                ):
-                                    recovery_evidence_path.unlink()
-                            except (OSError, ValueError):
-                                pass
                         attempts.append(AttemptReport(
                             f"recovery-plan-{round_index}", base_build.spec.engine,
                             "compile_failed", None, None, None, False, str(exc), {},
@@ -2337,8 +2322,6 @@ def run_maximum_addon(
                         "candidate_started", family=manifest.model_rel,
                         candidate=recovery_spec.candidate_id, engine=recovery_spec.engine,
                     )
-                    recovery_evidence_path: Path | None = None
-                    recovery_cache_stored = False
                     try:
                         result = recover_method(
                             manifest=manifest,
@@ -2416,18 +2399,19 @@ def run_maximum_addon(
                         _check_cancelled(
                             cancel, "cancelled before focused recovery cache store"
                         )
-                        stored = cache.store(
+                        stored, recovery_cache_owned = cache.store_with_ownership(
                             recovery_key, build.workspace,
                             {"candidate": recovery_spec.candidate_id, "profile": profile.version},
                             copy_function=lambda source, destination: _copy_file_cancellable(
                                 source, destination, cancel
                             ),
                         )
-                        recovery_cache_stored = True
-                        _check_cancelled(
-                            cancel, "cancelled after focused recovery cache store"
-                        )
-                        _seal_cache_entry(stored, cancel)
+                        # Cache publication is a marker-last transaction. Once
+                        # store returns, finish its integrity seal without an
+                        # interrupt; cancellation may prevent promotion, but it
+                        # must not destroy a valid new or concurrent cache entry.
+                        _seal_cache_entry(stored, None)
+                        recovery_cache_sealed = True
                         _check_cancelled(
                             cancel, "cancelled before focused recovery promotion"
                         )
@@ -2445,12 +2429,12 @@ def run_maximum_addon(
                         )
                         break
                     except ProcessCancelledError as exc:
-                        if recovery_cache_stored:
+                        if recovery_cache_owned and not recovery_cache_sealed:
                             try:
                                 cache.invalidate(recovery_key)
                             except Exception:
                                 pass
-                        if recovery_evidence_path is not None:
+                        if recovery_evidence_path is not None and workspace is not None:
                             try:
                                 _safe_workspace_leaf(
                                     workspace,
@@ -2476,6 +2460,26 @@ def run_maximum_addon(
                         )
                         break
                     except Exception as exc:
+                        if recovery_cache_owned and not recovery_cache_sealed:
+                            try:
+                                cache.invalidate(recovery_key)
+                            except Exception:
+                                pass
+                        if recovery_evidence_path is not None and workspace is not None:
+                            try:
+                                _safe_workspace_leaf(
+                                    workspace,
+                                    recovery_evidence_path,
+                                    "failed focused recovery evidence",
+                                )
+                                if (
+                                    os.path.lexists(recovery_evidence_path)
+                                    and recovery_evidence_path.is_file()
+                                    and not _is_reparse(recovery_evidence_path)
+                                ):
+                                    recovery_evidence_path.unlink()
+                            except (OSError, ValueError):
+                                pass
                         attempts.append(AttemptReport(
                             recovery_spec.candidate_id, recovery_spec.engine,
                             "compile_failed", None, None, None, False, str(exc), {},

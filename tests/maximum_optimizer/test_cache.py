@@ -398,6 +398,18 @@ class CandidateCacheTests(unittest.TestCase):
         self.assertEqual((final / "metadata.json").read_bytes(), original_metadata)
         self.assertEqual((final / "payload/model.mdl").read_bytes(), b"cached")
 
+    def test_store_with_ownership_distinguishes_new_and_existing_entries(self):
+        first, first_owned = self.cache.store_with_ownership(
+            self.key, self.source, {"generation": 1}
+        )
+        second, second_owned = self.cache.store_with_ownership(
+            self.key, self.source, {"generation": 2}
+        )
+
+        self.assertEqual(first, second)
+        self.assertTrue(first_owned)
+        self.assertFalse(second_owned)
+
     def test_store_quarantines_invalid_final_and_promotes_without_merging(self):
         final = self.create_final_entry(None)
         write_tree(final / "payload", {"stale.bin": b"stale"})

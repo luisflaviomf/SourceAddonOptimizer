@@ -176,6 +176,19 @@ class CandidateCache:
         *,
         copy_function: Callable[[str, str], str | os.PathLike[str]] = shutil.copy2,
     ) -> Path:
+        entry, _owned = self.store_with_ownership(
+            key, source_dir, metadata, copy_function=copy_function
+        )
+        return entry
+
+    def store_with_ownership(
+        self,
+        key: CacheKey,
+        source_dir: os.PathLike[str] | str,
+        metadata: object,
+        *,
+        copy_function: Callable[[str, str], str | os.PathLike[str]] = shutil.copy2,
+    ) -> tuple[Path, bool]:
         source = Path(source_dir)
         if _is_symlink(source):
             raise ValueError(f"source_dir must not be a symlink: {source}")
@@ -187,7 +200,7 @@ class CandidateCache:
         final = self.root / key.digest
         existing = self.lookup(key)
         if existing is not None:
-            return existing
+            return existing, False
         _raise_if_cache_symlink(final)
 
         staging = _unique_sibling(
@@ -231,7 +244,7 @@ class CandidateCache:
                 f"{key.digest}.cleanup-pending-",
                 os.replace,
             )
-        return final
+        return final, True
 
     def cleanup_incomplete(self) -> int:
         if not self.root.is_dir():

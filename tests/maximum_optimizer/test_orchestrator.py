@@ -943,6 +943,57 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(report.families[0].status, "failed")
         self.assertIn("byte-exact focused recovery", report.families[0].reason)
 
+    def test_recovery_planning_failure_is_isolated_before_reservation(self):
+        self.config = MaximumRunConfig(
+            self.config.addon_dir, self.config.output_dir, self.config.work_dir,
+            self.config.blender_path, self.config.studiomdl_path,
+            self.config.repo_root, SearchBudget(4, .025, 0),
+            _focused_profile(self.root / "focused-plan-failure.json"), False, False,
+        )
+        self.adapters.candidate_schedule = lambda _manifest: (
+            CandidateSpec("candidate-100", "blender", 1.0, 0.01, "transfer-v1"),
+        )
+        self.adapters.visual = lambda *_args, **_kwargs: ValidationResult(
+            True, metrics={"fidelity_score": 0.99}
+        )
+
+        def focused_visual(*_args):
+            target = _focus_target()
+            metrics = {"fidelity_score": 0.0, "edge_error": 0.2}
+            failed = ValidationResult(
+                False,
+                (GateFailure("edge_error", "bind", 0.2, 0.1, "failed"),),
+                metrics, "bind",
+            )
+            region = FocusRegionResult(target, failed, "3" * 64, False)
+            return FocusedGateResult(
+                failed, (target,), {target.region_key: region}, "4" * 64,
+            )
+
+        self.adapters.focused_visual = focused_visual
+        self.adapters.recover_focused_candidate = lambda **_kwargs: self.fail(
+            "adapter must not run when planning fails"
+        )
+        with patch.object(
+            orchestrator_module, "_build_original_recovery_snapshot",
+            side_effect=RuntimeError("synthetic recovery planning failure"),
+        ):
+            report = run_maximum_addon(
+                self.config, adapters=self.adapters, validator=self.structural,
+                event_sink=self.events.append,
+                profile_selector=lambda _manifest: FamilyFidelitySelection(
+                    GENERAL_BODY_DETAIL, "test", (),
+                ),
+            )
+
+        planning = [
+            attempt for attempt in report.families[0].attempts
+            if attempt.candidate_id == "recovery-plan-0"
+        ]
+        self.assertEqual(len(planning), 1)
+        self.assertEqual(planning[0].status, "compile_failed")
+        self.assertIn("synthetic recovery planning failure", planning[0].error)
+
     def test_schema3_cancellation_after_focused_adapter_never_stores_promotes_or_updates_best(self):
         cancel = threading.Event()
         self.config = MaximumRunConfig(
