@@ -38,9 +38,85 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal bool SingleAddonOnly { get; init; }
     }
 
+    internal interface ISourceAddonOptimizerProcess : IDisposable
+    {
+        event Action<string>? OutputLine;
+        event Action<string>? ErrorLine;
+        bool HasExited { get; }
+        int ExitCode { get; }
+        bool Start();
+        void BeginOutputReadLine();
+        void BeginErrorReadLine();
+        Task WaitForExitAsync(CancellationToken cancellationToken);
+        bool TryRequestCooperativeCancellation();
+        void KillEntireProcessTree();
+    }
+
+    internal sealed class SystemSourceAddonOptimizerProcess : ISourceAddonOptimizerProcess
+    {
+        private readonly Process _process;
+
+        internal SystemSourceAddonOptimizerProcess(ProcessStartInfo startInfo)
+        {
+            _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+            _process.OutputDataReceived += (_, args) =>
+            {
+                if (args.Data != null)
+                    OutputLine?.Invoke(args.Data);
+            };
+            _process.ErrorDataReceived += (_, args) =>
+            {
+                if (args.Data != null)
+                    ErrorLine?.Invoke(args.Data);
+            };
+        }
+
+        public event Action<string>? OutputLine;
+        public event Action<string>? ErrorLine;
+        public bool HasExited => _process.HasExited;
+        public int ExitCode => _process.ExitCode;
+        public bool Start() => _process.Start();
+        public void BeginOutputReadLine() => _process.BeginOutputReadLine();
+        public void BeginErrorReadLine() => _process.BeginErrorReadLine();
+        public Task WaitForExitAsync(CancellationToken cancellationToken) =>
+            _process.WaitForExitAsync(cancellationToken);
+
+        public bool TryRequestCooperativeCancellation()
+        {
+            // The worker currently has no cancellation channel. With CreateNoWindow,
+            // redirected streams, and a WPF parent that normally owns no console,
+            // GenerateConsoleCtrlEvent cannot be delivered reliably. Keep this
+            // explicit hook so a future documented worker channel can be added
+            // without changing the cancellation ordering in the runner.
+            return false;
+        }
+
+        public void KillEntireProcessTree() => _process.Kill(entireProcessTree: true);
+        public void Dispose() => _process.Dispose();
+    }
+
     internal sealed class SourceAddonOptimizerRunner
     {
         private readonly SourceAddonOptimizerProgressParser _parser = new SourceAddonOptimizerProgressParser();
+        private readonly Func<ProcessStartInfo, ISourceAddonOptimizerProcess> _processFactory;
+        private readonly TimeSpan _cancellationGracePeriod;
+
+        internal SourceAddonOptimizerRunner()
+            : this(
+                startInfo => new SystemSourceAddonOptimizerProcess(startInfo),
+                TimeSpan.FromSeconds(2))
+        {
+        }
+
+        internal SourceAddonOptimizerRunner(
+            Func<ProcessStartInfo, ISourceAddonOptimizerProcess> processFactory,
+            TimeSpan cancellationGracePeriod)
+        {
+            _processFactory = processFactory ?? throw new ArgumentNullException(nameof(processFactory));
+            if (cancellationGracePeriod <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(cancellationGracePeriod));
+            _cancellationGracePeriod = cancellationGracePeriod;
+        }
 
         internal event Action<string>? LogLine;
         internal event Action<string>? ErrorLine;
@@ -182,18 +258,9 @@ namespace GmodAddonCompressor.Systems.Optimizer
             if (options.SingleAddonOnly)
                 startInfo.ArgumentList.Add("--single-addon-only");
 
-            using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-
-            process.OutputDataReceived += (_, args) =>
-            {
-                if (args.Data != null)
-                    HandleLine(args.Data, false);
-            };
-            process.ErrorDataReceived += (_, args) =>
-            {
-                if (args.Data != null)
-                    HandleLine(args.Data, true);
-            };
+            using var process = _processFactory(startInfo);
+            process.OutputLine += line => HandleLine(line, false);
+            process.ErrorLine += line => HandleLine(line, true);
 
             if (!process.Start())
                 throw new InvalidOperationException("Failed to start SourceAddonOptimizer worker.");
@@ -207,12 +274,59 @@ namespace GmodAddonCompressor.Systems.Optimizer
             }
             catch (OperationCanceledException)
             {
-                if (!process.HasExited)
-                    process.Kill(true);
+                await CancelProcessAsync(process);
                 throw;
             }
 
             return process.ExitCode;
+        }
+
+        private async Task CancelProcessAsync(ISourceAddonOptimizerProcess process)
+        {
+            if (process.HasExited)
+                return;
+
+            // Always attempt the cooperative hook first. The current production
+            // adapter honestly returns false because the worker exposes no safe
+            // Ctrl+Break/stdin protocol, but test and future adapters can support it.
+            process.TryRequestCooperativeCancellation();
+
+            if (!process.HasExited)
+            {
+                using var grace = new CancellationTokenSource(_cancellationGracePeriod);
+                try
+                {
+                    await process.WaitForExitAsync(grace.Token);
+                }
+                catch (OperationCanceledException) when (grace.IsCancellationRequested)
+                {
+                    // Bounded grace expired; Task 10 recovery makes hard-kill safe.
+                }
+            }
+
+            if (process.HasExited)
+                return;
+
+            try
+            {
+                process.KillEntireProcessTree();
+            }
+            catch (InvalidOperationException) when (process.HasExited)
+            {
+                // The worker exited between the final check and Kill().
+                return;
+            }
+
+            // Let redirected stdout/stderr finish dispatching terminal events after
+            // the root process is killed, also with a bounded asynchronous wait.
+            using var drain = new CancellationTokenSource(_cancellationGracePeriod);
+            try
+            {
+                await process.WaitForExitAsync(drain.Token);
+            }
+            catch (OperationCanceledException) when (drain.IsCancellationRequested)
+            {
+            }
         }
 
         private void HandleLine(string line, bool isError)
