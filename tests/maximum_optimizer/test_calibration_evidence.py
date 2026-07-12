@@ -97,6 +97,16 @@ def _payload() -> dict:
             "reason": "raw corpus distributions are not calibrated acceptance thresholds",
         },
     }
+    for family in payload["families"]:
+        family["alternatives"] = []
+    wheel = payload["families"][0]
+    alternative_lane = copy.deepcopy(wheel["candidate"])
+    alternative_lane["candidate_id"] = "r035"
+    wheel["alternatives"] = [{
+        "lane": alternative_lane,
+        "status": "rejected-research-alternative",
+        "reason": "smaller than r040 but visually dominated r040 and showed manual wheel faceting",
+    }]
     payload["evidence_sha256"] = canonical_calibration_evidence_hash(payload)
     return payload
 
@@ -110,6 +120,29 @@ class CalibrationEvidenceTests(unittest.TestCase):
         )
         self.assertFalse(parsed["decision"]["winner"])
         self.assertEqual(parsed["status"], "calibration-pending")
+        self.assertEqual(
+            parsed["families"][0]["alternatives"][0]["lane"]["candidate_id"],
+            "r035",
+        )
+        self.assertTrue(all(
+            not family["alternatives"] for family in parsed["families"][1:]
+        ))
+
+    def test_alternative_set_and_rejection_identity_are_fixed(self) -> None:
+        for mutate in (
+            lambda item: item["families"][0]["alternatives"].clear(),
+            lambda item: item["families"][1]["alternatives"].append(
+                copy.deepcopy(item["families"][0]["alternatives"][0])
+            ),
+            lambda item: item["families"][0]["alternatives"][0].__setitem__(
+                "status", "winner"
+            ),
+        ):
+            changed = copy.deepcopy(_payload())
+            mutate(changed)
+            changed["evidence_sha256"] = canonical_calibration_evidence_hash(changed)
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                parse_calibration_evidence(changed)
 
     def test_seal_rejects_metric_manifest_family_and_decision_mutations(self) -> None:
         mutations = []

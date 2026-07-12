@@ -171,6 +171,15 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
     for expected_id, family_spec in zip(CALIBRATION_FAMILIES, spec["families"]):
         if family_spec["family_id"] != expected_id:
             raise ValueError("calibration spec family order is invalid")
+        alternatives = []
+        for alternative_spec in family_spec["alternatives"]:
+            alternatives.append({
+                "lane": _lane(
+                    alternative_spec["lane"], "strict-region-paired"
+                ),
+                "status": alternative_spec["status"],
+                "reason": alternative_spec["reason"],
+            })
         families.append({
             "family_id": expected_id,
             "baseline": _lane(
@@ -178,6 +187,7 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
                 "aggregate-appearance-anchor-not-structural-baseline",
             ),
             "candidate": _lane(family_spec["candidate"], "strict-region-paired"),
+            "alternatives": alternatives,
         })
     implementation_paths = (
         "render_previews.py",

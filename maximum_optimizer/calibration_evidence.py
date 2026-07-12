@@ -31,6 +31,17 @@ _CANDIDATES = {
     "nissan_skyline_gtr32": "r025",
     "dodge_monaco_police": "r040",
 }
+_ALTERNATIVES = {
+    "pontiac_transam_wheel": ("r035",),
+    "dodge_charger": (),
+    "toyota_supra": (),
+    "nissan_skyline_gtr32": (),
+    "dodge_monaco_police": (),
+}
+_ALTERNATIVE_STATUS = "rejected-research-alternative"
+_ALTERNATIVE_REASON = (
+    "smaller than r040 but visually dominated r040 and showed manual wheel faceting"
+)
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -191,7 +202,11 @@ def parse_calibration_evidence(payload: object) -> dict:
     ) != CALIBRATION_FAMILIES:
         raise ValueError("calibration family set/order is invalid")
     for family_id, family_value in zip(CALIBRATION_FAMILIES, families):
-        family = _exact(family_value, {"family_id", "baseline", "candidate"}, family_id)
+        family = _exact(
+            family_value,
+            {"family_id", "baseline", "candidate", "alternatives"},
+            family_id,
+        )
         _lane(
             family["baseline"],
             "aggregate-appearance-anchor-not-structural-baseline",
@@ -202,6 +217,26 @@ def parse_calibration_evidence(payload: object) -> dict:
             family["candidate"], "strict-region-paired", _CANDIDATES[family_id],
             f"{family_id} candidate",
         )
+        alternatives = family["alternatives"]
+        expected_alternatives = _ALTERNATIVES[family_id]
+        if type(alternatives) is not list or len(alternatives) != len(expected_alternatives):
+            raise ValueError(f"{family_id} alternatives are invalid")
+        for position, (alternative_value, candidate_id) in enumerate(zip(
+            alternatives, expected_alternatives
+        )):
+            alternative = _exact(
+                alternative_value, {"lane", "status", "reason"},
+                f"{family_id} alternative {position}",
+            )
+            if (
+                alternative["status"] != _ALTERNATIVE_STATUS
+                or alternative["reason"] != _ALTERNATIVE_REASON
+            ):
+                raise ValueError(f"{family_id} alternative decision is invalid")
+            _lane(
+                alternative["lane"], "strict-region-paired", candidate_id,
+                f"{family_id} alternative {position} lane",
+            )
     distributions = _exact(
         root["baseline_distribution"], set(CALIBRATION_METRICS),
         "baseline distribution",
