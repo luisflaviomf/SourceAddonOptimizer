@@ -37,7 +37,7 @@ from maximum_optimizer.meshopt_bridge import (
     simplify_mesh,
 )
 from maximum_optimizer.compiler_aware import (
-    allows_exact_fallback, engine_evidence, exact_source_payload,
+    SmdAuditValidationError, allows_exact_fallback, engine_evidence, exact_source_payload,
     move_modifier_first, preserve_whole_source, provenance_status, require_triangular_mesh,
 )
 from maximum_optimizer.importance_map import MeshImportanceInput, build_importance_weights
@@ -635,24 +635,27 @@ def audit_smd_text(text: str) -> SmdAudit:
 
 def validate_smd_audits(before: SmdAudit, after: SmdAudit) -> None:
     if not set(before.materials).issubset(after.materials):
-        raise RuntimeError("export lost SMD materials")
+        raise SmdAuditValidationError("export lost SMD materials")
     if before.bone_nodes != after.bone_nodes:
-        raise RuntimeError("export changed SMD bone names/order/hierarchy")
+        raise SmdAuditValidationError("export changed SMD bone names/order/hierarchy")
     if not set(before.influence_bones).issubset(after.influence_bones):
-        raise RuntimeError("export lost SMD bone influence identities")
+        raise SmdAuditValidationError("export lost SMD bone influence identities")
     if not set(before.influence_sets).issubset(after.influence_sets):
-        raise RuntimeError("export lost SMD bone influence sets")
+        raise SmdAuditValidationError("export lost SMD bone influence sets")
     if before.uv_seam_positions and not after.uv_seam_positions:
-        raise RuntimeError("export lost all UV seam evidence")
+        raise SmdAuditValidationError("export lost all UV seam evidence")
     if before.hard_normal_positions and not after.hard_normal_positions:
-        raise RuntimeError("export lost all hard-normal seam evidence")
+        raise SmdAuditValidationError("export lost all hard-normal seam evidence")
     if after.position_normal_keys > before.position_normal_keys:
-        raise RuntimeError(
+        raise SmdAuditValidationError(
             "export amplified SMD position-normal keys "
             f"({before.position_normal_keys}->{after.position_normal_keys})"
         )
-    if after.uv_bounds is None or after.finite_normal_count != after.triangle_count * 3:
-        raise RuntimeError("export has incomplete UV or hard-normal evidence")
+    before_missing_normals = before.triangle_count * 3 - before.finite_normal_count
+    after_missing_normals = after.triangle_count * 3 - after.finite_normal_count
+    if ((before.uv_bounds is not None and after.uv_bounds is None)
+            or after_missing_normals > before_missing_normals):
+        raise SmdAuditValidationError("export has incomplete UV or hard-normal evidence")
 
 
 def restore_smd_normal_identity(
@@ -1238,7 +1241,7 @@ def _process_source_file(
                 source_identity, mesh_objects, candidate, region_manifest, before_audit.materials,
             )
     except (ValueError, RuntimeError) as exc:
-        if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"} or not allows_exact_fallback(str(exc)):
+        if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"} or not allows_exact_fallback(exc):
             raise
         preserve_exact = True
         fallback_reason = str(exc)
@@ -1318,7 +1321,7 @@ def _process_source_file(
     try:
         validate_smd_audits(before_audit, after_audit)
     except RuntimeError as exc:
-        if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"} or not allows_exact_fallback(str(exc)):
+        if candidate.strategy not in {"blender-adaptive-v1", "blender-importance-map-v1"} or not allows_exact_fallback(exc):
             raise
         preserve_exact = True
         fallback_reason = str(exc)

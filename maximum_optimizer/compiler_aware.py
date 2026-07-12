@@ -8,6 +8,10 @@ COMPILED_VERTEX_BYTES = 82
 COMPILED_TRIANGLE_BYTES = 12
 
 
+class SmdAuditValidationError(RuntimeError):
+    """A post-export SMD contract failure safe for whole-file exact fallback."""
+
+
 def compiler_proxy_bytes(compiled_vertices: int, triangles: int) -> int:
     """Approximate two-VTX Source output; final ranking still uses real sidecars."""
     if type(compiled_vertices) is not int or compiled_vertices < 0:
@@ -47,7 +51,10 @@ def exact_source_payload(raw: bytes) -> bytes:
     return raw
 
 
-def allows_exact_fallback(message: str) -> bool:
+def allows_exact_fallback(error: object) -> bool:
+    if isinstance(error, SmdAuditValidationError):
+        return True
+    message = str(error)
     return message in {
         "normal must be non-zero",
         "export lost all hard-normal seam evidence",
