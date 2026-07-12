@@ -608,6 +608,15 @@ class CandidateAdapterTests(unittest.TestCase):
         payload = json.loads((self.workspace / "candidate.json").read_text(encoding="utf-8"))
         self.assertEqual(payload, spec.cache_payload())
 
+    def test_fidelity_and_blender_reject_regional_specs_before_launch(self):
+        region = "r-" + "2" * 64
+        runner = MaterializingRunner(self.manifest.model_rel)
+        for adapter, engine in ((BlenderAdapter(process_runner=runner), "blender"), (FidelityAdapter(process_runner=runner), "fidelity")):
+            spec = CandidateSpec("regional", engine, 0.5, 0.01, "profile", ((region, 0.75),))
+            with self.assertRaisesRegex(CandidateBuildError, "region_overrides"):
+                adapter.generate(self.manifest, spec, self.workspace, self.tools)
+            self.assertEqual(runner.commands, [])
+
     def test_build_copies_compile_mappings_and_makes_them_read_only(self):
         build = BlenderAdapter(process_runner=MaterializingRunner(self.manifest.model_rel)).generate(
             self.manifest, self.spec, self.workspace, self.tools

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from argparse import Namespace
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +13,18 @@ from worker import worker_main
 
 
 class MaximumCliTests(unittest.TestCase):
+    def test_maximum_work_selection_never_deletes_existing_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "existing-work"
+            work.mkdir()
+            sentinel = work / "cache.bin"
+            sentinel.write_bytes(b"cache")
+            selected = build_optimized_addon._choose_maximum_work_dir(
+                work, overwrite=True, resume=False
+            )
+            self.assertEqual(selected, work)
+            self.assertEqual(sentinel.read_bytes(), b"cache")
+
     def test_maximum_overwrite_selection_never_deletes_existing_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "existing"
@@ -100,6 +113,48 @@ class MaximumCliTests(unittest.TestCase):
             self.assertEqual(rc, 2)
             self.assertFalse(output.exists())
             self.assertFalse(work.exists())
+
+    def test_unsafe_work_overlap_returns_two_before_decompile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            addon = root / "addon"
+            (addon / "models").mkdir(parents=True)
+            sentinel = addon / "keep.txt"
+            sentinel.write_text("keep", encoding="utf-8")
+            blender = root / "blender.exe"
+            studiomdl = root / "studiomdl.exe"
+            blender.write_bytes(b"tool")
+            studiomdl.write_bytes(b"tool")
+            profile = root / "profile.json"
+            profile.write_text(json.dumps({
+                "schema": 1,
+                "version": "test",
+                "calibrated": True,
+                "corpus_hash": "a" * 64,
+                "limits": {
+                    "silhouette_iou": 1, "rgb_mae": 1, "edge_error": 1,
+                    "surface_bidirectional_p95": 1, "surface_max": 1,
+                    "normal_angle_p95": 180, "uv_error_p95": 1,
+                    "skinning_error_p95": 1,
+                },
+            }), encoding="utf-8")
+            args = Namespace(
+                maximum_profile=profile, blender=str(blender), studiomdl=str(studiomdl),
+                maximum_max_candidates=2, maximum_min_ratio_step=0.1,
+                maximum_min_marginal_saving=0.0, maximum_resume=False,
+                resume_opt=False, overwrite=True, decompile_jobs=1,
+            )
+            with patch("maximum_optimizer.orchestrator.run_process") as decompile:
+                rc = run_maximum_from_existing_args(
+                    args,
+                    repo_root=root,
+                    addon_path=addon,
+                    out_addon_dir=root / "output",
+                    work_dir=addon,
+                )
+            self.assertEqual(rc, 2)
+            decompile.assert_not_called()
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
 
 
 if __name__ == "__main__":

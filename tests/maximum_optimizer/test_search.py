@@ -59,6 +59,103 @@ def evaluation_at(
 
 
 class SearchTests(unittest.TestCase):
+    def test_custom_schedule_compares_marginal_savings_within_engine_trail(self):
+        schedule = (
+            CandidateSpec("fidelity-baseline", "fidelity", 0.5, 0.0, "fidelity"),
+            CandidateSpec("blender-r075", "blender", 0.75, 0.01, "transfer"),
+            CandidateSpec("blender-r050", "blender", 0.50, 0.01, "transfer"),
+            CandidateSpec("blender-r025", "blender", 0.25, 0.01, "transfer"),
+            CandidateSpec("mesh-r075", "meshoptimizer", 0.75, 0.01, "transfer"),
+        )
+        budget = SearchBudget(10, 0.025, 0.05)
+        evaluations = [
+            evaluation_at(0.5, True, total_bytes=100, candidate_id="fidelity-baseline", engine="fidelity"),
+            evaluation_at(0.75, True, total_bytes=130, candidate_id="blender-r075", engine="blender"),
+            evaluation_at(0.50, True, total_bytes=120, candidate_id="blender-r050", engine="blender"),
+        ]
+
+        self.assertEqual(
+            choose_next(evaluations, budget, initial=schedule).candidate_id,
+            "blender-r025",
+        )
+        evaluations.append(
+            evaluation_at(0.25, True, total_bytes=119, candidate_id="blender-r025", engine="blender")
+        )
+        self.assertEqual(
+            choose_next(evaluations, budget, initial=schedule).candidate_id,
+            "mesh-r075",
+        )
+
+    def test_regional_recovery_is_only_generated_for_capable_meshoptimizer_engine(self):
+        region = "r-" + "4" * 64
+        schedule = (
+            CandidateSpec("blender-r050", "blender", 0.5, 0.01, "transfer"),
+            CandidateSpec("mesh-r050", "meshoptimizer", 0.5, 0.01, "transfer"),
+        )
+        evaluations = [
+            evaluation_at(0.75, True, candidate_id="blender-pass", engine="blender"),
+            evaluation_at(
+                0.25,
+                False,
+                candidate_id="blender-fail",
+                engine="blender",
+                worst_scope=f"{region}/bind",
+            ),
+        ]
+
+        next_candidate = choose_next(evaluations, SearchBudget.experimental_default(), initial=schedule)
+
+        self.assertFalse(next_candidate.region_overrides)
+        self.assertNotIn("region", next_candidate.candidate_id)
+
+    def test_default_schedule_does_not_stop_when_unscheduled_engine_trail_is_worse(self):
+        evaluations = [
+            evaluation_at(0.5, True, total_bytes=100, candidate_id="fidelity-baseline", engine="fidelity"),
+            evaluation_at(0.75, True, total_bytes=101, candidate_id="external-blender", engine="blender"),
+        ]
+        self.assertEqual(
+            choose_next(evaluations, SearchBudget.experimental_default()).candidate_id,
+            "meshopt-r075",
+        )
+
+    def test_profiles_and_regional_overrides_are_separate_search_trails(self):
+        schedule = (
+            CandidateSpec("a-next", "blender", 0.25, 0.01, "profile-a"),
+            CandidateSpec("b-next", "blender", 0.25, 0.01, "profile-b"),
+            CandidateSpec("mesh-next", "meshoptimizer", 0.5, 0.01, "mesh"),
+        )
+        evaluations = [
+            CandidateEvaluation(
+                CandidateSpec("a-pass", "blender", 0.75, 0.01, "profile-a"),
+                evaluation_at(0.75, True, total_bytes=100).size,
+                ValidationResult(True), ValidationResult(True), Path("compiled"),
+            ),
+            CandidateEvaluation(
+                CandidateSpec("b-pass", "blender", 0.50, 0.01, "profile-b"),
+                evaluation_at(0.50, True, total_bytes=100).size,
+                ValidationResult(True), ValidationResult(True), Path("compiled"),
+            ),
+        ]
+        self.assertEqual(
+            choose_next(evaluations, SearchBudget(10, 0.025, 0.05), initial=schedule).candidate_id,
+            "a-next",
+        )
+
+        region = "r-" + "5" * 64
+        base = evaluation_at(0.5, True, candidate_id="base", engine="meshoptimizer")
+        regional = evaluation_at(
+            0.25,
+            False,
+            candidate_id="regional",
+            engine="meshoptimizer",
+            region_overrides=((region, 0.5),),
+        )
+        next_candidate = choose_next(
+            [base, regional],
+            SearchBudget.experimental_default(),
+            initial=(CandidateSpec("scheduled", "meshoptimizer", 0.1, 0.01, "transfer-v1"),),
+        )
+        self.assertEqual(next_candidate.candidate_id, "scheduled")
     def test_initial_candidates_have_exact_order_and_profiles(self):
         candidates = initial_candidates()
 
@@ -171,7 +268,7 @@ class SearchTests(unittest.TestCase):
         evaluations = [evaluation_at(0.50, True, candidate_id="only")]
         budget = SearchBudget(max_candidates=1, min_ratio_step=0.025, min_marginal_saving=0.005)
 
-        self.assertIsNone(choose_next(evaluations, budget))
+        self.assertIsNone(choose_next(evaluations, budget, initial=()))
 
     def test_choose_next_does_not_generate_below_ratio_floor(self):
         evaluations = [
@@ -180,7 +277,7 @@ class SearchTests(unittest.TestCase):
         ]
         budget = SearchBudget(max_candidates=18, min_ratio_step=0.001, min_marginal_saving=0.0)
 
-        self.assertIsNone(choose_next(evaluations, budget))
+        self.assertIsNone(choose_next(evaluations, budget, initial=()))
 
     def test_choose_next_does_not_repeat_a_midpoint_candidate_id(self):
         evaluations = [
@@ -195,7 +292,7 @@ class SearchTests(unittest.TestCase):
         ]
 
         self.assertIsNone(
-            choose_next(evaluations, SearchBudget.experimental_default())
+            choose_next(evaluations, SearchBudget.experimental_default(), initial=())
         )
 
     def test_choose_next_stops_when_narrowest_bracket_is_too_small(self):
@@ -204,7 +301,7 @@ class SearchTests(unittest.TestCase):
             evaluation_at(0.49, False, candidate_id="fail"),
         ]
 
-        self.assertIsNone(choose_next(evaluations, SearchBudget.experimental_default()))
+        self.assertIsNone(choose_next(evaluations, SearchBudget.experimental_default(), initial=()))
 
     def test_choose_next_rejects_a_rounded_midpoint_that_collapses_an_endpoint(self):
         evaluations = [
@@ -217,7 +314,7 @@ class SearchTests(unittest.TestCase):
             min_marginal_saving=0.0,
         )
 
-        self.assertIsNone(choose_next(evaluations, budget))
+        self.assertIsNone(choose_next(evaluations, budget, initial=()))
 
     def test_marginal_stop_uses_previous_winner_and_only_after_a_pass(self):
         budget = SearchBudget(max_candidates=18, min_ratio_step=0.025, min_marginal_saving=0.05)
@@ -230,8 +327,11 @@ class SearchTests(unittest.TestCase):
             evaluation_at(0.25, False, total_bytes=80, candidate_id="failure"),
         ]
 
-        self.assertIsNone(choose_next(low_saving, budget))
-        self.assertIsNotNone(choose_next(latest_failure, budget))
+        self.assertIsNone(choose_next(low_saving, budget, initial=()))
+        pending = (
+            CandidateSpec("pending", "meshoptimizer", 0.15, 0.01, "transfer-v1"),
+        )
+        self.assertIsNotNone(choose_next(latest_failure, budget, initial=pending))
 
     def test_marginal_stop_protects_zero_previous_bytes(self):
         budget = SearchBudget(max_candidates=18, min_ratio_step=0.025, min_marginal_saving=0.05)
@@ -240,7 +340,7 @@ class SearchTests(unittest.TestCase):
             evaluation_at(0.40, True, total_bytes=0, candidate_id="current"),
         ]
 
-        self.assertIsNone(choose_next(evaluations, budget))
+        self.assertIsNone(choose_next(evaluations, budget, initial=()))
 
     def test_marginal_saving_equal_to_threshold_does_not_stop(self):
         budget = SearchBudget(

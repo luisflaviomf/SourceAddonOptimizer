@@ -192,6 +192,13 @@ def _choose_maximum_dest_dir(base: Path, *, overwrite: bool) -> Path:
     return base.parent / f"{base.name}_{_ts()}"
 
 
+def _choose_maximum_work_dir(base: Path, *, overwrite: bool, resume: bool) -> Path:
+    """Select Maximum work without deleting cache, logs, or recovery state."""
+    if not base.exists() or overwrite or resume:
+        return base
+    return base.parent / f"{base.name}_{_ts()}"
+
+
 def _choose_work_dir(base: Path, *, overwrite: bool) -> Path:
     if not base.exists():
         return base
@@ -1031,8 +1038,12 @@ def main(argv: list[str]) -> int:
     maximum_mode = args.optimizer_mode == OPTIMIZER_MODE_MAXIMUM
     maximum_resume = bool(args.maximum_resume or args.resume_opt)
     work_dir = (
-        work_base
-        if maximum_mode and maximum_resume
+        _choose_maximum_work_dir(
+            work_base,
+            overwrite=bool(args.overwrite_work),
+            resume=maximum_resume,
+        )
+        if maximum_mode
         else _choose_work_dir(work_base, overwrite=bool(args.overwrite_work))
     )
 

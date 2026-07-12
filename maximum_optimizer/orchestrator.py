@@ -4,16 +4,18 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
+import stat
 import sys
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
-from .cache import CacheKey, CandidateCache, atomic_replace_tree
+from .cache import AtomicReplaceError, CacheKey, CandidateCache
 from .candidates import (
     BlenderAdapter,
     CandidateBuild,
@@ -34,7 +36,7 @@ from .domain import (
 )
 from .meshopt_bridge import MESHOPT_ENGINE_PREFERRED
 from .processes import ProcessCancelledError, run_process
-from .qc_inventory import build_family_manifests, parse_qc_fingerprint
+from .qc_inventory import _inventory_qc, build_family_manifests
 from .reporting import atomic_write_json, canonical_payload, deep_freeze, event_line
 from .search import choose_next, select_winner
 from .structural_validation import validate_structure
@@ -80,7 +82,11 @@ class MaximumRunConfig:
             "studiomdl_path", "repo_root", "profile_path",
         ):
             raw = Path(getattr(self, field_name)).expanduser()
-            object.__setattr__(self, field_name, raw.resolve(strict=False))
+            # Keep the lexical path. Resolving here would erase a symlink/junction
+            # component before the safety validator has a chance to reject it.
+            object.__setattr__(
+                self, field_name, Path(os.path.abspath(os.fspath(raw)))
+            )
         if not isinstance(self.budget, SearchBudget):
             raise TypeError("budget must be a SearchBudget")
         if type(self.budget.max_candidates) is not int or self.budget.max_candidates < 1:
@@ -143,12 +149,14 @@ class FamilyRunOutcome:
     worst_metrics: Mapping[str, float]
     worst_scopes: Mapping[str, str]
     provenance: Mapping[str, str]
+    metric_margins: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "savings", deep_freeze(dict(self.savings)))
         object.__setattr__(self, "worst_metrics", deep_freeze(dict(self.worst_metrics)))
         object.__setattr__(self, "worst_scopes", deep_freeze(dict(self.worst_scopes)))
         object.__setattr__(self, "provenance", deep_freeze(dict(self.provenance)))
+        object.__setattr__(self, "metric_margins", deep_freeze(dict(self.metric_margins)))
 
 
 @dataclass(frozen=True)
@@ -162,12 +170,14 @@ class MaximumRunReport:
     tool_versions: Mapping[str, str]
     families: tuple[FamilyRunOutcome, ...]
     report_path: Path
+    events: tuple[Mapping[str, object], ...] = ()
     cancelled: bool = False
 
     def __post_init__(self) -> None:
         if self.schema != 1:
             raise ValueError("unsupported Maximum report schema")
         object.__setattr__(self, "tool_versions", deep_freeze(dict(self.tool_versions)))
+        object.__setattr__(self, "events", deep_freeze(tuple(self.events)))
 
 
 class AdapterSet(Protocol):
@@ -211,12 +221,9 @@ def _snapshot_from_artifacts(root: Path, artifacts: Sequence[ArtifactStat]) -> C
 
 
 def _family_snapshot(snapshot: CompiledSizeSnapshot, model_rel: str) -> CompiledSizeSnapshot:
-    model = PurePosixPath(model_rel.replace("\\", "/"))
-    stem = model.with_suffix("").as_posix().casefold()
     artifacts = tuple(
         item for item in snapshot.artifacts
-        if PurePosixPath(item.relative_path).with_suffix("").as_posix().casefold() == stem
-        or item.relative_path.casefold().startswith(stem + ".")
+        if _is_exact_family_artifact(item.relative_path, model_rel)
     )
     return _snapshot_from_artifacts(snapshot.root, artifacts)
 
@@ -272,7 +279,31 @@ def _first_reparse(root: Path) -> Path | None:
     return None
 
 
-def _validate_paths(config: MaximumRunConfig) -> None:
+def _existing_components(path: Path) -> tuple[Path, ...]:
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    components: list[Path] = []
+    current = Path(absolute.anchor)
+    if current.exists():
+        components.append(current)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if not os.path.lexists(current):
+            break
+        components.append(current)
+    return tuple(components)
+
+
+def validate_run_paths(config: MaximumRunConfig, *, create: bool) -> None:
+    for label, path in (
+        ("addon", config.addon_dir),
+        ("output", config.output_dir),
+        ("work", config.work_dir),
+    ):
+        for component in _existing_components(path):
+            if _is_reparse(component):
+                raise MaximumConfigError(
+                    f"{label} path contains a symlink/junction/reparse component: {component.name}"
+                )
     if _is_reparse(config.addon_dir) or not config.addon_dir.is_dir():
         raise MaximumConfigError("addon_dir must be an existing non-reparse directory")
     if not (config.addon_dir / "models").is_dir():
@@ -280,10 +311,13 @@ def _validate_paths(config: MaximumRunConfig) -> None:
     internal = _first_reparse(config.addon_dir)
     if internal is not None:
         raise MaximumConfigError(f"addon_dir contains a symlink or junction: {internal.name}")
+    resolved_addon = config.addon_dir.resolve(strict=True)
+    resolved_output = config.output_dir.resolve(strict=False)
+    resolved_work = config.work_dir.resolve(strict=False)
     for first_name, first, second_name, second in (
-        ("output", config.output_dir, "addon", config.addon_dir),
-        ("work", config.work_dir, "addon", config.addon_dir),
-        ("output", config.output_dir, "work", config.work_dir),
+        ("output", resolved_output, "addon", resolved_addon),
+        ("work", resolved_work, "addon", resolved_addon),
+        ("output", resolved_output, "work", resolved_work),
     ):
         if _overlaps(first, second):
             raise MaximumConfigError(f"{first_name} and {second_name} directories overlap")
@@ -292,8 +326,9 @@ def _validate_paths(config: MaximumRunConfig) -> None:
             raise MaximumConfigError(f"{label} directory cannot be a symlink or junction")
     if config.output_dir.exists() and not config.overwrite:
         raise MaximumConfigError("output exists and overwrite is disabled")
-    config.output_dir.parent.mkdir(parents=True, exist_ok=True)
-    config.work_dir.mkdir(parents=True, exist_ok=True)
+    if create:
+        config.output_dir.parent.mkdir(parents=True, exist_ok=True)
+        config.work_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _default_schedule() -> tuple[CandidateSpec, ...]:
@@ -319,11 +354,163 @@ def _validation_payload(result: ValidationResult) -> dict[str, Any]:
 
 def _validation_from_payload(payload: Mapping[str, Any]) -> ValidationResult:
     from .domain import GateFailure
-    failures = tuple(GateFailure(**item) for item in payload.get("failures", ()))
+    if type(payload) is not dict or set(payload) != {"passed", "failures", "metrics", "worst_scope"}:
+        raise ValueError("cached validation schema is invalid")
+    if (
+        type(payload["passed"]) is not bool
+        or type(payload["failures"]) is not list
+        or type(payload["metrics"]) is not dict
+        or type(payload["worst_scope"]) is not str
+    ):
+        raise ValueError("cached validation types are invalid")
+    failures = tuple(GateFailure(**item) for item in payload["failures"])
+    metrics: dict[str, float] = {}
+    for name, value in payload["metrics"].items():
+        if type(name) is not str or isinstance(value, bool) or type(value) not in (int, float):
+            raise ValueError("cached validation metric is invalid")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("cached validation metric is non-finite")
+        metrics[name] = number
     return ValidationResult(
-        bool(payload["passed"]), failures,
-        dict(payload.get("metrics", {})), str(payload.get("worst_scope", "")),
+        payload["passed"], failures, metrics, payload["worst_scope"],
     )
+
+
+def _dependency_proof(config: MaximumRunConfig) -> dict[str, object]:
+    paths: list[tuple[str, Path]] = [
+        ("tool/python", Path(sys.executable)),
+        ("tool/blender", config.blender_path),
+        ("tool/studiomdl", config.studiomdl_path),
+        ("profile", config.profile_path),
+        ("policy", config.work_dir / "logs" / "selective_policy_map.json"),
+    ]
+    for name in (
+        "batch_optimize_qc.py",
+        "batch_optimize_round_parts_policy.py",
+        "batch_optimize_maximum.py",
+        "batch_compile_opt_qc.py",
+        "render_previews.py",
+        "vehicle_steer_turn_basis_fix.py",
+    ):
+        paths.append((f"script/{name}", config.repo_root / name))
+    package = config.repo_root / "maximum_optimizer"
+    if package.is_dir():
+        for path in sorted(package.rglob("*.py"), key=lambda item: item.relative_to(package).as_posix()):
+            paths.append((f"module/{path.relative_to(package).as_posix()}", path))
+    addon_roots = list(config.blender_path.parent.glob("*/scripts/addons/io_scene_valvesource"))
+    appdata = Path(os.environ.get("APPDATA", "")) / "Blender Foundation" / "Blender"
+    if appdata.is_dir():
+        addon_roots.extend(appdata.glob("*/scripts/addons/io_scene_valvesource"))
+    for root in sorted({path.resolve() for path in addon_roots if path.is_dir()}):
+        for path in sorted((item for item in root.rglob("*") if item.is_file()), key=lambda item: item.relative_to(root).as_posix()):
+            paths.append((f"blender_source_tools/{root.parent.parent.parent.name}/{path.relative_to(root).as_posix()}", path))
+    paths.append((
+        "tool/meshopt_bridge",
+        config.repo_root / "maximum_optimizer" / "native" / "bin" / "win-x64" / "meshopt_bridge.dll",
+    ))
+    files: list[dict[str, object]] = []
+    for label, path in paths:
+        if path.is_file() and not _is_reparse(path):
+            content = path.read_bytes()
+            files.append({
+                "label": label,
+                "state": "file",
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            })
+        else:
+            files.append({"label": label, "state": "missing", "size": 0, "sha256": ""})
+    payload = {"schema": 1, "files": files}
+    payload["digest"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+def _payload_file_manifest(root: Path) -> tuple[dict[str, object], ...]:
+    root = root.resolve(strict=True)
+    entries: list[dict[str, object]] = []
+    folded: set[str] = set()
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        parent = Path(directory)
+        for name in tuple(directory_names):
+            path = parent / name
+            if _is_reparse(path):
+                raise ValueError("cache payload contains a reparse directory")
+        for name in file_names:
+            path = parent / name
+            if _is_reparse(path):
+                raise ValueError("cache payload contains a reparse file")
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("cache payload contains a special file")
+            relative = path.relative_to(root).as_posix()
+            if relative.casefold() in folded:
+                raise ValueError("cache payload contains case-colliding paths")
+            folded.add(relative.casefold())
+            content = path.read_bytes()
+            entries.append({
+                "path": relative,
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            })
+    return tuple(sorted(entries, key=lambda item: str(item["path"])))
+
+
+def _seal_cache_entry(cache_entry: Path) -> None:
+    files = _payload_file_manifest(cache_entry / "payload")
+    record = next(
+        (item for item in files if item["path"] == "maximum_cache_record.json"),
+        None,
+    )
+    if record is None:
+        raise ValueError("cache record is missing from payload")
+    atomic_write_json(
+        cache_entry / "maximum_integrity.json",
+        {
+            "schema": 1,
+            "record_sha256": record["sha256"],
+            "files": files,
+        },
+    )
+
+
+def _verify_cache_entry(cache_entry: Path) -> bool:
+    try:
+        if _is_reparse(cache_entry) or _is_reparse(cache_entry / "payload"):
+            return False
+        marker = json.loads((cache_entry / "maximum_integrity.json").read_text(encoding="utf-8"))
+        if type(marker) is not dict or set(marker) != {"schema", "record_sha256", "files"}:
+            return False
+        if type(marker["schema"]) is not int or marker["schema"] != 1:
+            return False
+        if type(marker["record_sha256"]) is not str or len(marker["record_sha256"]) != 64:
+            return False
+        raw_files = marker["files"]
+        if type(raw_files) is not list:
+            return False
+        expected: list[dict[str, object]] = []
+        for item in raw_files:
+            if type(item) is not dict or set(item) != {"path", "size", "sha256"}:
+                return False
+            if (
+                type(item["path"]) is not str
+                or not item["path"]
+                or type(item["size"]) is not int
+                or item["size"] < 0
+                or type(item["sha256"]) is not str
+                or len(item["sha256"]) != 64
+            ):
+                return False
+            expected.append(item)
+        actual = list(_payload_file_manifest(cache_entry / "payload"))
+        if expected != actual:
+            return False
+        record = next((item for item in actual if item["path"] == "maximum_cache_record.json"), None)
+        return record is not None and record["sha256"] == marker["record_sha256"]
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
 
 
 def _cache_record_path(workspace: Path) -> Path:
@@ -335,12 +522,23 @@ def _store_cache_record(
     build: CandidateBuild,
     structural: ValidationResult,
     visual: ValidationResult,
+    *,
+    key: CacheKey,
+    manifest: FamilyManifest,
+    dependency_digest: str,
 ) -> None:
     relative_compiled = build.compiled_models_dir.relative_to(workspace).as_posix()
     relative_qc = build.optimized_qc.relative_to(workspace).as_posix()
     atomic_write_json(
         _cache_record_path(workspace),
         {
+            "schema": 2,
+            "key_digest": key.digest,
+            "family_id": manifest.family_id,
+            "model_rel": manifest.model_rel,
+            "input_hash": manifest.input_hash,
+            "candidate": build.spec.cache_payload(),
+            "dependency_digest": dependency_digest,
             "compiled_models_dir": relative_compiled,
             "optimized_qc": relative_qc,
             "compile_record": build.compile_record,
@@ -352,9 +550,41 @@ def _store_cache_record(
     )
 
 
-def _load_cached_build(cache_entry: Path, spec: CandidateSpec) -> tuple[CandidateBuild, ValidationResult, ValidationResult]:
-    workspace = cache_entry / "payload"
+def _load_cached_build(
+    cache_entry: Path,
+    spec: CandidateSpec,
+    *,
+    key: CacheKey,
+    manifest: FamilyManifest,
+    dependency_digest: str,
+    materialized_workspace: Path | None = None,
+) -> CandidateBuild:
+    workspace = materialized_workspace or (cache_entry / "payload")
     payload = json.loads(_cache_record_path(workspace).read_text(encoding="utf-8"))
+    expected_fields = {
+        "schema", "key_digest", "family_id", "model_rel", "input_hash",
+        "candidate", "dependency_digest", "compiled_models_dir", "optimized_qc",
+        "compile_record", "provenance", "commands", "structural", "visual",
+    }
+    if type(payload) is not dict or set(payload) != expected_fields:
+        raise ValueError("cached record schema is invalid")
+    if (
+        type(payload["schema"]) is not int
+        or payload["schema"] != 2
+        or payload["key_digest"] != key.digest
+        or payload["family_id"] != manifest.family_id
+        or payload["model_rel"] != manifest.model_rel
+        or payload["input_hash"] != manifest.input_hash
+        or payload["candidate"] != spec.cache_payload()
+        or payload["dependency_digest"] != dependency_digest
+        or type(payload["compile_record"]) is not dict
+        or type(payload["provenance"]) is not dict
+        or not all(type(k) is str and type(v) is str for k, v in payload["provenance"].items())
+        or type(payload["commands"]) is not list
+    ):
+        raise ValueError("cached record does not match the requested candidate")
+    _validation_from_payload(payload["structural"])
+    _validation_from_payload(payload["visual"])
     def contained_relative(raw: object, *, directory: bool) -> Path:
         if not isinstance(raw, str):
             raise ValueError("cached path must be a string")
@@ -380,11 +610,7 @@ def _load_cached_build(cache_entry: Path, spec: CandidateSpec) -> tuple[Candidat
         payload["provenance"],
         tuple(tuple(command) for command in payload.get("commands", ())),
     )
-    return (
-        build,
-        _validation_from_payload(payload["structural"]),
-        _validation_from_payload(payload["visual"]),
-    )
+    return build
 
 
 def _copy_selected_family(
@@ -393,15 +619,16 @@ def _copy_selected_family(
     source_root = build.compiled_models_dir.resolve()
     destination_root = output_models.resolve()
     promoted: dict[str, str] = {}
-    model_stem = PurePosixPath(model_rel.replace("\\", "/")).with_suffix("").as_posix().casefold()
+    if not build.provenance:
+        raise ValueError("candidate provenance must be nonempty")
     for logical, provenance in sorted(build.provenance.items()):
         relative = PurePosixPath(logical.replace("\\", "/"))
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError(f"candidate provenance escapes models root: {logical}")
-        logical_folded = relative.as_posix().casefold()
-        artifact_stem = relative.with_suffix("").as_posix().casefold()
-        if artifact_stem != model_stem and not logical_folded.startswith(model_stem + "."):
-            continue
+        if not _is_exact_family_artifact(relative.as_posix(), model_rel):
+            raise ValueError(f"candidate provenance contains a non-family artifact: {logical}")
+        if provenance != "candidate-compile":
+            raise ValueError(f"candidate provenance is not compile-owned: {logical}")
         source = source_root.joinpath(*relative.parts)
         destination = destination_root.joinpath(*relative.parts)
         if source.is_symlink() or not source.is_file() or not _within(source.resolve(), source_root):
@@ -412,6 +639,167 @@ def _copy_selected_family(
         shutil.copy2(source, destination)
         promoted[relative.as_posix()] = str(provenance)
     return promoted
+
+
+def _is_exact_family_artifact(logical: str, model_rel: str) -> bool:
+    normalized = PurePosixPath(logical.replace("\\", "/")).as_posix().casefold()
+    base = PurePosixPath(model_rel.replace("\\", "/")).with_suffix("").as_posix().casefold()
+    if normalized in {base + suffix for suffix in (".mdl", ".vvd", ".phy", ".ani", ".vtx")}:
+        return True
+    prefix, suffix = base + ".", ".vtx"
+    if normalized.startswith(prefix) and normalized.endswith(suffix):
+        variant = normalized[len(prefix):-len(suffix)]
+        return bool(variant) and all(char.isalnum() or char in "_-" for char in variant)
+    return False
+
+
+def _tree_manifest(root: Path) -> dict[str, dict[str, int | str]]:
+    root = Path(root).resolve(strict=True)
+    result: dict[str, dict[str, int | str]] = {}
+    folded: set[str] = set()
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        parent = Path(directory)
+        for name in tuple(directory_names):
+            if _is_reparse(parent / name):
+                raise ValueError("tree contains a reparse directory")
+        for name in file_names:
+            path = parent / name
+            if _is_reparse(path) or not stat.S_ISREG(path.lstat().st_mode):
+                raise ValueError("tree contains a reparse or special file")
+            relative = path.relative_to(root).as_posix()
+            if relative.casefold() in folded:
+                raise ValueError("tree contains case-colliding paths")
+            folded.add(relative.casefold())
+            content = path.read_bytes()
+            result[relative] = {
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+    return dict(sorted(result.items()))
+
+
+def _promote_verified_tree(
+    staging: Path,
+    destination: Path,
+    expected: Mapping[str, Mapping[str, int | str]],
+    *,
+    manifest_reader: Callable[[Path], dict[str, dict[str, int | str]]] = _tree_manifest,
+) -> None:
+    if manifest_reader(staging) != dict(expected):
+        raise ValueError("staging manifest does not match expected output manifest")
+    backup: Path | None = None
+    if destination.exists():
+        backup = destination.parent / f".{destination.name}.maximum-backup-{uuid.uuid4().hex}"
+        os.replace(destination, backup)
+    try:
+        os.replace(staging, destination)
+        if manifest_reader(destination) != dict(expected):
+            raise ValueError("final manifest does not match expected output manifest")
+    except BaseException as promotion_error:
+        restore_error: BaseException | None = None
+        try:
+            if destination.exists() and not _is_reparse(destination):
+                shutil.rmtree(destination)
+            if backup is not None and backup.exists():
+                os.replace(backup, destination)
+        except BaseException as exc:
+            restore_error = exc
+        if restore_error is not None:
+            raise AtomicReplaceError(
+                destination,
+                backup or destination,
+                promotion_error,
+                restore_error,
+            ) from restore_error
+        raise
+    if backup is not None:
+        try:
+            shutil.rmtree(backup)
+        except OSError:
+            pass
+
+
+def _expected_output_manifest(
+    addon_dir: Path,
+    selected: Sequence[tuple[FamilyRunOutcome, CandidateBuild, FamilyManifest]],
+) -> dict[str, dict[str, int | str]]:
+    expected = _tree_manifest(addon_dir)
+    for outcome, build, manifest in selected:
+        family_original = [
+            logical for logical in expected
+            if logical.casefold().startswith("models/")
+            and _is_exact_family_artifact(logical[7:], outcome.model_rel)
+        ]
+        if not family_original:
+            raise ValueError(f"original family artifacts are missing: {outcome.model_rel}")
+        for logical in family_original:
+            del expected[logical]
+        if not build.provenance:
+            raise ValueError("candidate provenance must be nonempty")
+        base = PurePosixPath(outcome.model_rel.replace("\\", "/")).with_suffix("").as_posix()
+        required = {
+            base + (kind if str(kind).startswith(".") else "." + str(kind))
+            for kind in manifest.required_artifact_kinds
+        }
+        missing_required = sorted(
+            logical for logical in required
+            if logical.casefold() not in {key.casefold() for key in build.provenance}
+        )
+        if missing_required:
+            raise ValueError(f"candidate provenance is missing required artifacts: {missing_required}")
+        for logical, provenance in sorted(build.provenance.items()):
+            if provenance != "candidate-compile" or not _is_exact_family_artifact(logical, outcome.model_rel):
+                raise ValueError(f"candidate provenance contains invalid family artifact: {logical}")
+            relative = PurePosixPath(logical.replace("\\", "/"))
+            source = build.compiled_models_dir.joinpath(*relative.parts)
+            if _is_reparse(source) or not source.is_file():
+                raise ValueError(f"candidate family artifact is missing: {logical}")
+            content = source.read_bytes()
+            expected[f"models/{relative.as_posix()}"] = {
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+    return dict(sorted(expected.items()))
+
+
+def _reconcile_inventory(
+    original: CompiledSizeSnapshot,
+    manifests: Sequence[FamilyManifest],
+) -> tuple[tuple[FamilyManifest, ...], tuple[str, ...]]:
+    original_models = tuple(
+        item.relative_path for item in original.artifacts if item.kind == ".mdl"
+    )
+    if not original_models:
+        raise MaximumConfigError("original models tree contains no MDL families")
+    by_folded: dict[str, str] = {}
+    for model_rel in original_models:
+        folded = model_rel.casefold()
+        if folded in by_folded:
+            raise MaximumConfigError("original models contain case-colliding MDL paths")
+        by_folded[folded] = model_rel
+    seen: set[str] = set()
+    for manifest in manifests:
+        if re.fullmatch(r"[0-9a-f]{64}", manifest.family_id) is None:
+            raise MaximumConfigError("inventory family_id must be a lowercase SHA-256 digest")
+        if re.fullmatch(r"[0-9a-f]{64}", manifest.input_hash) is None:
+            raise MaximumConfigError("inventory input_hash must be a lowercase SHA-256 digest")
+        folded = manifest.model_rel.replace("\\", "/").casefold()
+        if folded not in by_folded:
+            raise MaximumConfigError(f"inventory family has no original MDL: {manifest.model_rel}")
+        if folded in seen:
+            raise MaximumConfigError(f"inventory contains duplicate family: {manifest.model_rel}")
+        seen.add(folded)
+    for artifact in original.artifacts:
+        owners = [
+            model_rel for model_rel in original_models
+            if _is_exact_family_artifact(artifact.relative_path, model_rel)
+        ]
+        if len(owners) != 1:
+            raise MaximumConfigError(
+                f"original compiled artifact has ambiguous or missing family owner: {artifact.relative_path}"
+            )
+    missing = tuple(by_folded[key] for key in sorted(set(by_folded) - seen))
+    return tuple(manifests), missing
 
 
 def _worst(attempts: Sequence[AttemptReport]) -> tuple[dict[str, float], dict[str, str]]:
@@ -441,7 +829,7 @@ def run_maximum_addon(
     # Loading the calibrated profile is deliberately first: the production sentinel
     # must fail closed before any candidate, cache mutation, or output promotion.
     profile = load_profile(config.profile_path)
-    _validate_paths(config)
+    validate_run_paths(config, create=True)
     cancel = cancel_event or threading.Event()
     sink = event_sink or _default_sink
     adapter_set = adapters or ProductionAdapters(config, cancel)
@@ -457,6 +845,8 @@ def run_maximum_addon(
     report_path = config.work_dir / "logs" / "maximum_report.json"
     versions = dict(adapter_set.tool_versions())
     versions["profile_sha256"] = hashlib.sha256(config.profile_path.read_bytes()).hexdigest()
+    dependency = _dependency_proof(config)
+    versions["dependency_digest"] = str(dependency["digest"])
     if any(
         not isinstance(key, str) or not key or not isinstance(value, str)
         for key, value in versions.items()
@@ -469,6 +859,7 @@ def run_maximum_addon(
     selected_builds: dict[str, CandidateBuild] = {}
     cache = CandidateCache(config.work_dir / "cache")
     event_history: list[dict[str, Any]] = []
+    candidate_counts: dict[str, int] = {}
     tools = CandidateTools(
         sys.executable,
         config.blender_path,
@@ -496,24 +887,112 @@ def run_maximum_addon(
     def emit(kind: str, **payload: Any) -> None:
         if kind not in EVENT_KINDS:
             raise ValueError(f"unknown Maximum event kind: {kind}")
+        payload.setdefault("report_path", "logs/maximum_report.json")
+        family_rel = payload.get("family")
+        if isinstance(family_rel, str):
+            manifest_for_event = next(
+                (item for item in manifests if item.model_rel == family_rel), None
+            )
+            if manifest_for_event is not None:
+                payload.setdefault("family_id", manifest_for_event.family_id)
+        if "candidate" in payload:
+            payload.setdefault("candidate_id", payload["candidate"])
+        if kind == "candidate_started" and isinstance(family_rel, str):
+            index = candidate_counts.get(family_rel, 0)
+            candidate_counts[family_rel] = index + 1
+            payload.setdefault("index", index)
+            payload.setdefault("total", config.budget.max_candidates + 1)
+        if "status" in payload:
+            payload.setdefault("gate_status", payload["status"])
+        if kind == "best_updated" and "compiled_bytes" in payload:
+            payload.setdefault("best_bytes", payload["compiled_bytes"])
+        if isinstance(family_rel, str) and "compiled_bytes" in payload:
+            original_for_event = _family_snapshot(original, family_rel).total_bytes
+            payload.setdefault(
+                "reduction_percent",
+                (
+                    (original_for_event - int(payload["compiled_bytes"]))
+                    / original_for_event
+                    * 100
+                    if original_for_event
+                    else 0.0
+                ),
+            )
+        if kind == "family_finished" and isinstance(family_rel, str):
+            finished = next(
+                (item for item in reversed(outcomes) if item.model_rel == family_rel),
+                None,
+            )
+            if finished is not None:
+                payload.setdefault("best_bytes", finished.selected_size.total_bytes)
+                payload.setdefault(
+                    "reduction_percent",
+                    (
+                        (finished.original_size.total_bytes - finished.selected_size.total_bytes)
+                        / finished.original_size.total_bytes
+                        * 100
+                        if finished.original_size.total_bytes
+                        else 0.0
+                    ),
+                )
         event = {"schema": 1, "kind": kind, **payload}
         # Canonicalization rejects non-finite data and unsupported/path objects.
         canonical_payload(event)
         frozen_event = canonical_payload(event)
         event_history.append(frozen_event)
-        sink(dict(frozen_event))
+        try:
+            sink(dict(frozen_event))
+        except Exception:
+            # Progress observers are non-authoritative; the atomic report journal
+            # remains the durable protocol and must still reach a terminal state.
+            pass
         if kind not in {"run_finished", "run_cancelled"}:
             partial("running")
 
-    emit("run_started", family_count=0)
-    manifests = tuple(adapter_set.inventory(config))
-    if not manifests:
-        raise MaximumConfigError("no model families were inventoried")
+    manifests: tuple[FamilyManifest, ...] = ()
+    missing_model_rels: tuple[str, ...] = ()
+    try:
+        manifests, missing_model_rels = _reconcile_inventory(
+            original, tuple(adapter_set.inventory(config))
+        )
+    except Exception as exc:
+        emit("run_started", family_count=0)
+        emit(
+            "run_finished",
+            status="failed",
+            optimized=0,
+            preserved=0,
+            failed=0,
+            final_bytes=original.total_bytes,
+            reason=type(exc).__name__,
+        )
+        empty = _empty_snapshot(config.work_dir)
+        report = MaximumRunReport(
+            1,
+            "failed",
+            original,
+            empty,
+            original,
+            original,
+            versions,
+            (),
+            report_path,
+            tuple(event_history),
+            False,
+        )
+        atomic_write_json(report_path, report)
+        return report
+    diagnostic_method = getattr(adapter_set, "inventory_diagnostics", None)
+    inventory_diagnostics = (
+        dict(diagnostic_method(config)) if callable(diagnostic_method) else {}
+    )
+    total_family_count = len(manifests) + len(missing_model_rels)
+    emit("run_started", family_count=total_family_count)
 
     for family_index, manifest in enumerate(manifests):
         original_family = _family_snapshot(original, manifest.model_rel)
         attempts: list[AttemptReport] = []
-        emit("family_started", family=manifest.model_rel, index=family_index, total=len(manifests))
+        emit("family_started", family=manifest.model_rel, index=family_index, total=total_family_count)
         control_spec = CandidateSpec("roundtrip-control", "blender", 1.0, 0.0, "roundtrip-control")
         control_build: CandidateBuild | None = None
         control_size: CompiledSizeSnapshot | None = None
@@ -542,29 +1021,53 @@ def run_maximum_addon(
             control_size = _family_snapshot(scan_compiled_models(control_build.compiled_models_dir), manifest.model_rel)
             structural = structural_validator(manifest, control_build)
             emit("stage", family=manifest.model_rel, candidate=control_spec.candidate_id, stage="structural")
-            if not structural.passed:
-                raise CandidateBuildError("control roundtrip failed structural gates", stage="structural")
+            control_visual = (
+                adapter_set.visual(manifest, control_build, control_build, profile)
+                if structural.passed
+                else ValidationResult(False, worst_scope=structural.worst_scope)
+            )
+            emit("stage", family=manifest.model_rel, candidate=control_spec.candidate_id, stage="visual")
             attempts.append(AttemptReport(
-                control_spec.candidate_id, "blender", "control", control_size,
-                structural, None, False, "", control_build.provenance,
+                control_spec.candidate_id,
+                "blender",
+                "control" if structural.passed and control_visual.passed else "control_rejected",
+                control_size,
+                structural,
+                control_visual,
+                False,
+                "",
+                control_build.provenance,
             ))
             control_snapshots.append(control_size)
-            control_valid = True
-            emit("candidate_finished", family=manifest.model_rel, candidate=control_spec.candidate_id, status="control", compiled_bytes=control_size.total_bytes)
+            control_valid = structural.passed and control_visual.passed
+            emit("candidate_finished", family=manifest.model_rel, candidate=control_spec.candidate_id, status="control" if control_valid else "control_rejected", compiled_bytes=control_size.total_bytes)
         except ProcessCancelledError as exc:
             cancel.set()
             attempts.append(AttemptReport(control_spec.candidate_id, "blender", "cancelled", None, None, None, False, str(exc), {}))
             emit("candidate_finished", family=manifest.model_rel, candidate=control_spec.candidate_id, status="cancelled")
-        except (CandidateBuildError, OSError, ValueError) as exc:
+        except Exception as exc:
             attempts.append(AttemptReport(control_spec.candidate_id, "blender", "compile_failed", None, None, None, False, str(exc), {}))
             emit("candidate_finished", family=manifest.model_rel, candidate=control_spec.candidate_id, status="compile_failed", stage=getattr(exc, "stage", "orchestrator"))
 
         if control_build is None or control_size is None or not control_valid:
-            status = "cancelled" if cancel.is_set() else "failed"
-            reason = "run cancelled during control compile" if cancel.is_set() else "mandatory control compile failed"
+            status = "cancelled" if cancel.is_set() else ("failed" if control_build is None else "preserved")
+            reason = (
+                "run cancelled during control compile"
+                if cancel.is_set()
+                else (
+                    "mandatory control compile failed"
+                    if control_build is None
+                    else "control roundtrip failed structural or visual compatibility gates"
+                )
+            )
+            control_savings = (
+                compare_snapshots(original_family, control_size, original_family)
+                if control_size is not None
+                else {}
+            )
             outcome = FamilyRunOutcome(
                 manifest.family_id, manifest.model_rel, status, None,
-                original_family, control_size, original_family, {}, tuple(attempts), reason,
+                original_family, control_size, original_family, control_savings, tuple(attempts), reason,
                 *_worst(attempts), {"source": "original-preserved"},
             )
             outcomes.append(outcome)
@@ -581,12 +1084,38 @@ def run_maximum_addon(
             or len({item.candidate_id for item in schedule}) != len(schedule)
             or any(
                 not isinstance(item, CandidateSpec)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", item.candidate_id) is None
                 or not math.isfinite(item.target_ratio)
                 or not 0 < item.target_ratio <= 1
                 for item in schedule
             )
         ):
-            raise MaximumConfigError("candidate schedule is empty, duplicated, or invalid")
+            reason = "candidate schedule is empty, duplicated, or invalid"
+            outcome = FamilyRunOutcome(
+                manifest.family_id,
+                manifest.model_rel,
+                "failed",
+                None,
+                original_family,
+                control_size,
+                original_family,
+                compare_snapshots(original_family, control_size, original_family),
+                tuple(attempts),
+                reason,
+                *_worst(attempts),
+                {item.relative_path: "original-preserved" for item in original_family.artifacts},
+            )
+            outcomes.append(outcome)
+            selected_snapshots.append(original_family)
+            emit(
+                "family_finished",
+                family=manifest.model_rel,
+                status="failed",
+                reason=reason,
+                best_bytes=original_family.total_bytes,
+                reduction_percent=0.0,
+            )
+            continue
         evaluations: list[CandidateEvaluation] = []
         attempted_ids: set[str] = set()
         last_best: str | None = None
@@ -607,29 +1136,67 @@ def run_maximum_addon(
             cache_hit = False
             try:
                 cache_entry = cache.lookup(key) if config.resume else None
+                if cache_entry is not None and not _verify_cache_entry(cache_entry):
+                    cache.invalidate(key)
+                    cache_entry = None
                 if cache_entry is not None:
-                    build, structural, visual = _load_cached_build(cache_entry, spec)
-                    cache_hit = True
-                    emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="cache_hit")
-                    if cancel.is_set():
-                        raise ProcessCancelledError("cancelled after cache restore")
-                else:
+                    try:
+                        if workspace.exists():
+                            shutil.rmtree(workspace)
+                        shutil.copytree(cache_entry / "payload", workspace)
+                        build = _load_cached_build(
+                            cache_entry,
+                            spec,
+                            key=key,
+                            manifest=manifest,
+                            dependency_digest=str(dependency["digest"]),
+                            materialized_workspace=workspace,
+                        )
+                    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                        cache.invalidate(key)
+                        cache_entry = None
+                    else:
+                        cache_hit = True
+                        emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="cache_hit")
+                        if cancel.is_set():
+                            raise ProcessCancelledError("cancelled after cache restore")
+                if cache_entry is None:
                     if workspace.exists():
                         shutil.rmtree(workspace)
                     build = adapter_set.build(manifest, spec, workspace, tools, cancel)
                     if cancel.is_set():
                         raise ProcessCancelledError("cancelled after candidate compile")
-                    emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="compiled_size")
-                    structural = structural_validator(manifest, build)
-                    emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="structural")
-                    if cancel.is_set():
-                        raise ProcessCancelledError("cancelled after structural validation")
-                    visual = adapter_set.visual(manifest, control_build, build, profile) if structural.passed else ValidationResult(False, worst_scope=structural.worst_scope)
-                    emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="visual")
-                    if cancel.is_set():
-                        raise ProcessCancelledError("cancelled after visual validation")
-                    _store_cache_record(workspace, build, structural, visual)
-                    cache.store(key, workspace, {"candidate": spec.candidate_id, "profile": profile.version})
+                emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="compiled_size")
+                # Cached diagnostics never authorize a candidate: both hard gates
+                # are evaluated from the sealed artifacts and current materials.
+                structural = structural_validator(manifest, build)
+                emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="structural")
+                if cancel.is_set():
+                    raise ProcessCancelledError("cancelled after structural validation")
+                visual = (
+                    adapter_set.visual(manifest, control_build, build, profile)
+                    if structural.passed
+                    else ValidationResult(False, worst_scope=structural.worst_scope)
+                )
+                emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="visual")
+                if cancel.is_set():
+                    raise ProcessCancelledError("cancelled after visual validation")
+                if not cache_hit:
+                    _store_cache_record(
+                        workspace,
+                        build,
+                        structural,
+                        visual,
+                        key=key,
+                        manifest=manifest,
+                        dependency_digest=str(dependency["digest"]),
+                    )
+                    stored = cache.store(
+                        key,
+                        workspace,
+                        {"candidate": spec.candidate_id, "profile": profile.version},
+                    )
+                    _seal_cache_entry(stored)
                 size = _family_snapshot(scan_compiled_models(build.compiled_models_dir), manifest.model_rel)
                 evaluation = CandidateEvaluation(spec, size, structural, visual, build.compiled_models_dir)
                 evaluations.append(evaluation)
@@ -650,17 +1217,30 @@ def run_maximum_addon(
                 cancel.set()
                 attempts.append(AttemptReport(spec.candidate_id, spec.engine, "cancelled", None, None, None, cache_hit, str(exc), {}))
                 emit("candidate_finished", family=manifest.model_rel, candidate=spec.candidate_id, status="cancelled")
-            except (CandidateBuildError, OSError, ValueError, KeyError, TypeError) as exc:
+            except Exception as exc:
                 attempts.append(AttemptReport(spec.candidate_id, spec.engine, "compile_failed", None, None, None, cache_hit, str(exc), {}))
                 emit("candidate_finished", family=manifest.model_rel, candidate=spec.candidate_id, status="compile_failed", stage=getattr(exc, "stage", "orchestrator"))
 
         winner = select_winner(evaluations)
+        no_positive_saving = (
+            winner is not None and winner.size.total_bytes >= original_family.total_bytes
+        )
+        if no_positive_saving:
+            winner = None
         if cancel.is_set():
             status, reason, selected = "cancelled", "run cancelled; original family retained", original_family
             selected_id = None
             provenance = {"source": "original-preserved"}
         elif winner is None:
-            status, reason, selected = "preserved", "no candidate passed all hard gates", original_family
+            status, reason, selected = (
+                "preserved",
+                (
+                    "no candidate produced a strictly positive compiled saving"
+                    if no_positive_saving
+                    else "no candidate passed all hard gates"
+                ),
+                original_family,
+            )
             selected_id = None
             provenance = {"source": "original-preserved"}
         else:
@@ -669,15 +1249,42 @@ def run_maximum_addon(
             chosen_attempt = next(item for item in attempts if item.candidate_id == selected_id)
             provenance = dict(chosen_attempt.provenance)
         selected_snapshots.append(selected)
-        savings = compare_snapshots(original_family, control_size, selected) if winner is not None else {}
-        metrics, scopes = _worst(attempts)
+        savings = compare_snapshots(original_family, control_size, selected)
+        approved_attempts = (
+            [next(item for item in attempts if item.candidate_id == selected_id)]
+            if selected_id is not None
+            else [item for item in attempts if item.status in {"control", "control_rejected"}]
+        )
+        metrics, scopes = _worst(approved_attempts)
+        margins: dict[str, float] = {}
+        if selected_id is not None:
+            selected_attempt = approved_attempts[0]
+            if selected_attempt.visual is not None:
+                margins = {
+                    name: float(limit) - float(selected_attempt.visual.metrics.get(name, 0.0))
+                    for name, limit in profile.limits.items()
+                }
         outcome = FamilyRunOutcome(
             manifest.family_id, manifest.model_rel, status, selected_id,
             original_family, control_size, selected, savings, tuple(attempts), reason,
-            metrics, scopes, provenance,
+            metrics, scopes, provenance, margins,
         )
         outcomes.append(outcome)
-        emit("family_finished", family=manifest.model_rel, status=status, selected=selected_id, reason=reason)
+        emit(
+            "family_finished",
+            family=manifest.model_rel,
+            status=status,
+            selected=selected_id,
+            reason=reason,
+            best_bytes=selected.total_bytes,
+            reduction_percent=(
+                (original_family.total_bytes - selected.total_bytes)
+                / original_family.total_bytes
+                * 100
+                if original_family.total_bytes
+                else 0.0
+            ),
+        )
         if cancel.is_set():
             break
 
@@ -692,23 +1299,74 @@ def run_maximum_addon(
             ))
             selected_snapshots.append(original_family)
 
+    for missing_index, model_rel in enumerate(missing_model_rels, start=len(manifests)):
+        family_id = hashlib.sha256(model_rel.casefold().encode("utf-8")).hexdigest()
+        original_family = _family_snapshot(original, model_rel)
+        missing_status = "cancelled" if cancel.is_set() else "preserved"
+        diagnostic = str(
+            inventory_diagnostics.get(model_rel)
+            or inventory_diagnostics.get(model_rel.casefold())
+            or "model was not successfully decompiled/inventoried"
+        )
+        reason = "run cancelled before family started" if cancel.is_set() else diagnostic
+        emit(
+            "family_started",
+            family=model_rel,
+            family_id=family_id,
+            index=missing_index,
+            total=total_family_count,
+        )
+        outcomes.append(FamilyRunOutcome(
+            family_id,
+            model_rel,
+            missing_status,
+            None,
+            original_family,
+            None,
+            original_family,
+            {},
+            (),
+            reason,
+            {},
+            {},
+            {item.relative_path: "original-preserved" for item in original_family.artifacts},
+        ))
+        selected_snapshots.append(original_family)
+        emit(
+            "family_finished",
+            family=model_rel,
+            family_id=family_id,
+            status=missing_status,
+            reason=reason,
+        )
+
     control_total = _combine_snapshots(config.work_dir, control_snapshots)
     selected_total = _combine_snapshots(config.work_dir, selected_snapshots)
     if cancel.is_set():
         final = original
+        emit("run_cancelled", completed_families=len([item for item in outcomes if item.status != "cancelled"]), total_families=total_family_count)
         report = MaximumRunReport(
             1, "cancelled", original, control_total, selected_total, final,
-            versions, tuple(outcomes), report_path, True,
+            versions, tuple(outcomes), report_path, tuple(event_history), True,
         )
         atomic_write_json(report_path, report)
-        emit("run_cancelled", completed_families=len([item for item in outcomes if item.status != "cancelled"]), total_families=len(manifests))
         return report
 
     staging = config.output_dir.parent / f".{config.output_dir.name}.maximum-staging-{uuid.uuid4().hex}"
-    if staging.exists():
-        raise RuntimeError("unique output staging path unexpectedly exists")
-    shutil.copytree(config.addon_dir, staging)
     try:
+        if staging.exists():
+            raise RuntimeError("unique output staging path unexpectedly exists")
+        selected_pairs = tuple(
+            (
+                outcome,
+                selected_builds[outcome.family_id],
+                next(item for item in manifests if item.family_id == outcome.family_id),
+            )
+            for outcome in outcomes
+            if outcome.status == "optimized"
+        )
+        shutil.copytree(config.addon_dir, staging)
+        expected_output = _expected_output_manifest(config.addon_dir, selected_pairs)
         for outcome in outcomes:
             if cancel.is_set():
                 raise ProcessCancelledError("cancelled during output staging")
@@ -720,17 +1378,17 @@ def run_maximum_addon(
             _copy_selected_family(build, staging / "models", outcome.model_rel)
         if cancel.is_set():
             raise ProcessCancelledError("cancelled before output promotion")
-        atomic_replace_tree(staging, config.output_dir)
+        _promote_verified_tree(staging, config.output_dir, expected_output)
     except ProcessCancelledError:
         cancel.set()
         if staging.exists() and not staging.is_symlink():
             shutil.rmtree(staging, ignore_errors=True)
+        emit("run_cancelled", completed_families=len(outcomes), total_families=total_family_count)
         report = MaximumRunReport(
             1, "cancelled", original, control_total, selected_total, original,
-            versions, tuple(outcomes), report_path, True,
+            versions, tuple(outcomes), report_path, tuple(event_history), True,
         )
         atomic_write_json(report_path, report)
-        emit("run_cancelled", completed_families=len(outcomes), total_families=len(manifests))
         return report
     except BaseException as exc:
         if staging.exists() and not staging.is_symlink():
@@ -740,11 +1398,6 @@ def run_maximum_addon(
             if (config.output_dir / "models").is_dir()
             else original
         )
-        report = MaximumRunReport(
-            1, "failed", original, control_total, selected_total, final,
-            versions, tuple(outcomes), report_path, False,
-        )
-        atomic_write_json(report_path, report)
         emit(
             "run_finished",
             status="failed",
@@ -754,15 +1407,22 @@ def run_maximum_addon(
             final_bytes=final.total_bytes,
             reason=type(exc).__name__,
         )
+        report = MaximumRunReport(
+            1, "failed", original, control_total, selected_total, final,
+            versions, tuple(outcomes), report_path, tuple(event_history), False,
+        )
+        atomic_write_json(report_path, report)
         return report
     final = scan_compiled_models(config.output_dir / "models")
+    # The promoted, hash-verified tree is the single source of truth for selected accounting.
+    selected_total = final
     status = "success" if all(item.status in {"optimized", "preserved"} for item in outcomes) else "failed"
+    emit("run_finished", status=status, optimized=sum(item.status == "optimized" for item in outcomes), preserved=sum(item.status == "preserved" for item in outcomes), failed=sum(item.status == "failed" for item in outcomes), final_bytes=final.total_bytes)
     report = MaximumRunReport(
         1, status, original, control_total, selected_total, final,
-        versions, tuple(outcomes), report_path, False,
+        versions, tuple(outcomes), report_path, tuple(event_history), False,
     )
     atomic_write_json(report_path, report)
-    emit("run_finished", status=status, optimized=sum(item.status == "optimized" for item in outcomes), preserved=sum(item.status == "preserved" for item in outcomes), failed=sum(item.status == "failed" for item in outcomes), final_bytes=final.total_bytes)
     return report
 
 
@@ -787,6 +1447,25 @@ class ProductionAdapters:
             config.work_dir / "logs" / "decompile_manifest.json",
             config.work_dir / "src",
         )
+
+    def inventory_diagnostics(self, config: MaximumRunConfig) -> Mapping[str, str]:
+        try:
+            payload = json.loads(
+                (config.work_dir / "logs" / "decompile_manifest.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError):
+            return {}
+        result: dict[str, str] = {}
+        for record in payload.get("results", ()) if type(payload) is dict else ():
+            if type(record) is not dict or record.get("status") == "ok":
+                continue
+            model_rel = str(record.get("model_rel") or record.get("model_rel_fallback") or "").replace("\\", "/")
+            if not model_rel:
+                continue
+            result[model_rel] = str(
+                record.get("error") or record.get("message") or f"decompile status={record.get('status')}"
+            )
+        return result
 
     def build(
         self,
@@ -835,9 +1514,19 @@ class ProductionAdapters:
                 log_path=manifest_log,
             )
         region_manifest = source_root / "maximum_region_manifest.json"
-        optimized_fingerprint = parse_qc_fingerprint(candidate.optimized_qc)
-        before = tuple(source_root / Path(*name.replace("\\", "/").split("/")) for name in manifest.fingerprint.mesh_files)
-        after = tuple(candidate.optimized_qc.parent / Path(*name.replace("\\", "/").split("/")) for name in optimized_fingerprint.mesh_files)
+        candidate_source_root = candidate.workspace / "src"
+        optimized_fingerprint = _inventory_qc(
+            candidate.optimized_qc,
+            family_root=candidate_source_root,
+        )[0]
+        before_names = tuple(dict.fromkeys(
+            (*manifest.fingerprint.mesh_files, *manifest.fingerprint.lod_mesh_files)
+        ))
+        after_names = tuple(dict.fromkeys(
+            (*optimized_fingerprint.mesh_files, *optimized_fingerprint.lod_mesh_files)
+        ))
+        before = tuple(source_root / Path(*name.replace("\\", "/").split("/")) for name in before_names)
+        after = tuple(candidate.optimized_qc.parent / Path(*name.replace("\\", "/").split("/")) for name in after_names)
         if not before or len(before) != len(after) or any(not path.is_file() for path in (*before, *after)):
             raise CandidateBuildError(
                 "render source pairs are missing or ambiguous",
@@ -856,7 +1545,12 @@ class ProductionAdapters:
             "--out", str(render_root),
             "--size", "512",
             "--passes", "textured,clay",
-            "--poses", "bind:0",
+            "--poses",
+            (
+                "bind:0,representative:1"
+                if manifest.fingerprint.sequences or manifest.fingerprint.bones
+                else "bind:0"
+            ),
             "--materials-root", str(self.config.addon_dir / "materials"),
             "--region-manifest", str(region_manifest),
         ))
@@ -936,6 +1630,39 @@ def run_maximum_from_existing_args(
         if not blender.is_file() or not studiomdl.is_file():
             raise MaximumConfigError("Maximum Blender/StudioMDL tools were not found")
 
+        budget = SearchBudget(
+            max_candidates=getattr(args, "maximum_max_candidates", 18),
+            min_ratio_step=getattr(args, "maximum_min_ratio_step", 0.025),
+            min_marginal_saving=getattr(args, "maximum_min_marginal_saving", 0.005),
+        )
+        config = MaximumRunConfig(
+            addon_path,
+            out_addon_dir,
+            work_dir,
+            blender,
+            studiomdl,
+            repo_root,
+            budget,
+            profile_path,
+            bool(getattr(args, "maximum_resume", False) or getattr(args, "resume_opt", False)),
+            bool(getattr(args, "overwrite", False)),
+        )
+        validate_run_paths(config, create=False)
+        required_runtime = (
+            repo_root / "batch_decompile_organize.py",
+            repo_root / "batch_optimize_qc.py",
+            repo_root / "batch_optimize_round_parts_policy.py",
+            repo_root / "batch_optimize_maximum.py",
+            repo_root / "batch_compile_opt_qc.py",
+            repo_root / "render_previews.py",
+            repo_root / "maximum_optimizer" / "native" / "bin" / "win-x64" / "meshopt_bridge.dll",
+        )
+        missing_runtime = [path.name for path in required_runtime if not path.is_file() or _is_reparse(path)]
+        if missing_runtime:
+            raise MaximumConfigError(
+                f"Maximum runtime dependencies are missing or unsafe: {sorted(missing_runtime)}"
+            )
+
         logs = work_dir / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         decompile_script = repo_root / "batch_decompile_organize.py"
@@ -967,23 +1694,6 @@ def run_maximum_from_existing_args(
             decompile_results=list(payload.get("results", ())),
             src_root=work_dir / "src",
             logs_dir=logs,
-        )
-        budget = SearchBudget(
-            max_candidates=int(getattr(args, "maximum_max_candidates", 18)),
-            min_ratio_step=float(getattr(args, "maximum_min_ratio_step", 0.025)),
-            min_marginal_saving=float(getattr(args, "maximum_min_marginal_saving", 0.005)),
-        )
-        config = MaximumRunConfig(
-            addon_path,
-            out_addon_dir,
-            work_dir,
-            blender,
-            studiomdl,
-            repo_root,
-            budget,
-            profile_path,
-            bool(getattr(args, "maximum_resume", False) or getattr(args, "resume_opt", False)),
-            bool(getattr(args, "overwrite", False)),
         )
         report = run_maximum_addon(config)
         return 0 if report.status == "success" else 1

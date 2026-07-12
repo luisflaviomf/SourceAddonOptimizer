@@ -17,10 +17,19 @@ from maximum_optimizer.domain import (
     ValidationResult,
 )
 from maximum_optimizer.orchestrator import (
+    MaximumConfigError,
     MaximumRunConfig,
+    ProductionAdapters,
+    _seal_cache_entry,
+    _copy_selected_family,
+    _promote_verified_tree,
+    _tree_manifest,
+    validate_run_paths,
     run_maximum_addon,
 )
 from maximum_optimizer.reporting import canonical_json, event_line
+from maximum_optimizer.processes import ProcessResult
+from maximum_optimizer.visual_validation import load_profile
 
 
 def _profile(path: Path) -> Path:
@@ -198,8 +207,38 @@ class OrchestratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-finite"):
             canonical_json({"metric": float("nan")})
 
+    def test_inventory_exception_writes_failed_terminal_report(self):
+        self.adapters.inventory = lambda _config: (_ for _ in ()).throw(RuntimeError("inventory boom"))
+        report = self.run_optimizer()
+        self.assertEqual(report.status, "failed")
+        self.assertEqual([event["kind"] for event in self.events], ["run_started", "run_finished"])
+        self.assertEqual(self.events[0]["family_count"], 0)
+        self.assertEqual(json.loads(report.report_path.read_text(encoding="utf-8"))["status"], "failed")
+        self.assertFalse(self.config.output_dir.exists())
+
+    def test_injected_event_sink_failure_does_not_prevent_terminal_report(self):
+        report = run_maximum_addon(
+            self.config,
+            adapters=self.adapters,
+            validator=self.structural,
+            event_sink=lambda _event: (_ for _ in ()).throw(RuntimeError("sink boom")),
+        )
+        payload = json.loads(report.report_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["events"][0]["kind"], "run_started")
+        self.assertEqual(payload["events"][-1]["kind"], "run_finished")
+
+    def test_invalid_schedule_is_explicit_family_failure_with_terminal_event(self):
+        self.adapters.candidate_schedule = lambda _manifest: ()
+        report = self.run_optimizer()
+        self.assertEqual(report.status, "failed")
+        self.assertEqual(report.families[0].status, "failed")
+        self.assertEqual(self.events[-1]["kind"], "run_finished")
+
     def test_no_passing_variant_preserves_exact_original_explicitly(self):
-        self.adapters.visual = lambda *args: ValidationResult(False, worst_scope="all")
+        self.adapters.visual = lambda _manifest, _control, candidate, _profile: ValidationResult(
+            candidate.spec.candidate_id == "roundtrip-control",
+            worst_scope="all",
+        )
         report = self.run_optimizer()
         family = report.families[0]
         self.assertEqual(family.status, "preserved")
@@ -228,6 +267,22 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual([item.status for item in report.families], ["optimized", "preserved"])
         self.assertEqual((self.config.output_dir / "models" / "other.mdl").read_bytes(), b"z" * 90)
 
+    def test_original_model_missing_from_decompile_inventory_is_explicitly_preserved(self):
+        (self.addon / "models" / "not_decompiled.mdl").write_bytes(b"n" * 77)
+        self.adapters.inventory_diagnostics = lambda _config: {
+            "not_decompiled.mdl": "decompile failed: synthetic"
+        }
+        report = self.run_optimizer()
+        missing = next(item for item in report.families if item.model_rel == "not_decompiled.mdl")
+        self.assertEqual(missing.status, "preserved")
+        self.assertIn("decompile failed", missing.reason)
+        self.assertEqual(missing.original_size.total_bytes, 77)
+        self.assertEqual(missing.selected_size.total_bytes, 77)
+        self.assertEqual(
+            (self.config.output_dir / "models" / "not_decompiled.mdl").read_bytes(),
+            b"n" * 77,
+        )
+
     def test_cancelled_run_has_exact_terminal_event_and_never_promotes(self):
         self.adapters.cancel_on = "candidate-60"
         cancel = threading.Event()
@@ -251,6 +306,16 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(all(event["schema"] == 1 for event in self.events))
         self.assertTrue(report.report_path.is_file())
         self.assertFalse(tuple(report.report_path.parent.glob(".maximum_report.json.tmp-*")))
+        self.assertEqual(self.events[0]["family_count"], 1)
+        self.assertEqual(self.events[0]["report_path"], "logs/maximum_report.json")
+        family_started = next(event for event in self.events if event["kind"] == "family_started")
+        self.assertEqual(family_started["family_id"], self.family.family_id)
+        candidate_started = next(event for event in self.events if event["kind"] == "candidate_started")
+        self.assertIn("candidate_id", candidate_started)
+        self.assertIn("index", candidate_started)
+        self.assertIn("total", candidate_started)
+        final_payload = json.loads(report.report_path.read_text(encoding="utf-8"))
+        self.assertEqual(final_payload["events"][-1]["kind"], "run_finished")
 
     def test_resume_reuses_only_complete_keyed_candidate_results(self):
         first = self.run_optimizer()
@@ -306,9 +371,10 @@ class OrchestratorTests(unittest.TestCase):
         (self.addon / "models" / "other" / "test.mdl").write_bytes(b"original-unrelated")
         self.adapters.extra_collision = True
         report = self.run_optimizer()
-        self.assertEqual(report.status, "success")
+        self.assertEqual(report.status, "failed")
+        self.assertFalse(self.config.output_dir.exists())
         self.assertEqual(
-            (self.config.output_dir / "models" / "other" / "test.mdl").read_bytes(),
+            (self.addon / "models" / "other" / "test.mdl").read_bytes(),
             b"original-unrelated",
         )
 
@@ -352,6 +418,116 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(report.status, "success")
         self.assertGreater(len(self.adapters.calls), first_count + 1)
 
+    def _cached_payload_for_size(self, size: int) -> Path:
+        for payload in (self.config.work_dir / "cache").glob("*/payload"):
+            model = payload / "compiled" / "models" / "test.mdl"
+            if model.is_file() and model.stat().st_size == size:
+                return payload
+        self.fail(f"cache payload with compiled size {size} not found")
+
+    def test_same_size_tampered_cached_mdl_is_rebuilt_before_use(self):
+        self.run_optimizer()
+        payload = self._cached_payload_for_size(60)
+        (payload / "compiled" / "models" / "test.mdl").write_bytes(b"y" * 60)
+        first_count = len(self.adapters.calls)
+        self.config = MaximumRunConfig(
+            **{**self.config.to_kwargs(), "output_dir": self.root / "tamper-miss", "resume": True}
+        )
+        self.events.clear()
+        report = self.run_optimizer()
+        rebuilt = {candidate for _family_name, candidate in self.adapters.calls[first_count:]}
+        self.assertIn("candidate-60", rebuilt)
+        self.assertEqual((self.config.output_dir / "models" / "test.mdl").read_bytes(), b"x" * 60)
+        self.assertEqual(report.status, "success")
+
+    def test_cache_hit_reruns_structural_and_visual_authorization(self):
+        self.run_optimizer()
+        first_count = len(self.adapters.calls)
+        counts = {"structural": 0, "visual": 0}
+        def structural(_manifest, _build):
+            counts["structural"] += 1
+            return ValidationResult(True)
+        def visual(_manifest, _control, candidate, _profile):
+            counts["visual"] += 1
+            return ValidationResult(
+                candidate.spec.candidate_id == "roundtrip-control",
+                worst_scope="fresh-material",
+            )
+        self.adapters.visual = visual
+        self.config = MaximumRunConfig(
+            **{**self.config.to_kwargs(), "output_dir": self.root / "fresh-gates", "resume": True}
+        )
+        self.events.clear()
+        report = run_maximum_addon(
+            self.config,
+            adapters=self.adapters,
+            validator=structural,
+            event_sink=self.events.append,
+        )
+        rebuilt_known = {
+            candidate for _family_name, candidate in self.adapters.calls[first_count:]
+            if candidate in {"candidate-100", "candidate-60", "candidate-40"}
+        }
+        self.assertFalse(rebuilt_known)
+        self.assertGreaterEqual(counts["structural"], 4)  # control + three cached candidates
+        self.assertEqual(counts["visual"], 4)
+        self.assertEqual(report.families[0].status, "preserved")
+
+    def test_policy_and_script_content_changes_invalidate_candidate_cache(self):
+        policy = self.config.work_dir / "logs" / "selective_policy_map.json"
+        policy.parent.mkdir(parents=True)
+        policy.write_text("first", encoding="utf-8")
+        script = self.config.repo_root / "batch_optimize_maximum.py"
+        script.write_text("first", encoding="utf-8")
+        self.run_optimizer()
+        policy.write_text("second", encoding="utf-8")
+        script.write_text("second", encoding="utf-8")
+        first_count = len(self.adapters.calls)
+        self.config = MaximumRunConfig(
+            **{**self.config.to_kwargs(), "output_dir": self.root / "dependency-miss", "resume": True}
+        )
+        self.events.clear()
+        self.run_optimizer()
+        rebuilt = {candidate for _family_name, candidate in self.adapters.calls[first_count:]}
+        self.assertTrue({"candidate-100", "candidate-60", "candidate-40"} <= rebuilt)
+
+    def test_cached_missing_provenance_cannot_authorize_optimization(self):
+        self.run_optimizer()
+        payload = self._cached_payload_for_size(60)
+        record = payload / "maximum_cache_record.json"
+        data = json.loads(record.read_text(encoding="utf-8"))
+        data["provenance"] = {}
+        record.write_text(json.dumps(data), encoding="utf-8")
+        _seal_cache_entry(payload.parent)
+        self.config = MaximumRunConfig(
+            **{**self.config.to_kwargs(), "output_dir": self.root / "missing-provenance", "resume": True}
+        )
+        self.events.clear()
+        report = run_maximum_addon(
+            self.config,
+            adapters=self.adapters,
+            validator=lambda _manifest, build: ValidationResult(bool(build.provenance)),
+            event_sink=self.events.append,
+        )
+        self.assertNotEqual(report.families[0].selected_candidate, "candidate-60")
+
+    def test_cached_string_false_is_rejected_not_bool_coerced(self):
+        self.run_optimizer()
+        payload = self._cached_payload_for_size(60)
+        record = payload / "maximum_cache_record.json"
+        data = json.loads(record.read_text(encoding="utf-8"))
+        data["visual"]["passed"] = "false"
+        record.write_text(json.dumps(data), encoding="utf-8")
+        _seal_cache_entry(payload.parent)
+        first_count = len(self.adapters.calls)
+        self.config = MaximumRunConfig(
+            **{**self.config.to_kwargs(), "output_dir": self.root / "string-false", "resume": True}
+        )
+        self.events.clear()
+        self.run_optimizer()
+        rebuilt = {candidate for _family_name, candidate in self.adapters.calls[first_count:]}
+        self.assertIn("candidate-60", rebuilt)
+
     def test_promotion_failure_preserves_existing_output_and_reports_failure(self):
         self.config = MaximumRunConfig(
             **{**self.config.to_kwargs(), "overwrite": True}
@@ -359,7 +535,7 @@ class OrchestratorTests(unittest.TestCase):
         self.config.output_dir.mkdir()
         (self.config.output_dir / "sentinel.txt").write_text("old", encoding="utf-8")
         with patch(
-            "maximum_optimizer.orchestrator.atomic_replace_tree",
+            "maximum_optimizer.orchestrator._promote_verified_tree",
             side_effect=OSError("synthetic promotion failure"),
         ):
             report = self.run_optimizer()
@@ -367,6 +543,142 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual((self.config.output_dir / "sentinel.txt").read_text(), "old")
         self.assertEqual(self.events[-1]["kind"], "run_finished")
         self.assertEqual(self.events[-1]["status"], "failed")
+
+    def test_control_visual_incompatibility_preserves_with_roundtrip_diagnostic(self):
+        original_visual = self.adapters.visual
+        self.adapters.visual = lambda manifest, control, candidate, profile: (
+            ValidationResult(False, worst_scope="control-view")
+            if candidate.spec.candidate_id == "roundtrip-control"
+            else original_visual(manifest, control, candidate, profile)
+        )
+        report = self.run_optimizer()
+        family = report.families[0]
+        self.assertEqual(family.status, "preserved")
+        self.assertIn("control", family.reason)
+        self.assertIsNotNone(family.control_size)
+        self.assertIn("roundtrip_delta_bytes", family.savings)
+
+    def test_equal_or_larger_passing_candidates_are_not_called_optimized(self):
+        self.adapters.sizes.update({"candidate-100": 130, "candidate-60": 125, "candidate-40": 124})
+        self.adapters.visual = lambda *args: ValidationResult(True, metrics={"fidelity_score": 1.0})
+        report = self.run_optimizer()
+        self.assertEqual(report.families[0].status, "preserved")
+        self.assertIsNone(report.families[0].selected_candidate)
+        self.assertIn("positive compiled saving", report.families[0].reason)
+
+    def test_copy_requires_nonempty_complete_family_provenance(self):
+        workspace = self.root / "manual-build"
+        compiled = workspace / "compiled"
+        compiled.mkdir(parents=True)
+        qc = workspace / "x.qc"
+        qc.write_text("", encoding="utf-8")
+        build = CandidateBuild(
+            CandidateSpec("manual", "blender", 0.5, 0.0, "test"),
+            workspace, qc, compiled, {}, {}, (),
+        )
+        output_models = self.root / "manual-output"
+        output_models.mkdir()
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            _copy_selected_family(build, output_models, "test.mdl")
+
+    def test_family_copy_rejects_sibling_prefix_artifact(self):
+        workspace = self.root / "prefix-build"
+        compiled = workspace / "compiled"
+        compiled.mkdir(parents=True)
+        (compiled / "test.mdl").write_bytes(b"model")
+        (compiled / "test.extra.mdl").write_bytes(b"wrong")
+        qc = workspace / "x.qc"
+        qc.write_text("", encoding="utf-8")
+        build = CandidateBuild(
+            CandidateSpec("prefix", "blender", 0.5, 0.0, "test"),
+            workspace, qc, compiled, {},
+            {"test.mdl": "candidate-compile", "test.extra.mdl": "candidate-compile"}, (),
+        )
+        output_models = self.root / "prefix-output"
+        output_models.mkdir()
+        with self.assertRaisesRegex(ValueError, "family artifact"):
+            _copy_selected_family(build, output_models, "test.mdl")
+
+    def test_verified_promotion_rolls_back_when_final_manifest_mutates(self):
+        staging = self.root / "transaction-staging"
+        destination = self.root / "transaction-output"
+        staging.mkdir()
+        destination.mkdir()
+        (staging / "new.bin").write_bytes(b"new")
+        (destination / "old.bin").write_bytes(b"old")
+        expected = _tree_manifest(staging)
+        calls = 0
+        def reader(path):
+            nonlocal calls
+            calls += 1
+            actual = _tree_manifest(path)
+            if calls == 2:
+                return {**actual, "mutated.bin": {"size": 1, "sha256": "0" * 64}}
+            return actual
+        with self.assertRaisesRegex(ValueError, "manifest"):
+            _promote_verified_tree(staging, destination, expected, manifest_reader=reader)
+        self.assertEqual((destination / "old.bin").read_bytes(), b"old")
+        self.assertFalse((destination / "new.bin").exists())
+
+    def test_production_visual_command_uses_nested_family_root_all_lods_and_poses(self):
+        source = self.root / "production-source"
+        source.mkdir()
+        smd = "version 1\nnodes\n0 \"root\" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\nend\n"
+        (source / "mesh.smd").write_text(smd, encoding="utf-8")
+        (source / "lod.smd").write_text(smd, encoding="utf-8")
+        (source / "main.qc").write_text(
+            '$modelname "test.mdl"\n$body "body" "mesh.smd"\n$lod 10 { replacemodel "mesh.smd" "lod.smd" }\n',
+            encoding="utf-8",
+        )
+        fp = StructuralFingerprint(
+            "test.mdl", ("body",), (), (), ("root",), (), (), (), ("idle",),
+            ("mesh.smd",), ("lod.smd",), None,
+        )
+        manifest = FamilyManifest(
+            "production-family", "test.mdl", source, self.addon / "models", fp,
+            "b" * 64, (".mdl",),
+        )
+        workspace = self.root / "production-candidate"
+        nested = workspace / "src" / "nested"
+        nested.mkdir(parents=True)
+        (workspace / "logs").mkdir()
+        (workspace / "src" / "mesh_OPT.smd").write_text(smd, encoding="utf-8")
+        (workspace / "src" / "lod_OPT.smd").write_text(smd, encoding="utf-8")
+        qc = nested / "main_OPT.qc"
+        qc.write_text(
+            '$modelname "test.mdl"\n$body "body" "../mesh_OPT.smd"\n$lod 10 { replacemodel "../mesh_OPT.smd" "../lod_OPT.smd" }\n',
+            encoding="utf-8",
+        )
+        compiled = workspace / "compiled"
+        compiled.mkdir()
+        build = CandidateBuild(
+            CandidateSpec("production", "blender", 0.5, 0.0, "test"),
+            workspace, qc, compiled, {}, {"test.mdl": "candidate-compile"}, (),
+        )
+        commands = []
+        def runner(command, **kwargs):
+            commands.append(tuple(str(item) for item in command))
+            if "--python-expr" in command:
+                (workspace / "render-source" / "maximum_region_manifest.json").write_text("{}", encoding="utf-8")
+            else:
+                (workspace / "renders" / "original").mkdir(parents=True)
+                (workspace / "renders" / "optimized").mkdir(parents=True)
+            return ProcessResult(tuple(str(item) for item in command), 0, 0.01, kwargs["log_path"])
+        adapter = ProductionAdapters(self.config, threading.Event())
+        with (
+            patch("maximum_optimizer.orchestrator.run_process", side_effect=runner),
+            patch("maximum_optimizer.orchestrator.compare_render_sets", return_value=ValidationResult(True)),
+        ):
+            result = adapter.visual(manifest, build, build, load_profile(self.config.profile_path))
+        self.assertTrue(result.passed)
+        render = commands[1]
+        before_values = [render[index + 1] for index, value in enumerate(render) if value == "--before"]
+        after_values = [render[index + 1] for index, value in enumerate(render) if value == "--after"]
+        self.assertEqual(len(before_values), 2)
+        self.assertEqual(len(after_values), 2)
+        self.assertTrue(any(value.endswith("lod.smd") for value in before_values))
+        self.assertTrue(any(value.endswith("lod_OPT.smd") for value in after_values))
+        self.assertEqual(render[render.index("--poses") + 1], "bind:0,representative:1")
 
     def test_default_schedule_prefers_blender_when_meshopt_is_not_preferred(self):
         self.adapters.candidate_schedule = None
@@ -383,6 +695,38 @@ class OrchestratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "calibrated"):
             self.run_optimizer()
         self.assertFalse(self.config.output_dir.exists())
+
+    def test_lexical_work_overlap_is_rejected_before_any_mutation(self):
+        sentinel = self.addon / "do-not-touch.txt"
+        sentinel.write_text("original", encoding="utf-8")
+        config = MaximumRunConfig(
+            **{**self.config.to_kwargs(), "work_dir": self.addon}
+        )
+        with self.assertRaisesRegex(MaximumConfigError, "overlap"):
+            validate_run_paths(config, create=False)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "original")
+
+    def test_lexical_ancestor_overlap_is_rejected_before_any_mutation(self):
+        config = MaximumRunConfig(
+            **{**self.config.to_kwargs(), "work_dir": self.root}
+        )
+        with self.assertRaisesRegex(MaximumConfigError, "overlap"):
+            validate_run_paths(config, create=False)
+        self.assertFalse((self.root / "logs").exists())
+
+    def test_output_reparse_component_is_rejected_even_when_resolve_points_outside(self):
+        (self.root / "output-link").mkdir()
+        raw_output = self.root / "output-link" / "child"
+        config = MaximumRunConfig(
+            **{**self.config.to_kwargs(), "output_dir": raw_output, "overwrite": True}
+        )
+        with patch(
+            "maximum_optimizer.orchestrator._is_reparse",
+            side_effect=lambda path: Path(path) == self.root / "output-link",
+        ):
+            with self.assertRaisesRegex(MaximumConfigError, "reparse"):
+                validate_run_paths(config, create=False)
+        self.assertFalse(raw_output.exists())
 
 
 if __name__ == "__main__":

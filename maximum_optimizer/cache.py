@@ -242,6 +242,16 @@ class CandidateCache:
             removed += 1
         return removed
 
+    def invalidate(self, key: CacheKey) -> bool:
+        """Remove only the exact invalid entry; never follow a reparse point."""
+        final = self.root / key.digest
+        _raise_if_cache_symlink(final)
+        if not final.exists():
+            return False
+        _require_direct_child(final, self.root)
+        _remove_direct_child(final, self.root)
+        return True
+
 
 def atomic_replace_tree(
     staging: os.PathLike[str] | str,

@@ -148,6 +148,7 @@ def _matching_qcs(root: Path, model_rel: str, *, optimized: bool) -> list[Path]:
 class _BaseAdapter:
     optimize_script = ""
     needs_heuristic_map = False
+    supports_region_overrides = False
 
     def __init__(
         self,
@@ -259,6 +260,11 @@ class _BaseAdapter:
         workspace: Path,
         tools: CandidateTools,
     ) -> CandidateBuild:
+        if spec.region_overrides and not self.supports_region_overrides:
+            raise CandidateBuildError(
+                f"{spec.engine} adapter does not support region_overrides",
+                stage="candidate-validation",
+            )
         workspace = Path(workspace).expanduser().resolve()
         self._validate_tools(tools)
         source = self._prepare_workspace(manifest, workspace)
@@ -494,6 +500,7 @@ class FidelityAdapter(_BaseAdapter):
 
 class MeshoptimizerAdapter(_BaseAdapter):
     optimize_script = "batch_optimize_maximum.py"
+    supports_region_overrides = True
 
     def _validate_tools(self, tools: CandidateTools) -> None:
         super()._validate_tools(tools)

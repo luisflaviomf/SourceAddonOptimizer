@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Sequence
 
 from maximum_optimizer.domain import CandidateEvaluation, CandidateSpec, SearchBudget
@@ -9,6 +10,20 @@ from maximum_optimizer.regions import parse_region_scope
 
 _INITIAL_RATIOS = (0.75, 0.50, 0.35, 0.25, 0.15, 0.10, 0.05)
 _MIN_RATIO = 0.01
+
+
+def _trail_key(spec: CandidateSpec) -> tuple[object, ...]:
+    return (
+        spec.engine,
+        spec.target_error,
+        spec.repair_profile,
+        spec.region_overrides,
+    )
+
+
+def _strategy_suffix(key: tuple[object, ...]) -> str:
+    raw = json.dumps(key, ensure_ascii=True, separators=(",", ":"), sort_keys=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
 
 
 def _ratio_id(ratio: float) -> str:
@@ -96,21 +111,22 @@ def select_winner(
     )
 
 
-def _should_stop_for_marginal_saving(
+def _trail_should_stop_for_marginal_saving(
     evaluations: list[CandidateEvaluation], budget: SearchBudget
 ) -> bool:
     if not evaluations or not evaluations[-1].passed:
         return False
-    previous_winner = select_winner(evaluations[:-1])
-    if previous_winner is None:
+    previous = next(
+        (item for item in reversed(evaluations[:-1]) if item.passed),
+        None,
+    )
+    if previous is None:
         return False
-    previous_bytes = previous_winner.size.total_bytes
-    if previous_bytes <= 0:
+    if previous.size.total_bytes <= 0:
         return True
-    current_winner = select_winner(evaluations)
-    if current_winner is None:
-        return False
-    saving = (previous_bytes - current_winner.size.total_bytes) / previous_bytes
+    saving = (
+        previous.size.total_bytes - evaluations[-1].size.total_bytes
+    ) / previous.size.total_bytes
     return saving < budget.min_marginal_saving
 
 
@@ -123,7 +139,9 @@ def _regional_recovery(
     )
     if (
         failed is None
-        or failed.spec.engine == "fidelity"
+        or failed.spec.engine != "meshoptimizer"
+        or not failed.structural.passed
+        or failed.visual.passed
         or not failed.visual.worst_scope
         or failed.spec.region_overrides
     ):
@@ -199,42 +217,71 @@ def choose_next(
         return None
     used_ids = {evaluation.spec.candidate_id for evaluation in evaluations} | attempted
 
-    recovery = _regional_recovery(evaluations, used_ids)
-    if recovery is not None:
-        return recovery
+    schedule = tuple(initial) if initial is not None else tuple(initial_candidates())
+    ordered_keys = list(dict.fromkeys(_trail_key(item) for item in schedule))
+    for evaluation in evaluations:
+        key = _trail_key(evaluation.spec)
+        if key not in ordered_keys:
+            ordered_keys.append(key)
+    trails = {
+        key: [item for item in evaluations if _trail_key(item.spec) == key]
+        for key in ordered_keys
+    }
+    retired: set[tuple[object, ...]] = set()
+    engine_trails: dict[str, int] = {}
+    for key in ordered_keys:
+        engine_trails[str(key[0])] = engine_trails.get(str(key[0]), 0) + 1
 
-    if _should_stop_for_marginal_saving(evaluations, budget):
-        return None
-
-    bracket = _narrowest_bracket(evaluations)
-    if bracket is not None:
+    # Recovery and boundary refinement stay inside one comparable strategy trail.
+    for key in ordered_keys:
+        trail = trails[key]
+        recovery = _regional_recovery(trail, used_ids)
+        if recovery is not None:
+            if engine_trails[recovery.engine] > 1:
+                recovery = CandidateSpec(
+                    recovery.candidate_id + "-s" + _strategy_suffix(key),
+                    recovery.engine,
+                    recovery.target_ratio,
+                    recovery.target_error,
+                    recovery.repair_profile,
+                    recovery.region_overrides,
+                )
+            return recovery
+    for key in ordered_keys:
+        trail = trails[key]
+        bracket = _narrowest_bracket(trail)
+        if bracket is None:
+            continue
         passing, failed = bracket
         interval = passing.spec.target_ratio - failed.spec.target_ratio
         if interval < budget.min_ratio_step:
-            return None
-        midpoint = round(
-            (passing.spec.target_ratio + failed.spec.target_ratio) / 2,
-            6,
-        )
+            retired.add(key)
+            continue
+        midpoint = round((passing.spec.target_ratio + failed.spec.target_ratio) / 2, 6)
         if not failed.spec.target_ratio < midpoint < passing.spec.target_ratio:
-            return None
+            retired.add(key)
+            continue
         candidate_id = _candidate_id(passing.spec.engine, midpoint)
-        if midpoint < _MIN_RATIO or candidate_id in used_ids:
-            return None
-        return CandidateSpec(
-            candidate_id,
-            passing.spec.engine,
-            midpoint,
-            passing.spec.target_error,
-            passing.spec.repair_profile,
-        )
+        if engine_trails[passing.spec.engine] > 1:
+            candidate_id += "-s" + _strategy_suffix(key)
+        if midpoint >= _MIN_RATIO and candidate_id not in used_ids:
+            return CandidateSpec(
+                candidate_id,
+                passing.spec.engine,
+                midpoint,
+                passing.spec.target_error,
+                passing.spec.repair_profile,
+                passing.spec.region_overrides,
+            )
+        retired.add(key)
 
-    schedule = tuple(initial) if initial is not None else tuple(initial_candidates())
+    for key in ordered_keys:
+        if _trail_should_stop_for_marginal_saving(trails[key], budget):
+            retired.add(key)
     return next(
         (
-            candidate
-            for candidate in schedule
-            if candidate.candidate_id not in used_ids
+            candidate for candidate in schedule
+            if _trail_key(candidate) not in retired and candidate.candidate_id not in used_ids
         ),
         None,
     )
