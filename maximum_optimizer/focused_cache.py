@@ -47,6 +47,9 @@ _MAX_CAPTURED_VMT_BYTES = 32 * 1024 ** 2
 _MAX_CONTROL_FILE_BYTES = 16 * 1024 ** 2
 _MAX_RENDER_FILES_PER_SIDE = 33
 _MAX_RENDER_BYTES_PER_SIDE = 512 * 1024 ** 2
+_MAX_CACHE_TREE_BYTES = (
+    2 * _MAX_RENDER_BYTES_PER_SIDE + 2 * _MAX_CONTROL_FILE_BYTES
+)
 _IO_CHUNK_SIZE = 1024 * 1024
 _TOP_FIELDS = {
     "schema", "family_input_sha256", "candidate_cache_digest", "source_pairs",
@@ -1231,7 +1234,7 @@ def _assert_safe_tree(
     expected_paths: set[str] | None = None,
     *,
     max_files: int = 128,
-    max_bytes: int = 1024 ** 3,
+    max_bytes: int = _MAX_CACHE_TREE_BYTES,
 ) -> tuple[Path, ...]:
     root = Path(root)
     if _is_reparse(root) or not root.is_dir():

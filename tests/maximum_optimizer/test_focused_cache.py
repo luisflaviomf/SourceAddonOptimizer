@@ -780,6 +780,19 @@ class FocusedRenderCacheTests(unittest.TestCase):
             )
         self.assertFalse(tuple((self.base / "cache").glob("*.lock")))
 
+    def test_cleanup_bound_contains_maximum_valid_entry_plus_control_files(self):
+        from maximum_optimizer import focused_cache
+
+        root = self.base / "maximum-valid-cache-tree"
+        root.mkdir()
+        for name in ("reference.bin", "candidate.bin"):
+            with (root / name).open("wb") as stream:
+                stream.truncate(focused_cache._MAX_RENDER_BYTES_PER_SIDE)
+        (root / "metadata.json").write_bytes(b"m")
+        (root / "complete.json").write_bytes(b"c")
+        files = focused_cache._assert_safe_tree(root)
+        self.assertEqual(len(files), 4)
+
     def test_expected_layout_rejects_extra_before_hash_and_traversal_is_cancelable(self):
         from maximum_optimizer import focused_cache
         from maximum_optimizer.processes import ProcessCancelledError
