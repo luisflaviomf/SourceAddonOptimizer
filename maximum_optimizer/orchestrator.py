@@ -13,10 +13,11 @@ import tempfile
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Protocol
 
 from .cache import AtomicReplaceError, CacheKey, CandidateCache
+from .calibration_evidence import TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256
 from .candidates import (
     BlenderAdapter,
     CandidateBuild,
@@ -33,9 +34,13 @@ from .domain import (
     CandidateSpec,
     CompiledSizeSnapshot,
     FamilyManifest,
+    FocusedRegionPolicy,
+    FocusedGateResult,
+    FocusRegionResult,
     GateFailure,
     SearchBudget,
     ValidationResult,
+    WholeStateEvidence,
 )
 from .fidelity_selection import (
     GENERAL_BODY_DETAIL,
@@ -44,15 +49,39 @@ from .fidelity_selection import (
     classify_original_family,
     load_fidelity_profile_set,
 )
+from .focused_cache import (
+    FocusCacheContext,
+    FocusCacheKey,
+    FocusCacheMetadata,
+    FocusExpectedMatrix,
+    FocusProfileProof,
+    FocusRenderDirectories,
+    FocusStateProof,
+    FocusedEvidenceContext,
+    FocusedRenderCache,
+    _file_proof as _focused_file_proof,
+    _render_file_manifest as _focused_render_file_manifest,
+    _read_regular_no_follow,
+    focused_gate_evidence_payload,
+    material_resolution_proof,
+    validate_focused_target,
+)
+from .focused_regions import select_focus_targets_with_evidence
 from .meshopt_bridge import MESHOPT_ENGINE_PREFERRED
 from .processes import ProcessCancelledError, run_process
 from .qc_inventory import _inventory_qc, build_family_manifests
 from .qc_graph import QcGraph, parse_qc_graph
 from .regions import filter_region_manifest, load_region_manifest_payload
-from .reporting import atomic_write_json, canonical_payload, deep_freeze, event_line
+from .reporting import atomic_write_json, canonical_json, canonical_payload, deep_freeze, event_line
 from .search import blender_adaptive_candidates, choose_next, select_winner
 from .structural_validation import validate_structure
-from .visual_validation import FidelityProfile, compare_render_sets, load_profile
+from .visual_validation import (
+    EXPECTED_ANGLES,
+    EXPECTED_PASSES,
+    FidelityProfile,
+    compare_render_sets,
+    load_profile,
+)
 
 
 EVENT_KINDS = frozenset(
@@ -210,7 +239,18 @@ class AdapterSet(Protocol):
         control: CandidateBuild,
         candidate: CandidateBuild,
         profile: FidelityProfile,
+        *,
+        focused_profile: FidelityProfile | None = None,
     ) -> ValidationResult: ...
+    def focused_visual(
+        self,
+        manifest: FamilyManifest,
+        control: CandidateBuild,
+        candidate: CandidateBuild,
+        whole_profile: FidelityProfile,
+        focused_profile: FidelityProfile,
+        policy: FocusedRegionPolicy,
+    ) -> FocusedGateResult: ...
     def tool_versions(self) -> Mapping[str, str]: ...
 
 
@@ -1559,6 +1599,12 @@ def run_maximum_addon(
                 profile = profile_set.profile_for(profile_class)
                 reason = selection.reason
                 sources = [asdict(source) for source in selection.sources]
+            focused_policy = profile_set.focused_policy
+            focused_profile = (
+                profile_set.focused_profile_for(profile_class)
+                if focused_policy is not None
+                else None
+            )
             selection_records.append({
                 "family_id": manifest.family_id,
                 "model_rel": manifest.model_rel,
@@ -1777,15 +1823,41 @@ def run_maximum_addon(
                 emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="structural")
                 if cancel.is_set():
                     raise ProcessCancelledError("cancelled after structural validation")
-                visual = (
-                    adapter_set.visual(manifest, control_build, build, profile)
-                    if structural.passed
-                    else ValidationResult(False, worst_scope=structural.worst_scope)
+                bind_cache_digest = getattr(adapter_set, "bind_candidate_cache_digest", None)
+                if focused_policy is not None and callable(bind_cache_digest):
+                    bind_cache_digest(build, key.digest)
+                whole_visual = (
+                    adapter_set.visual(
+                        manifest, control_build, build, profile,
+                        focused_profile=focused_profile,
+                    )
+                    if structural.passed and focused_policy is not None
+                    else (
+                        adapter_set.visual(manifest, control_build, build, profile)
+                        if structural.passed
+                        else ValidationResult(False, worst_scope=structural.worst_scope)
+                    )
                 )
                 emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="visual")
                 if cancel.is_set():
                     raise ProcessCancelledError("cancelled after visual validation")
-                if not cache_hit:
+                focused_by_region: Mapping[str, FocusRegionResult] = {}
+                visual = whole_visual
+                if focused_policy is not None and structural.passed and whole_visual.passed:
+                    focused_method = getattr(adapter_set, "focused_visual", None)
+                    if not callable(focused_method):
+                        raise TypeError("schema-3 adapter does not implement focused_visual")
+                    focused_gate = focused_method(
+                        manifest, control_build, build, profile,
+                        focused_profile, focused_policy,
+                    )
+                    if cancel.is_set():
+                        raise ProcessCancelledError("cancelled after focused visual validation")
+                    visual = _aggregate_focused_gate(whole_visual, focused_gate)
+                    focused_by_region = focused_gate.regions
+                    emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="focused_visual")
+                if not cache_hit and (focused_policy is None or visual.passed):
+                    _check_cancelled(cancel, "cancelled before candidate cache record")
                     _store_cache_record(
                         workspace,
                         build,
@@ -1795,6 +1867,7 @@ def run_maximum_addon(
                         manifest=manifest,
                         dependency_digest=str(dependency["digest"]),
                     )
+                    _check_cancelled(cancel, "cancelled before candidate cache store")
                     stored = cache.store(
                         key,
                         workspace,
@@ -1805,7 +1878,10 @@ def run_maximum_addon(
                     )
                     _seal_cache_entry(stored, cancel)
                 size = _family_snapshot(scan_compiled_models(build.compiled_models_dir), manifest.model_rel)
-                evaluation = CandidateEvaluation(spec, size, structural, visual, build.compiled_models_dir)
+                evaluation = CandidateEvaluation(
+                    spec, size, structural, visual, build.compiled_models_dir,
+                    whole_visual, focused_by_region,
+                )
                 evaluations.append(evaluation)
                 status = "passed" if evaluation.passed else "rejected"
                 attempts.append(AttemptReport(
@@ -2410,6 +2486,250 @@ def _paired_representative_animation(
     return selected
 
 
+_WHOLE_INDEX_FIELDS = {
+    "schema", "selector_version", "family", "candidate", "profiles",
+    "dependency", "renderer", "full_region_manifest", "animation", "states",
+}
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_REGION_KEY_RE = re.compile(r"^r-[0-9a-f]{64}$")
+
+
+def _whole_exact(value: object, fields: set[str], label: str) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != fields:
+        raise ValueError(f"whole visual index {label} fields are invalid")
+    return value
+
+
+def _whole_hash(value: object, label: str) -> str:
+    if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
+        raise ValueError(f"whole visual index {label} hash is invalid")
+    return value
+
+
+def _whole_relative(value: object, label: str) -> str:
+    if type(value) is not str or not value or "\\" in value:
+        raise ValueError(f"whole visual index {label} path is not relative canonical POSIX")
+    posix = PurePosixPath(value)
+    windows = PureWindowsPath(value)
+    if (
+        posix.is_absolute() or windows.is_absolute() or windows.drive
+        or any(part in {"", ".", ".."} for part in posix.parts)
+        or posix.as_posix() != value
+    ):
+        raise ValueError(f"whole visual index {label} path is not relative canonical POSIX")
+    return value
+
+
+def _validate_whole_file_proof(
+    value: object,
+    workspace: Path,
+    label: str,
+    cancel_event: threading.Event | None,
+) -> dict[str, str]:
+    proof = _whole_exact(value, {"path", "sha256"}, label)
+    relative = _whole_relative(proof["path"], label)
+    expected = _whole_hash(proof["sha256"], label)
+    root = Path(workspace).resolve(strict=True)
+    path = Path(workspace) / PurePosixPath(relative)
+    for component in _existing_components(path):
+        if _is_reparse(component):
+            raise ValueError(f"whole visual index {label} path contains a reparse point")
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root)
+        info = path.lstat()
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"whole visual index {label} path is not contained") from exc
+    if _is_reparse(path) or not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"whole visual index {label} path is not a regular file")
+    _size, actual = _focused_file_proof(
+        path, cancel_event, contained_root=root,
+    )
+    if actual != expected:
+        raise ValueError(f"whole visual index {label} current file hash changed")
+    return {"path": relative, "sha256": expected}
+
+
+def _validate_whole_visual_payload(
+    raw: object,
+    workspace: Path,
+    cancel_event: threading.Event | None,
+) -> dict[str, Any]:
+    payload = _whole_exact(raw, _WHOLE_INDEX_FIELDS, "root")
+    if payload["schema"] != 1 or payload["selector_version"] != "surface-risk-top-k-v1":
+        raise ValueError("whole visual index schema/selector is invalid")
+    family = _whole_exact(
+        payload["family"], {"family_id", "model_rel", "input_sha256"}, "family"
+    )
+    _whole_hash(family["family_id"], "family id")
+    _whole_relative(family["model_rel"], "model")
+    _whole_hash(family["input_sha256"], "family input")
+    candidate = _whole_exact(
+        payload["candidate"], {"candidate_id", "spec", "cache_digest"}, "candidate"
+    )
+    if type(candidate["candidate_id"]) is not str or not candidate["candidate_id"]:
+        raise ValueError("whole visual index candidate id is invalid")
+    spec = _whole_exact(candidate["spec"], {
+        "candidate_id", "engine", "target_ratio", "target_error", "repair_profile",
+        "region_overrides", "strategy", "update_vertices", "transfer",
+    }, "candidate spec")
+    if spec["candidate_id"] != candidate["candidate_id"]:
+        raise ValueError("whole visual index candidate spec identity differs")
+    _whole_hash(candidate["cache_digest"], "candidate cache")
+    profiles = _whole_exact(payload["profiles"], {"whole", "focused"}, "profiles")
+    for name in ("whole", "focused"):
+        profile = _whole_exact(
+            profiles[name], {"version", "corpus_hash", "file_sha256"}, f"{name} profile"
+        )
+        if type(profile["version"]) is not str or not profile["version"]:
+            raise ValueError("whole visual index profile version is invalid")
+        _whole_hash(profile["corpus_hash"], f"{name} profile corpus")
+        _whole_hash(profile["file_sha256"], f"{name} profile file")
+    dependency = _whole_exact(payload["dependency"], {"digest"}, "dependency")
+    renderer = _whole_exact(payload["renderer"], {"version", "digest"}, "renderer")
+    _whole_hash(dependency["digest"], "dependency")
+    if type(renderer["version"]) is not str or not renderer["version"]:
+        raise ValueError("whole visual index renderer version is invalid")
+    _whole_hash(renderer["digest"], "renderer")
+    _validate_whole_file_proof(
+        payload["full_region_manifest"], workspace, "full region manifest", cancel_event
+    )
+    animation = _whole_exact(
+        payload["animation"], {"classification", "reference", "candidate"}, "animation"
+    )
+    _validate_whole_file_proof(
+        animation["classification"], workspace, "animation classification", cancel_event
+    )
+    if (animation["reference"] is None) != (animation["candidate"] is None):
+        raise ValueError("whole visual index animation source pairing is invalid")
+    if animation["reference"] is not None:
+        _validate_whole_file_proof(
+            animation["reference"], workspace, "reference animation", cancel_event
+        )
+        _validate_whole_file_proof(
+            animation["candidate"], workspace, "candidate animation", cancel_event
+        )
+    states = payload["states"]
+    if type(states) is not list or not states or len(states) > 16:
+        raise ValueError("whole visual index states are invalid")
+    if [state.get("state_index") if type(state) is dict else None for state in states] != list(range(len(states))):
+        raise ValueError("whole visual index state indices are not contiguous")
+    state_names: set[str] = set()
+    for index, state_value in enumerate(states):
+        state = _whole_exact(state_value, {
+            "state_index", "state_name", "bodygroups", "lod_index", "poses",
+            "region_manifest", "configuration_manifest", "reference_manifest",
+            "candidate_manifest", "sources", "geometry_rows",
+        }, f"state {index}")
+        name = state["state_name"]
+        if type(name) is not str or not name or name in state_names:
+            raise ValueError("whole visual index state names are invalid")
+        state_names.add(name)
+        if type(state["lod_index"]) is not int or state["lod_index"] < 0:
+            raise ValueError("whole visual index state LOD is invalid")
+        bodygroups = state["bodygroups"]
+        if (
+            type(bodygroups) is not list
+            or any(type(item) is not list or len(item) != 2 or type(item[0]) is not str or type(item[1]) is not int for item in bodygroups)
+            or bodygroups != sorted(bodygroups, key=lambda item: (item[0].casefold(), item[0]))
+        ):
+            raise ValueError("whole visual index state bodygroups are invalid")
+        poses = state["poses"]
+        if type(poses) is not list or not poses or poses[0] != "bind" or len(poses) > 2 or len(set(poses)) != len(poses):
+            raise ValueError("whole visual index state poses are invalid")
+        for field in (
+            "region_manifest", "configuration_manifest", "reference_manifest", "candidate_manifest"
+        ):
+            _validate_whole_file_proof(state[field], workspace, f"state {index} {field}", cancel_event)
+        sources = state["sources"]
+        if type(sources) is not list or not sources:
+            raise ValueError("whole visual index state sources are invalid")
+        identities: list[str] = []
+        for source_value in sources:
+            source = _whole_exact(
+                source_value, {"source_identity", "reference", "candidate"}, "state source"
+            )
+            identity = _whole_relative(source["source_identity"], "source identity")
+            identities.append(identity)
+            _validate_whole_file_proof(source["reference"], workspace, "reference source", cancel_event)
+            _validate_whole_file_proof(source["candidate"], workspace, "candidate source", cancel_event)
+        if identities != sorted(identities, key=lambda item: (item.casefold(), item)) or len({item.casefold() for item in identities}) != len(identities):
+            raise ValueError("whole visual index state source identities are not canonical")
+        rows = state["geometry_rows"]
+        if type(rows) is not list or not rows:
+            raise ValueError("whole visual index geometry rows are invalid")
+        if [
+            (row.get("scope"), row.get("pose")) if type(row) is dict else (None, None)
+            for row in rows
+        ] != sorted(
+            (
+                (row.get("scope"), row.get("pose")) if type(row) is dict else (None, None)
+                for row in rows
+            ),
+            key=lambda item: (str(item[0]), str(item[1])),
+        ):
+            raise ValueError("whole visual index geometry rows are not canonical order")
+        coverage: set[tuple[str, str]] = set()
+        for row_value in rows:
+            row = _whole_exact(
+                row_value,
+                {"scope", "pose", "surface_bidirectional_p95", "surface_max"},
+                "geometry row",
+            )
+            if type(row["scope"]) is not str or _REGION_KEY_RE.fullmatch(row["scope"]) is None or row["pose"] not in poses:
+                raise ValueError("whole visual index geometry identity is invalid")
+            for metric in ("surface_bidirectional_p95", "surface_max"):
+                value = row[metric]
+                if isinstance(value, bool) or type(value) not in (int, float) or not math.isfinite(float(value)) or float(value) < 0:
+                    raise ValueError("whole visual index geometry metric is invalid")
+            key = (row["scope"], row["pose"])
+            if key in coverage:
+                raise ValueError("whole visual index geometry rows are duplicated")
+            coverage.add(key)
+        scopes = {scope for scope, _pose in coverage}
+        if coverage != {(scope, pose) for scope in scopes for pose in poses}:
+            raise ValueError("whole visual index geometry pose coverage is incomplete")
+    return payload
+
+
+def _write_whole_visual_index(
+    path: Path,
+    workspace: Path,
+    payload: Mapping[str, object],
+    cancel_event: threading.Event | None,
+) -> str:
+    mutable = json.loads(canonical_json(payload))
+    _validate_whole_visual_payload(mutable, workspace, cancel_event)
+    seal = hashlib.sha256(canonical_json(mutable).encode("utf-8")).hexdigest()
+    mutable["evidence_sha256"] = seal
+    _check_cancelled(cancel_event, "cancelled before whole visual index publication")
+    atomic_write_json(path, mutable)
+    return seal
+
+
+def _load_whole_visual_index(
+    path: Path,
+    workspace: Path,
+    expected_seal: str,
+    cancel_event: threading.Event | None,
+) -> Mapping[str, object]:
+    _whole_hash(expected_seal, "expected evidence")
+    try:
+        raw = json.loads(_read_regular_no_follow(
+            path, cancel_event, contained_root=Path(workspace),
+        ).decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("whole visual index cannot be read safely") from exc
+    sealed = _whole_exact(raw, _WHOLE_INDEX_FIELDS | {"evidence_sha256"}, "sealed root")
+    supplied = _whole_hash(sealed.pop("evidence_sha256"), "evidence")
+    actual = hashlib.sha256(canonical_json(sealed).encode("utf-8")).hexdigest()
+    if supplied != actual or supplied != expected_seal:
+        raise ValueError("whole visual index seal is invalid")
+    _validate_whole_visual_payload(sealed, workspace, cancel_event)
+    sealed["evidence_sha256"] = supplied
+    return deep_freeze(sealed)
+
+
 def _aggregate_visual_results(results: Sequence[tuple[str, ValidationResult]]) -> ValidationResult:
     failures: list[GateFailure] = []
     metrics: dict[str, float] = {}
@@ -2445,10 +2765,88 @@ def _aggregate_visual_results(results: Sequence[tuple[str, ValidationResult]]) -
     )
 
 
+def _aggregate_focused_gate(
+    whole: ValidationResult,
+    gate: FocusedGateResult,
+) -> ValidationResult:
+    if not isinstance(whole, ValidationResult) or not isinstance(gate, FocusedGateResult):
+        raise TypeError("focused gate aggregate arguments are invalid")
+    targets = tuple(gate.targets)
+    regions = dict(gate.regions)
+    target_keys = tuple(target.region_key for target in targets)
+    if (
+        not targets
+        or tuple(target.rank for target in targets) != tuple(range(len(targets)))
+        or len(set(target_keys)) != len(target_keys)
+        or _SHA256_RE.fullmatch(gate.evidence_sha256) is None
+        or set(regions) != set(target_keys)
+        or any(
+            not isinstance(regions.get(target.region_key), FocusRegionResult)
+            or regions[target.region_key].target != target
+            or _SHA256_RE.fullmatch(regions[target.region_key].evidence_sha256) is None
+            for target in targets
+        )
+    ):
+        raise ValueError("focused gate evidence/rank/cardinality is invalid")
+    failures = list(whole.failures)
+    metrics = {name: float(value) for name, value in whole.metrics.items()}
+    worst_scope = whole.worst_scope
+    passed = whole.passed
+    for target in targets:
+        result = regions[target.region_key].validation
+        if not isinstance(result, ValidationResult):
+            raise TypeError("focused region validation is invalid")
+        passed = passed and result.passed
+        for failure in result.failures:
+            scope = failure.scope
+            if not scope.startswith(target.region_key + "/"):
+                scope = f"{target.region_key}/{scope or result.worst_scope or target.anchor_pose}"
+            failures.append(GateFailure(
+                failure.gate, scope, failure.measured, failure.limit, failure.message,
+            ))
+        for name, value in result.metrics.items():
+            number = float(value)
+            if name == "fidelity_score":
+                metrics[name] = min(metrics.get(name, number), number)
+            else:
+                metrics[name] = max(metrics.get(name, number), number)
+        if not result.passed:
+            worst_scope = f"{target.region_key}/{result.worst_scope or target.anchor_pose}"
+    return ValidationResult(passed, tuple(failures), metrics, worst_scope)
+
+
 class ProductionAdapters:
     def __init__(self, config: MaximumRunConfig, cancel_event: threading.Event) -> None:
         self.config = config
         self.cancel_event = cancel_event
+        self._whole_index_seals: dict[Path, str] = {}
+        self._candidate_cache_digests: dict[Path, str] = {}
+
+    def bind_candidate_cache_digest(self, candidate: CandidateBuild, digest: str) -> None:
+        if not isinstance(candidate, CandidateBuild) or _SHA256_RE.fullmatch(digest) is None:
+            raise ValueError("candidate cache digest binding is invalid")
+        self._candidate_cache_digests[candidate.workspace.resolve()] = digest
+
+    @staticmethod
+    def _remove_evidence_file(path: Path) -> None:
+        if not os.path.lexists(path):
+            return
+        if _is_reparse(path) or not path.is_file():
+            raise CandidateBuildError("candidate visual evidence path is unsafe", stage="render")
+        path.unlink()
+
+    @staticmethod
+    def _workspace_proof(workspace: Path, path: Path, cancel_event: threading.Event) -> dict[str, str]:
+        root = workspace.resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        try:
+            relative = resolved.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise CandidateBuildError("visual evidence path escapes candidate workspace", stage="render") from exc
+        _size, digest = _focused_file_proof(
+            path, cancel_event, contained_root=root,
+        )
+        return {"path": relative, "sha256": digest}
 
     def _vtfcmd(self) -> Path | None:
         local = Path(os.environ.get("LOCALAPPDATA", "")) / "GmodAddonOptimizer" / "tools" / "VTFEdit" / "VTFCmd.exe"
@@ -2537,7 +2935,20 @@ class ProductionAdapters:
         control: CandidateBuild,
         candidate: CandidateBuild,
         profile: FidelityProfile,
+        *,
+        focused_profile: FidelityProfile | None = None,
     ) -> ValidationResult:
+        whole_index_path = candidate.workspace / "logs" / "whole-visual-index.json"
+        if focused_profile is not None:
+            if not isinstance(focused_profile, FidelityProfile):
+                raise TypeError("focused profile is invalid")
+            for stale in (
+                whole_index_path,
+                candidate.workspace / "logs" / "focused-region-gate.json",
+                candidate.workspace / "logs" / "focused-region-gate.partial.json",
+            ):
+                self._remove_evidence_file(stale)
+            self._whole_index_seals.pop(candidate.workspace.resolve(), None)
         source_root = candidate.workspace / "render-source"
         if source_root.exists():
             shutil.rmtree(source_root)
@@ -2665,6 +3076,7 @@ class ProductionAdapters:
         pose_arg = f"bind:0,representative:{animation[2]}" if animation else "bind:0"
         vtfcmd = self._vtfcmd()
         state_results: list[tuple[str, ValidationResult]] = []
+        state_index_records: list[dict[str, object]] = []
         for state_index, (before_state, after_state) in enumerate(
             zip(original_states, candidate_states)
         ):
@@ -2775,7 +3187,373 @@ class ProductionAdapters:
                 state_name,
                 compare_render_sets(state_root / "original", state_root / "optimized", profile),
             ))
-        return _aggregate_visual_results(state_results)
+            if focused_profile is not None:
+                candidate_render_manifest = state_root / "optimized" / "render_manifest.json"
+                try:
+                    render_payload = json.loads(candidate_render_manifest.read_text(encoding="utf-8"))
+                    raw_geometry = render_payload["geometry"]
+                    geometry_rows = [
+                        {
+                            "scope": row["scope"], "pose": row["pose"],
+                            "surface_bidirectional_p95": row["surface_bidirectional_p95"],
+                            "surface_max": row["surface_max"],
+                        }
+                        for row in raw_geometry
+                    ]
+                except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                    raise CandidateBuildError(
+                        "whole visual render geometry evidence is invalid", stage="render"
+                    ) from exc
+                state_index_records.append({
+                    "state_index": state_index,
+                    "state_name": state_name,
+                    "bodygroups": [list(item) for item in before_state.bodygroup_indices],
+                    "lod_index": before_state.lod_index,
+                    "poses": ["bind", "representative"] if animation else ["bind"],
+                    "region_manifest": self._workspace_proof(
+                        candidate.workspace, state_region_manifest, self.cancel_event
+                    ),
+                    "configuration_manifest": self._workspace_proof(
+                        candidate.workspace, configuration_manifest, self.cancel_event
+                    ),
+                    "reference_manifest": self._workspace_proof(
+                        candidate.workspace, state_root / "original/render_manifest.json",
+                        self.cancel_event,
+                    ),
+                    "candidate_manifest": self._workspace_proof(
+                        candidate.workspace, candidate_render_manifest, self.cancel_event
+                    ),
+                    "sources": sorted((
+                        {
+                            "source_identity": identity,
+                            "reference": self._workspace_proof(
+                                candidate.workspace, before_path, self.cancel_event
+                            ),
+                            "candidate": self._workspace_proof(
+                                candidate.workspace, after_path, self.cancel_event
+                            ),
+                        }
+                        for identity, before_path, after_path in zip(
+                            source_identities, before, after
+                        )
+                    ), key=lambda item: (item["source_identity"].casefold(), item["source_identity"])),
+                    "geometry_rows": sorted(
+                        geometry_rows, key=lambda row: (row["scope"], row["pose"])
+                    ),
+                })
+        aggregate = _aggregate_visual_results(state_results)
+        if focused_profile is not None and aggregate.passed:
+            profile_file_hash = _sha256_file(self.config.profile_path, self.cancel_event)
+            dependency = _dependency_proof(self.config, self.cancel_event)
+            renderer_path = self.config.repo_root / "render_previews.py"
+            candidate_digest = self._candidate_cache_digests.get(candidate.workspace.resolve())
+            if candidate_digest is None:
+                raise CandidateBuildError(
+                    "candidate cache digest was not bound before whole validation",
+                    stage="render",
+                )
+            animation_reference = animation_candidate = None
+            if animation is not None:
+                animation_reference = self._workspace_proof(
+                    candidate.workspace,
+                    source_root / animation[0].relative_to(manifest.source_dir.resolve(strict=True)),
+                    self.cancel_event,
+                )
+                animation_candidate = self._workspace_proof(
+                    candidate.workspace, animation[1], self.cancel_event
+                )
+            payload = {
+                "schema": 1,
+                "selector_version": "surface-risk-top-k-v1",
+                "family": {
+                    "family_id": manifest.family_id, "model_rel": manifest.model_rel,
+                    "input_sha256": manifest.input_hash,
+                },
+                "candidate": {
+                    "candidate_id": candidate.spec.candidate_id,
+                    "spec": candidate.spec.cache_payload(),
+                    "cache_digest": candidate_digest,
+                },
+                "profiles": {
+                    "whole": {
+                        "version": profile.version, "corpus_hash": profile.corpus_hash,
+                        "file_sha256": profile_file_hash,
+                    },
+                    "focused": {
+                        "version": focused_profile.version,
+                        "corpus_hash": focused_profile.corpus_hash,
+                        "file_sha256": profile_file_hash,
+                    },
+                },
+                "dependency": {"digest": dependency["digest"]},
+                "renderer": {
+                    "version": "focus-render-v1",
+                    "digest": _sha256_file(renderer_path, self.cancel_event),
+                },
+                "full_region_manifest": self._workspace_proof(
+                    candidate.workspace, region_manifest, self.cancel_event
+                ),
+                "animation": {
+                    "classification": self._workspace_proof(
+                        candidate.workspace,
+                        candidate.workspace / "logs/render-animation-classification.json",
+                        self.cancel_event,
+                    ),
+                    "reference": animation_reference,
+                    "candidate": animation_candidate,
+                },
+                "states": state_index_records,
+            }
+            seal = _write_whole_visual_index(
+                whole_index_path, candidate.workspace, payload, self.cancel_event
+            )
+            self._whole_index_seals[candidate.workspace.resolve()] = seal
+            if self.cancel_event.is_set():
+                self._remove_evidence_file(whole_index_path)
+                self._whole_index_seals.pop(candidate.workspace.resolve(), None)
+                raise ProcessCancelledError("cancelled after whole visual index publication")
+        return aggregate
+
+    def focused_visual(
+        self,
+        manifest: FamilyManifest,
+        control: CandidateBuild,
+        candidate: CandidateBuild,
+        whole_profile: FidelityProfile,
+        focused_profile: FidelityProfile,
+        policy: FocusedRegionPolicy,
+    ) -> FocusedGateResult:
+        del control
+        if (
+            not isinstance(whole_profile, FidelityProfile)
+            or not isinstance(focused_profile, FidelityProfile)
+            or not isinstance(policy, FocusedRegionPolicy)
+        ):
+            raise TypeError("focused visual arguments are invalid")
+        workspace = candidate.workspace.resolve(strict=True)
+        expected_seal = self._whole_index_seals.get(workspace)
+        if expected_seal is None:
+            raise CandidateBuildError("fresh whole visual index is unavailable", stage="focused-render")
+        index = _load_whole_visual_index(
+            workspace / "logs/whole-visual-index.json",
+            workspace,
+            expected_seal,
+            self.cancel_event,
+        )
+        if (
+            index["family"]["family_id"] != manifest.family_id
+            or index["family"]["model_rel"] != manifest.model_rel
+            or index["family"]["input_sha256"] != manifest.input_hash
+            or index["candidate"]["candidate_id"] != candidate.spec.candidate_id
+            or canonical_payload(index["candidate"]["spec"])
+            != canonical_payload(candidate.spec.cache_payload())
+            or index["profiles"]["whole"]["version"] != whole_profile.version
+            or index["profiles"]["focused"]["version"] != focused_profile.version
+        ):
+            raise CandidateBuildError("whole visual index identity differs", stage="focused-render")
+        full_manifest_proof = index["full_region_manifest"]
+        full_manifest_path = workspace / PurePosixPath(full_manifest_proof["path"])
+        try:
+            full_manifest = load_region_manifest_payload(json.loads(
+                _read_regular_no_follow(
+                    full_manifest_path, self.cancel_event, contained_root=workspace
+                ).decode("utf-8")
+            ))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise CandidateBuildError("whole region manifest cannot authorize focus", stage="focused-render") from exc
+        states = tuple(
+            WholeStateEvidence(
+                state["state_index"], state["state_name"],
+                tuple(tuple(item) for item in state["bodygroups"]), state["lod_index"],
+                tuple(state["poses"]),
+                tuple(
+                    (
+                        source["source_identity"], source["reference"]["sha256"],
+                        source["candidate"]["sha256"],
+                    )
+                    for source in state["sources"]
+                ),
+                state["reference_manifest"]["path"],
+                state["reference_manifest"]["sha256"],
+                state["candidate_manifest"]["path"],
+                state["candidate_manifest"]["sha256"],
+                tuple(dict(row) for row in state["geometry_rows"]),
+            )
+            for state in index["states"]
+        )
+        selection = select_focus_targets_with_evidence(
+            states, full_manifest, focused_profile, policy
+        )
+        cache = FocusedRenderCache(self.config.work_dir / "focused-render-cache")
+        profile_file_sha = index["profiles"]["focused"]["file_sha256"]
+        whole_proof = FocusProfileProof(
+            whole_profile.version, whole_profile.corpus_hash,
+            index["profiles"]["whole"]["file_sha256"], whole_profile.limits,
+        )
+        focused_proof = FocusProfileProof(
+            focused_profile.version, focused_profile.corpus_hash,
+            profile_file_sha, focused_profile.limits,
+        )
+        material_proofs: dict[str, Mapping[str, object]] = {}
+        records = []
+        results: dict[str, FocusRegionResult] = {}
+        partial_path = workspace / "logs/focused-region-gate.partial.json"
+        final_path = workspace / "logs/focused-region-gate.json"
+        self._remove_evidence_file(final_path)
+        for target in selection.selected:
+            _check_cancelled(self.cancel_event, "cancelled between focused targets")
+            state = index["states"][target.state_index]
+            descriptor = full_manifest.by_key[target.region_key].descriptor
+            roots = tuple(
+                (f"material-root-{position:03d}", root)
+                for position, root in enumerate(self._materials_roots())
+            )
+            requests = tuple({
+                "material_identity": material,
+                "search_paths": (),
+            } for material in (descriptor.materials or ("none",)))
+            material = material_resolution_proof(roots, requests, self.cancel_event)
+            if not material.cacheable:
+                raise CandidateBuildError(
+                    f"focused material proof is unavailable: {material.reason}",
+                    stage="focused-render",
+                )
+            material_payload = canonical_payload(material)
+            material_proofs[target.region_key] = material_payload
+            poses = tuple(state["poses"])
+            expected = FocusExpectedMatrix(
+                target.region_key, poses, EXPECTED_PASSES, EXPECTED_ANGLES,
+                512, 512,
+                len(poses) * len(EXPECTED_PASSES) * len(EXPECTED_ANGLES),
+                len(poses) * len(EXPECTED_PASSES) * len(EXPECTED_ANGLES),
+            )
+            state_proof = FocusStateProof(
+                state["state_index"], state["state_name"],
+                tuple(tuple(item) for item in state["bodygroups"]),
+                state["lod_index"], poses, target.anchor_pose,
+                0 if target.anchor_pose == "bind" else int(
+                    json.loads(_read_regular_no_follow(
+                        workspace / PurePosixPath(index["animation"]["classification"]["path"]),
+                        self.cancel_event, contained_root=workspace,
+                    ).decode("utf-8"))["selected_frame"]
+                ),
+                "source" if index["animation"]["reference"] is not None else "none",
+                (
+                    index["animation"]["reference"]["sha256"]
+                    if index["animation"]["reference"] is not None else None
+                ),
+            )
+            context = FocusCacheContext(
+                1, manifest.input_hash, index["candidate"]["cache_digest"],
+                tuple(
+                    (
+                        source["source_identity"], source["reference"]["sha256"],
+                        source["candidate"]["sha256"],
+                    )
+                    for source in state["sources"]
+                ),
+                descriptor, target, state_proof,
+                state["region_manifest"]["sha256"],
+                state["configuration_manifest"]["sha256"],
+                whole_proof, focused_proof,
+                TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
+                index["selector_version"], index["renderer"]["version"],
+                index["dependency"]["digest"], material_payload, expected,
+            )
+            key = FocusCacheKey.build(context.to_payload())
+            metadata = FocusCacheMetadata(
+                1, context.to_payload(), canonical_payload(target), canonical_payload(expected)
+            )
+            expected_files = []
+            target_root = workspace / "focused-renders" / f"{target.rank:03d}-{target.region_key}"
+
+            def render_fresh(
+                *, target=target, state=state, target_root=target_root,
+                expected_files=expected_files,
+            ) -> FocusRenderDirectories:
+                if os.path.lexists(target_root):
+                    if _is_reparse(target_root) or not target_root.is_dir():
+                        raise CandidateBuildError("focused render root is unsafe", stage="focused-render")
+                    shutil.rmtree(target_root)
+                command: list[str] = [
+                    str(self.config.blender_path), "--background", "--python",
+                    str(self.config.repo_root / "render_previews.py"), "--",
+                ]
+                for source in state["sources"]:
+                    command.extend(("--before", str(workspace / PurePosixPath(source["reference"]["path"]))))
+                for source in state["sources"]:
+                    command.extend(("--after", str(workspace / PurePosixPath(source["candidate"]["path"]))))
+                pose_arg = ",".join(
+                    "bind:0" if pose == "bind" else f"{pose}:{state_proof.selected_frame}"
+                    for pose in poses
+                )
+                command.extend((
+                    "--out", str(target_root), "--size", "512",
+                    "--passes", "textured,clay", "--poses", pose_arg,
+                    "--region-manifest", str(workspace / PurePosixPath(state["region_manifest"]["path"])),
+                    "--source-root", str(workspace / "render-source"),
+                    "--configuration-manifest", str(workspace / PurePosixPath(state["configuration_manifest"]["path"])),
+                    "--texture-cache", str(self._texture_cache_root(candidate)),
+                    "--focus-region", target.region_key,
+                ))
+                for root in self._materials_roots():
+                    command.extend(("--materials-root", str(root)))
+                if index["animation"]["reference"] is not None:
+                    command.extend((
+                        "--animation-before", str(workspace / PurePosixPath(index["animation"]["reference"]["path"])),
+                        "--animation-after", str(workspace / PurePosixPath(index["animation"]["candidate"]["path"])),
+                    ))
+                process = run_process(
+                    command, cwd=self.config.repo_root,
+                    log_path=workspace / "logs" / f"focused-render-{target.rank:03d}.log",
+                    cancel_event=self.cancel_event,
+                )
+                if process.returncode != 0:
+                    raise CandidateBuildError("focused render failed", stage="focused-render")
+                directories = FocusRenderDirectories(
+                    target_root / "original", target_root / "optimized"
+                )
+                expected_files.extend(_focused_render_file_manifest(
+                    directories, self.cancel_event
+                ))
+                return directories
+
+            result, record = validate_focused_target(
+                cache, key, target, focused_profile, render_fresh,
+                workspace / "focused-snapshots" / f"{target.rank:03d}-{target.region_key}",
+                metadata, expected_files, self.cancel_event,
+            )
+            results[target.region_key] = result
+            records.append(record)
+            _check_cancelled(self.cancel_event, "cancelled before focused partial evidence")
+            atomic_write_json(partial_path, {
+                "schema": "focused-progress-v1",
+                "family_id": manifest.family_id,
+                "candidate_id": candidate.spec.candidate_id,
+                "completed": len(records),
+                "selected": len(selection.selected),
+                "records": tuple(canonical_payload(item) for item in records),
+            })
+        evidence_context = FocusedEvidenceContext(
+            1, manifest.family_id, candidate.spec.candidate_id, policy,
+            canonical_payload(whole_proof), canonical_payload(focused_proof),
+            TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
+            index["dependency"]["digest"], material_proofs,
+        )
+        _check_cancelled(self.cancel_event, "cancelled before focused evidence publication")
+        evidence = focused_gate_evidence_payload(
+            evidence_context, selection, tuple(records), recoveries=()
+        )
+        atomic_write_json(final_path, evidence)
+        self._remove_evidence_file(partial_path)
+        focused_validation = _aggregate_visual_results(tuple(
+            (target.region_key, results[target.region_key].validation)
+            for target in selection.selected
+        ))
+        return FocusedGateResult(
+            focused_validation, selection.selected, results,
+            evidence["evidence_sha256"],
+        )
 
     def tool_versions(self) -> Mapping[str, str]:
         def digest(path: Path) -> str:
@@ -2824,7 +3602,7 @@ def run_maximum_from_existing_args(
             or repo_root / "maximum_optimizer" / "profiles" / "maximum-experimental-v1.json"
         ).expanduser().resolve()
         # Fail closed before decompilation or output changes.
-        load_profile(profile_path)
+        load_fidelity_profile_set(profile_path)
         blender = _resolved_blender(getattr(args, "blender", None))
         studiomdl_raw = getattr(args, "studiomdl", None)
         if studiomdl_raw:

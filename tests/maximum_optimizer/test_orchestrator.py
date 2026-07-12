@@ -7,14 +7,18 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from maximum_optimizer import orchestrator as orchestrator_module
 from maximum_optimizer.candidates import CandidateBuild, CandidateBuildError
 from maximum_optimizer.domain import (
     GateFailure,
+    CandidateEvaluation,
     CandidateSpec,
     FamilyManifest,
+    FocusRegionResult,
+    FocusedGateResult,
     SearchBudget,
     StructuralFingerprint,
     ValidationResult,
@@ -96,6 +100,39 @@ def _typed_profile(path: Path) -> Path:
     return path
 
 
+def _focused_profile(path: Path) -> Path:
+    from maximum_optimizer.calibration_evidence import (
+        TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
+    )
+
+    limits = json.loads(_profile(path).read_text(encoding="utf-8"))["limits"]
+    payload = {
+        "schema": 3,
+        "version": "test-focused-v1",
+        "calibrated": True,
+        "corpus_hash": "c" * 64,
+        "selector": "audited-original-round-family-v1",
+        "focused_evidence_sha256": TRUSTED_CALIBRATION_EVIDENCE_V3_SHA256,
+        "focused_policy": {
+            "schema": 1,
+            "selector": "surface-risk-top-k-v1",
+            "top_k": 1,
+        },
+        "profiles": {
+            GENERAL_BODY_DETAIL: {
+                "limits": {**limits, "edge_error": 0.2},
+                "focused_limits": {**limits, "edge_error": 0.1},
+            },
+            ROUND_RIGID: {
+                "limits": {**limits, "edge_error": 0.05},
+                "focused_limits": {**limits, "edge_error": 0.025},
+            },
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def _family(root: Path, name: str = "test") -> FamilyManifest:
     source = root / "source" / name
     source.mkdir(parents=True)
@@ -112,6 +149,82 @@ def _family(root: Path, name: str = "test") -> FamilyManifest:
         hashlib.sha256((name + "-input").encode()).hexdigest(),
         (".mdl",),
     )
+
+
+def _focus_target():
+    from maximum_optimizer.domain import FocusTarget
+
+    return FocusTarget(
+        0, "r-" + "1" * 64, "test.smd", 0, "engine-default", (), 0,
+        "bind", 0.01, 0.02, 0.1, 0.2, "2" * 64,
+    )
+
+
+def _whole_index_payload(workspace: Path) -> dict:
+    files = {
+        "render-source/maximum_region_manifest.json": b'{"schema":1}',
+        "render-source/state-region.json": b'{"schema":1}',
+        "render-source/state-configuration.json": b'{"schema":1}',
+        "renders/engine-default/original/render_manifest.json": b'{"schema":1}',
+        "renders/engine-default/optimized/render_manifest.json": b'{"schema":1}',
+        "render-source/test.smd": b"reference-source",
+        "src/test_OPT.smd": b"candidate-source",
+        "logs/render-animation-classification.json": b'{"schema":1,"required":false}',
+    }
+    for relative, content in files.items():
+        path = workspace / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    def proof(relative):
+        return {
+            "path": relative,
+            "sha256": hashlib.sha256((workspace / relative).read_bytes()).hexdigest(),
+        }
+
+    return {
+        "schema": 1,
+        "selector_version": "surface-risk-top-k-v1",
+        "family": {
+            "family_id": "a" * 64, "model_rel": "test.mdl",
+            "input_sha256": "b" * 64,
+        },
+        "candidate": {
+            "candidate_id": "candidate-100",
+            "spec": CandidateSpec(
+                "candidate-100", "blender", 1.0, 0.01, "transfer-v1"
+            ).cache_payload(),
+            "cache_digest": "c" * 64,
+        },
+        "profiles": {
+            "whole": {"version": "whole-v1", "corpus_hash": "d" * 64, "file_sha256": "e" * 64},
+            "focused": {"version": "focused-v1", "corpus_hash": "d" * 64, "file_sha256": "e" * 64},
+        },
+        "dependency": {"digest": "f" * 64},
+        "renderer": {"version": "focus-render-v1", "digest": "1" * 64},
+        "full_region_manifest": proof("render-source/maximum_region_manifest.json"),
+        "animation": {
+            "classification": proof("logs/render-animation-classification.json"),
+            "reference": None, "candidate": None,
+        },
+        "states": [{
+            "state_index": 0, "state_name": "engine-default",
+            "bodygroups": [], "lod_index": 0, "poses": ["bind"],
+            "region_manifest": proof("render-source/state-region.json"),
+            "configuration_manifest": proof("render-source/state-configuration.json"),
+            "reference_manifest": proof("renders/engine-default/original/render_manifest.json"),
+            "candidate_manifest": proof("renders/engine-default/optimized/render_manifest.json"),
+            "sources": [{
+                "source_identity": "test.smd",
+                "reference": proof("render-source/test.smd"),
+                "candidate": proof("src/test_OPT.smd"),
+            }],
+            "geometry_rows": [{
+                "scope": "r-" + "1" * 64, "pose": "bind",
+                "surface_bidirectional_p95": 0.01, "surface_max": 0.02,
+            }],
+        }],
+    }
 
 
 class FakeAdapters:
@@ -222,6 +335,376 @@ class OrchestratorTests(unittest.TestCase):
             event_sink=self.events.append,
             **kwargs,
         )
+
+    def test_candidate_evaluation_trailing_focused_fields_preserve_legacy_construction(self):
+        from maximum_optimizer.compiled_size import scan_compiled_models
+
+        compiled = self.root / "candidate-evaluation/models"
+        compiled.mkdir(parents=True)
+        (compiled / "test.mdl").write_bytes(b"x")
+        size = scan_compiled_models(compiled)
+        structural = ValidationResult(True)
+        visual = ValidationResult(True, metrics={"fidelity_score": 0.9})
+
+        evaluation = CandidateEvaluation(
+            CandidateSpec("legacy", "blender", 1.0, 0.0, "legacy"),
+            size, structural, visual, compiled,
+        )
+
+        self.assertIs(evaluation.whole_visual, visual)
+        self.assertEqual(dict(evaluation.focused_by_region), {})
+        with self.assertRaises(TypeError):
+            evaluation.focused_by_region["r-" + "1" * 64] = object()
+
+    def test_schema3_orders_focused_gate_before_candidate_cache_store_and_never_focuses_control(self):
+        order = []
+        self.config = MaximumRunConfig(
+            self.config.addon_dir, self.config.output_dir, self.config.work_dir,
+            self.config.blender_path, self.config.studiomdl_path,
+            self.config.repo_root, SearchBudget(1, .025, 0),
+            _focused_profile(self.root / "focused-profile.json"), False, False,
+        )
+        self.adapters.candidate_schedule = lambda _manifest: (
+            CandidateSpec("candidate-100", "blender", 1.0, 0.01, "transfer-v1"),
+        )
+        original_build = self.adapters.build
+        original_visual = self.adapters.visual
+
+        def build(*args, **kwargs):
+            result = original_build(*args, **kwargs)
+            if result.spec.candidate_id != "roundtrip-control":
+                order.append("build")
+            return result
+
+        def structural(manifest, candidate):
+            if candidate.spec.candidate_id != "roundtrip-control":
+                order.append("structural")
+            return ValidationResult(True)
+
+        def visual(manifest, control, candidate, profile, *, focused_profile=None):
+            if candidate.spec.candidate_id == "roundtrip-control":
+                self.assertIsNone(focused_profile)
+            else:
+                order.append("whole")
+                self.assertIsNotNone(focused_profile)
+            return original_visual(manifest, control, candidate, profile)
+
+        def focused_visual(manifest, control, candidate, whole_profile, focused_profile, policy):
+            self.assertNotEqual(candidate.spec.candidate_id, "roundtrip-control")
+            order.append("focused")
+            target = _focus_target()
+            result = FocusRegionResult(
+                target, ValidationResult(True, metrics={"fidelity_score": 0.95}),
+                "3" * 64, False,
+            )
+            return FocusedGateResult(
+                result.validation, (target,), {target.region_key: result}, "4" * 64,
+            )
+
+        self.adapters.build = build
+        self.adapters.visual = visual
+        self.adapters.focused_visual = focused_visual
+        original_store = orchestrator_module.CandidateCache.store
+
+        def store(cache, *args, **kwargs):
+            order.append("store")
+            return original_store(cache, *args, **kwargs)
+
+        with patch.object(
+            orchestrator_module.CandidateCache, "store",
+            autospec=True,
+            side_effect=store,
+        ):
+            report = run_maximum_addon(
+                self.config,
+                adapters=self.adapters,
+                validator=structural,
+                event_sink=self.events.append,
+                profile_selector=lambda _manifest: FamilyFidelitySelection(
+                    GENERAL_BODY_DETAIL, "test", (),
+                ),
+            )
+
+        self.assertEqual(order, ["build", "structural", "whole", "focused", "store"])
+        self.assertEqual(report.families[0].selected_candidate, "candidate-100")
+
+    def test_models_bridge_preflights_schema3_with_profile_set_loader_without_cli_changes(self):
+        from maximum_optimizer.orchestrator import run_maximum_from_existing_args
+
+        repo = Path(__file__).parents[2]
+        profile = _focused_profile(self.root / "bridge-focused.json")
+        blender = self.root / "bridge-blender.exe"
+        studiomdl = self.root / "bridge-studiomdl.exe"
+        blender.write_bytes(b"tool")
+        studiomdl.write_bytes(b"tool")
+        args = SimpleNamespace(
+            maximum_profile=str(profile), blender=str(blender), studiomdl=str(studiomdl),
+            maximum_max_candidates=1, maximum_min_ratio_step=.025,
+            maximum_min_marginal_saving=0.0, maximum_resume=False,
+            resume_opt=False, overwrite=False, decompile_jobs=1,
+        )
+        work = self.root / "bridge-work"
+
+        def decompile(*_args, **_kwargs):
+            logs = work / "logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            (logs / "decompile_manifest.json").write_text(
+                json.dumps({"total": 1, "results": []}), encoding="utf-8"
+            )
+            return ProcessResult(("python",), 0, 0.0, logs / "decompile.log")
+
+        with patch.object(
+            orchestrator_module, "load_fidelity_profile_set",
+            wraps=orchestrator_module.load_fidelity_profile_set,
+        ) as profile_loader, patch.object(
+            orchestrator_module, "load_profile",
+            side_effect=AssertionError("schema-1-only loader must not be called"),
+        ), patch.object(
+            orchestrator_module, "run_process", side_effect=decompile,
+        ), patch(
+            "selective_policy_models.write_final_policy_files",
+        ), patch.object(
+            orchestrator_module, "run_maximum_addon",
+            return_value=SimpleNamespace(status="success"),
+        ):
+            result = run_maximum_from_existing_args(
+                args, repo_root=repo, addon_path=self.addon,
+                out_addon_dir=self.root / "bridge-output", work_dir=work,
+            )
+
+        self.assertEqual(result, 0)
+        profile_loader.assert_called_once_with(profile.resolve())
+
+    def test_whole_visual_index_is_exact_sealed_and_rechecks_current_bytes(self):
+        workspace = self.root / "whole-index"
+        payload = _whole_index_payload(workspace)
+        path = workspace / "logs/whole-visual-index.json"
+
+        seal = orchestrator_module._write_whole_visual_index(
+            path, workspace, payload, threading.Event()
+        )
+        loaded = orchestrator_module._load_whole_visual_index(
+            path, workspace, seal, threading.Event()
+        )
+        self.assertEqual(loaded["evidence_sha256"], seal)
+
+        source = workspace / "render-source/test.smd"
+        original = source.read_bytes()
+        source.write_bytes(b"X" * len(original))
+        with self.assertRaisesRegex(ValueError, "hash|changed|seal"):
+            orchestrator_module._load_whole_visual_index(
+                path, workspace, seal, threading.Event()
+            )
+
+    def test_whole_visual_index_rejects_self_reseal_path_escape_and_state_gaps(self):
+        workspace = self.root / "whole-index-adversarial"
+        payload = _whole_index_payload(workspace)
+        path = workspace / "logs/whole-visual-index.json"
+        seal = orchestrator_module._write_whole_visual_index(
+            path, workspace, payload, threading.Event()
+        )
+
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["family"]["model_rel"] = "other.mdl"
+        raw.pop("evidence_sha256")
+        raw["evidence_sha256"] = hashlib.sha256(
+            canonical_json(raw).encode("utf-8")
+        ).hexdigest()
+        path.write_text(canonical_json(raw), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "seal"):
+            orchestrator_module._load_whole_visual_index(
+                path, workspace, seal, threading.Event()
+            )
+
+        payload = _whole_index_payload(workspace)
+        payload["states"][0]["reference_manifest"]["path"] = "../escape.json"
+        with self.assertRaisesRegex(ValueError, "relative|path"):
+            orchestrator_module._write_whole_visual_index(
+                path, workspace, payload, threading.Event()
+            )
+
+        payload = _whole_index_payload(workspace)
+        second = json.loads(json.dumps(payload["states"][0]))
+        second["state_index"] = 2
+        second["state_name"] = "gap"
+        payload["states"].append(second)
+        with self.assertRaisesRegex(ValueError, "state"):
+            orchestrator_module._write_whole_visual_index(
+                path, workspace, payload, threading.Event()
+            )
+
+        payload = _whole_index_payload(workspace)
+        payload["states"][0]["geometry_rows"] = [{
+            "scope": "r-" + "2" * 64, "pose": "bind",
+            "surface_bidirectional_p95": .01, "surface_max": .02,
+        }, payload["states"][0]["geometry_rows"][0]]
+        with self.assertRaisesRegex(ValueError, "geometry.*canonical|order"):
+            orchestrator_module._write_whole_visual_index(
+                path, workspace, payload, threading.Event()
+            )
+
+    def test_schema3_failed_or_incomplete_focus_never_stores_or_wins(self):
+        self.config = MaximumRunConfig(
+            self.config.addon_dir, self.config.output_dir, self.config.work_dir,
+            self.config.blender_path, self.config.studiomdl_path,
+            self.config.repo_root, SearchBudget(1, .025, 0),
+            _focused_profile(self.root / "focused-reject-profile.json"), False, False,
+        )
+        self.adapters.candidate_schedule = lambda _manifest: (
+            CandidateSpec("candidate-100", "blender", 1.0, 0.01, "transfer-v1"),
+        )
+
+        def visual(manifest, control, candidate, profile, *, focused_profile=None):
+            return ValidationResult(True, metrics={"fidelity_score": 0.99})
+
+        def focused_visual(*_args):
+            target = _focus_target()
+            validation = ValidationResult(
+                False,
+                (GateFailure("edge_error", "bind", .2, .1, "failed"),),
+                {"fidelity_score": 0.0, "edge_error": .2}, "bind",
+            )
+            result = FocusRegionResult(target, validation, "3" * 64, False)
+            return FocusedGateResult(
+                validation, (target,), {target.region_key: result}, "4" * 64,
+            )
+
+        self.adapters.visual = visual
+        self.adapters.focused_visual = focused_visual
+        with patch.object(
+            orchestrator_module.CandidateCache, "store", autospec=True,
+        ) as store:
+            report = run_maximum_addon(
+                self.config, adapters=self.adapters, validator=self.structural,
+                event_sink=self.events.append,
+                profile_selector=lambda _manifest: FamilyFidelitySelection(
+                    GENERAL_BODY_DETAIL, "test", (),
+                ),
+            )
+        store.assert_not_called()
+        self.assertIsNone(report.families[0].selected_candidate)
+        self.assertEqual(report.families[0].status, "preserved")
+
+    def test_schema3_cancellation_after_focused_adapter_never_stores_promotes_or_updates_best(self):
+        cancel = threading.Event()
+        self.config = MaximumRunConfig(
+            self.config.addon_dir, self.config.output_dir, self.config.work_dir,
+            self.config.blender_path, self.config.studiomdl_path,
+            self.config.repo_root, SearchBudget(1, .025, 0),
+            _focused_profile(self.root / "focused-cancel-profile.json"), False, False,
+        )
+        self.adapters.candidate_schedule = lambda _manifest: (
+            CandidateSpec("candidate-100", "blender", 1.0, 0.01, "transfer-v1"),
+        )
+        self.adapters.visual = lambda *_args, **_kwargs: ValidationResult(True)
+
+        def focused_visual(*_args):
+            target = _focus_target()
+            result = FocusRegionResult(target, ValidationResult(True), "3" * 64, False)
+            cancel.set()
+            return FocusedGateResult(
+                result.validation, (target,), {target.region_key: result}, "4" * 64,
+            )
+
+        self.adapters.focused_visual = focused_visual
+        with patch.object(
+            orchestrator_module.CandidateCache, "store", autospec=True,
+        ) as store:
+            report = run_maximum_addon(
+                self.config, cancel, adapters=self.adapters, validator=self.structural,
+                event_sink=self.events.append,
+                profile_selector=lambda _manifest: FamilyFidelitySelection(
+                    GENERAL_BODY_DETAIL, "test", (),
+                ),
+            )
+        store.assert_not_called()
+        self.assertTrue(report.cancelled)
+        self.assertFalse(self.config.output_dir.exists())
+        self.assertNotIn("best_updated", [event["kind"] for event in self.events])
+        candidate_terminal = [
+            event for event in self.events
+            if event["kind"] == "candidate_finished"
+            and event.get("candidate") == "candidate-100"
+        ]
+        self.assertEqual(len(candidate_terminal), 1)
+        self.assertEqual(candidate_terminal[0]["status"], "cancelled")
+
+    def test_focused_aggregate_rejects_unsealed_or_rank_gapped_results(self):
+        target = _focus_target()
+        result = FocusRegionResult(target, ValidationResult(True), "not-a-seal", False)
+        gate = FocusedGateResult(
+            result.validation, (target,), {target.region_key: result}, "4" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "seal|evidence"):
+            orchestrator_module._aggregate_focused_gate(ValidationResult(True), gate)
+
+        from dataclasses import replace
+        gapped = replace(target, rank=1)
+        result = FocusRegionResult(gapped, ValidationResult(True), "3" * 64, False)
+        gate = FocusedGateResult(
+            result.validation, (gapped,), {gapped.region_key: result}, "4" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "rank|cardinality"):
+            orchestrator_module._aggregate_focused_gate(ValidationResult(True), gate)
+
+    def test_schema3_compiled_cache_hit_reruns_whole_and_focused_without_second_store(self):
+        self.config = MaximumRunConfig(
+            self.config.addon_dir, self.config.output_dir, self.config.work_dir,
+            self.config.blender_path, self.config.studiomdl_path,
+            self.config.repo_root, SearchBudget(1, .025, 0),
+            _focused_profile(self.root / "focused-resume-profile.json"), True, True,
+        )
+        self.adapters.candidate_schedule = lambda _manifest: (
+            CandidateSpec("candidate-100", "blender", 1.0, 0.01, "transfer-v1"),
+        )
+        whole_calls = []
+        focused_calls = []
+
+        def visual(manifest, control, candidate, profile, *, focused_profile=None):
+            if candidate.spec.candidate_id != "roundtrip-control":
+                whole_calls.append(candidate.spec.candidate_id)
+            return ValidationResult(True)
+
+        def focused_visual(*args):
+            candidate = args[2]
+            focused_calls.append(candidate.spec.candidate_id)
+            target = _focus_target()
+            result = FocusRegionResult(target, ValidationResult(True), "3" * 64, False)
+            return FocusedGateResult(
+                result.validation, (target,), {target.region_key: result}, "4" * 64,
+            )
+
+        self.adapters.visual = visual
+        self.adapters.focused_visual = focused_visual
+        original_store = orchestrator_module.CandidateCache.store
+        stores = []
+
+        def store(cache, *args, **kwargs):
+            stores.append(args[0].digest)
+            return original_store(cache, *args, **kwargs)
+
+        kwargs = {
+            "adapters": self.adapters,
+            "validator": self.structural,
+            "profile_selector": lambda _manifest: FamilyFidelitySelection(
+                GENERAL_BODY_DETAIL, "test", (),
+            ),
+        }
+        with patch.object(
+            orchestrator_module.CandidateCache, "store", autospec=True, side_effect=store,
+        ):
+            first = run_maximum_addon(self.config, **kwargs)
+            second = run_maximum_addon(self.config, **kwargs)
+
+        self.assertEqual(first.families[0].selected_candidate, "candidate-100")
+        self.assertEqual(second.families[0].selected_candidate, "candidate-100")
+        self.assertEqual(whole_calls, ["candidate-100", "candidate-100"])
+        self.assertEqual(focused_calls, ["candidate-100", "candidate-100"])
+        self.assertEqual(len(stores), 1)
+        candidate_builds = [
+            call for call in self.adapters.calls if call[1] == "candidate-100"
+        ]
+        self.assertEqual(len(candidate_builds), 1)
 
     def test_promotes_smallest_passing_compiled_candidate_and_preserves_unrelated_files(self):
         report = self.run_optimizer()
@@ -1191,7 +1674,7 @@ class OrchestratorTests(unittest.TestCase):
             ("mesh.smd",), ("lod.smd",), None,
         )
         manifest = FamilyManifest(
-            "production-family", "test.mdl", source, self.addon / "models", fp,
+            hashlib.sha256(b"production-family").hexdigest(), "test.mdl", source, self.addon / "models", fp,
             "b" * 64, (".mdl",),
         )
         workspace = self.root / "production-candidate"
@@ -1261,7 +1744,17 @@ class OrchestratorTests(unittest.TestCase):
                 out = Path(command[command.index("--out") + 1])
                 for side in ("original", "optimized"):
                     (out / side).mkdir(parents=True)
-                    (out / side / "render_manifest.json").write_text("{}", encoding="utf-8")
+                    (out / side / "render_manifest.json").write_text(json.dumps({
+                        "geometry": [
+                            {
+                                "scope": entry.key, "pose": pose,
+                                "surface_bidirectional_p95": .01,
+                                "surface_max": .02,
+                            }
+                            for entry in region_manifest.entries
+                            for pose in ("bind", "representative")
+                        ],
+                    }), encoding="utf-8")
             return ProcessResult(tuple(str(item) for item in command), 0, 0.01, kwargs["log_path"])
         adapter = ProductionAdapters(self.config, threading.Event())
         with (
@@ -1301,6 +1794,25 @@ class OrchestratorTests(unittest.TestCase):
                 "candidate_source_identity": "anim.smd",
             },
         )
+
+        (self.root / "render_previews.py").write_text("# renderer", encoding="utf-8")
+        adapter.bind_candidate_cache_digest(build, "a" * 64)
+        with (
+            patch("maximum_optimizer.orchestrator.run_process", side_effect=runner),
+            patch("maximum_optimizer.orchestrator.compare_render_sets", return_value=ValidationResult(True)),
+        ):
+            focused_whole = adapter.visual(
+                manifest, build, build, load_profile(self.config.profile_path),
+                focused_profile=load_profile(self.config.profile_path),
+            )
+        self.assertTrue(focused_whole.passed)
+        whole_index_path = workspace / "logs/whole-visual-index.json"
+        self.assertTrue(whole_index_path.is_file())
+        seal = adapter._whole_index_seals[workspace.resolve()]
+        loaded_index = orchestrator_module._load_whole_visual_index(
+            whole_index_path, workspace, seal, threading.Event()
+        )
+        self.assertEqual(len(loaded_index["states"]), 2)
 
         def no_fresh_output(command, **kwargs):
             if "--python-expr" in command:

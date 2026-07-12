@@ -232,6 +232,23 @@ class CandidateEvaluation:
     structural: ValidationResult
     visual: ValidationResult
     compiled_models_dir: Path
+    whole_visual: ValidationResult | None = None
+    focused_by_region: Mapping[str, FocusRegionResult] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        whole = self.visual if self.whole_visual is None else self.whole_visual
+        if not isinstance(whole, ValidationResult):
+            raise TypeError("whole visual result is invalid")
+        focused = dict(self.focused_by_region)
+        if any(
+            type(key) is not str
+            or not isinstance(value, FocusRegionResult)
+            or value.target.region_key != key
+            for key, value in focused.items()
+        ):
+            raise ValueError("focused region results are invalid")
+        object.__setattr__(self, "whole_visual", whole)
+        object.__setattr__(self, "focused_by_region", _deep_freeze(focused))
 
     @property
     def passed(self) -> bool:
