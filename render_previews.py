@@ -5,11 +5,14 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
@@ -762,46 +765,102 @@ def _apply_clay_material(objs) -> None:
         obj.data.materials.append(clay)
 
 
+def _path_is_link_or_reparse(path: Path) -> bool:
+    try:
+        info = Path(path).lstat()
+    except FileNotFoundError:
+        return False
+    return bool(
+        getattr(info, "st_file_attributes", 0) & 0x400
+        or stat.S_ISLNK(getattr(info, "st_mode", 0))
+    )
+
+
+def _safe_contained_directory(path: Path, *, parent: Path | None = None) -> Path:
+    path = Path(path)
+    if _path_is_link_or_reparse(path):
+        raise RuntimeError(f"texture cache directory is a link/reparse point: {path}")
+    path.mkdir(parents=True, exist_ok=True)
+    if _path_is_link_or_reparse(path) or not path.is_dir():
+        raise RuntimeError(f"texture cache directory is unsafe: {path}")
+    resolved = path.resolve(strict=True)
+    if parent is not None:
+        parent_resolved = Path(parent).resolve(strict=True)
+        try:
+            resolved.relative_to(parent_resolved)
+        except ValueError as exc:
+            raise RuntimeError(f"texture cache directory escapes parent: {path}") from exc
+    return resolved
+
+
+def _valid_regular_cache_file(path: Path) -> bool:
+    path = Path(path)
+    if _path_is_link_or_reparse(path):
+        raise RuntimeError(f"texture cache output is a link/reparse point: {path}")
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
+        raise RuntimeError(f"texture cache output is not a non-empty regular file: {path}")
+    return True
+
+
+def _publish_cache_file(staged_output: Path, output_path: Path) -> Path:
+    for attempt in range(20):
+        if _valid_regular_cache_file(output_path):
+            return output_path
+        try:
+            os.replace(staged_output, output_path)
+        except (FileExistsError, PermissionError):
+            if _valid_regular_cache_file(output_path):
+                return output_path
+            if attempt == 19:
+                raise
+            time.sleep(0.01)
+            continue
+        if _valid_regular_cache_file(output_path):
+            return output_path
+        raise RuntimeError(f"texture cache publish did not create a valid file: {output_path}")
+    raise RuntimeError(f"texture cache publish exhausted retries: {output_path}")
+
+
 def _convert_vtf(vtf_path: Path, vtfcmd: Path | None, cache_root: Path) -> Path | None:
     if vtfcmd is None or not vtfcmd.is_file() or not vtf_path.is_file():
         return None
-    digest = hashlib.sha256(vtf_path.read_bytes()).hexdigest()
-    output_dir = cache_root / digest
-    output_dir.mkdir(parents=True, exist_ok=True)
+    source_digest = hashlib.sha256(vtf_path.read_bytes()).hexdigest()
+    tool_digest = hashlib.sha256(vtfcmd.read_bytes()).hexdigest()
+    digest = hashlib.sha256(f"{tool_digest}:{source_digest}".encode("ascii")).hexdigest()
+    cache_root = _safe_contained_directory(cache_root)
+    output_dir = _safe_contained_directory(cache_root / digest, parent=cache_root)
     output_path = output_dir / "texture.png"
-    if output_path.is_file():
+    if _valid_regular_cache_file(output_path):
         return output_path
     attempts = []
     for _attempt in range(2):
-        staging_dir = (
-            Path(tempfile.gettempdir()).resolve()
-            / "maximum-vtf-stage"
-            / uuid.uuid4().hex
+        staging_parent = _safe_contained_directory(
+            Path(tempfile.gettempdir()).resolve() / "maximum-vtf-stage"
         )
-        staging_dir.mkdir(parents=True, exist_ok=False)
+        staging_dir = _safe_contained_directory(
+            staging_parent / uuid.uuid4().hex,
+            parent=staging_parent,
+        )
         staged_input = staging_dir / "texture.vtf"
         staged_output = staging_dir / "texture.png"
-        shutil.copy2(vtf_path, staged_input)
-        command = [
-            str(vtfcmd),
-            "-file",
-            str(staged_input),
-            "-output",
-            str(staging_dir),
-            "-exportformat",
-            "png",
-        ]
         try:
+            shutil.copy2(vtf_path, staged_input)
+            command = [
+                str(vtfcmd),
+                "-file",
+                str(staged_input),
+                "-output",
+                str(staging_dir),
+                "-exportformat",
+                "png",
+            ]
             result = subprocess.run(command, capture_output=True, text=True, check=False)
-            if result.returncode == 0 and staged_output.is_file():
-                if output_path.is_file():
-                    return output_path
-                try:
-                    staged_output.replace(output_path)
-                except FileExistsError:
-                    if not output_path.is_file():
-                        raise
-                return output_path
+            if result.returncode == 0 and _valid_regular_cache_file(staged_output):
+                return _publish_cache_file(staged_output, output_path)
             attempts.append(
                 f"rc={result.returncode}; stdout={(result.stdout or '')[-500:]!r}; "
                 f"stderr={(result.stderr or '')[-500:]!r}"

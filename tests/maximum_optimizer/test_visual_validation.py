@@ -1326,7 +1326,8 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             source.write_bytes(b"same-vtf")
             tool = root / "VTFCmd.exe"
             tool.write_bytes(b"tool")
-            barrier = threading.Barrier(2)
+            worker_count = 8
+            barrier = threading.Barrier(worker_count)
             output_dirs = []
             output_dirs_lock = threading.Lock()
 
@@ -1341,16 +1342,103 @@ class RenderPreviewArgumentTests(unittest.TestCase):
 
             cache = root / "short-cache"
             with mock.patch.object(render_previews.subprocess, "run", side_effect=run):
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
                     converted = tuple(pool.map(
                         lambda _index: render_previews._convert_vtf(source, tool, cache),
-                        range(2),
+                        range(worker_count),
                     ))
 
-            self.assertEqual(converted[0], converted[1])
+            self.assertEqual(len(set(converted)), 1)
             self.assertEqual(converted[0].read_bytes(), b"png")
-            self.assertEqual(len(set(output_dirs)), 2)
+            self.assertEqual(len(set(output_dirs)), worker_count)
             self.assertTrue(all(len(str(path / "texture.png")) < 160 for path in output_dirs))
+
+    def test_vtfcmd_cache_key_changes_when_tool_changes(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "paint.vtf"
+            source.write_bytes(b"vtf")
+            tool = root / "VTFCmd.exe"
+            tool.write_bytes(b"tool-v1")
+
+            def run(command, **_kwargs):
+                output_dir = Path(command[command.index("-output") + 1])
+                (output_dir / "texture.png").write_bytes(b"png")
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(render_previews.subprocess, "run", side_effect=run) as run_mock:
+                first = render_previews._convert_vtf(source, tool, root / "cache")
+                tool.write_bytes(b"tool-v2")
+                second = render_previews._convert_vtf(source, tool, root / "cache")
+
+            self.assertNotEqual(first, second)
+            self.assertEqual(run_mock.call_count, 2)
+
+    def test_vtfcmd_copy_failure_cleans_unique_staging(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "paint.vtf"
+            source.write_bytes(b"vtf")
+            tool = root / "VTFCmd.exe"
+            tool.write_bytes(b"tool")
+            copied_to = []
+
+            def fail_copy(_source, destination):
+                copied_to.append(Path(destination))
+                raise OSError("copy failed")
+
+            with mock.patch.object(render_previews.shutil, "copy2", side_effect=fail_copy):
+                with self.assertRaisesRegex(OSError, "copy failed"):
+                    render_previews._convert_vtf(source, tool, root / "cache")
+
+            self.assertEqual(len(copied_to), 1)
+            self.assertFalse(copied_to[0].parent.exists())
+
+    def test_vtfcmd_cache_rejects_reparse_output(self):
+        import render_previews
+
+        fake_stat = type("Stat", (), {"st_file_attributes": 0x400})()
+        with mock.patch.object(Path, "lstat", return_value=fake_stat):
+            self.assertTrue(render_previews._path_is_link_or_reparse(Path("cache")))
+
+    def test_vtfcmd_publish_accepts_valid_file_from_concurrent_publisher(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            staged = root / "staged.png"
+            output = root / "cache/texture.png"
+            staged.write_bytes(b"staged")
+            output.parent.mkdir()
+
+            def concurrent_publish(_source, destination):
+                Path(destination).write_bytes(b"winner")
+                raise PermissionError(5, "Access is denied")
+
+            with mock.patch.object(render_previews.os, "replace", side_effect=concurrent_publish):
+                selected = render_previews._publish_cache_file(staged, output)
+
+            self.assertEqual(selected, output)
+            self.assertEqual(output.read_bytes(), b"winner")
+
+    def test_vtfcmd_cache_directory_rejects_symlink_when_available(self):
+        import render_previews
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "target"
+            target.mkdir()
+            linked = root / "linked"
+            try:
+                os.symlink(target, linked, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlink privilege unavailable: {exc}")
+            with self.assertRaisesRegex(RuntimeError, "link/reparse"):
+                render_previews._safe_contained_directory(linked)
 
     def test_textured_material_application_uses_each_objects_source_search_paths(self):
         import render_previews
