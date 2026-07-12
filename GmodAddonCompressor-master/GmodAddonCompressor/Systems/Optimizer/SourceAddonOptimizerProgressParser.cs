@@ -61,10 +61,13 @@ namespace GmodAddonCompressor.Systems.Optimizer
             var match = _step.Match(line);
             if (match.Success)
             {
+                if (!int.TryParse(match.Groups[1].Value, out var stepIndex)
+                    || !int.TryParse(match.Groups[2].Value, out var stepTotal))
+                    return null;
                 return new SourceAddonOptimizerProgressUpdate
                 {
-                    StepIndex = int.Parse(match.Groups[1].Value),
-                    StepTotal = int.Parse(match.Groups[2].Value),
+                    StepIndex = stepIndex,
+                    StepTotal = stepTotal,
                     Phase = match.Groups[3].Value
                 };
             }
@@ -92,10 +95,13 @@ namespace GmodAddonCompressor.Systems.Optimizer
             match = _batchAddon.Match(line);
             if (match.Success)
             {
+                if (!int.TryParse(match.Groups[1].Value, out var batchAddonIndex)
+                    || !int.TryParse(match.Groups[2].Value, out var batchAddonTotal))
+                    return null;
                 return new SourceAddonOptimizerProgressUpdate
                 {
-                    BatchAddonIndex = int.Parse(match.Groups[1].Value),
-                    BatchAddonTotal = int.Parse(match.Groups[2].Value),
+                    BatchAddonIndex = batchAddonIndex,
+                    BatchAddonTotal = batchAddonTotal,
                     BatchAddonName = match.Groups[3].Value
                 };
             }
@@ -103,10 +109,13 @@ namespace GmodAddonCompressor.Systems.Optimizer
             match = _itemCompleted.Match(line);
             if (match.Success)
             {
+                if (!int.TryParse(match.Groups[1].Value, out var completedItemIndex)
+                    || !int.TryParse(match.Groups[2].Value, out var completedItemTotal))
+                    return null;
                 return new SourceAddonOptimizerProgressUpdate
                 {
-                    ItemIndex = int.Parse(match.Groups[1].Value),
-                    ItemTotal = int.Parse(match.Groups[2].Value),
+                    ItemIndex = completedItemIndex,
+                    ItemTotal = completedItemTotal,
                     ItemType = match.Groups[3].Value,
                     ItemPath = match.Groups[4].Value,
                     IsItemCompletion = true
@@ -116,10 +125,13 @@ namespace GmodAddonCompressor.Systems.Optimizer
             match = _item.Match(line);
             if (match.Success)
             {
+                if (!int.TryParse(match.Groups[1].Value, out var itemIndex)
+                    || !int.TryParse(match.Groups[2].Value, out var itemTotal))
+                    return null;
                 return new SourceAddonOptimizerProgressUpdate
                 {
-                    ItemIndex = int.Parse(match.Groups[1].Value),
-                    ItemTotal = int.Parse(match.Groups[2].Value),
+                    ItemIndex = itemIndex,
+                    ItemTotal = itemTotal,
                     ItemType = match.Groups[3].Value,
                     ItemPath = match.Groups[4].Value
                 };
@@ -187,6 +199,12 @@ namespace GmodAddonCompressor.Systems.Optimizer
                     || !TryReadNullableDouble(root, "reduction_percent", out var reductionPercent)
                     || !TryReadNullableString(root, "gate_status", out var gateStatus)
                     || !TryReadNullableString(root, "report_path", out var reportPath))
+                    return null;
+
+                if (!HasValidCounterPair(familyIndex, familyTotal)
+                    || !HasValidCounterPair(candidateIndex, candidateTotal)
+                    || bestBytes < 0
+                    || reductionPercent > 100)
                     return null;
 
                 return new SourceAddonOptimizerProgressUpdate
@@ -291,6 +309,15 @@ namespace GmodAddonCompressor.Systems.Optimizer
             return raw.IndexOf('.') < 0
                 && raw.IndexOf('e') < 0
                 && raw.IndexOf('E') < 0;
+        }
+
+        private static bool HasValidCounterPair(int? index, int? total)
+        {
+            if (index < 0 || total < 0)
+                return false;
+            if (index.HasValue && total.HasValue)
+                return total.Value > 0 && index.Value < total.Value;
+            return true;
         }
     }
 }

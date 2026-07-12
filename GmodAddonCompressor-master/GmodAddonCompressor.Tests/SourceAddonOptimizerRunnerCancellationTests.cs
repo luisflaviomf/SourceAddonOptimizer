@@ -16,10 +16,11 @@ public sealed class SourceAddonOptimizerRunnerCancellationTests
         var process = new FakeOptimizerProcess(exitAfterCooperativeRequest: false);
         var runner = new SourceAddonOptimizerRunner(_ => process, TimeSpan.FromMilliseconds(1));
         using var cancellation = new CancellationTokenSource();
+        var run = runner.RunAsync(ValidOptions(), cancellation.Token);
+        await process.InitialWaitEntered.Task;
         cancellation.Cancel();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            runner.RunAsync(ValidOptions(), cancellation.Token));
+        await Assert.ThrowsAsync<OperationCanceledException>(() => run);
 
         CollectionAssert.AreEqual(
             new[] { "start", "read-output", "read-error", "cooperative", "wait-grace", "kill-tree", "wait-drain" },
@@ -32,10 +33,11 @@ public sealed class SourceAddonOptimizerRunnerCancellationTests
         var process = new FakeOptimizerProcess(exitAfterCooperativeRequest: true);
         var runner = new SourceAddonOptimizerRunner(_ => process, TimeSpan.FromSeconds(1));
         using var cancellation = new CancellationTokenSource();
+        var run = runner.RunAsync(ValidOptions(), cancellation.Token);
+        await process.InitialWaitEntered.Task;
         cancellation.Cancel();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            runner.RunAsync(ValidOptions(), cancellation.Token));
+        await Assert.ThrowsAsync<OperationCanceledException>(() => run);
 
         CollectionAssert.AreEqual(
             new[] { "start", "read-output", "read-error", "cooperative", "wait-grace" },
@@ -52,14 +54,55 @@ public sealed class SourceAddonOptimizerRunnerCancellationTests
         SourceAddonOptimizerProgressUpdate? seen = null;
         runner.ProgressUpdate += update => seen = update;
         using var cancellation = new CancellationTokenSource();
+        var run = runner.RunAsync(ValidOptions(), cancellation.Token);
+        await process.InitialWaitEntered.Task;
+        cancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => run);
+
+        Assert.IsNotNull(seen);
+        Assert.AreEqual("run_cancelled", seen.MaximumKind);
+        Assert.AreEqual("logs/maximum_report.json", seen.ReportPath);
+    }
+
+    [TestMethod]
+    public async Task PreCancelledTokenDoesNotCreateOrStartProcess()
+    {
+        var factoryCalled = false;
+        var runner = new SourceAddonOptimizerRunner(
+            _ =>
+            {
+                factoryCalled = true;
+                return new FakeOptimizerProcess(false);
+            },
+            TimeSpan.FromSeconds(1));
+        using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
             runner.RunAsync(ValidOptions(), cancellation.Token));
 
-        Assert.IsNotNull(seen);
-        Assert.AreEqual("run_cancelled", seen.MaximumKind);
-        Assert.AreEqual("logs/maximum_report.json", seen.ReportPath);
+        Assert.IsFalse(factoryCalled);
+    }
+
+    [TestMethod]
+    public async Task CooperativeHookFailureIsLoggedAndFallsBackToTreeKill()
+    {
+        var process = new FakeOptimizerProcess(false, throwFromCooperativeRequest: true);
+        var runner = new SourceAddonOptimizerRunner(_ => process, TimeSpan.FromMilliseconds(1));
+        string? error = null;
+        runner.ErrorLine += line => error = line;
+        using var cancellation = new CancellationTokenSource();
+        var run = runner.RunAsync(ValidOptions(), cancellation.Token);
+        await process.InitialWaitEntered.Task;
+        cancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => run);
+
+        StringAssert.Contains(error!, "cooperative cancellation");
+        CollectionAssert.AreEqual(
+            new[] { "start", "read-output", "read-error", "cooperative", "wait-grace", "kill-tree", "wait-drain" },
+            process.Calls);
     }
 
     private static SourceAddonOptimizerRunOptions ValidOptions()
@@ -76,16 +119,23 @@ public sealed class SourceAddonOptimizerRunnerCancellationTests
     {
         private readonly bool _exitAfterCooperativeRequest;
         private readonly string? _terminalLine;
+        private readonly bool _throwFromCooperativeRequest;
         private bool _cooperativeRequested;
         private bool _killed;
 
-        internal FakeOptimizerProcess(bool exitAfterCooperativeRequest, string? terminalLine = null)
+        internal FakeOptimizerProcess(
+            bool exitAfterCooperativeRequest,
+            string? terminalLine = null,
+            bool throwFromCooperativeRequest = false)
         {
             _exitAfterCooperativeRequest = exitAfterCooperativeRequest;
             _terminalLine = terminalLine;
+            _throwFromCooperativeRequest = throwFromCooperativeRequest;
         }
 
         internal List<string> Calls { get; } = new();
+        internal TaskCompletionSource<bool> InitialWaitEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         public event Action<string>? OutputLine;
         public event Action<string>? ErrorLine
         {
@@ -125,13 +175,16 @@ public sealed class SourceAddonOptimizerRunnerCancellationTests
                 return Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             }
 
-            return Task.FromCanceled(cancellationToken);
+            InitialWaitEntered.TrySetResult(true);
+            return Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
 
         public bool TryRequestCooperativeCancellation()
         {
             Calls.Add("cooperative");
             _cooperativeRequested = true;
+            if (_throwFromCooperativeRequest)
+                throw new InvalidOperationException("fake cooperative failure");
             return true;
         }
 

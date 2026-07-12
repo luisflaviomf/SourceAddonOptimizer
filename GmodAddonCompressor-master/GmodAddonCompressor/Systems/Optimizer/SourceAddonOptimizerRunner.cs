@@ -125,6 +125,7 @@ namespace GmodAddonCompressor.Systems.Optimizer
 
         internal async Task<int> RunAsync(SourceAddonOptimizerRunOptions options, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(options.WorkerExePath))
                 throw new ArgumentException("Worker exe path is required.", nameof(options.WorkerExePath));
             if (!File.Exists(options.WorkerExePath))
@@ -289,7 +290,15 @@ namespace GmodAddonCompressor.Systems.Optimizer
             // Always attempt the cooperative hook first. The current production
             // adapter honestly returns false because the worker exposes no safe
             // Ctrl+Break/stdin protocol, but test and future adapters can support it.
-            process.TryRequestCooperativeCancellation();
+            try
+            {
+                process.TryRequestCooperativeCancellation();
+            }
+            catch (Exception ex)
+            {
+                ReportCancellationDiagnostic(
+                    $"SourceAddonOptimizer cooperative cancellation failed; using hard-kill fallback: {ex.Message}");
+            }
 
             if (!process.HasExited)
             {
@@ -325,6 +334,25 @@ namespace GmodAddonCompressor.Systems.Optimizer
                 await process.WaitForExitAsync(drain.Token);
             }
             catch (OperationCanceledException) when (drain.IsCancellationRequested)
+            {
+            }
+        }
+
+        private void ReportCancellationDiagnostic(string message)
+        {
+            // Diagnostics must never replace the original cancellation exception.
+            try
+            {
+                LogLine?.Invoke(message);
+            }
+            catch (Exception)
+            {
+            }
+            try
+            {
+                ErrorLine?.Invoke(message);
+            }
+            catch (Exception)
             {
             }
         }

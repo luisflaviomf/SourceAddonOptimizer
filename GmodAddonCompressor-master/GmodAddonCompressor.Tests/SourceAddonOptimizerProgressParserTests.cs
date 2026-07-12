@@ -116,6 +116,36 @@ public sealed class SourceAddonOptimizerProgressParserTests
     }
 
     [TestMethod]
+    [DataRow("family_index", "-1")]
+    [DataRow("family_total", "-1")]
+    [DataRow("candidate_index", "-1")]
+    [DataRow("candidate_total", "-1")]
+    [DataRow("best_bytes", "-1")]
+    [DataRow("reduction_percent", "100.0001")]
+    public void RejectsMaximumValuesOutsideSemanticRanges(string field, string value)
+    {
+        var line = $"MAXIMUM_EVENT {{\"schema\":1,\"kind\":\"stage\",\"{field}\":{value}}}";
+
+        Assert.IsNull(_parser.Parse(line));
+    }
+
+    [TestMethod]
+    [DataRow("family_index", 0, "family_total", 0)]
+    [DataRow("family_index", 1, "family_total", 1)]
+    [DataRow("candidate_index", 0, "candidate_total", 0)]
+    [DataRow("candidate_index", 2, "candidate_total", 2)]
+    public void RejectsInvalidZeroBasedIndexAndTotalPairs(
+        string indexName,
+        int index,
+        string totalName,
+        int total)
+    {
+        var line = $"MAXIMUM_EVENT {{\"schema\":1,\"kind\":\"stage\",\"{indexName}\":{index},\"{totalName}\":{total}}}";
+
+        Assert.IsNull(_parser.Parse(line));
+    }
+
+    [TestMethod]
     public void ExplicitNullIsAcceptedForNullableFields()
     {
         var update = _parser.Parse(
@@ -129,15 +159,39 @@ public sealed class SourceAddonOptimizerProgressParserTests
     }
 
     [TestMethod]
-    public void AcceptsSafeIntegerAndLongBoundaries()
+    public void AcceptsSafeAndSemanticNumericBoundaries()
     {
         var update = _parser.Parse(
-            "MAXIMUM_EVENT {\"schema\":1,\"kind\":\"stage\",\"family_index\":-2147483648,\"family_total\":2147483647,\"best_bytes\":9223372036854775807}");
+            "MAXIMUM_EVENT {\"schema\":1,\"kind\":\"stage\",\"family_index\":0,\"family_total\":2147483647,\"candidate_index\":2147483646,\"candidate_total\":2147483647,\"best_bytes\":9223372036854775807,\"reduction_percent\":100}");
 
         Assert.IsNotNull(update);
-        Assert.AreEqual(int.MinValue, update.FamilyIndex);
+        Assert.AreEqual(0, update.FamilyIndex);
         Assert.AreEqual(int.MaxValue, update.FamilyTotal);
+        Assert.AreEqual(int.MaxValue - 1, update.CandidateIndex);
+        Assert.AreEqual(int.MaxValue, update.CandidateTotal);
         Assert.AreEqual(long.MaxValue, update.BestBytes);
+        Assert.AreEqual(100.0, update.ReductionPercent);
+    }
+
+    [TestMethod]
+    public void AcceptsZeroBytesAndStandaloneZeroTotal()
+    {
+        var update = _parser.Parse(
+            "MAXIMUM_EVENT {\"schema\":1,\"kind\":\"run_started\",\"family_total\":0,\"best_bytes\":0}");
+
+        Assert.IsNotNull(update);
+        Assert.AreEqual(0, update.FamilyTotal);
+        Assert.AreEqual(0L, update.BestBytes);
+    }
+
+    [TestMethod]
+    public void AllowsNegativeReductionToReportInflation()
+    {
+        var update = _parser.Parse(
+            "MAXIMUM_EVENT {\"schema\":1,\"kind\":\"candidate_finished\",\"reduction_percent\":-25.5}");
+
+        Assert.IsNotNull(update);
+        Assert.AreEqual(-25.5, update.ReductionPercent);
     }
 
     [TestMethod]
@@ -189,5 +243,16 @@ public sealed class SourceAddonOptimizerProgressParserTests
         Assert.IsTrue(completed.IsItemCompletion);
         Assert.AreEqual("C:\\out\\addon", output!.OutputAddonPath);
         Assert.AreEqual("C:\\work\\addon", work!.WorkDirPath);
+    }
+
+    [TestMethod]
+    [DataRow("== Step 999999999999999999999/2: Compile ==")]
+    [DataRow("== Batch addon 1/999999999999999999999: addon ==")]
+    [DataRow("=== (999999999999999999999/2) MDL: models/a.mdl")]
+    [DataRow(">>> DONE (1/999999999999999999999) QC: source/a.qc")]
+    [DataRow("== Step x/2: Compile ==")]
+    public void LegacyLikeMalformedOrOverflowingLinesReturnNullWithoutThrowing(string line)
+    {
+        Assert.IsNull(_parser.Parse(line));
     }
 }
