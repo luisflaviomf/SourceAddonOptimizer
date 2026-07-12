@@ -607,7 +607,7 @@ class CandidateAdapterTests(unittest.TestCase):
             str(self.blender), "--background", "--python",
             str(self.repo / "batch_optimize_maximum.py"),
         ))
-        self.assertEqual(optimize[optimize.index("--meshopt-dll") + 1], str(self.meshopt_dll))
+        self.assertNotIn("--meshopt-dll", optimize)
         self.assertEqual(
             json.loads((self.workspace / "candidate.json").read_text(encoding="utf-8")),
             spec.cache_payload(),

@@ -42,7 +42,7 @@ from .qc_inventory import _inventory_qc, build_family_manifests
 from .qc_graph import QcGraph, parse_qc_graph
 from .regions import filter_region_manifest, load_region_manifest_payload
 from .reporting import atomic_write_json, canonical_payload, deep_freeze, event_line
-from .search import choose_next, select_winner
+from .search import blender_adaptive_candidates, choose_next, select_winner
 from .structural_validation import validate_structure
 from .visual_validation import FidelityProfile, compare_render_sets, load_profile
 
@@ -389,6 +389,8 @@ def _default_schedule() -> tuple[CandidateSpec, ...]:
         )
         for ratio in (0.85, 0.70, 0.55, 0.40, 0.25)
     )
+    if os.environ.get("MAXIMUM_RND_BLENDER_ADAPTIVE") == "1":
+        return (fidelity, *blender_adaptive_candidates(), *meshopt)
     return (fidelity, *meshopt, *blender) if MESHOPT_ENGINE_PREFERRED else (fidelity, *blender, *meshopt)
 
 

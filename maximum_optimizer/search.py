@@ -179,7 +179,13 @@ def _regional_recovery(
     )
     if (
         failed is None
-        or failed.spec.engine != "meshoptimizer"
+        or not (
+            failed.spec.engine == "meshoptimizer"
+            or (
+                failed.spec.engine == "blender"
+                and failed.spec.strategy == "blender-adaptive-v1"
+            )
+        )
         or not failed.structural.passed
         or failed.visual.passed
         or not failed.visual.worst_scope

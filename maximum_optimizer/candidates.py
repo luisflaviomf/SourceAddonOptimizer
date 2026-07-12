@@ -472,10 +472,6 @@ class BlenderAdapter(_BaseAdapter):
                     stage="candidate-validation",
                 )
             return super()._optimize_command(source, spec, workspace, tools)
-        if tools.meshopt_dll is None or not tools.meshopt_dll.is_file():
-            raise CandidateBuildError(
-                "optimizer bridge DLL not found", stage="tool-validation"
-            )
         candidate_path = workspace / "candidate.json"
         with candidate_path.open("x", encoding="utf-8") as stream:
             json.dump(spec.cache_payload(), stream, sort_keys=True, separators=(",", ":"))
@@ -485,7 +481,6 @@ class BlenderAdapter(_BaseAdapter):
             str(tools.blender_exe), "--background", "--python",
             str(tools.repo_root / "batch_optimize_maximum.py"), "--", str(source),
             "--candidate-json", str(candidate_path),
-            "--meshopt-dll", str(tools.meshopt_dll),
         )
 
 

@@ -13,6 +13,7 @@ from maximum_optimizer.compiler_aware import (
     exact_source_payload,
     allows_exact_fallback,
     provenance_status,
+    move_modifier_first,
 )
 
 
@@ -76,6 +77,17 @@ class CompilerAwareTests(unittest.TestCase):
             ("preserved", "exact-source-fallback-v1: normal must be non-zero"),
         )
         self.assertEqual(provenance_status(None), ("optimized", "blender-adaptive-v1"))
+
+    def test_decimate_modifier_is_moved_before_imported_armature(self) -> None:
+        class Modifier:
+            def __init__(self, name): self.name = name
+        class Modifiers(list):
+            def find(self, name): return next(i for i, item in enumerate(self) if item.name == name)
+            def move(self, source, target): self.insert(target, self.pop(source))
+        armature, decimate = Modifier("Armature"), Modifier("MaximumCompilerAware")
+        modifiers = Modifiers((armature, decimate))
+        move_modifier_first(modifiers, decimate)
+        self.assertIs(modifiers[0], decimate)
 
 
 if __name__ == "__main__":

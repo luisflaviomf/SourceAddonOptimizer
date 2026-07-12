@@ -60,6 +60,16 @@ def provenance_status(fallback_reason: str | None) -> tuple[str, str]:
     return "preserved", f"exact-source-fallback-v1: {fallback_reason}"
 
 
+def move_modifier_first(modifiers: object, modifier: object) -> None:
+    index = modifiers.find(modifier.name)
+    if type(index) is not int or index < 0:
+        raise RuntimeError("decimate modifier is missing from Blender stack")
+    if index:
+        modifiers.move(index, 0)
+    if modifiers.find(modifier.name) != 0:
+        raise RuntimeError("decimate modifier must be first in Blender stack")
+
+
 @dataclass(frozen=True)
 class CompiledCostCalibration:
     snapshot_count: int

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -1262,6 +1263,13 @@ class OrchestratorTests(unittest.TestCase):
         self.assertGreater(len(engines), 1)
         self.assertEqual(engines[0], "fidelity")
         self.assertEqual(engines[1], "blender")
+
+    def test_explicit_rnd_flag_wires_compiler_aware_blender_schedule(self):
+        with patch.dict(os.environ, {"MAXIMUM_RND_BLENDER_ADAPTIVE": "1"}):
+            schedule = orchestrator_module._default_schedule()
+        adaptive = [item for item in schedule if item.strategy == "blender-adaptive-v1"]
+        self.assertEqual(tuple(item.target_ratio for item in adaptive), (0.45, 0.4, 0.35, 0.3, 0.25))
+        self.assertTrue(all(item.engine == "blender" for item in adaptive))
 
     def test_uncalibrated_production_profile_fails_closed_before_promotion(self):
         self.config = MaximumRunConfig(

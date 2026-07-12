@@ -545,6 +545,19 @@ class MaximumBlenderPureTests(unittest.TestCase):
         self.assertEqual(candidate.strategy, "blender-adaptive-v1")
         self.assertEqual(candidate.region_overrides, (("r-" + "a" * 64, 0.7),))
 
+    def test_blender_candidate_parse_does_not_require_meshoptimizer_dll(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "candidate.json"
+            candidate.write_text(json.dumps({
+                "candidate_id": "blender-adaptive-r040", "engine": "blender",
+                "ratio": 0.4, "target_error": 0.0, "update_vertices": True,
+                "region_overrides": [], "strategy": "blender-adaptive-v1",
+                "transfer": "blender-native-v1",
+            }), encoding="utf-8")
+            settings = maximum.parse_args([str(root), "--candidate-json", str(candidate)])
+        self.assertIsNone(settings.meshopt_dll)
+
     def test_blender_strategy_contract_rejects_projection_or_nonzero_error(self) -> None:
         base = {
             "candidate_id": "blender-adaptive-r040",

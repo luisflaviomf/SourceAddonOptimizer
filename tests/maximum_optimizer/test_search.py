@@ -33,15 +33,21 @@ def evaluation_at(
     structural_passed: bool = True,
     worst_scope: str = "",
     region_overrides: tuple[tuple[str, float], ...] = (),
+    strategy: str = "legacy-v1",
+    repair_profile: str = "transfer-v1",
+    transfer: str = "projection-v1",
+    target_error: float = 0.01,
 ) -> CandidateEvaluation:
     visual_metrics = {} if fidelity_score is None else {"fidelity_score": fidelity_score}
     spec = CandidateSpec(
         candidate_id or f"attempt-{ratio:.6f}-{len(region_overrides)}",
         engine,
         ratio,
-        0.01,
-        "transfer-v1",
+        target_error,
+        repair_profile,
         region_overrides,
+        strategy=strategy,
+        transfer=transfer,
     )
     artifact = ArtifactStat("model.mdl", "mdl", total_bytes)
     size = CompiledSizeSnapshot(
@@ -67,6 +73,25 @@ class SearchTests(unittest.TestCase):
         self.assertTrue(all(item.engine == "blender" for item in candidates))
         self.assertTrue(all(item.strategy == "blender-adaptive-v1" for item in candidates))
         self.assertTrue(all(item.transfer == "blender-native-v1" for item in candidates))
+
+    def test_blender_adaptive_visual_failure_generates_stable_region_recovery(self):
+        region = "r-" + "a" * 64
+        passing = evaluation_at(
+            0.45, True, candidate_id="adaptive-pass", engine="blender",
+            strategy="blender-adaptive-v1", repair_profile="blender-adaptive-v1",
+            transfer="blender-native-v1", target_error=0.0,
+        )
+        failed = evaluation_at(
+            0.35, False, candidate_id="adaptive-fail", engine="blender",
+            worst_scope=f"{region}/bind", strategy="blender-adaptive-v1",
+            repair_profile="blender-adaptive-v1", transfer="blender-native-v1", target_error=0.0,
+        )
+
+        nxt = choose_next((passing, failed), SearchBudget.experimental_default(), initial=())
+
+        self.assertEqual(nxt.engine, "blender")
+        self.assertEqual(nxt.region_overrides, ((region, 0.45),))
+        self.assertEqual(nxt.strategy, "blender-adaptive-v1")
 
     def test_custom_schedule_compares_marginal_savings_within_engine_trail(self):
         schedule = (

@@ -38,7 +38,7 @@ from maximum_optimizer.meshopt_bridge import (
 )
 from maximum_optimizer.compiler_aware import (
     allows_exact_fallback, engine_evidence, exact_source_payload,
-    preserve_whole_source, provenance_status, require_triangular_mesh,
+    move_modifier_first, preserve_whole_source, provenance_status, require_triangular_mesh,
 )
 from maximum_optimizer.regions import (
     RegionManifest,
@@ -99,7 +99,7 @@ class Settings:
     raw_root: Path
     root: Path
     candidate_json: Path
-    meshopt_dll: Path
+    meshopt_dll: Path | None
     candidate: CandidateConfig
 
 
@@ -310,6 +310,7 @@ def _optimize_blender_object(
     if triangles_before <= 0:
         raise ValueError("imported mesh has no triangles")
     modifier = obj.modifiers.new(name="MaximumCompilerAware", type="DECIMATE")
+    move_modifier_first(obj.modifiers, modifier)
     modifier.decimate_type = "COLLAPSE"
     modifier.ratio = float(ratio)
     modifier.use_collapse_triangulate = True
@@ -358,7 +359,7 @@ def parse_args(argv: Sequence[str]) -> Settings:
     parser = argparse.ArgumentParser()
     parser.add_argument("root")
     parser.add_argument("--candidate-json", required=True)
-    parser.add_argument("--meshopt-dll", required=True)
+    parser.add_argument("--meshopt-dll")
     parsed = parser.parse_args(argv)
     raw_root = _raw_absolute(Path(parsed.root).expanduser())
     _reject_lexical_reparse_components(raw_root)
@@ -367,14 +368,17 @@ def parse_args(argv: Sequence[str]) -> Settings:
     except FileNotFoundError as exc:
         raise ValueError(f"root does not exist: {raw_root}") from exc
     candidate_json = Path(parsed.candidate_json).expanduser().resolve()
-    meshopt_dll = Path(parsed.meshopt_dll).expanduser().resolve()
+    meshopt_dll = Path(parsed.meshopt_dll).expanduser().resolve() if parsed.meshopt_dll else None
     if not root.is_dir():
         raise ValueError(f"root does not exist: {root}")
     try:
         payload = json.loads(candidate_json.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read candidate JSON: {candidate_json}") from exc
-    return Settings(raw_root, root, candidate_json, meshopt_dll, load_candidate_payload(payload))
+    candidate = load_candidate_payload(payload)
+    if candidate.engine == "meshoptimizer" and meshopt_dll is None:
+        raise ValueError("meshoptimizer candidate requires --meshopt-dll")
+    return Settings(raw_root, root, candidate_json, meshopt_dll, candidate)
 
 
 def _triangle_edges(triangle: Sequence[int]) -> tuple[tuple[int, int], ...]:
@@ -1463,9 +1467,10 @@ def run_blender(settings: Settings) -> dict[str, object]:
     import os
     import batch_optimize_qc as source_tools
 
-    if not settings.meshopt_dll.is_file():
-        raise ValueError(f"meshopt DLL does not exist: {settings.meshopt_dll}")
-    os.environ["MAXIMUM_MESHOPT_DLL"] = str(settings.meshopt_dll)
+    if settings.candidate.engine == "meshoptimizer":
+        if settings.meshopt_dll is None or not settings.meshopt_dll.is_file():
+            raise ValueError(f"meshopt DLL does not exist: {settings.meshopt_dll}")
+        os.environ["MAXIMUM_MESHOPT_DLL"] = str(settings.meshopt_dll)
     source_tools.ensure_source_tools_enabled()
 
     qcs = tuple(
@@ -1547,7 +1552,7 @@ def run_blender(settings: Settings) -> dict[str, object]:
                 destination, _item = processed[reference.source_path]
                 optimized_sources[reference.source_path] = destination
                 if settings.candidate.strategy == "blender-adaptive-v1":
-                    status, reason = provenance_status(item.get("fallback_reason"))
+                    status, reason = provenance_status(_item.get("fallback_reason"))
                 else:
                     status, reason = "optimized", settings.candidate.strategy
                 output_hash = hashlib.sha256(destination.read_bytes()).hexdigest()

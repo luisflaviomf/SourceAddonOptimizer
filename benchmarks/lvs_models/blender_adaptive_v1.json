@@ -1,0 +1,225 @@
+{
+  "decision": {
+    "pressure_families_run": 1,
+    "reason": "both compiled checkpoints beat b050, but only one of five pressure families ran and visual/runtime acceptance is incomplete",
+    "required_pressure_families": 5,
+    "winner": false
+  },
+  "evidence_sha256": "e621947f1b3dc68de3e1e1cdf7071d87e12b26adce90b0d31d29031e483735e7",
+  "implementation": {
+    "scripts": {
+      "batch_optimize_maximum.py": "54bc5fb8befaca22b63229760d75d0d0350b9256fcbb5c60e4f0c7d0702056ad",
+      "maximum_optimizer/candidates.py": "12a8a9b96308483bd0d1cd0d3ecefa94e2f153134cdfdd4c489bcf5ffd733cd6",
+      "maximum_optimizer/compiler_aware.py": "a15300251261acb317362c3ec9ad47ff6ffddc48731efe2311dbf017754e14cd"
+    }
+  },
+  "quality": {
+    "reason": "wheel QC-aware manifest has no missing textures but bodygroups occlude internal detail; Charger render attempt produced no accepted manifest because geometry metrics fail closed on a preserved degenerate source; thresholds and runtime are not calibrated",
+    "render_status": "wheel-raw-ranking-only-charger-failed-closed",
+    "status": "unverified",
+    "texture_status": "resolved-wheel-only"
+  },
+  "records": [
+    {
+      "baseline": {
+        "artifacts": [
+          {
+            "path": "wheel.dx80.vtx",
+            "sha256": "018cf8e169d27cc529cbaea74a377f4ad4dc100c88ff32a9c8e360ac612cfb36",
+            "size_bytes": 107079
+          },
+          {
+            "path": "wheel.dx90.vtx",
+            "sha256": "d7427c985c48f40747f2ad4efc2f99dd6c595e32ec4cb49bca7c269f2ec1830c",
+            "size_bytes": 107079
+          },
+          {
+            "path": "wheel.mdl",
+            "sha256": "7b1bd3dbbd848c1dbf3fbd68f68e055d66f981a156863736fb91156c923a6a12",
+            "size_bytes": 3000
+          },
+          {
+            "path": "wheel.phy",
+            "sha256": "fa3e392bdd115a77570f8f323fc5f8ae28590e7843744b0eaefcd116a905cb3c",
+            "size_bytes": 3387
+          },
+          {
+            "path": "wheel.vvd",
+            "sha256": "bebbbe42aad46f76ffd744e264512d48686abe58cf96b320fee674dad98cee0d",
+            "size_bytes": 412544
+          }
+        ],
+        "total_bytes": 633089
+      },
+      "candidate": {
+        "artifacts": [
+          {
+            "path": "wheel.dx80.vtx",
+            "sha256": "931caa6152a4a753640fc064b684e7e19b39dc2ae8adb98206a2ccfac2f6048b",
+            "size_bytes": 85107
+          },
+          {
+            "path": "wheel.dx90.vtx",
+            "sha256": "b6116547714cc03333f260c8b152314b455db4081d7b8c24ccb6b7cb5e1ae37e",
+            "size_bytes": 85107
+          },
+          {
+            "path": "wheel.mdl",
+            "sha256": "ab31d26e10fe3a2124521021310837a2906812d7d6905993a80fcf908d4c8827",
+            "size_bytes": 2768
+          },
+          {
+            "path": "wheel.phy",
+            "sha256": "c76370f7016e19af6d91d41f3ec8fcb27a5dff077ee173bd6e90c80b9c175ba1",
+            "size_bytes": 3397
+          },
+          {
+            "path": "wheel.vvd",
+            "sha256": "a26bf6fd760209eb865d87c7e4f9277f7c35bca281a41743877b114f16cddaab",
+            "size_bytes": 326400
+          }
+        ],
+        "total_bytes": 502779
+      },
+      "candidate_metrics_sha256": "aaa2b5c6e735922eafb53e1d983e7ea8ad934754cece236d5661175b11801a8e",
+      "candidate_payload_sha256": "7b31f0f8201db3eaac1c0802401e46aecc6ccd4fd1ab43f5403802a662adea18",
+      "compile_log_sha256": "c1e5a99c4e2ec11c685dc298ab673745bf5c4c1c5f8829f7b4685821a0c44d55",
+      "fallbacks": [],
+      "family_id": "pontiac_transam_wheel",
+      "proxy": {
+        "absolute_error_bytes": 856,
+        "actual_payload_bytes": 496614,
+        "compiled_vertices": 5099,
+        "predicted_bytes": 495758,
+        "triangles": 6470
+      },
+      "qc": {
+        "differing_fields": [
+          "mesh_files"
+        ],
+        "status": "pass"
+      },
+      "ratio": 0.4,
+      "triangles": {
+        "after": 6470,
+        "before": 16180
+      }
+    },
+    {
+      "baseline": {
+        "artifacts": [
+          {
+            "path": "charger.dx80.vtx",
+            "sha256": "5e5b05efac662cd9faaa95a1d3b761fb87648df14f676377b1c6a7fc01b0d435",
+            "size_bytes": 2307218
+          },
+          {
+            "path": "charger.dx90.vtx",
+            "sha256": "450600dbbf86a5c982fe47e89d938471c4c1c2f8eb797ac11f69dece0cdf548d",
+            "size_bytes": 2307218
+          },
+          {
+            "path": "charger.mdl",
+            "sha256": "9a736054923aa9566c791c9e764d7804ec5475e5f2dcedf0013afcb6e48206e9",
+            "size_bytes": 111256
+          },
+          {
+            "path": "charger.phy",
+            "sha256": "674e8f1e4917ffb5e08b31c5d18886dc88f61cd7c70a03ace524b180b2cb5f71",
+            "size_bytes": 17964
+          },
+          {
+            "path": "charger.vvd",
+            "sha256": "7fd44d78659c7c6f23299152ef7240e66f8d015ab84a37a8ffd77fdc16bf1a98",
+            "size_bytes": 9995328
+          }
+        ],
+        "total_bytes": 14738984
+      },
+      "candidate": {
+        "artifacts": [
+          {
+            "path": "charger.dx80.vtx",
+            "sha256": "141cfd27b5e2ad928b5502fe485869d203e2796728d6acb990e876dae863e283",
+            "size_bytes": 2074937
+          },
+          {
+            "path": "charger.dx90.vtx",
+            "sha256": "a1977f0f96fd631501e3ae746330bd5f37c9ce3bf8b44cde4c05f5f68c5f9105",
+            "size_bytes": 2074937
+          },
+          {
+            "path": "charger.mdl",
+            "sha256": "b3cb398bc6a5175419bca12f12694822421570247fe802bea3f3443db036e39c",
+            "size_bytes": 107944
+          },
+          {
+            "path": "charger.phy",
+            "sha256": "804418aa9d8bbdedbf5d7d41012d0f17217741b51b719cb20f89a5fc467d4421",
+            "size_bytes": 18023
+          },
+          {
+            "path": "charger.vvd",
+            "sha256": "28584ca50717708ea12f1260680e8184de1bac0871e3c5648067230dc231c8df",
+            "size_bytes": 9050368
+          }
+        ],
+        "total_bytes": 13326209
+      },
+      "candidate_metrics_sha256": "4a7a8de15da8a86f17253e1743545508a06712743e3af02553e2bf1d1b75ff07",
+      "candidate_payload_sha256": "a92aeca88622ac57e25aba8bc36512214060b19ac1b7db9ff3e6b0e428904918",
+      "compile_log_sha256": "654ba22663849966dd839e6020c75643bfc5fefe0b84d5bc83679cdb71eaca29",
+      "fallbacks": [
+        {
+          "output_sha256": "0643d472e4b275e9d742fa9ea7846a3c7e0d306956dd36c12040402758570cc0",
+          "reason": "export lost all hard-normal seam evidence",
+          "size_bytes": 1070309,
+          "source": "roof_paint.smd",
+          "source_sha256": "0643d472e4b275e9d742fa9ea7846a3c7e0d306956dd36c12040402758570cc0"
+        },
+        {
+          "output_sha256": "d725cb4fa415c6999d05a41cc07caa834a2d0b4bd49929251e331d403e3485bf",
+          "reason": "normal must be non-zero",
+          "size_bytes": 5465361,
+          "source": "body29_model0.smd",
+          "source_sha256": "d725cb4fa415c6999d05a41cc07caa834a2d0b4bd49929251e331d403e3485bf"
+        }
+      ],
+      "family_id": "dodge_charger",
+      "proxy": {
+        "absolute_error_bytes": 24176,
+        "actual_payload_bytes": 13200242,
+        "compiled_vertices": 141411,
+        "predicted_bytes": 13176066,
+        "triangles": 131697
+      },
+      "qc": {
+        "differing_fields": [
+          "mesh_files"
+        ],
+        "status": "pass"
+      },
+      "ratio": 0.4,
+      "triangles": {
+        "after": 131697,
+        "before": 295861
+      }
+    }
+  ],
+  "schema_version": 1,
+  "scoring": {
+    "proxy_role": "diagnostic-only-confirmed-by-snapshot",
+    "selector": "actual-studiomdl-compiled-bytes"
+  },
+  "strategy": "blender-adaptive-v1",
+  "toolchain": {
+    "blender": {
+      "sha256": "f81d3bca0af0d917e03fdf09255981b2ed0750d3a2815da991ea5425a87f8f7c",
+      "version": "5.0.1"
+    },
+    "studiomdl": {
+      "sha256": "9e40454499890d0de941068f2b47db4d3be69ab7213f95e4d9c09f255a7230cf",
+      "version": "Jun 29 2026 Garry's Mod Edition"
+    }
+  }
+}
