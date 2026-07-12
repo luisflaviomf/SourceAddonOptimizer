@@ -899,6 +899,178 @@ def _tree_manifest(
     return dict(sorted(result.items()))
 
 
+_TRANSACTION_SCHEMA = 1
+_TRANSACTION_PHASES = frozenset({"marker_created", "backup_renamed", "staging_renamed", "verified"})
+_NONCE_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+class _InjectedPromotionCrash(BaseException):
+    def __init__(self, original: BaseException) -> None:
+        self.original = original
+
+
+def _fsync_directory(path: Path) -> None:
+    path = Path(path)
+    if os.name != "nt":
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel32.CreateFileW(
+        str(path), 0x40000000, 0x00000007, None, 3, 0x02000000, None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle in (0, -1, invalid):
+        raise OSError(ctypes.get_last_error(), f"cannot open directory for fsync: {path}")
+    try:
+        if not kernel32.FlushFileBuffers(handle):
+            raise OSError(ctypes.get_last_error(), f"cannot fsync directory: {path}")
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _transaction_marker_path(destination: Path) -> Path:
+    return destination.parent / f".{destination.name}.maximum-transaction.json"
+
+
+def _transaction_names(destination: Path, staging: Path) -> tuple[str, str, str]:
+    if staging.parent != destination.parent:
+        raise MaximumConfigError("promotion staging must be a direct destination sibling")
+    prefix = f".{destination.name}.maximum-staging-"
+    if not staging.name.startswith(prefix):
+        raise MaximumConfigError("promotion staging name is invalid")
+    nonce = staging.name[len(prefix):]
+    if _NONCE_RE.fullmatch(nonce) is None:
+        raise MaximumConfigError("promotion staging nonce is invalid")
+    return nonce, staging.name, f".{destination.name}.maximum-backup-{nonce}"
+
+
+def _canonical_marker_bytes(payload: Mapping[str, object]) -> bytes:
+    return (json.dumps(
+        dict(payload), ensure_ascii=False, allow_nan=False,
+        sort_keys=True, separators=(",", ":"),
+    ) + "\n").encode("utf-8")
+
+
+def _write_marker_exclusive(marker: Path, payload: Mapping[str, object]) -> None:
+    with marker.open("xb") as stream:
+        stream.write(_canonical_marker_bytes(payload))
+        stream.flush()
+        os.fsync(stream.fileno())
+    _fsync_directory(marker.parent)
+
+
+def _update_marker(marker: Path, payload: Mapping[str, object]) -> None:
+    temporary = marker.with_name(f".{marker.name}.tmp-{uuid.uuid4().hex}")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(_canonical_marker_bytes(payload))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, marker)
+        _fsync_directory(marker.parent)
+    finally:
+        if temporary.exists() and not _is_reparse(temporary):
+            temporary.unlink()
+
+
+def _validated_transaction_marker(destination: Path) -> tuple[dict[str, object], Path, Path | None]:
+    marker = _transaction_marker_path(destination)
+    if _is_reparse(marker) or not marker.is_file() or marker.stat().st_size > 65536:
+        raise MaximumConfigError("output transaction marker is missing, unsafe, or oversized")
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8", errors="strict"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise MaximumConfigError("output transaction marker is invalid") from exc
+    required = {"schema", "destination", "staging", "backup", "nonce", "phase", "had_destination"}
+    if type(payload) is not dict or set(payload) != required:
+        raise MaximumConfigError("output transaction marker schema is invalid")
+    if (
+        type(payload["schema"]) is not int or payload["schema"] != _TRANSACTION_SCHEMA
+        or type(payload["destination"]) is not str or payload["destination"] != destination.name
+        or type(payload["staging"]) is not str
+        or type(payload["nonce"]) is not str or _NONCE_RE.fullmatch(payload["nonce"]) is None
+        or type(payload["phase"]) is not str or payload["phase"] not in _TRANSACTION_PHASES
+        or type(payload["had_destination"]) is not bool
+        or (payload["backup"] is not None and type(payload["backup"]) is not str)
+    ):
+        raise MaximumConfigError("output transaction marker values are invalid")
+    nonce, staging_name, backup_name = _transaction_names(
+        destination, destination.parent / payload["staging"]
+    )
+    expected_backup = backup_name if payload["had_destination"] else None
+    if nonce != payload["nonce"] or payload["staging"] != staging_name or payload["backup"] != expected_backup:
+        raise MaximumConfigError("output transaction marker paths do not match transaction ownership")
+    staging = destination.parent / staging_name
+    backup = destination.parent / backup_name if expected_backup is not None else None
+    for path in (destination, staging, backup, marker):
+        if path is None:
+            continue
+        if path.parent != destination.parent:
+            raise MaximumConfigError("output transaction path escapes destination parent")
+        if os.path.lexists(path) and _is_reparse(path):
+            raise MaximumConfigError("output transaction path contains a reparse point")
+    return payload, staging, backup
+
+
+def _remove_owned_tree(path: Path) -> None:
+    if not path.exists():
+        return
+    if _is_reparse(path) or not path.is_dir():
+        raise MaximumConfigError("owned transaction artifact is unsafe")
+    _tree_manifest(path)
+    shutil.rmtree(path)
+    _fsync_directory(path.parent)
+
+
+def _recover_output_transaction(destination: Path) -> None:
+    destination = Path(os.path.abspath(os.fspath(destination)))
+    parent = destination.parent
+    if _is_reparse(parent) or not parent.is_dir():
+        raise MaximumConfigError("output transaction parent is unsafe")
+    marker = _transaction_marker_path(destination)
+    backups = tuple(sorted(parent.glob(f".{destination.name}.maximum-backup-*")))
+    stagings = tuple(sorted(parent.glob(f".{destination.name}.maximum-staging-*")))
+    if not marker.exists():
+        if backups or stagings:
+            raise MaximumConfigError("legacy output transaction orphan exists without a valid marker")
+        return
+    payload, staging, backup = _validated_transaction_marker(destination)
+    owned = {staging}
+    if backup is not None:
+        owned.add(backup)
+    extras = (set(backups) | set(stagings)) - owned
+    if extras:
+        raise MaximumConfigError("ambiguous output transaction artifacts")
+    if destination.exists():
+        if _is_reparse(destination) or not destination.is_dir():
+            raise MaximumConfigError("existing output transaction destination is unsafe")
+        _tree_manifest(destination)
+        if backup is not None:
+            _remove_owned_tree(backup)
+        _remove_owned_tree(staging)
+    else:
+        if payload["had_destination"]:
+            if backup is None or not backup.is_dir() or _is_reparse(backup):
+                raise MaximumConfigError("marker-owned backup is unavailable for recovery")
+            _tree_manifest(backup)
+            os.replace(backup, destination)
+            _fsync_directory(parent)
+        _remove_owned_tree(staging)
+    marker.unlink()
+    _fsync_directory(parent)
+
+
 def _promote_verified_tree(
     staging: Path,
     destination: Path,
@@ -906,6 +1078,7 @@ def _promote_verified_tree(
     *,
     manifest_reader: Callable[[Path], dict[str, dict[str, int | str]]] = _tree_manifest,
     cancel_event: threading.Event | None = None,
+    crash_hook: Callable[[str], None] | None = None,
 ) -> None:
     staging_manifest = (
         _tree_manifest(staging, cancel_event)
@@ -917,14 +1090,56 @@ def _promote_verified_tree(
     # This is the final cancellation barrier. From the first os.replace onward
     # the transaction is deliberately non-interruptible and commits or rolls back.
     _check_cancelled(cancel_event, "cancelled before atomic output promotion")
-    backup: Path | None = None
-    if destination.exists():
-        backup = destination.parent / f".{destination.name}.maximum-backup-{uuid.uuid4().hex}"
+    nonce, staging_name, backup_name = _transaction_names(destination, staging)
+    marker = _transaction_marker_path(destination)
+    had_destination = destination.exists()
+    backup = destination.parent / backup_name if had_destination else None
+    payload: dict[str, object] = {
+        "schema": _TRANSACTION_SCHEMA,
+        "destination": destination.name,
+        "staging": staging_name,
+        "backup": backup_name if had_destination else None,
+        "nonce": nonce,
+        "phase": "marker_created",
+        "had_destination": had_destination,
+    }
+    _write_marker_exclusive(marker, payload)
+
+    def inject(phase: str) -> None:
+        if crash_hook is None:
+            return
+        try:
+            crash_hook(phase)
+        except BaseException as exc:
+            raise _InjectedPromotionCrash(exc) from exc
+
+    try:
+        inject("marker_created")
+    except _InjectedPromotionCrash as injected:
+        raise injected.original
+
+    if backup is not None:
         os.replace(destination, backup)
+        _fsync_directory(destination.parent)
+        payload["phase"] = "backup_renamed"
+        _update_marker(marker, payload)
+        try:
+            inject("backup_renamed")
+        except _InjectedPromotionCrash as injected:
+            raise injected.original
     try:
         os.replace(staging, destination)
+        _fsync_directory(destination.parent)
+        payload["phase"] = "staging_renamed"
+        _update_marker(marker, payload)
+        inject("staging_renamed")
         if manifest_reader(destination) != dict(expected):
             raise ValueError("final manifest does not match expected output manifest")
+        payload["phase"] = "verified"
+        _update_marker(marker, payload)
+        inject("verified")
+    except _InjectedPromotionCrash as injected:
+        raise injected.original
     except BaseException as promotion_error:
         restore_error: BaseException | None = None
         try:
@@ -932,6 +1147,9 @@ def _promote_verified_tree(
                 shutil.rmtree(destination)
             if backup is not None and backup.exists():
                 os.replace(backup, destination)
+            if marker.exists() and not _is_reparse(marker):
+                marker.unlink()
+            _fsync_directory(destination.parent)
         except BaseException as exc:
             restore_error = exc
         if restore_error is not None:
@@ -943,10 +1161,9 @@ def _promote_verified_tree(
             ) from restore_error
         raise
     if backup is not None:
-        try:
-            shutil.rmtree(backup)
-        except OSError:
-            pass
+        _remove_owned_tree(backup)
+    marker.unlink()
+    _fsync_directory(destination.parent)
 
 
 def _expected_output_manifest(
@@ -1073,9 +1290,41 @@ def run_maximum_addon(
     # Loading the calibrated profile is deliberately first: the production sentinel
     # must fail closed before any candidate, cache mutation, or output promotion.
     profile = load_profile(config.profile_path)
+    validate_run_paths(config, create=False)
+    _recover_output_transaction(config.output_dir)
     validate_run_paths(config, create=True)
     cancel = cancel_event or threading.Event()
     sink = event_sink or _default_sink
+    if cancel.is_set():
+        report_path = config.work_dir / "logs" / "maximum_report.json"
+        events = (
+            canonical_payload({
+                "schema": 1,
+                "kind": "run_started",
+                "family_count": 0,
+                "report_path": "logs/maximum_report.json",
+            }),
+            canonical_payload({
+                "schema": 1,
+                "kind": "run_cancelled",
+                "completed_families": 0,
+                "total_families": 0,
+                "report_path": "logs/maximum_report.json",
+            }),
+        )
+        for event in events:
+            try:
+                sink(dict(event))
+            except Exception:
+                pass
+        original = scan_compiled_models(config.addon_dir / "models")
+        empty = _empty_snapshot(config.work_dir)
+        report = MaximumRunReport(
+            1, "cancelled", original, empty, empty, original,
+            {}, (), report_path, events, True,
+        )
+        atomic_write_json(report_path, report)
+        return report
     adapter_set = adapters or ProductionAdapters(config, cancel)
     structural_validator = validator or (
         lambda manifest, build: validate_structure(
@@ -2295,6 +2544,7 @@ def run_maximum_from_existing_args(
             bool(getattr(args, "overwrite", False)),
         )
         validate_run_paths(config, create=False)
+        _recover_output_transaction(config.output_dir)
         required_runtime = (
             repo_root / "batch_decompile_organize.py",
             repo_root / "batch_optimize_qc.py",

@@ -31,7 +31,9 @@ from maximum_optimizer.orchestrator import (
     _seal_cache_entry,
     _copy_selected_family,
     _promote_verified_tree,
+    _recover_output_transaction,
     _tree_manifest,
+    _transaction_marker_path,
     _verify_cache_entry,
     _worst,
     validate_run_paths,
@@ -244,6 +246,19 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(json.loads(report.report_path.read_text(encoding="utf-8"))["status"], "failed")
         self.assertFalse(self.config.output_dir.exists())
 
+    def test_transaction_recovery_runs_before_inventory_or_new_work(self):
+        order = []
+        original_inventory = self.adapters.inventory
+        self.adapters.inventory = lambda config: (
+            order.append("inventory") or original_inventory(config)
+        )
+        with patch(
+            "maximum_optimizer.orchestrator._recover_output_transaction",
+            side_effect=lambda destination: order.append("recovery"),
+        ):
+            self.run_optimizer()
+        self.assertEqual(order[:2], ["recovery", "inventory"])
+
     def test_injected_event_sink_failure_does_not_prevent_terminal_report(self):
         report = run_maximum_addon(
             self.config,
@@ -327,6 +342,24 @@ class OrchestratorTests(unittest.TestCase):
         self.assertFalse(self.config.output_dir.exists())
         terminals = [event["kind"] for event in self.events if event["kind"] in {"run_finished", "run_cancelled"}]
         self.assertEqual(terminals, ["run_cancelled"])
+
+    def test_pre_set_cancel_writes_exact_terminal_journal_without_inventory(self):
+        cancel = threading.Event()
+        cancel.set()
+        with patch.object(self.adapters, "inventory") as inventory, patch.object(
+            self.adapters, "tool_versions"
+        ) as versions:
+            report = self.run_optimizer(cancel_event=cancel)
+        inventory.assert_not_called()
+        versions.assert_not_called()
+        self.assertTrue(report.cancelled)
+        self.assertEqual(report.status, "cancelled")
+        self.assertEqual(
+            [event["kind"] for event in self.events],
+            ["run_started", "run_cancelled"],
+        )
+        self.assertTrue(report.report_path.is_file())
+        self.assertFalse(self.config.output_dir.exists())
 
     def test_event_order_and_partial_report_are_explicit(self):
         report = self.run_optimizer()
@@ -638,8 +671,8 @@ class OrchestratorTests(unittest.TestCase):
             _copy_selected_family(build, output_models, "test.mdl")
 
     def test_verified_promotion_rolls_back_when_final_manifest_mutates(self):
-        staging = self.root / "transaction-staging"
         destination = self.root / "transaction-output"
+        staging = self.root / (".transaction-output.maximum-staging-" + "f" * 32)
         staging.mkdir()
         destination.mkdir()
         (staging / "new.bin").write_bytes(b"new")
@@ -675,8 +708,8 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(staging.exists())
 
     def test_promotion_is_non_interruptible_after_first_replace(self):
-        staging = self.root / "commit-staging"
         destination = self.root / "commit-output"
+        staging = self.root / (".commit-output.maximum-staging-" + "1" * 32)
         staging.mkdir()
         (staging / "new.bin").write_bytes(b"new")
         expected = _tree_manifest(staging)
@@ -684,13 +717,136 @@ class OrchestratorTests(unittest.TestCase):
         real_replace = __import__("os").replace
         def replace_then_cancel(source, target):
             real_replace(source, target)
-            cancel.set()
+            if Path(source) == staging and Path(target) == destination:
+                cancel.set()
         with patch("maximum_optimizer.orchestrator.os.replace", side_effect=replace_then_cancel):
             _promote_verified_tree(
                 staging, destination, expected, cancel_event=cancel
             )
         self.assertTrue(cancel.is_set())
         self.assertEqual((destination / "new.bin").read_bytes(), b"new")
+
+    def test_marker_owned_backup_is_restored_after_crash_between_renames(self):
+        destination = self.root / "recover-output"
+        staging = self.root / (".recover-output.maximum-staging-" + "a" * 32)
+        destination.mkdir()
+        staging.mkdir()
+        (destination / "old.bin").write_bytes(b"old")
+        (staging / "new.bin").write_bytes(b"new")
+        expected = _tree_manifest(staging)
+        class Crash(BaseException):
+            pass
+        with self.assertRaises(Crash):
+            _promote_verified_tree(
+                staging,
+                destination,
+                expected,
+                crash_hook=lambda phase: (_ for _ in ()).throw(Crash())
+                if phase == "backup_renamed" else None,
+            )
+        self.assertFalse(destination.exists())
+        _recover_output_transaction(destination)
+        self.assertEqual((destination / "old.bin").read_bytes(), b"old")
+        self.assertFalse(staging.exists())
+        self.assertFalse(tuple(self.root.glob(".recover-output.maximum-backup-*")))
+
+    def test_recovery_fails_closed_on_ambiguous_marker_owned_backups(self):
+        destination = self.root / "ambiguous-output"
+        staging = self.root / (".ambiguous-output.maximum-staging-" + "b" * 32)
+        destination.mkdir()
+        staging.mkdir()
+        (destination / "old.bin").write_bytes(b"old")
+        (staging / "new.bin").write_bytes(b"new")
+        class Crash(BaseException):
+            pass
+        with self.assertRaises(Crash):
+            _promote_verified_tree(
+                staging, destination, _tree_manifest(staging),
+                crash_hook=lambda phase: (_ for _ in ()).throw(Crash())
+                if phase == "backup_renamed" else None,
+            )
+        extra = self.root / (".ambiguous-output.maximum-backup-" + "c" * 32)
+        extra.mkdir()
+        (extra / "other.bin").write_bytes(b"other")
+        with self.assertRaisesRegex(MaximumConfigError, "ambiguous"):
+            _recover_output_transaction(destination)
+        self.assertFalse(destination.exists())
+        self.assertTrue(extra.exists())
+
+    def test_destination_present_is_never_overwritten_during_recovery(self):
+        destination = self.root / "committed-output"
+        staging = self.root / (".committed-output.maximum-staging-" + "d" * 32)
+        destination.mkdir()
+        staging.mkdir()
+        (destination / "old.bin").write_bytes(b"old")
+        (staging / "new.bin").write_bytes(b"new")
+        class Crash(BaseException):
+            pass
+        with self.assertRaises(Crash):
+            _promote_verified_tree(
+                staging, destination, _tree_manifest(staging),
+                crash_hook=lambda phase: (_ for _ in ()).throw(Crash())
+                if phase == "staging_renamed" else None,
+            )
+        self.assertEqual((destination / "new.bin").read_bytes(), b"new")
+        _recover_output_transaction(destination)
+        self.assertEqual((destination / "new.bin").read_bytes(), b"new")
+        self.assertFalse(tuple(self.root.glob(".committed-output.maximum-backup-*")))
+
+    def test_legacy_orphan_without_marker_is_diagnostic_only(self):
+        destination = self.root / "legacy-output"
+        orphan = self.root / (".legacy-output.maximum-backup-" + "e" * 32)
+        orphan.mkdir()
+        (orphan / "old.bin").write_bytes(b"old")
+        with self.assertRaisesRegex(MaximumConfigError, "without.*marker"):
+            _recover_output_transaction(destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual((orphan / "old.bin").read_bytes(), b"old")
+
+    def test_crash_barriers_before_backup_and_after_verification_recover_safely(self):
+        class Crash(BaseException):
+            pass
+        for index, phase in enumerate(("marker_created", "verified"), start=2):
+            with self.subTest(phase=phase):
+                destination = self.root / f"phase-{index}-output"
+                staging = self.root / (
+                    f".phase-{index}-output.maximum-staging-" + str(index) * 32
+                )
+                destination.mkdir()
+                staging.mkdir()
+                (destination / "old.bin").write_bytes(b"old")
+                (staging / "new.bin").write_bytes(b"new")
+                with self.assertRaises(Crash):
+                    _promote_verified_tree(
+                        staging, destination, _tree_manifest(staging),
+                        crash_hook=lambda current, wanted=phase: (
+                            (_ for _ in ()).throw(Crash()) if current == wanted else None
+                        ),
+                    )
+                _recover_output_transaction(destination)
+                expected = b"old" if phase == "marker_created" else b"new"
+                filename = "old.bin" if phase == "marker_created" else "new.bin"
+                self.assertEqual((destination / filename).read_bytes(), expected)
+                self.assertFalse(tuple(self.root.glob(
+                    f".phase-{index}-output.maximum-backup-*"
+                )))
+                self.assertFalse(_transaction_marker_path(destination).exists())
+
+    def test_invalid_marker_path_schema_fails_without_mutation(self):
+        destination = self.root / "invalid-marker-output"
+        marker = _transaction_marker_path(destination)
+        marker.write_text(json.dumps({
+            "schema": 1,
+            "destination": destination.name,
+            "staging": "../outside",
+            "backup": None,
+            "nonce": "3" * 32,
+            "phase": "marker_created",
+            "had_destination": False,
+        }), encoding="utf-8")
+        with self.assertRaisesRegex(MaximumConfigError, "staging|marker"):
+            _recover_output_transaction(destination)
+        self.assertTrue(marker.exists())
 
     def test_real_smd_deformation_evidence_classifies_rigid_one_bone_as_bind_only(self):
         rigid = self.root / "rigid.smd"
