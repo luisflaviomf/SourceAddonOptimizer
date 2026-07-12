@@ -1745,36 +1745,159 @@ def _smd_animation_frames(path: Path) -> tuple[int, ...]:
     return tuple(dict.fromkeys(frames))
 
 
+def _smd_controlling_bones(path: Path) -> frozenset[int] | None:
+    """Return positive triangle influences, or None when rigid evidence is unsafe."""
+    if path.suffix.casefold() != ".smd":
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
+    except (OSError, UnicodeError):
+        return None
+
+    section = ""
+    saw_nodes = False
+    saw_triangles = False
+    nodes: dict[int, int] = {}
+    triangle_rows: list[str] = []
+    triangle_position = 0
+    malformed = False
+    node_pattern = re.compile(r'(-?\d+)\s+"[^"]*"\s+(-?\d+)')
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        folded = line.casefold()
+        if not section:
+            if folded == "nodes":
+                if saw_nodes:
+                    malformed = True
+                saw_nodes = True
+                section = "nodes"
+            elif folded == "triangles":
+                if saw_triangles:
+                    malformed = True
+                saw_triangles = True
+                section = "triangles"
+                triangle_position = 0
+            continue
+        if folded == "end":
+            if section == "triangles" and triangle_position != 0:
+                malformed = True
+            section = ""
+            continue
+        if section == "nodes":
+            match = node_pattern.fullmatch(line)
+            if match is None:
+                malformed = True
+                continue
+            bone_id, parent_id = (int(value) for value in match.groups())
+            if bone_id < 0 or bone_id in nodes:
+                malformed = True
+            else:
+                nodes[bone_id] = parent_id
+        elif section == "triangles":
+            if triangle_position == 0:
+                triangle_position = 1
+            else:
+                triangle_rows.append(line)
+                triangle_position = (triangle_position + 1) % 4
+
+    if section or not saw_nodes or not saw_triangles or not nodes or not triangle_rows:
+        return None
+    if malformed or any(parent != -1 and parent not in nodes for parent in nodes.values()):
+        return None
+
+    controlling: set[int] = set()
+    for row in triangle_rows:
+        fields = row.split()
+        if len(fields) < 9:
+            return None
+        try:
+            parent = int(fields[0])
+            numeric = tuple(float(value) for value in fields[1:9])
+        except ValueError:
+            return None
+        if parent not in nodes or any(not math.isfinite(value) for value in numeric):
+            return None
+        if len(fields) == 9:
+            controlling.add(parent)
+            continue
+        try:
+            link_count = int(fields[9])
+        except ValueError:
+            return None
+        if link_count < 0 or len(fields) != 10 + (link_count * 2):
+            return None
+        positive = False
+        for index in range(link_count):
+            try:
+                bone_id = int(fields[10 + (index * 2)])
+                weight = float(fields[11 + (index * 2)])
+            except ValueError:
+                return None
+            if bone_id < 0 or bone_id not in nodes or not math.isfinite(weight) or weight < 0:
+                return None
+            if weight > 0:
+                positive = True
+                controlling.add(bone_id)
+        if not positive:
+            return None
+    return frozenset(controlling) if controlling else None
+
+
+def _smd_deformation_required(paths: Sequence[Path]) -> bool:
+    """Fail closed unless every real visual vertex has one common controlling bone."""
+    controlling: set[int] = set()
+    saw_source = False
+    for path in paths:
+        saw_source = True
+        evidence = _smd_controlling_bones(path)
+        if evidence is None:
+            return True
+        controlling.update(evidence)
+        if len(controlling) >= 2:
+            return True
+    return not saw_source or len(controlling) != 1
+
+
+def _canonical_graph_source_identity(graph: QcGraph, path: Path) -> str:
+    return path.resolve(strict=True).relative_to(
+        graph.family_root.resolve(strict=True)
+    ).as_posix()
+
+
 def _paired_representative_animation(
     original_graph: QcGraph,
     candidate_graph: QcGraph,
 ) -> tuple[Path, Path, int] | None:
     def refs(graph: QcGraph):
-        return tuple(sorted(
-            (reference for reference in graph.references if reference.role == "animation"),
-            key=lambda item: (item.directive, item.logical_path.casefold()),
-        ))
+        result: dict[tuple[str, str], list[Any]] = {}
+        for reference in graph.references:
+            if reference.role != "animation":
+                continue
+            identity = _canonical_graph_source_identity(graph, reference.source_path)
+            key = (reference.directive.casefold(), identity.casefold())
+            result.setdefault(key, []).append(reference)
+        return result
+
     before = refs(original_graph)
     after = refs(candidate_graph)
-    if not before or len(before) != len(after):
+    if not before or not after or before.keys() != after.keys():
         return None
-    before_identity = tuple(
-        (item.directive, item.source_path.relative_to(original_graph.family_root).as_posix().casefold())
-        for item in before
-    )
-    after_identity = tuple(
-        (item.directive, item.source_path.relative_to(candidate_graph.family_root).as_posix().casefold())
-        for item in after
-    )
-    if before_identity != after_identity:
-        return None
-    for original, optimized in zip(before, after):
+    for key in sorted(before):
+        if len(before[key]) != len(after[key]):
+            return None
+        original = before[key][0]
+        optimized = after[key][0]
         original_frames = _smd_animation_frames(original.source_path)
         optimized_frames = _smd_animation_frames(optimized.source_path)
-        if original_frames == optimized_frames:
-            representative = max((frame for frame in original_frames if frame > 0), default=0)
-            if representative:
-                return original.source_path, optimized.source_path, representative
+        representative = max(
+            (frame for frame in set(original_frames).intersection(optimized_frames) if frame > 0),
+            default=0,
+        )
+        if representative:
+            return original.source_path, optimized.source_path, representative
     return None
 
 
@@ -1941,9 +2064,57 @@ class ProductionAdapters:
         ):
             raise CandidateBuildError("render LOD state pairs are ambiguous", stage="render")
 
-        animation = _paired_representative_animation(original_graph, candidate_graph)
-        animated = bool(manifest.fingerprint.sequences)
-        if animated and animation is None:
+        original_visual_sources = tuple(
+            source for state in original_states for source in state
+        )
+        candidate_visual_sources = tuple(
+            source for state in candidate_states for source in state
+        )
+        deformation_required = (
+            _smd_deformation_required(original_visual_sources)
+            or _smd_deformation_required(candidate_visual_sources)
+        )
+        animation = (
+            _paired_representative_animation(original_graph, candidate_graph)
+            if deformation_required
+            else None
+        )
+        if not deformation_required:
+            classification = {
+                "schema": 1,
+                "required": False,
+                "reason": "rigid-or-bind-only",
+                "selected_frame": None,
+                "original_source_identity": None,
+                "candidate_source_identity": None,
+            }
+        elif animation is not None:
+            classification = {
+                "schema": 1,
+                "required": True,
+                "reason": "deformable-with-representative-animation",
+                "selected_frame": animation[2],
+                "original_source_identity": _canonical_graph_source_identity(
+                    original_graph, animation[0]
+                ),
+                "candidate_source_identity": _canonical_graph_source_identity(
+                    candidate_graph, animation[1]
+                ),
+            }
+        else:
+            classification = {
+                "schema": 1,
+                "required": True,
+                "reason": "representative-animation-unavailable",
+                "selected_frame": None,
+                "original_source_identity": None,
+                "candidate_source_identity": None,
+            }
+        atomic_write_json(
+            candidate.workspace / "logs" / "render-animation-classification.json",
+            classification,
+        )
+        if deformation_required and animation is None:
             return ValidationResult(
                 False,
                 (GateFailure(

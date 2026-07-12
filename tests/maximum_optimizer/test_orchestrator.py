@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from maximum_optimizer import orchestrator as orchestrator_module
 from maximum_optimizer.candidates import CandidateBuild, CandidateBuildError
 from maximum_optimizer.domain import (
     GateFailure,
@@ -691,15 +692,78 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(cancel.is_set())
         self.assertEqual((destination / "new.bin").read_bytes(), b"new")
 
+    def test_real_smd_deformation_evidence_classifies_rigid_one_bone_as_bind_only(self):
+        rigid = self.root / "rigid.smd"
+        rigid.write_text(
+            "version 1\n"
+            "nodes\n0 \"root\" -1\nend\n"
+            "skeleton\ntime 0\n0 0 0 0 0 0 0\nend\n"
+            "triangles\nmaterial/base\n"
+            "0 0 0 0 0 0 1 0 0\n"
+            "0 1 0 0 0 0 1 1 0\n"
+            "0 0 1 0 0 0 1 0 1\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        helper = getattr(orchestrator_module, "_smd_deformation_required", None)
+        self.assertIsNotNone(helper, "conservative real-SMD deformation helper is missing")
+        self.assertFalse(helper((rigid,)))
+
+    def test_real_smd_deformation_evidence_classifies_weighted_multi_bone_as_required(self):
+        deformable = self.root / "deformable.smd"
+        deformable.write_text(
+            "version 1\n"
+            "nodes\n0 \"root\" -1\n1 \"child\" 0\nend\n"
+            "skeleton\ntime 0\n0 0 0 0 0 0 0\n1 0 0 0 0 0 0\nend\n"
+            "triangles\nmaterial/base\n"
+            "0 0 0 0 0 0 1 0 0 2 0 0.5 1 0.5\n"
+            "0 1 0 0 0 0 1 1 0 1 0 1\n"
+            "1 0 1 0 0 0 1 0 1\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        helper = getattr(orchestrator_module, "_smd_deformation_required", None)
+        self.assertIsNotNone(helper, "conservative real-SMD deformation helper is missing")
+        self.assertTrue(helper((deformable,)))
+
+    def test_ambiguous_smd_link_evidence_never_authorizes_bind_only(self):
+        helper = getattr(orchestrator_module, "_smd_deformation_required", None)
+        self.assertIsNotNone(helper, "conservative real-SMD deformation helper is missing")
+        cases = {
+            "unknown": "0 0 0 0 0 0 1 0 0 1 9 1",
+            "negative": "0 0 0 0 0 0 1 0 0 1 0 -0.1",
+            "nonfinite": "0 0 0 0 0 0 1 0 0 1 0 nan",
+            "malformed": "0 0 0 0 0 0 1 0 0 2 0 1",
+        }
+        for name, vertex in cases.items():
+            with self.subTest(name=name):
+                path = self.root / f"ambiguous-{name}.smd"
+                path.write_text(
+                    "version 1\nnodes\n0 \"root\" -1\nend\n"
+                    "skeleton\ntime 0\n0 0 0 0 0 0 0\nend\n"
+                    f"triangles\nmaterial/base\n{vertex}\n"
+                    "0 1 0 0 0 0 1 1 0\n0 0 1 0 0 0 1 0 1\nend\n",
+                    encoding="utf-8",
+                )
+                self.assertTrue(helper((path,)))
+
     def test_production_visual_uses_nested_paths_real_animation_and_separate_lods(self):
         source = self.root / "production-source"
         source.mkdir()
-        smd = "version 1\nnodes\n0 \"root\" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\nend\n"
+        smd = (
+            "version 1\nnodes\n0 \"root\" -1\n1 \"child\" 0\nend\n"
+            "skeleton\ntime 0\n0 0 0 0 0 0 0\n1 0 0 0 0 0 0\nend\n"
+            "triangles\nmaterial/base\n"
+            "0 0 0 0 0 0 1 0 0 2 0 0.5 1 0.5\n"
+            "0 1 0 0 0 0 1 1 0 1 0 1\n"
+            "1 0 1 0 0 0 1 0 1\nend\n"
+        )
         (source / "mesh.smd").write_text(smd, encoding="utf-8")
         (source / "lod.smd").write_text(smd, encoding="utf-8")
-        animation_smd = smd.replace("time 0\n", "time 0\n").replace(
-            "0 0 0 0 0 0 0\nend\ntriangles",
-            "0 0 0 0 0 0 0\ntime 10\n0 1 0 0 0 0 0\nend\ntriangles",
+        animation_smd = (
+            "version 1\nnodes\n0 \"root\" -1\n1 \"child\" 0\nend\n"
+            "skeleton\ntime 0\n0 0 0 0 0 0 0\n1 0 0 0 0 0 0\n"
+            "time 10\n0 1 0 0 0 0 0\n1 0 1 0 0 0 0\nend\ntriangles\nend\n"
         )
         (source / "anim.smd").write_text(animation_smd, encoding="utf-8")
         (source / "nested").mkdir()
@@ -806,6 +870,18 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(render[render.index("--poses") + 1], "bind:0,representative:10")
             self.assertTrue(render[render.index("--animation-before") + 1].endswith("anim.smd"))
             self.assertTrue(render[render.index("--animation-after") + 1].endswith("anim.smd"))
+        classification_path = workspace / "logs" / "render-animation-classification.json"
+        self.assertEqual(
+            json.loads(classification_path.read_text(encoding="utf-8")),
+            {
+                "schema": 1,
+                "required": True,
+                "reason": "deformable-with-representative-animation",
+                "selected_frame": 10,
+                "original_source_identity": "anim.smd",
+                "candidate_source_identity": "anim.smd",
+            },
+        )
 
         def no_fresh_output(command, **kwargs):
             if "--python-expr" in command:
@@ -824,6 +900,103 @@ class OrchestratorTests(unittest.TestCase):
             unavailable = adapter.visual(manifest, build, build, load_profile(self.config.profile_path))
         self.assertFalse(unavailable.passed)
         self.assertEqual(unavailable.failures[0].gate, "representative-animation-unavailable")
+        self.assertEqual(
+            json.loads(classification_path.read_text(encoding="utf-8")),
+            {
+                "schema": 1,
+                "required": True,
+                "reason": "representative-animation-unavailable",
+                "selected_frame": None,
+                "original_source_identity": None,
+                "candidate_source_identity": None,
+            },
+        )
+
+    def test_production_visual_rigid_time_zero_sequence_renders_bind_only_and_records_reason(self):
+        source = self.root / "rigid-production-source"
+        source.mkdir()
+        rigid_smd = (
+            "version 1\nnodes\n0 \"root\" -1\nend\n"
+            "skeleton\ntime 0\n0 0 0 0 0 0 0\nend\n"
+            "triangles\nmaterial/base\n"
+            "0 0 0 0 0 0 1 0 0\n0 1 0 0 0 0 1 1 0\n0 0 1 0 0 0 1 0 1\nend\n"
+        )
+        animation_smd = (
+            "version 1\nnodes\n0 \"root\" -1\nend\n"
+            "skeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\nend\n"
+        )
+        (source / "mesh.smd").write_text(rigid_smd, encoding="utf-8")
+        (source / "anim.smd").write_text(animation_smd, encoding="utf-8")
+        (source / "main.qc").write_text(
+            '$modelname "rigid.mdl"\n$body "body" "mesh.smd"\n$sequence "idle" "anim.smd"\n',
+            encoding="utf-8",
+        )
+        fp = StructuralFingerprint(
+            "rigid.mdl", ("body",), (), (), ("root",), (), (), (), ("idle",),
+            ("mesh.smd",), (), None,
+        )
+        manifest = FamilyManifest(
+            "rigid-production-family", "rigid.mdl", source, self.addon / "models", fp,
+            "c" * 64, (".mdl",),
+        )
+        workspace = self.root / "rigid-production-candidate"
+        candidate_source = workspace / "src"
+        candidate_source.mkdir(parents=True)
+        (workspace / "logs").mkdir()
+        (candidate_source / "mesh_OPT.smd").write_text(rigid_smd, encoding="utf-8")
+        (candidate_source / "anim.smd").write_text(animation_smd, encoding="utf-8")
+        qc = candidate_source / "main_OPT.qc"
+        qc.write_text(
+            '$modelname "rigid.mdl"\n$body "body" "mesh_OPT.smd"\n$sequence "idle" "anim.smd"\n',
+            encoding="utf-8",
+        )
+        compiled = workspace / "compiled"
+        compiled.mkdir()
+        build = CandidateBuild(
+            CandidateSpec("rigid-production", "blender", 0.5, 0.0, "test"),
+            workspace, qc, compiled, {}, {"rigid.mdl": "candidate-compile"}, (),
+        )
+        region_manifest = build_region_manifest((("mesh.smd", "Body", ("material/base",)),))
+        commands = []
+
+        def runner(command, **kwargs):
+            command = tuple(str(item) for item in command)
+            commands.append(command)
+            if "--python-expr" in command:
+                (workspace / "render-source" / "maximum_region_manifest.json").write_text(
+                    canonical_json(region_manifest.to_payload()) + "\n",
+                    encoding="utf-8",
+                )
+            else:
+                out = Path(command[command.index("--out") + 1])
+                for side in ("original", "optimized"):
+                    (out / side).mkdir(parents=True)
+                    (out / side / "render_manifest.json").write_text("{}", encoding="utf-8")
+            return ProcessResult(command, 0, 0.01, kwargs["log_path"])
+
+        adapter = ProductionAdapters(self.config, threading.Event())
+        with (
+            patch("maximum_optimizer.orchestrator.run_process", side_effect=runner),
+            patch("maximum_optimizer.orchestrator.compare_render_sets", return_value=ValidationResult(True)),
+        ):
+            result = adapter.visual(manifest, build, build, load_profile(self.config.profile_path))
+
+        self.assertTrue(result.passed)
+        render = commands[1]
+        self.assertEqual(render[render.index("--poses") + 1], "bind:0")
+        self.assertNotIn("--animation-before", render)
+        self.assertNotIn("--animation-after", render)
+        self.assertEqual(
+            json.loads((workspace / "logs" / "render-animation-classification.json").read_text()),
+            {
+                "schema": 1,
+                "required": False,
+                "reason": "rigid-or-bind-only",
+                "selected_frame": None,
+                "original_source_identity": None,
+                "candidate_source_identity": None,
+            },
+        )
 
     def test_default_schedule_prefers_blender_when_meshopt_is_not_preferred(self):
         self.adapters.candidate_schedule = None
