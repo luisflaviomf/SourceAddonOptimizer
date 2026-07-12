@@ -7,6 +7,8 @@ from maximum_optimizer.calibration_evidence import (
     CALIBRATION_FAMILIES,
     CALIBRATION_METRICS,
     canonical_calibration_evidence_hash,
+    canonical_compiled_hash,
+    canonical_lane_binding_hash,
     parse_calibration_evidence,
 )
 
@@ -32,10 +34,43 @@ def _configuration(name: str, scope: str) -> dict:
         "top_regions": [
             {"source": "body.smd", "surface_bidirectional_p95": 0.01, "surface_max": 0.02}
         ],
+        "source_pairs": [{
+            "source_identity": f"{name}.smd",
+            "reference_sha256": "a" * 64,
+            "candidate_sha256": "b" * 64,
+        }],
     }
 
 
 def _payload() -> dict:
+    state_names = {
+        "pontiac_transam_wheel": (
+            "engine-default", "bodygroup-rim-001-1569ec5b-1",
+        ),
+        "dodge_charger": (
+            "engine-default", "bodygroup-steering_wheel-001-b81bc2a7-1",
+            "bodygroup-hood-002-2314555c-1", "bodygroup-hood-002-2314555c-2",
+            "bodygroup-trunk-003-3e341d2d-1",
+        ),
+        "toyota_supra": (
+            "engine-default", "bodygroup-front_bumper-001-9b0d8061-1",
+            "bodygroup-front_bumper-001-9b0d8061-2",
+            "bodygroup-front_bumper-001-9b0d8061-3",
+            "bodygroup-rear_bumper-002-611e4375-1",
+        ),
+        "nissan_skyline_gtr32": (
+            "engine-default", "bodygroup-front_bumper-002-9b0d8061-1",
+            "bodygroup-front_bumper-002-9b0d8061-2",
+            "bodygroup-rear_fenders-004-21ab784a-1",
+            "bodygroup-rear_fenders-004-21ab784a-2",
+        ),
+        "dodge_monaco_police": (
+            "engine-default", "bodygroup-lightbar-001-605787d6-1",
+            "bodygroup-lightbar-001-605787d6-2",
+            "bodygroup-lightbar-001-605787d6-3",
+            "bodygroup-spotlight-002-be46a22b-1",
+        ),
+    }
     candidates = {
         "pontiac_transam_wheel": "r050",
         "dodge_charger": "r030",
@@ -56,8 +91,9 @@ def _payload() -> dict:
         },
         "external_artifacts": {
             "monaco_accepted_composite_v1": {
-                "file_sha256": "6" * 64,
-                "canonical_payload_sha256": "7" * 64,
+                "file_sha256": "c3717c8dda5bf0c03eac22a3017d534c8374a125e785e28eba5f7de56f9f897f",
+                "canonical_payload_sha256": "713c09b7b177bb6c949d696f20966251144887bebec7c68839b56f13b57fdbb9",
+                "candidate_metrics_sha256": "4f5001804dfb5002915289dbb62cb2029eb5e1d76fe6c361e999be4e0431faa5",
             },
         },
         "families": [
@@ -110,10 +146,10 @@ def _payload() -> dict:
                             for index in range(5)
                         ],
                     },
-                    "configurations": [_configuration(
-                        "engine-default",
-                        "strict-region-paired",
-                    )],
+                    "configurations": [
+                        _configuration(name, "strict-region-paired")
+                        for name in state_names[family]
+                    ],
                 },
                 "candidate": {
                     "lane": "strict-region-paired",
@@ -125,7 +161,10 @@ def _payload() -> dict:
                             for index in range(5)
                         ],
                     },
-                    "configurations": [_configuration("engine-default", "strict-region-paired")],
+                    "configurations": [
+                        _configuration(name, "strict-region-paired")
+                        for name in state_names[family]
+                    ],
                 },
             }
             for family in CALIBRATION_FAMILIES
@@ -142,6 +181,35 @@ def _payload() -> dict:
     }
     for family in payload["families"]:
         family["alternatives"] = []
+        for lane in (family["baseline"], family["candidate"]):
+            lane["raw_visual_states_sha256"] = "d" * 64
+            is_control = lane["candidate_id"] == "roundtrip-control"
+            is_composite = lane["candidate_id"] == "hybrid-stable"
+            lane["provenance"] = {
+                "kind": (
+                    "roundtrip-control-record-v1" if is_control
+                    else "accepted-composite-bundle-v1" if is_composite
+                    else "optimization-compile-bundle-v1"
+                ),
+                "artifacts": ([{
+                    "kind": "control-record",
+                    "path": "benchmarks/lvs_models/control.json#family",
+                    "sha256": "e" * 64,
+                }] if is_control else [
+                    {"kind": kind, "path": f"research://{kind}", "sha256": char * 64}
+                    for kind, char in ((
+                        ("accepted-composite", "e"), ("optimized-qc", "1"),
+                        ("compile-summary", "2"),
+                    ) if is_composite else (
+                        ("candidate-json", "e"), ("candidate-metrics", "f"),
+                        ("optimized-qc", "1"), ("compile-summary", "2"),
+                    ))
+                ]),
+            }
+            if lane["candidate_id"] == "roundtrip-control":
+                for configuration in lane["configurations"]:
+                    configuration["source_pairs"][0]["candidate_sha256"] = "a" * 64
+            lane["lane_binding_sha256"] = canonical_lane_binding_hash(lane)
     wheel = payload["families"][0]
     wheel["alternatives"] = [
         {
@@ -164,7 +232,23 @@ def _payload() -> dict:
                 "quality_scope": quality_scope,
                 "compiled": (
                     None if index == 0
-                    else copy.deepcopy(wheel["candidate"]["compiled"])
+                    else {
+                        "total_bytes": 700,
+                        "artifacts": [
+                            {"path": f"alt.{position}", "size_bytes": 140, "sha256": "6" * 64}
+                            for position in range(5)
+                        ],
+                    }
+                ),
+                "compiled_sha256": (
+                    None if index == 0
+                    else canonical_compiled_hash({
+                        "total_bytes": 700,
+                        "artifacts": [
+                            {"path": f"alt.{position}", "size_bytes": 140, "sha256": "6" * 64}
+                            for position in range(5)
+                        ],
+                    })
                 ),
                 "winner": False,
             },
@@ -249,6 +333,30 @@ class CalibrationEvidenceTests(unittest.TestCase):
         changed["external_artifacts"]["monaco_accepted_composite_v1"]["file_sha256"] = "8" * 64
         with self.assertRaisesRegex(ValueError, "seal"):
             parse_calibration_evidence(changed)
+
+    def test_resealed_state_source_compile_and_external_swaps_are_rejected(self) -> None:
+        mutations = (
+            lambda item: item["families"][1]["candidate"]["configurations"].pop(),
+            lambda item: item["families"][0]["candidate"]["configurations"][0]["source_pairs"][0].__setitem__(
+                "candidate_sha256", "9" * 64
+            ),
+            lambda item: item["families"][0]["candidate"]["provenance"]["artifacts"][3].__setitem__(
+                "sha256", "9" * 64
+            ),
+            lambda item: item["external_artifacts"]["monaco_accepted_composite_v1"].update(
+                file_sha256="8" * 64,
+                canonical_payload_sha256="9" * 64,
+            ),
+            lambda item: item["families"][0]["alternatives"][1]["evidence"].__setitem__(
+                "compiled", copy.deepcopy(item["families"][0]["candidate"]["compiled"])
+            ),
+        )
+        for mutate in mutations:
+            changed = copy.deepcopy(_payload())
+            mutate(changed)
+            changed["evidence_sha256"] = canonical_calibration_evidence_hash(changed)
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                parse_calibration_evidence(changed)
 
     def test_b050_aggregate_cannot_be_reintroduced_as_calibration_baseline(self) -> None:
         changed = copy.deepcopy(_payload())

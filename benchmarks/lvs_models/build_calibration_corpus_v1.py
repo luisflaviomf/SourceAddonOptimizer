@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -15,6 +16,8 @@ from maximum_optimizer.calibration_evidence import (
     CALIBRATION_FAMILIES,
     CALIBRATION_METRICS,
     canonical_calibration_evidence_hash,
+    canonical_compiled_hash,
+    canonical_lane_binding_hash,
     parse_calibration_evidence,
 )
 from maximum_optimizer.visual_validation import (
@@ -143,8 +146,91 @@ def _archived_alternative(spec: dict, repo_root: Path) -> dict:
             "artifact_availability": spec["artifact_availability"],
             "quality_scope": spec["quality_scope"],
             "compiled": compiled,
+            "compiled_sha256": (
+                canonical_compiled_hash(compiled) if compiled is not None else None
+            ),
             "winner": False,
         },
+    }
+
+
+def _canonical_payload_hash(payload: object) -> str:
+    return hashlib.sha256((
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")).hexdigest()
+
+
+def _validate_monaco_composite(path: Path, lane: dict) -> dict:
+    path = path.resolve(strict=True)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    without_seal = copy.deepcopy(payload)
+    declared_seal = without_seal.pop("seal_sha256", None)
+    computed_seal = _canonical_payload_hash(without_seal)
+    metrics = payload.get("candidate_metrics")
+    computed_metrics = _canonical_payload_hash(metrics)
+    if (
+        payload.get("schema") != "maximum-accepted-composite-v1"
+        or declared_seal != computed_seal
+        or payload.get("candidate_metrics_sha256") != computed_metrics
+    ):
+        raise ValueError("Monaco composite canonical seal is invalid")
+    composition = payload.get("composition", {})
+    qc = payload.get("qc", {})
+    files = metrics.get("files", ()) if type(metrics) is dict else ()
+    if (
+        len(files) != 44
+        or metrics.get("triangles_before") != 206754
+        or metrics.get("triangles_after") != 95128
+        or any(item.get("fallback_reason") is not None for item in files)
+        or len(composition.get("file_origins", ())) != 44
+        or composition.get("stable_direct_visuals") != 8
+        or composition.get("inherited_r040_visuals") != 36
+        or composition.get("visual_fallback_count") != 0
+        or qc.get("source_mesh_files") != 44
+        or qc.get("optimized_mesh_files") != 44
+        or qc.get("differing_fields") != ["mesh_files"]
+    ):
+        raise ValueError("Monaco composite counts or QC contract drift")
+
+    external_compiled = payload.get("compiled", {})
+    normalized_external = {
+        "total_bytes": external_compiled.get("total_bytes"),
+        "artifacts": sorted((
+            {
+                "path": Path(item["path"]).name.casefold(),
+                "size_bytes": item["bytes"],
+                "sha256": item["sha256"],
+            }
+            for item in external_compiled.get("artifacts", ())
+        ), key=lambda item: item["path"]),
+    }
+    normalized_lane = {
+        "total_bytes": lane["compiled"]["total_bytes"],
+        "artifacts": sorted((
+            {
+                "path": Path(item["path"]).name.casefold(),
+                "size_bytes": item["size_bytes"],
+                "sha256": item["sha256"],
+            }
+            for item in lane["compiled"]["artifacts"]
+        ), key=lambda item: item["path"]),
+    }
+    if normalized_external != normalized_lane or normalized_lane["total_bytes"] != 11592080:
+        raise ValueError("Monaco composite compiled artifacts do not match the lane")
+
+    outputs = {
+        item["source"].casefold(): item["output_sha256"]
+        for item in composition["file_origins"]
+    }
+    for configuration in lane["configurations"]:
+        for pair in configuration["source_pairs"]:
+            if outputs.get(Path(pair["source_identity"]).name.casefold()) != pair["candidate_sha256"]:
+                raise ValueError("Monaco composite does not bind rendered visual sources")
+    return {
+        "file_sha256": _digest(path),
+        "canonical_payload_sha256": computed_seal,
+        "candidate_metrics_sha256": computed_metrics,
     }
 
 
@@ -154,6 +240,13 @@ def _configuration(run_root: Path, index: int, record: dict, source_map: dict[st
     candidate_path = state_root / "optimized" / "render_manifest.json"
     reference = json.loads(reference_path.read_text(encoding="utf-8"))
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    source_pairs = record.get("source_pairs")
+    if (
+        type(source_pairs) is not list
+        or reference.get("configuration", {}).get("source_pairs") != source_pairs
+        or candidate.get("configuration", {}).get("source_pairs") != source_pairs
+    ):
+        raise ValueError(f"raw/render source-pair binding drift: {record['name']}")
     profile = FidelityProfile(
         1, "calibration-raw-probe", True, "a" * 64,
         {metric: 1e9 for metric in REQUIRED_METRICS},
@@ -212,12 +305,118 @@ def _configuration(run_root: Path, index: int, record: dict, source_map: dict[st
             }
             for item in ranked
         ],
+        "source_pairs": source_pairs,
     }
 
 
-def _lane(spec: dict, lane: str) -> dict:
+def _control_provenance(repo_root: Path, family_id: str, compiled: dict) -> dict:
+    path = repo_root / "benchmarks/lvs_models/control.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    matches = [item for item in payload["records"] if item["family_id"] == family_id]
+    if len(matches) != 1 or matches[0]["status"] != "compiled":
+        raise ValueError(f"control provenance is missing: {family_id}")
+    record = matches[0]
+    expected = {
+        "total_bytes": sum(item["size_bytes"] for item in record["artifacts"]),
+        "artifacts": sorted(record["artifacts"], key=lambda item: item["path"].casefold()),
+    }
+    if compiled != expected:
+        raise ValueError(f"control compiled artifacts drift: {family_id}")
+    return {
+        "kind": "roundtrip-control-record-v1",
+        "artifacts": [{
+            "kind": "control-record",
+            "path": "benchmarks/lvs_models/control.json#" + family_id,
+            "sha256": hashlib.sha256((
+                json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            ).encode("utf-8")).hexdigest(),
+        }],
+    }
+
+
+def _candidate_provenance(
+    spec: dict, compiled: dict, configurations: list[dict], repo_root: Path,
+) -> dict:
+    source_root = Path(spec["source_root"]).resolve(strict=True)
+    compiled_root = Path(spec["compiled_root"]).resolve(strict=True)
+    compiled_root.relative_to(source_root)
+    optimized_qc = Path(spec["optimized_qc"]).resolve(strict=True)
+    optimized_qc.relative_to(source_root)
+    is_composite = spec["candidate_id"] == "hybrid-stable"
+    paths = ({
+        "accepted-composite": Path(spec["composite_path"]),
+        "optimized-qc": optimized_qc,
+        "compile-summary": compiled_root / "compile_summary.json",
+    } if is_composite else {
+        "candidate-json": source_root / "candidate.json",
+        "candidate-metrics": source_root / "candidate_metrics.json",
+        "optimized-qc": optimized_qc,
+        "compile-summary": compiled_root / "compile_summary.json",
+    })
+    for path in paths.values():
+        resolved = path.resolve(strict=True)
+        if not is_composite or path != paths["accepted-composite"]:
+            resolved.relative_to(source_root)
+
+    composite = (
+        json.loads(paths["accepted-composite"].read_text(encoding="utf-8"))
+        if is_composite else None
+    )
+    metrics = (
+        composite["candidate_metrics"]
+        if is_composite
+        else json.loads(paths["candidate-metrics"].read_text(encoding="utf-8"))
+    )
+    outputs = {}
+    for item in metrics.get("files", ()):
+        identity = Path(item["source"]).name.casefold()
+        digest = item.get("restored_export_sha256")
+        if identity in outputs or type(digest) is not str:
+            raise ValueError("candidate metrics output identity is invalid")
+        outputs[identity] = digest
+    for configuration in configurations:
+        for pair in configuration["source_pairs"]:
+            identity = Path(pair["source_identity"]).name.casefold()
+            if outputs.get(identity) != pair["candidate_sha256"]:
+                raise ValueError(
+                    f"rendered candidate is not an optimization output: {pair['source_identity']}"
+                )
+
+    summary = json.loads(paths["compile-summary"].read_text(encoding="utf-8"))
+    if summary.get("total") != 1 or summary.get("ok") != 1 or summary.get("fail") != 0:
+        raise ValueError("compile summary is not a single successful build")
+    result = summary["results"][0]
+    if (
+        result.get("status") != "ok"
+        or Path(result["qc_path"]).resolve() != optimized_qc
+        or {Path(path).resolve() for path in result["compiled_files"]}
+        != {
+            (compiled_root / artifact["path"]).resolve()
+            for artifact in compiled["artifacts"]
+        }
+    ):
+        raise ValueError("compile summary does not bind the optimized QC and artifacts")
+    return {
+        "kind": (
+            "accepted-composite-bundle-v1"
+            if is_composite else "optimization-compile-bundle-v1"
+        ),
+        "artifacts": [
+            {
+                "kind": kind,
+                "path": spec.get("provenance_label", "research://") + "#" + kind,
+                "sha256": _digest(path),
+            }
+            for kind, path in paths.items()
+        ],
+    }
+
+
+def _lane(spec: dict, lane: str, family_id: str, repo_root: Path) -> dict:
     run_root = Path(spec["run_root"]).resolve(strict=True)
-    summary = json.loads((run_root / "raw-visual-states.json").read_text(encoding="utf-8"))
+    raw_summary_path = run_root / "raw-visual-states.json"
+    summary = json.loads(raw_summary_path.read_text(encoding="utf-8"))
     expected_scope = (
         "aggregate-appearance-anchor-not-structural-baseline"
         if lane.startswith("aggregate") else "strict-region-paired"
@@ -237,12 +436,22 @@ def _lane(spec: dict, lane: str) -> dict:
     ]
     if lane.startswith("aggregate"):
         configurations[0]["scope"] = expected_scope
-    return {
+    compiled = _compiled(spec)
+    provenance = (
+        _control_provenance(repo_root, family_id, compiled)
+        if spec["candidate_id"] == "roundtrip-control"
+        else _candidate_provenance(spec, compiled, configurations, repo_root)
+    )
+    result = {
         "lane": lane,
         "candidate_id": spec["candidate_id"],
-        "compiled": _compiled(spec),
+        "compiled": compiled,
         "configurations": configurations,
+        "raw_visual_states_sha256": _digest(raw_summary_path),
+        "provenance": provenance,
     }
+    result["lane_binding_sha256"] = canonical_lane_binding_hash(result)
+    return result
 
 
 def build_payload(spec: dict, repo_root: Path) -> dict:
@@ -254,8 +463,12 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
             _archived_alternative(alternative_spec, repo_root)
             for alternative_spec in family_spec["alternatives"]
         ]
-        baseline = _lane(family_spec["baseline"], "strict-region-paired")
-        candidate = _lane(family_spec["candidate"], "strict-region-paired")
+        baseline = _lane(
+            family_spec["baseline"], "strict-region-paired", expected_id, repo_root
+        )
+        candidate = _lane(
+            family_spec["candidate"], "strict-region-paired", expected_id, repo_root
+        )
         shipped = _shipped_original(repo_root, expected_id)
         roundtrip = baseline["compiled"]
         families.append({
@@ -303,18 +516,7 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
         "implementation": {
             relative: _digest(repo_root / relative) for relative in implementation_paths
         },
-        "external_artifacts": {
-            "monaco_accepted_composite_v1": {
-                "file_sha256": _digest(
-                    Path(spec["external_artifacts"]["monaco_accepted_composite_v1"])
-                    .resolve(strict=True)
-                ),
-                "canonical_payload_sha256": json.loads(
-                    Path(spec["external_artifacts"]["monaco_accepted_composite_v1"])
-                    .read_text(encoding="utf-8")
-                )["seal_sha256"],
-            },
-        },
+        "external_artifacts": {},
         "families": families,
         "baseline_distribution": baseline_distribution,
         "decision": {
@@ -323,6 +525,13 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
             "reason": "raw corpus distributions are not calibrated acceptance thresholds",
         },
     }
+    monaco = next(item for item in families if item["family_id"] == "dodge_monaco_police")
+    payload["external_artifacts"]["monaco_accepted_composite_v1"] = (
+        _validate_monaco_composite(
+            Path(spec["external_artifacts"]["monaco_accepted_composite_v1"]),
+            monaco["candidate"],
+        )
+    )
     payload["evidence_sha256"] = canonical_calibration_evidence_hash(payload)
     parse_calibration_evidence(payload)
     return payload

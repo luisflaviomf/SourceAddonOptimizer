@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 
 from benchmarks.lvs_models.build_calibration_corpus_v1 import (
+    _canonical_payload_hash,
+    _validate_monaco_composite,
     build_byte_comparison,
     distribution,
 )
@@ -20,6 +22,75 @@ from maximum_optimizer.reporting import canonical_json
 
 
 class CalibrationBuilderTests(unittest.TestCase):
+    def test_monaco_composite_recomputes_inner_seals_before_binding_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "monaco.json"
+            artifacts = [
+                {"path": f"compiled/model.{index}", "bytes": 1, "sha256": str(index) * 64}
+                for index in range(5)
+            ]
+            artifacts[-1]["bytes"] = 11592076
+            compiled = {
+                "total_bytes": 11592080,
+                "artifacts": [
+                    {
+                        "path": f"models/model.{index}",
+                        "size_bytes": artifact["bytes"],
+                        "sha256": artifact["sha256"],
+                    }
+                    for index, artifact in enumerate(artifacts)
+                ],
+            }
+            origins = [
+                {
+                    "source": f"part{index}.smd",
+                    "source_sha256": "a" * 64,
+                    "output_sha256": "b" * 64,
+                }
+                for index in range(44)
+            ]
+            candidate_metrics = {
+                "files": [{"fallback_reason": None} for _ in range(44)],
+                "triangles_before": 206754,
+                "triangles_after": 95128,
+            }
+            payload = {
+                "schema": "maximum-accepted-composite-v1",
+                "candidate_metrics": candidate_metrics,
+                "candidate_metrics_sha256": _canonical_payload_hash(candidate_metrics),
+                "composition": {
+                    "file_origins": origins,
+                    "stable_direct_visuals": 8,
+                    "inherited_r040_visuals": 36,
+                    "visual_fallback_count": 0,
+                },
+                "qc": {
+                    "source_mesh_files": 44,
+                    "optimized_mesh_files": 44,
+                    "differing_fields": ["mesh_files"],
+                },
+                "compiled": {"total_bytes": 11592080, "artifacts": artifacts},
+            }
+            payload["seal_sha256"] = _canonical_payload_hash(payload)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            lane = {
+                "compiled": compiled,
+                "configurations": [{
+                    "source_pairs": [{
+                        "source_identity": "part0.smd",
+                        "candidate_sha256": "b" * 64,
+                    }],
+                }],
+            }
+            self.assertEqual(
+                _validate_monaco_composite(path, lane)["canonical_payload_sha256"],
+                payload["seal_sha256"],
+            )
+            payload["candidate_metrics"]["triangles_after"] += 1
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "seal"):
+                _validate_monaco_composite(path, lane)
+
     def test_byte_comparison_preserves_both_typed_denominators(self) -> None:
         self.assertEqual(build_byte_comparison(600, 1200, 1000), {
             "candidate_bytes": 600,

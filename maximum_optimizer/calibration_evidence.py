@@ -46,6 +46,39 @@ _ALTERNATIVES = {
 }
 _ALTERNATIVE_STATUS = "rejected-research-alternative"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
+_STATE_NAMES = {
+    "pontiac_transam_wheel": (
+        "engine-default", "bodygroup-rim-001-1569ec5b-1",
+    ),
+    "dodge_charger": (
+        "engine-default", "bodygroup-steering_wheel-001-b81bc2a7-1",
+        "bodygroup-hood-002-2314555c-1", "bodygroup-hood-002-2314555c-2",
+        "bodygroup-trunk-003-3e341d2d-1",
+    ),
+    "toyota_supra": (
+        "engine-default", "bodygroup-front_bumper-001-9b0d8061-1",
+        "bodygroup-front_bumper-001-9b0d8061-2",
+        "bodygroup-front_bumper-001-9b0d8061-3",
+        "bodygroup-rear_bumper-002-611e4375-1",
+    ),
+    "nissan_skyline_gtr32": (
+        "engine-default", "bodygroup-front_bumper-002-9b0d8061-1",
+        "bodygroup-front_bumper-002-9b0d8061-2",
+        "bodygroup-rear_fenders-004-21ab784a-1",
+        "bodygroup-rear_fenders-004-21ab784a-2",
+    ),
+    "dodge_monaco_police": (
+        "engine-default", "bodygroup-lightbar-001-605787d6-1",
+        "bodygroup-lightbar-001-605787d6-2",
+        "bodygroup-lightbar-001-605787d6-3",
+        "bodygroup-spotlight-002-be46a22b-1",
+    ),
+}
+_MONACO_EXTERNAL = {
+    "file_sha256": "c3717c8dda5bf0c03eac22a3017d534c8374a125e785e28eba5f7de56f9f897f",
+    "canonical_payload_sha256": "713c09b7b177bb6c949d696f20966251144887bebec7c68839b56f13b57fdbb9",
+    "candidate_metrics_sha256": "4f5001804dfb5002915289dbb62cb2029eb5e1d76fe6c361e999be4e0431faa5",
+}
 
 
 def _exact(value: object, fields: set[str], label: str) -> dict:
@@ -95,11 +128,40 @@ def canonical_calibration_evidence_hash(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _canonical_hash(payload: object) -> str:
+    return hashlib.sha256((json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ) + "\n").encode("utf-8")).hexdigest()
+
+
+def canonical_compiled_hash(compiled: object) -> str:
+    return _canonical_hash(compiled)
+
+
+def canonical_lane_binding_hash(lane: object) -> str:
+    if type(lane) is not dict:
+        raise ValueError("lane binding must be an object")
+    return _canonical_hash({
+        "lane": lane.get("lane"),
+        "candidate_id": lane.get("candidate_id"),
+        "raw_visual_states_sha256": lane.get("raw_visual_states_sha256"),
+        "compiled": lane.get("compiled"),
+        "source_pairs": [
+            {
+                "name": item.get("name"),
+                "source_pairs": item.get("source_pairs"),
+            }
+            for item in lane.get("configurations", ())
+        ],
+        "provenance": lane.get("provenance"),
+    })
+
+
 def _configuration(value: object, lane: str, label: str) -> dict:
     item = _exact(value, {
         "name", "scope", "bodygroups", "reference_manifest_sha256",
         "candidate_manifest_sha256", "metrics", "missing_materials",
-        "geometry_audit", "top_regions",
+        "geometry_audit", "top_regions", "source_pairs",
     }, label)
     if type(item["name"]) is not str or not item["name"]:
         raise ValueError(f"{label} name is invalid")
@@ -150,6 +212,24 @@ def _configuration(value: object, lane: str, label: str) -> dict:
             raise ValueError(f"{label} region source is invalid")
         _number(region["surface_bidirectional_p95"], f"{label} region p95")
         _number(region["surface_max"], f"{label} region max")
+    pairs = item["source_pairs"]
+    if type(pairs) is not list or not pairs:
+        raise ValueError(f"{label} source pairs are invalid")
+    identities = set()
+    for position, pair_value in enumerate(pairs):
+        pair = _exact(pair_value, {
+            "source_identity", "reference_sha256", "candidate_sha256"
+        }, f"{label} source pair {position}")
+        if (
+            type(pair["source_identity"]) is not str or not pair["source_identity"]
+            or pair["source_identity"].casefold() in identities
+            or any(
+                type(pair[field]) is not str or _HASH.fullmatch(pair[field]) is None
+                for field in ("reference_sha256", "candidate_sha256")
+            )
+        ):
+            raise ValueError(f"{label} source pair is invalid")
+        identities.add(pair["source_identity"].casefold())
     return item
 
 
@@ -176,15 +256,54 @@ def _compiled(value: object, label: str) -> dict:
     return compiled
 
 
-def _lane(value: object, expected_lane: str, expected_candidate: str, label: str) -> dict:
+def _lane(
+    value: object, expected_lane: str, expected_candidate: str,
+    expected_states: tuple[str, ...], label: str,
+) -> dict:
     lane = _exact(value, {
-        "lane", "candidate_id", "compiled", "configurations"
+        "lane", "candidate_id", "compiled", "configurations",
+        "raw_visual_states_sha256", "provenance", "lane_binding_sha256",
     }, label)
     if lane["lane"] != expected_lane or lane["candidate_id"] != expected_candidate:
         raise ValueError(f"{label} identity is invalid")
     _compiled(lane["compiled"], f"{label} compiled")
+    if (
+        type(lane["raw_visual_states_sha256"]) is not str
+        or _HASH.fullmatch(lane["raw_visual_states_sha256"]) is None
+    ):
+        raise ValueError(f"{label} raw summary hash is invalid")
+    provenance = _exact(lane["provenance"], {"kind", "artifacts"}, f"{label} provenance")
+    if expected_candidate == "roundtrip-control":
+        expected_kind = "roundtrip-control-record-v1"
+        expected_artifact_kinds = ("control-record",)
+    elif expected_candidate == "hybrid-stable":
+        expected_kind = "accepted-composite-bundle-v1"
+        expected_artifact_kinds = ("accepted-composite", "optimized-qc", "compile-summary")
+    else:
+        expected_kind = "optimization-compile-bundle-v1"
+        expected_artifact_kinds = (
+            "candidate-json", "candidate-metrics", "optimized-qc", "compile-summary"
+        )
+    if provenance["kind"] != expected_kind or type(provenance["artifacts"]) is not list:
+        raise ValueError(f"{label} provenance identity is invalid")
+    artifact_kinds = []
+    for position, artifact_value in enumerate(provenance["artifacts"]):
+        artifact = _exact(
+            artifact_value, {"kind", "path", "sha256"},
+            f"{label} provenance artifact {position}",
+        )
+        if (
+            type(artifact["kind"]) is not str
+            or type(artifact["path"]) is not str or not artifact["path"]
+            or type(artifact["sha256"]) is not str
+            or _HASH.fullmatch(artifact["sha256"]) is None
+        ):
+            raise ValueError(f"{label} provenance artifact is invalid")
+        artifact_kinds.append(artifact["kind"])
+    if tuple(artifact_kinds) != expected_artifact_kinds:
+        raise ValueError(f"{label} provenance artifact set/order is invalid")
     configurations = lane["configurations"]
-    if type(configurations) is not list or not configurations or len(configurations) > 5:
+    if type(configurations) is not list or len(configurations) != len(expected_states):
         raise ValueError(f"{label} configurations are invalid")
     parsed = [
         _configuration(item, expected_lane, f"{label} configuration {position}")
@@ -192,6 +311,8 @@ def _lane(value: object, expected_lane: str, expected_candidate: str, label: str
     ]
     if len({item["name"] for item in parsed}) != len(parsed):
         raise ValueError(f"{label} configuration names are duplicated")
+    if tuple(item["name"] for item in parsed) != expected_states:
+        raise ValueError(f"{label} state matrix is invalid")
     if expected_lane.startswith("aggregate"):
         if len(parsed) != 1 or not parsed[0]["name"].startswith(
             "aggregate-appearance-anchor-not-structural-baseline:engine-default"
@@ -199,6 +320,11 @@ def _lane(value: object, expected_lane: str, expected_candidate: str, label: str
             raise ValueError(f"{label} aggregate scope is invalid")
     elif parsed[0]["name"] != "engine-default":
         raise ValueError(f"{label} must begin with engine-default")
+    if (
+        type(lane["lane_binding_sha256"]) is not str
+        or lane["lane_binding_sha256"] != canonical_lane_binding_hash(lane)
+    ):
+        raise ValueError(f"{label} lane binding is invalid")
     return lane
 
 
@@ -269,7 +395,7 @@ def _alternative(value: object, expected: tuple[str, str], label: str) -> dict:
         raise ValueError(f"{label} identity is invalid")
     evidence = _exact(item["evidence"], {
         "artifact_path", "artifact_sha256", "payload_sha256", "artifact_availability",
-        "quality_scope", "compiled", "winner",
+        "quality_scope", "compiled", "compiled_sha256", "winner",
     }, f"{label} evidence")
     if (
         type(evidence["artifact_path"]) is not str or not evidence["artifact_path"]
@@ -287,6 +413,7 @@ def _alternative(value: object, expected: tuple[str, str], label: str) -> dict:
             if (
                 evidence["artifact_availability"] != "archived-visual-only"
                 or evidence["compiled"] is not None
+                or evidence["compiled_sha256"] is not None
             ):
                 raise ValueError(f"{label} archived-only evidence cannot claim bytes")
         elif evidence["artifact_availability"] != "archived-visual-and-compiled":
@@ -300,6 +427,11 @@ def _alternative(value: object, expected: tuple[str, str], label: str) -> dict:
         ):
             raise ValueError(f"{label} raw clay scope is invalid")
         _compiled(evidence["compiled"], f"{label} compiled")
+    if evidence["compiled"] is not None and (
+        type(evidence["compiled_sha256"]) is not str
+        or evidence["compiled_sha256"] != canonical_compiled_hash(evidence["compiled"])
+    ):
+        raise ValueError(f"{label} compiled binding is invalid")
     return item
 
 
@@ -332,13 +464,15 @@ def parse_calibration_evidence(payload: object) -> dict:
         "external artifacts",
     )
     composite = _exact(external["monaco_accepted_composite_v1"], {
-        "file_sha256", "canonical_payload_sha256"
+        "file_sha256", "canonical_payload_sha256", "candidate_metrics_sha256"
     }, "Monaco composite")
     if any(
         type(value) is not str or _HASH.fullmatch(value) is None
         for value in composite.values()
     ):
         raise ValueError("Monaco composite hashes are invalid")
+    if composite != _MONACO_EXTERNAL:
+        raise ValueError("Monaco composite seal is not the accepted artifact")
     families = root["families"]
     if type(families) is not list or tuple(
         item.get("family_id") if type(item) is dict else None for item in families
@@ -353,16 +487,38 @@ def parse_calibration_evidence(payload: object) -> dict:
             },
             family_id,
         )
-        _lane(
+        baseline = _lane(
             family["baseline"],
             "strict-region-paired",
             "roundtrip-control",
+            _STATE_NAMES[family_id],
             f"{family_id} baseline",
         )
-        _lane(
+        candidate = _lane(
             family["candidate"], "strict-region-paired", _CANDIDATES[family_id],
+            _STATE_NAMES[family_id],
             f"{family_id} candidate",
         )
+        for baseline_config, candidate_config in zip(
+            baseline["configurations"], candidate["configurations"]
+        ):
+            if baseline_config["bodygroups"] != candidate_config["bodygroups"]:
+                raise ValueError(f"{family_id} baseline/candidate bodygroups differ")
+            baseline_pairs = baseline_config["source_pairs"]
+            candidate_pairs = candidate_config["source_pairs"]
+            if tuple(
+                (item["source_identity"], item["reference_sha256"])
+                for item in baseline_pairs
+            ) != tuple(
+                (item["source_identity"], item["reference_sha256"])
+                for item in candidate_pairs
+            ):
+                raise ValueError(f"{family_id} source pair references differ")
+            if any(
+                item["reference_sha256"] != item["candidate_sha256"]
+                for item in baseline_pairs
+            ):
+                raise ValueError(f"{family_id} roundtrip source pairs are not exact")
         _byte_evidence(family, family_id)
         alternatives = family["alternatives"]
         expected_alternatives = _ALTERNATIVES[family_id]
