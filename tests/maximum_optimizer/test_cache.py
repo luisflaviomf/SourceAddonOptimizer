@@ -449,6 +449,24 @@ class CandidateCacheTests(unittest.TestCase):
         self.assertIsNone(self.cache.lookup(self.key))
         self.assertFalse(any(".tmp-" in item.name for item in self.root.iterdir()))
 
+    def test_validated_store_replaces_existing_entry_that_fails_semantics(self):
+        stale = self.cache.store(self.key, self.source, {"generation": "legacy"})
+        (stale / "payload/model.mdl").write_bytes(b"stale")
+
+        final, owned = self.cache.store_validated(
+            self.key, self.source, {"generation": "recovery"},
+            finalize_staging=lambda staging: (
+                staging / "maximum_integrity.json"
+            ).write_text('{"sealed":true}', encoding="utf-8"),
+            validate_existing=lambda _entry: (_ for _ in ()).throw(
+                ValueError("legacy or corrupt recovery cache")
+            ),
+        )
+
+        self.assertTrue(owned)
+        self.assertEqual((final / "payload/model.mdl").read_bytes(), b"compiled")
+        self.assertFalse(any(".quarantine-" in item.name for item in self.root.iterdir()))
+
     def test_validated_store_concurrent_valid_winner_is_never_replaced(self):
         barrier = threading.Barrier(2)
         results = []

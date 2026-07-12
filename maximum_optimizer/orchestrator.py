@@ -2773,6 +2773,9 @@ def run_maximum_addon(
                             cancel_check=lambda: _check_cancelled(
                                 cancel, "cancelled waiting for recovery cache lock"
                             ),
+                            is_cancellation=lambda exc: isinstance(
+                                exc, ProcessCancelledError
+                            ),
                         )
                         recovery_cache_sealed = True
                         # The atomic rename invalidates paths rooted in private

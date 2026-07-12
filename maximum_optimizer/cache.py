@@ -433,6 +433,7 @@ class CandidateCache:
         validate_existing: Callable[[Path], None],
         copy_function: Callable[[str, str], str | os.PathLike[str]] = shutil.copy2,
         cancel_check: Callable[[], None] = lambda: None,
+        is_cancellation: Callable[[BaseException], bool] = lambda _exc: False,
     ) -> tuple[Path, bool]:
         """Publish a recovery entry only after private-staging semantic validation."""
         with _validated_key_lock(key.digest):
@@ -442,6 +443,7 @@ class CandidateCache:
                     finalize_staging=finalize_staging,
                     validate_existing=validate_existing,
                     copy_function=copy_function,
+                    is_cancellation=is_cancellation,
                 )
 
     def _store_validated_locked(
@@ -453,6 +455,7 @@ class CandidateCache:
         finalize_staging: Callable[[Path], None],
         validate_existing: Callable[[Path], None],
         copy_function: Callable[[str, str], str | os.PathLike[str]] = shutil.copy2,
+        is_cancellation: Callable[[BaseException], bool] = lambda _exc: False,
     ) -> tuple[Path, bool]:
         source = Path(source_dir)
         if _is_symlink(source) or not source.is_dir():
@@ -462,8 +465,13 @@ class CandidateCache:
         final = self.root / key.digest
         existing = self.lookup(key)
         if existing is not None:
-            validate_existing(existing)
-            return existing, False
+            try:
+                validate_existing(existing)
+            except BaseException as exc:
+                if is_cancellation(exc):
+                    raise
+            else:
+                return existing, False
         _raise_if_cache_symlink(final)
         staging = _unique_sibling(self.root, f"{key.digest}.tmp-{os.getpid()}-")
         staging.mkdir()
@@ -477,9 +485,14 @@ class CandidateCache:
             # Give a concurrent valid publisher precedence; never quarantine it.
             existing = self.lookup(key)
             if existing is not None:
-                validate_existing(existing)
-                _remove_direct_child(staging, self.root)
-                return existing, False
+                try:
+                    validate_existing(existing)
+                except BaseException as exc:
+                    if is_cancellation(exc):
+                        raise
+                else:
+                    _remove_direct_child(staging, self.root)
+                    return existing, False
 
             metadata_sha256 = hashlib.sha256(
                 (staging / "metadata.json").read_bytes()
