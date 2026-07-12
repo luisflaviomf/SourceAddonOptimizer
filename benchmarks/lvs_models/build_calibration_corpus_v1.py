@@ -184,7 +184,7 @@ def build_payload(spec: dict, repo_root: Path) -> dict:
             "family_id": expected_id,
             "baseline": _lane(
                 family_spec["baseline"],
-                "aggregate-appearance-anchor-not-structural-baseline",
+                "strict-region-paired",
             ),
             "candidate": _lane(family_spec["candidate"], "strict-region-paired"),
             "alternatives": alternatives,

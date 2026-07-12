@@ -209,8 +209,8 @@ def parse_calibration_evidence(payload: object) -> dict:
         )
         _lane(
             family["baseline"],
-            "aggregate-appearance-anchor-not-structural-baseline",
-            "b050",
+            "strict-region-paired",
+            "roundtrip-control",
             f"{family_id} baseline",
         )
         _lane(

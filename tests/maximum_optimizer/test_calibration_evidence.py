@@ -58,8 +58,8 @@ def _payload() -> dict:
             {
                 "family_id": family,
                 "baseline": {
-                    "lane": "aggregate-appearance-anchor-not-structural-baseline",
-                    "candidate_id": "b050",
+                    "lane": "strict-region-paired",
+                    "candidate_id": "roundtrip-control",
                     "compiled": {
                         "total_bytes": 1000,
                         "artifacts": [
@@ -68,8 +68,8 @@ def _payload() -> dict:
                         ],
                     },
                     "configurations": [_configuration(
-                        "aggregate-appearance-anchor-not-structural-baseline:engine-default",
-                        "aggregate-appearance-anchor-not-structural-baseline",
+                        "engine-default",
+                        "strict-region-paired",
                     )],
                 },
                 "candidate": {
@@ -127,6 +127,27 @@ class CalibrationEvidenceTests(unittest.TestCase):
         self.assertTrue(all(
             not family["alternatives"] for family in parsed["families"][1:]
         ))
+        self.assertTrue(all(
+            family["baseline"]["candidate_id"] == "roundtrip-control"
+            and family["baseline"]["lane"] == "strict-region-paired"
+            for family in parsed["families"]
+        ))
+
+    def test_b050_aggregate_cannot_be_reintroduced_as_calibration_baseline(self) -> None:
+        changed = copy.deepcopy(_payload())
+        baseline = changed["families"][0]["baseline"]
+        baseline["candidate_id"] = "b050"
+        baseline["lane"] = "aggregate-appearance-anchor-not-structural-baseline"
+        baseline["configurations"][0]["name"] = (
+            "aggregate-appearance-anchor-not-structural-baseline:engine-default"
+        )
+        baseline["configurations"][0]["scope"] = (
+            "aggregate-appearance-anchor-not-structural-baseline"
+        )
+        changed["evidence_sha256"] = canonical_calibration_evidence_hash(changed)
+
+        with self.assertRaises(ValueError):
+            parse_calibration_evidence(changed)
 
     def test_alternative_set_and_rejection_identity_are_fixed(self) -> None:
         for mutate in (
