@@ -5,6 +5,7 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 
 from maximum_optimizer.domain import FocusedRegionPolicy, FocusTarget, WholeStateEvidence
@@ -21,6 +22,17 @@ _POSE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _GEOMETRY_FIELDS = {
     "scope", "pose", "surface_bidirectional_p95", "surface_max",
 }
+
+
+@dataclass(frozen=True)
+class FocusSelection:
+    selector_input_sha256: str
+    eligible_ranking: tuple[FocusTarget, ...]
+    selected: tuple[FocusTarget, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "eligible_ranking", tuple(self.eligible_ranking))
+        object.__setattr__(self, "selected", tuple(self.selected))
 
 
 def _relative_path(value: object, label: str) -> str:
@@ -216,12 +228,12 @@ def _canonical_states(
     return tuple(canonical_states), tuple(ranking_rows)
 
 
-def select_focus_targets(
+def select_focus_targets_with_evidence(
     states: Sequence[WholeStateEvidence],
     manifest: RegionManifest,
     profile: FidelityProfile,
     policy: FocusedRegionPolicy,
-) -> tuple[FocusTarget, ...]:
+) -> FocusSelection:
     if not isinstance(policy, FocusedRegionPolicy):
         raise TypeError("policy must be a FocusedRegionPolicy")
     if not isinstance(profile, FidelityProfile):
@@ -286,7 +298,7 @@ def select_focus_targets(
         item[0],
     ))
 
-    return tuple(
+    eligible_ranking = tuple(
         FocusTarget(
             rank,
             region_key,
@@ -302,5 +314,19 @@ def select_focus_targets(
             float(row["normalized_max"]),
             selector_hash,
         )
-        for rank, (region_key, row) in enumerate(anchors[:policy.top_k])
+        for rank, (region_key, row) in enumerate(anchors)
     )
+    return FocusSelection(
+        selector_hash,
+        eligible_ranking,
+        eligible_ranking[:policy.top_k],
+    )
+
+
+def select_focus_targets(
+    states: Sequence[WholeStateEvidence],
+    manifest: RegionManifest,
+    profile: FidelityProfile,
+    policy: FocusedRegionPolicy,
+) -> tuple[FocusTarget, ...]:
+    return select_focus_targets_with_evidence(states, manifest, profile, policy).selected

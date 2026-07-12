@@ -81,6 +81,33 @@ def _fixture():
 
 
 class FocusedRegionSelectionTests(unittest.TestCase):
+    def test_selection_evidence_exposes_complete_ranking_and_preserves_legacy_prefix(self):
+        from maximum_optimizer.focused_regions import (
+            select_focus_targets,
+            select_focus_targets_with_evidence,
+        )
+
+        manifest, keys, states, policy = _fixture()
+        profile = _profile(surface_bidirectional_p95=0.1, surface_max=0.2)
+        selection = select_focus_targets_with_evidence(states, manifest, profile, policy)
+
+        self.assertEqual(
+            selection.selected,
+            select_focus_targets(states, manifest, profile, policy),
+        )
+        self.assertEqual(len(selection.eligible_ranking), 3)
+        self.assertEqual(
+            tuple(item.rank for item in selection.eligible_ranking), (0, 1, 2)
+        )
+        self.assertEqual(
+            tuple(item.region_key for item in selection.eligible_ranking),
+            (keys["grille"], keys["wheel"], keys["body"]),
+        )
+        self.assertTrue(all(
+            item.selector_input_sha256 == selection.selector_input_sha256
+            for item in selection.eligible_ranking
+        ))
+
     def test_ranking_is_stable_under_shuffled_states_and_uses_normalized_risk(self):
         from maximum_optimizer.focused_regions import select_focus_targets
 
