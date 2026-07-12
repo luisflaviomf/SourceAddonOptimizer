@@ -271,6 +271,48 @@ class ProcessTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
 
+    def test_cancel_waits_on_inflight_natural_exit_before_sending_termination(self):
+        class CompletingProcess:
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                self.asserted_timeout = timeout
+                self.returncode = 0
+                return 0
+
+        process = CompletingProcess()
+        with patch(
+            "maximum_optimizer.processes._terminate_process_tree",
+            side_effect=AssertionError("must not terminate a naturally completing process"),
+        ):
+            cancelled = process_module._cancel_process_tree(process, object())
+
+        self.assertFalse(cancelled)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(process.asserted_timeout, process_module._CANCEL_EXIT_GRACE_SECONDS)
+
+    def test_cancel_terminates_process_that_remains_running_after_exit_grace(self):
+        class RunningProcess:
+            returncode = None
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired(["worker"], timeout)
+
+        process = RunningProcess()
+        with patch(
+            "maximum_optimizer.processes._terminate_process_tree", return_value=True
+        ) as terminate:
+            cancelled = process_module._cancel_process_tree(process, object())
+
+        self.assertTrue(cancelled)
+        terminate.assert_called_once()
+
     @unittest.skipUnless(os.name == "nt", "Windows Job accounting semantics")
     def test_run_returns_only_after_redirected_descendant_is_dead(self):
         child_pid_path = self.root / "redirected-child.pid"

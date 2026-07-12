@@ -26,6 +26,7 @@ SIMPLIFY_REGULARIZE_LIGHT = 1 << 6
 MESHOPT_ENGINE_PREFERRED = False
 
 _UINT32_MAX = (1 << 32) - 1
+_MESHOPT_COUNT_LIMIT = 1 << 28
 _DLL_CACHE: dict[Path, ctypes.WinDLL] = {}
 
 
@@ -161,9 +162,35 @@ def _finite_rows(name: str, rows: Iterable[tuple[float, ...]], width: int) -> No
             raise ValueError(f"{name} must contain finite float{width} rows")
 
 
+def _canonicalize_skin_slots(
+    weights: Iterable[float], bone_indices: Iterable[int]
+) -> tuple[tuple[float, float, float, float], tuple[int, int, int, int]]:
+    weight_row = tuple(float(value) for value in weights)
+    bone_row = tuple(bone_indices)
+    if len(weight_row) != 4 or len(bone_row) != 4:
+        raise ValueError("skin slots must contain four weights and four bone ids")
+    if not all(math.isfinite(value) for value in weight_row):
+        raise ValueError("skin weights must be finite")
+    if any(type(bone) is not int or bone < 0 or bone >= _UINT32_MAX for bone in bone_row):
+        raise ValueError("skin bone ids must be uint32 values")
+    combined: dict[int, float] = {}
+    for bone, weight in zip(bone_row, weight_row):
+        clamped = min(1.0, max(0.0, weight))
+        if clamped:
+            combined[bone] = combined.get(bone, 0.0) + clamped
+    selected = sorted(combined.items(), key=lambda item: (-item[1], item[0]))[:4]
+    total = sum(weight for _bone, weight in selected)
+    if total <= 1e-12 or not math.isfinite(total):
+        raise ValueError("skin weights contain a zero-sum vertex")
+    canonical = sorted(((bone, weight / total) for bone, weight in selected), key=lambda item: item[0])
+    out_bones = tuple(bone for bone, _weight in canonical) + (0,) * (4 - len(canonical))
+    out_weights = tuple(weight for _bone, weight in canonical) + (0.0,) * (4 - len(canonical))
+    return out_weights, out_bones  # type: ignore[return-value]
+
+
 def _validate(mesh: MeshInput, options: SimplifyOptions) -> None:
     count = len(mesh.positions)
-    if count == 0 or count > _UINT32_MAX:
+    if count == 0 or count >= _MESHOPT_COUNT_LIMIT:
         raise ValueError("vertex_count is out of range")
     _finite_rows("positions", mesh.positions, 3)
     _finite_rows("normals", mesh.normals, 3)
@@ -183,7 +210,7 @@ def _validate(mesh: MeshInput, options: SimplifyOptions) -> None:
         raise ValueError("bone_indices must contain uint32x4 rows")
     if len(mesh.indices) < 3 or len(mesh.indices) % 3:
         raise ValueError("indices must contain complete triangles")
-    if len(mesh.indices) > _UINT32_MAX:
+    if len(mesh.indices) >= _MESHOPT_COUNT_LIMIT:
         raise ValueError("index_count is out of range")
     if any(type(index) is not int or index < 0 or index >= count for index in mesh.indices):
         raise ValueError("indices contain an invalid vertex")
@@ -215,12 +242,19 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
     _validate(mesh, options)
     dll = load_library()
 
+    canonical_skin = tuple(
+        _canonicalize_skin_slots(weights, bones)
+        for weights, bones in zip(mesh.weights, mesh.bone_indices)
+    )
+    canonical_weights = tuple(weights for weights, _bones in canonical_skin)
+    canonical_bones = tuple(bones for _weights, bones in canonical_skin)
+
     position_buffer = (ctypes.c_float * (len(mesh.positions) * 3))(*_flat(mesh.positions))
     normal_buffer = (ctypes.c_float * (len(mesh.normals) * 3))(*_flat(mesh.normals))
     uv_buffer = (ctypes.c_float * (len(mesh.uvs) * 2))(*_flat(mesh.uvs))
-    weight_buffer = (ctypes.c_float * (len(mesh.weights) * 4))(*_flat(mesh.weights))
-    bone_buffer = (ctypes.c_uint32 * (len(mesh.bone_indices) * 4))(
-        *(value for row in mesh.bone_indices for value in row)
+    weight_buffer = (ctypes.c_float * (len(canonical_weights) * 4))(*_flat(canonical_weights))
+    bone_buffer = (ctypes.c_uint32 * (len(canonical_bones) * 4))(
+        *(value for row in canonical_bones for value in row)
     )
     index_buffer = (ctypes.c_uint32 * len(mesh.indices))(*mesh.indices)
     material_buffer = (ctypes.c_uint32 * len(mesh.material_ids))(*mesh.material_ids)
@@ -233,7 +267,7 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
         uv_buffer,
         weight_buffer,
         bone_buffer,
-        max((value for row in mesh.bone_indices for value in row), default=0) + 1,
+        max((value for row in canonical_bones for value in row), default=0) + 1,
         len(mesh.positions),
         index_buffer,
         len(mesh.indices),
@@ -299,7 +333,7 @@ def simplify_mesh(mesh: MeshInput, options: SimplifyOptions) -> SimplifiedMesh:
             for row in weights
         ):
             raise RuntimeError("invalid native output weights")
-        bone_count = max((value for row in mesh.bone_indices for value in row), default=0) + 1
+        bone_count = max((value for row in canonical_bones for value in row), default=0) + 1
         if any(
             bone >= bone_count
             for row_weights, row_bones in zip(weights, bone_indices)

@@ -7,6 +7,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 from maximum_optimizer.meshopt_bridge import (
     LOCK,
@@ -20,6 +21,8 @@ from maximum_optimizer.meshopt_bridge import (
     _MaximumMeshInput,
     _MaximumMeshOptions,
     _MaximumMeshOutput,
+    _canonicalize_skin_slots,
+    _validate,
 )
 
 
@@ -142,6 +145,122 @@ class MeshoptBridgeTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=8) as pool:
             results = tuple(pool.map(lambda _item: simplify_mesh(source, options), range(64)))
         self.assertTrue(all(result == results[0] for result in results))
+
+    def test_same_output_registry_linearizes_build_destroy_and_reuse(self) -> None:
+        dll = load_library()
+        for name, argtypes, restype in (
+            ("maximum_meshopt_test_pause_at", [ctypes.c_uint32], ctypes.c_int),
+            ("maximum_meshopt_test_wait_paused", [ctypes.c_uint32, ctypes.c_uint32], ctypes.c_int),
+            ("maximum_meshopt_test_release", [ctypes.c_uint32], ctypes.c_int),
+            ("maximum_meshopt_test_registry_count", [], ctypes.c_size_t),
+        ):
+            function = getattr(dll, name)
+            function.argtypes = argtypes
+            function.restype = restype
+
+        source = _grid(5)
+        positions = (ctypes.c_float * (len(source.positions) * 3))(*(
+            value for row in source.positions for value in row
+        ))
+        normals = (ctypes.c_float * (len(source.normals) * 3))(*(
+            value for row in source.normals for value in row
+        ))
+        uvs = (ctypes.c_float * (len(source.uvs) * 2))(*(
+            value for row in source.uvs for value in row
+        ))
+        weights = (ctypes.c_float * (len(source.weights) * 4))(*(
+            value for row in source.weights for value in row
+        ))
+        bones = (ctypes.c_uint32 * (len(source.bone_indices) * 4))(*(
+            value for row in source.bone_indices for value in row
+        ))
+        indices = (ctypes.c_uint32 * len(source.indices))(*source.indices)
+        materials = (ctypes.c_uint32 * len(source.material_ids))(*source.material_ids)
+        flags = (ctypes.c_ubyte * len(source.vertex_flags))(*source.vertex_flags)
+        native_input = _MaximumMeshInput(
+            ctypes.sizeof(_MaximumMeshInput), positions, normals, uvs, weights, bones, 2,
+            len(source.positions), indices, len(source.indices), materials,
+            len(source.material_ids), flags,
+        )
+        options = _MaximumMeshOptions(ctypes.sizeof(_MaximumMeshOptions), 0.55, 1.0, 0, 1)
+        output = _MaximumMeshOutput(struct_size=ctypes.sizeof(_MaximumMeshOutput))
+
+        self.assertEqual(dll.maximum_meshopt_test_pause_at(1), 1)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            building = pool.submit(
+                dll.maximum_meshopt_simplify,
+                ctypes.byref(native_input), ctypes.byref(options), ctypes.byref(output),
+            )
+            self.assertEqual(dll.maximum_meshopt_test_wait_paused(1, 5000), 1)
+            self.assertEqual(dll.maximum_meshopt_test_registry_count(), 1)
+            dll.maximum_meshopt_destroy(ctypes.byref(output))
+            self.assertFalse(output.positions)
+            self.assertEqual(output.ownership_cookie, 0)
+            self.assertEqual(dll.maximum_meshopt_test_release(1), 1)
+            self.assertEqual(building.result(timeout=5), 0)
+
+            self.assertTrue(output.positions)
+            self.assertEqual(dll.maximum_meshopt_test_pause_at(2), 1)
+            destroying = pool.submit(dll.maximum_meshopt_destroy, ctypes.byref(output))
+            self.assertEqual(dll.maximum_meshopt_test_wait_paused(2, 5000), 1)
+            self.assertFalse(output.positions)
+            self.assertEqual(
+                dll.maximum_meshopt_simplify(
+                    ctypes.byref(native_input), ctypes.byref(options), ctypes.byref(output)
+                ),
+                -9,
+            )
+            self.assertEqual(dll.maximum_meshopt_test_release(2), 1)
+            destroying.result(timeout=5)
+
+        dll.maximum_meshopt_destroy(ctypes.byref(output))
+        self.assertEqual(dll.maximum_meshopt_test_registry_count(), 0)
+
+    def test_skin_slots_are_canonical_by_bone_id_after_weight_selection(self) -> None:
+        weights, bones = _canonicalize_skin_slots(
+            (0.9, 0.1, 0.0, 0.0), (7, 2, 999999, 4000000)
+        )
+        self.assertEqual(bones, (2, 7, 0, 0))
+        self.assertEqual(weights, (0.1, 0.9, 0.0, 0.0))
+
+        dense_weights, dense_bones = _canonicalize_skin_slots(
+            (0.2, 0.4, 0.3, 0.1), (1000000, 2, 700000, 9)
+        )
+        self.assertEqual(dense_bones, (2, 9, 700000, 1000000))
+        for actual, expected in zip(dense_weights, (0.4, 0.1, 0.3, 0.2)):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_native_skin_metric_matches_python_canonical_slots(self) -> None:
+        source = _grid(4)
+        weights = []
+        bones = []
+        for index in range(len(source.positions)):
+            if index % 2:
+                weights.append((0.1, 0.9, 0.0, 0.0))
+                bones.append((2, 7, 1000000, 900000))
+            else:
+                weights.append((0.9, 0.1, 0.0, 0.0))
+                bones.append((7, 2, 900000, 1000000))
+        mesh = MeshInput(**{
+            **source.__dict__, "weights": tuple(weights), "bone_indices": tuple(bones)
+        })
+        result = simplify_mesh(mesh, SimplifyOptions(0.7, 1.0, update_vertices=True))
+        for row_weights, row_bones in zip(result.weights, result.bone_indices):
+            self.assertEqual(row_bones, (2, 7, 0, 0))
+            self.assertAlmostEqual(row_weights[0], 0.1, places=5)
+            self.assertAlmostEqual(row_weights[1], 0.9, places=5)
+
+    def test_python_rejects_meshoptimizer_count_limit_before_iteration(self) -> None:
+        class HugeCount:
+            def __len__(self) -> int:
+                return 1 << 28
+
+            def __iter__(self):
+                raise AssertionError("must reject before iterating")
+
+        fake = SimpleNamespace(positions=HugeCount())
+        with self.assertRaisesRegex(ValueError, "vertex_count is out of range"):
+            _validate(fake, SimplifyOptions(0.5, 0.1))
 
     def test_mesh_input_deep_freezes_lists_and_bone_ids(self) -> None:
         source = _grid(4)

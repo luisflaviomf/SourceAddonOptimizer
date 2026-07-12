@@ -21,11 +21,11 @@ class DomainTests(unittest.TestCase):
     def test_candidate_cache_payload_uses_structured_region_overrides(self):
         candidate = CandidateSpec(
             "regional", "meshoptimizer", 0.25, 0.01, "transfer-v1",
-            (("body|paint|0", 0.5),),
+            (("r-" + "a" * 64, 0.5),),
         )
         self.assertEqual(
             candidate.cache_payload()["region_overrides"],
-            [{"region_key": "body|paint|0", "ratio": 0.5}],
+            [{"region_key": "r-" + "a" * 64, "ratio": 0.5}],
         )
 
     def test_snapshot_rejects_inconsistent_total(self):

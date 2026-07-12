@@ -28,6 +28,9 @@ class ProcessExecutionError(RuntimeError):
     """Raised when a child cannot be safely launched or fully terminated."""
 
 
+_CANCEL_EXIT_GRACE_SECONDS = 0.1
+
+
 def _normalize_command(command: Sequence[str | os.PathLike[str]]) -> tuple[str, ...]:
     if isinstance(command, (str, bytes)):
         raise TypeError("command must be a sequence, not a shell string")
@@ -292,6 +295,18 @@ def _terminate_process_tree(
     return True
 
 
+def _cancel_process_tree(
+    process: subprocess.Popen[bytes], windows_job: object | None
+) -> bool:
+    if process.poll() is not None:
+        return False
+    try:
+        process.wait(timeout=_CANCEL_EXIT_GRACE_SECONDS)
+        return False
+    except subprocess.TimeoutExpired:
+        return _terminate_process_tree(process, windows_job)
+
+
 def _reap_parent(process: subprocess.Popen[bytes], windows_job: object | None) -> None:
     try:
         process.wait(timeout=2)
@@ -369,7 +384,7 @@ def run_process(
             if cancel_event.is_set():
                 if process.poll() is not None:
                     break
-                cancelled = _terminate_process_tree(process, windows_job)
+                cancelled = _cancel_process_tree(process, windows_job)
                 break
             time.sleep(0.05)
     finally:

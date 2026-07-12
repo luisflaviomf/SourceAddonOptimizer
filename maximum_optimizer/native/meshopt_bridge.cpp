@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -78,12 +79,55 @@ enum ErrorCode
     ErrorAllocation = -6,
     ErrorSimplifier = -7,
     ErrorException = -8,
+    ErrorBusy = -9,
+};
+
+enum class OutputState
+{
+    Building,
+    Owned,
+    Destroying,
+};
+
+struct OutputRecord
+{
+    OutputState state = OutputState::Building;
+    std::uint64_t cookie = 0;
+    float* positions = nullptr;
+    float* normals = nullptr;
+    float* uvs = nullptr;
+    float* weights = nullptr;
+    std::uint32_t* bone_indices = nullptr;
+    std::uint32_t* indices = nullptr;
+    std::uint32_t* material_ids = nullptr;
 };
 
 std::mutex g_output_mutex;
-std::unordered_map<MaximumMeshOutput*, std::uint64_t> g_owned_outputs;
+std::unordered_map<MaximumMeshOutput*, OutputRecord> g_output_states;
 std::atomic<std::uint64_t> g_cookie_counter{
     static_cast<std::uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count()) | 1u};
+
+std::mutex g_test_hook_mutex;
+std::condition_variable g_test_hook_condition;
+std::uint32_t g_test_pause_point = 0;
+std::uint32_t g_test_reached_point = 0;
+bool g_test_hook_released = false;
+
+void test_pause(std::uint32_t point)
+{
+    std::unique_lock<std::mutex> lock(g_test_hook_mutex);
+    if (g_test_pause_point != point)
+        return;
+    g_test_reached_point = point;
+    g_test_hook_condition.notify_all();
+    g_test_hook_condition.wait(lock, [point]() {
+        return g_test_hook_released || g_test_pause_point != point;
+    });
+    g_test_pause_point = 0;
+    g_test_reached_point = 0;
+    g_test_hook_released = false;
+    g_test_hook_condition.notify_all();
+}
 
 bool can_multiply(std::size_t a, std::size_t b)
 {
@@ -149,6 +193,75 @@ void reset_output(MaximumMeshOutput* output)
     output->result_error = 0.f;
     output->ownership_cookie = 0;
 }
+
+class OutputBuildReservation
+{
+public:
+    explicit OutputBuildReservation(MaximumMeshOutput* output) : output_(output) {}
+    OutputBuildReservation(const OutputBuildReservation&) = delete;
+    OutputBuildReservation& operator=(const OutputBuildReservation&) = delete;
+
+    ~OutputBuildReservation()
+    {
+        if (!active_)
+            return;
+        std::lock_guard<std::mutex> lock(g_output_mutex);
+        const auto found = g_output_states.find(output_);
+        if (found != g_output_states.end() && found->second.state == OutputState::Building)
+        {
+            reset_output(output_);
+            g_output_states.erase(found);
+        }
+    }
+
+    bool publish(
+        std::unique_ptr<float[]>& positions,
+        std::unique_ptr<float[]>& normals,
+        std::unique_ptr<float[]>& uvs,
+        std::unique_ptr<float[]>& weights,
+        std::unique_ptr<std::uint32_t[]>& bone_indices,
+        std::unique_ptr<std::uint32_t[]>& indices,
+        std::unique_ptr<std::uint32_t[]>& material_ids,
+        std::size_t vertex_count,
+        std::size_t index_count,
+        std::size_t triangle_count,
+        float result_error)
+    {
+        std::lock_guard<std::mutex> lock(g_output_mutex);
+        const auto found = g_output_states.find(output_);
+        if (found == g_output_states.end() || found->second.state != OutputState::Building)
+            return false;
+        OutputRecord& record = found->second;
+        record.cookie = g_cookie_counter.fetch_add(2, std::memory_order_relaxed);
+        record.positions = positions.release();
+        record.normals = normals.release();
+        record.uvs = uvs.release();
+        record.weights = weights.release();
+        record.bone_indices = bone_indices.release();
+        record.indices = indices.release();
+        record.material_ids = material_ids.release();
+
+        output_->positions = record.positions;
+        output_->normals = record.normals;
+        output_->uvs = record.uvs;
+        output_->weights = record.weights;
+        output_->bone_indices = record.bone_indices;
+        output_->vertex_count = vertex_count;
+        output_->indices = record.indices;
+        output_->index_count = index_count;
+        output_->material_ids = record.material_ids;
+        output_->triangle_count = triangle_count;
+        output_->result_error = result_error;
+        output_->ownership_cookie = record.cookie;
+        record.state = OutputState::Owned;
+        active_ = false;
+        return true;
+    }
+
+private:
+    MaximumMeshOutput* output_;
+    bool active_ = true;
+};
 } // namespace
 
 extern "C" __declspec(dllexport) int maximum_meshopt_version()
@@ -161,25 +274,74 @@ extern "C" __declspec(dllexport) int maximum_meshopt_abi_version()
     return 2;
 }
 
+extern "C" __declspec(dllexport) int maximum_meshopt_test_pause_at(std::uint32_t point)
+{
+    if (point != 1 && point != 2)
+        return 0;
+    std::lock_guard<std::mutex> lock(g_test_hook_mutex);
+    if (g_test_pause_point != 0 || g_test_reached_point != 0)
+        return 0;
+    g_test_pause_point = point;
+    g_test_hook_released = false;
+    return 1;
+}
+
+extern "C" __declspec(dllexport) int maximum_meshopt_test_wait_paused(
+    std::uint32_t point, std::uint32_t timeout_ms)
+{
+    std::unique_lock<std::mutex> lock(g_test_hook_mutex);
+    return g_test_hook_condition.wait_for(
+               lock, std::chrono::milliseconds(timeout_ms),
+               [point]() { return g_test_reached_point == point; })
+        ? 1
+        : 0;
+}
+
+extern "C" __declspec(dllexport) int maximum_meshopt_test_release(std::uint32_t point)
+{
+    std::lock_guard<std::mutex> lock(g_test_hook_mutex);
+    if (g_test_reached_point != point)
+        return 0;
+    g_test_hook_released = true;
+    g_test_hook_condition.notify_all();
+    return 1;
+}
+
+extern "C" __declspec(dllexport) std::size_t maximum_meshopt_test_registry_count()
+{
+    std::lock_guard<std::mutex> lock(g_output_mutex);
+    return g_output_states.size();
+}
+
 extern "C" __declspec(dllexport) void maximum_meshopt_destroy(MaximumMeshOutput* output)
 {
     if (output == nullptr || output->struct_size != sizeof(MaximumMeshOutput))
         return;
+    OutputRecord detached;
     {
         std::lock_guard<std::mutex> lock(g_output_mutex);
-        const auto owned = g_owned_outputs.find(output);
-        if (owned == g_owned_outputs.end() || owned->second != output->ownership_cookie)
+        const auto owned = g_output_states.find(output);
+        if (owned == g_output_states.end() || owned->second.state != OutputState::Owned ||
+            owned->second.cookie != output->ownership_cookie)
             return;
-        g_owned_outputs.erase(owned);
+        owned->second.state = OutputState::Destroying;
+        detached = owned->second;
+        reset_output(output);
     }
-    delete[] output->positions;
-    delete[] output->normals;
-    delete[] output->uvs;
-    delete[] output->weights;
-    delete[] output->bone_indices;
-    delete[] output->indices;
-    delete[] output->material_ids;
-    reset_output(output);
+    test_pause(2);
+    delete[] detached.positions;
+    delete[] detached.normals;
+    delete[] detached.uvs;
+    delete[] detached.weights;
+    delete[] detached.bone_indices;
+    delete[] detached.indices;
+    delete[] detached.material_ids;
+    {
+        std::lock_guard<std::mutex> lock(g_output_mutex);
+        const auto found = g_output_states.find(output);
+        if (found != g_output_states.end() && found->second.state == OutputState::Destroying)
+            g_output_states.erase(found);
+    }
 }
 
 extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
@@ -195,10 +357,13 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
         return ErrorStructSize;
     {
         std::lock_guard<std::mutex> lock(g_output_mutex);
-        if (g_owned_outputs.find(output) != g_owned_outputs.end())
-            return ErrorOptions;
+        if (g_output_states.find(output) != g_output_states.end())
+            return ErrorBusy;
+        reset_output(output);
+        g_output_states.emplace(output, OutputRecord{});
     }
-    reset_output(output);
+    OutputBuildReservation reservation(output);
+    test_pause(1);
 
     try
     {
@@ -238,23 +403,48 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
 
         std::vector<float> positions(input->positions, input->positions + input->vertex_count * 3);
         std::vector<float> attributes(input->vertex_count * kAttributeCount);
+        std::vector<std::uint32_t> canonical_bones(input->vertex_count * 4, 0);
         for (std::size_t vertex = 0; vertex < input->vertex_count; ++vertex)
         {
             float* attribute = attributes.data() + vertex * kAttributeCount;
             std::copy_n(input->normals + vertex * 3, 3, attribute);
             normalize3(attribute);
             std::copy_n(input->uvs + vertex * 2, 2, attribute + 3);
-            std::copy_n(input->weights + vertex * 4, 4, attribute + 5);
-            if (!normalize_weights(attribute + 5))
+            std::map<std::uint32_t, float> combined;
+            for (unsigned int influence = 0; influence < 4; ++influence)
+            {
+                const float weight = std::max(0.f, std::min(1.f, input->weights[vertex * 4 + influence]));
+                if (weight > 0.f)
+                    combined[input->bone_indices[vertex * 4 + influence]] += weight;
+            }
+            std::vector<std::pair<std::uint32_t, float>> selected(combined.begin(), combined.end());
+            std::sort(selected.begin(), selected.end(), [](const auto& left, const auto& right) {
+                return left.second != right.second ? left.second > right.second : left.first < right.first;
+            });
+            if (selected.size() > 4)
+                selected.resize(4);
+            float total = 0.f;
+            for (const auto& item : selected)
+                total += item.second;
+            if (!(total > 1e-12f) || !std::isfinite(total))
                 return ErrorData;
+            std::sort(selected.begin(), selected.end(), [](const auto& left, const auto& right) {
+                return left.first < right.first;
+            });
+            std::fill_n(attribute + 5, 4, 0.f);
+            for (std::size_t influence = 0; influence < selected.size(); ++influence)
+            {
+                canonical_bones[vertex * 4 + influence] = selected[influence].first;
+                attribute[5 + influence] = selected[influence].second / total;
+            }
         }
 
         std::vector<unsigned char> vertex_flags(input->vertex_flags, input->vertex_flags + input->vertex_count);
         auto influence_set = [&](std::uint32_t vertex) {
             std::vector<std::uint32_t> result;
             for (unsigned int influence = 0; influence < 4; ++influence)
-                if (input->weights[vertex * 4 + influence] > 0.f)
-                    result.push_back(input->bone_indices[vertex * 4 + influence]);
+                if (attributes[vertex * kAttributeCount + 5 + influence] > 0.f)
+                    result.push_back(canonical_bones[vertex * 4 + influence]);
             std::sort(result.begin(), result.end());
             result.erase(std::unique(result.begin(), result.end()), result.end());
             return result;
@@ -378,27 +568,13 @@ extern "C" __declspec(dllexport) int maximum_meshopt_simplify(
         }
         std::copy(result_indices.begin(), result_indices.end(), out_indices.get());
         std::copy(result_materials.begin(), result_materials.end(), out_materials.get());
-        std::copy(input->bone_indices, input->bone_indices + input->vertex_count * 4, out_bones.get());
+        std::copy(canonical_bones.begin(), canonical_bones.end(), out_bones.get());
 
-        {
-            std::lock_guard<std::mutex> lock(g_output_mutex);
-            const std::uint64_t cookie = g_cookie_counter.fetch_add(2, std::memory_order_relaxed);
-            if (!g_owned_outputs.emplace(output, cookie).second)
-                return ErrorOptions;
-            output->ownership_cookie = cookie;
-        }
-
-        output->positions = out_positions.release();
-        output->normals = out_normals.release();
-        output->uvs = out_uvs.release();
-        output->weights = out_weights.release();
-        output->bone_indices = out_bones.release();
-        output->vertex_count = input->vertex_count;
-        output->indices = out_indices.release();
-        output->index_count = result_indices.size();
-        output->material_ids = out_materials.release();
-        output->triangle_count = result_materials.size();
-        output->result_error = maximum_error;
+        if (!reservation.publish(
+                out_positions, out_normals, out_uvs, out_weights, out_bones, out_indices,
+                out_materials, input->vertex_count, result_indices.size(), result_materials.size(),
+                maximum_error))
+            return ErrorBusy;
         return 0;
     }
     catch (const std::bad_alloc&)

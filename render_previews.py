@@ -16,9 +16,10 @@ if str(_SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_ROOT))
 
 from maximum_optimizer.regions import (
-    blender_suffix_number as _blender_suffix_number,
-    normalized_region_name as _normalized_region_name,
-    region_keys as _region_keys,
+    RegionManifest,
+    load_region_manifest_payload,
+    normalized_source_identity as _normalized_source_identity,
+    resolve_region_assignments as _resolve_region_assignments,
 )
 
 try:
@@ -145,7 +146,28 @@ def _parse_args(argv: list[str]):
     ap.add_argument("--poses", default=None, help="Opt-in pose frames as name:frame CSV")
     ap.add_argument("--materials-root", default=None, help="Source materials directory")
     ap.add_argument("--vtfcmd", default=None, help="Optional VTFCmd executable")
+    ap.add_argument(
+        "--region-manifest", default=None,
+        help="Required shared Maximum region manifest for extended validation",
+    )
     return ap.parse_args(argv)
+
+
+def _load_region_manifest(path: Path) -> RegionManifest:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read region manifest: {path}") from exc
+    return load_region_manifest_payload(payload)
+
+
+def _required_region_manifest(args) -> Path:
+    if not args.region_manifest:
+        raise ValueError("extended Maximum validation requires an explicit region manifest")
+    path = Path(args.region_manifest).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"region manifest does not exist: {path}")
+    return path
 
 
 def _parse_csv(raw: str | None) -> tuple[str, ...]:
@@ -198,7 +220,7 @@ def _parse_poses(raw: str | None) -> tuple[tuple[str, int], ...]:
 def _is_extended_mode(args) -> bool:
     return any(
         value is not None
-        for value in (args.passes, args.poses, args.materials_root, args.vtfcmd)
+        for value in (args.passes, args.poses, args.materials_root, args.vtfcmd, args.region_manifest)
     )
 
 
@@ -615,24 +637,38 @@ def _percentile(values: list[float], fraction: float) -> float:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
-def _capture_regions(objs, frame: int) -> dict[str, dict]:
+def _region_source_identity(obj) -> str:
+    try:
+        value = obj.get("maximum_region_source_identity")
+    except AttributeError:
+        value = getattr(obj, "maximum_region_source_identity", None)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"mesh object has no region source identity: {obj.name}")
+    return value
+
+
+def _capture_regions(
+    objs, frame: int, region_manifest: RegionManifest
+) -> dict[str, dict]:
     bpy.context.scene.frame_set(frame)
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    descriptions = []
-    for obj in objs:
-        materials = tuple(
-            _normalized_region_name(material.name) if material else "none"
-            for material in getattr(obj.data, "materials", ())
-        ) or ("none",)
-        descriptions.append((obj.name, materials))
-    keys = _region_keys(descriptions)
+    observations = tuple(
+        (
+            _region_source_identity(obj),
+            obj.name,
+            tuple(
+                material.name if material else "none"
+                for material in getattr(obj.data, "materials", ())
+            ) or ("none",),
+        )
+        for obj in objs
+    )
+    assignments = _resolve_region_assignments(region_manifest, observations)
     regions = {}
-    for obj in sorted(objs, key=lambda item: item.name.casefold()):
-        materials = tuple(
-            _normalized_region_name(material.name) if material else "none"
-            for material in getattr(obj.data, "materials", ())
-        ) or ("none",)
-        region_key = keys[(obj.name, materials)]
+    for obj, observation in sorted(
+        zip(objs, observations), key=lambda item: assignments[item[1]]
+    ):
+        region_key = assignments[observation]
         evaluated = obj.evaluated_get(depsgraph)
         mesh = evaluated.to_mesh()
         if mesh is None:
@@ -999,14 +1035,30 @@ def _render_extended_set(
     materials_root: Path | None,
     vtfcmd: Path | None,
     texture_cache: Path,
+    region_manifest: RegionManifest,
+    source_identities: tuple[str, ...],
     *,
     fit=None,
 ) -> tuple[list[dict], dict[str, dict[str, dict]], tuple, dict]:
     _clear_scene()
     _setup_scene(size, transparent=True)
     cam_obj = _ensure_camera()
-    for src_path in src_paths:
+    if len(src_paths) != len(source_identities):
+        raise ValueError("render source/region identity counts do not match")
+    def object_identity(obj) -> int:
+        return int(obj.as_pointer()) if hasattr(obj, "as_pointer") else id(obj)
+
+    for src_path, source_identity in zip(src_paths, source_identities):
+        before_ids = {object_identity(obj) for obj in bpy.context.scene.objects}
         _import_source(src_path)
+        imported = tuple(
+            obj for obj in bpy.context.scene.objects
+            if object_identity(obj) not in before_ids and obj.type == "MESH"
+        )
+        if not imported:
+            raise RuntimeError(f"No mesh objects imported for region source: {src_path}")
+        for obj in imported:
+            obj["maximum_region_source_identity"] = source_identity
     objs = _get_mesh_objects()
     if not objs:
         raise RuntimeError(f"No mesh objects found for {label}: {src_paths}")
@@ -1016,7 +1068,13 @@ def _render_extended_set(
         if hasattr(obj.data, "materials")
         for index, material in enumerate(obj.data.materials)
     }
-    snapshots = _capture_pose_snapshots(objs, poses)
+    snapshots = _capture_pose_snapshots(
+        objs,
+        poses,
+        capture=lambda captured_objects, frame: _capture_regions(
+            captured_objects, frame, region_manifest
+        ),
+    )
     bbox, evaluated_fit = _framing_from_snapshots(snapshots)
     center, ortho_scale, dist = fit or evaluated_fit
     cam_obj.data.ortho_scale = ortho_scale
@@ -1063,6 +1121,24 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
     materials_root = Path(args.materials_root).resolve() if args.materials_root else None
     vtfcmd = Path(args.vtfcmd).resolve() if args.vtfcmd else None
     texture_cache = out_dir / ".vtf-cache"
+    region_manifest_path = _required_region_manifest(args)
+    region_manifest = _load_region_manifest(region_manifest_path)
+    if len(before) != len(after):
+        raise ValueError("extended Maximum validation requires paired before/after sources")
+    manifest_sources = {
+        entry.descriptor.source_identity for entry in region_manifest.entries
+    }
+    source_identities = []
+    for source in before:
+        try:
+            relative = source.resolve(strict=True).relative_to(region_manifest_path.parent.resolve(strict=True))
+        except ValueError as exc:
+            raise ValueError(f"render source is outside region manifest root: {source}") from exc
+        identity = _normalized_source_identity(relative.as_posix())
+        if identity not in manifest_sources:
+            raise ValueError(f"render source is missing from region manifest: {identity}")
+        source_identities.append(identity)
+    source_identities_tuple = tuple(source_identities)
     original_dir = out_dir / "original"
     candidate_dir = out_dir / "optimized"
     reference_entries, reference_snapshots, fit, bbox = _render_extended_set(
@@ -1076,6 +1152,8 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         materials_root,
         vtfcmd,
         texture_cache,
+        region_manifest,
+        source_identities_tuple,
     )
     candidate_entries, candidate_snapshots, _, candidate_bbox = _render_extended_set(
         "after",
@@ -1088,6 +1166,8 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         materials_root,
         vtfcmd,
         texture_cache,
+        region_manifest,
+        source_identities_tuple,
         fit=fit,
     )
     stride = 7

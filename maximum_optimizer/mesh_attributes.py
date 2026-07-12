@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import struct
 from typing import Sequence
 
 
@@ -55,8 +56,14 @@ def recombine_full_attribute_vertices(
             raise ValueError("recombine source vertex is invalid")
         material = int(material_ids[corner // 3])
         key = (
-            _rounded(positions[source]), _rounded(normals[source]), _rounded(uvs[source]),
-            tuple((name, round(weight, 9)) for name, weight in influences[source]), material,
+            _exact_float_signature(positions[source]),
+            _exact_float_signature(normals[source]),
+            _exact_float_signature(uvs[source]),
+            tuple(
+                (name, struct.pack(">d", float(weight)))
+                for name, weight in influences[source]
+            ),
+            material,
         )
         target = by_key.get(key)
         if target is None:
@@ -147,6 +154,10 @@ def interpolate_vector(
 
 def _rounded(values: Sequence[float]) -> tuple[float, ...]:
     return tuple(round(float(value), 9) for value in values)
+
+
+def _exact_float_signature(values: Sequence[float]) -> tuple[bytes, ...]:
+    return tuple(struct.pack(">d", float(value)) for value in values)
 
 
 def build_wedge_mesh(

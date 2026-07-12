@@ -259,7 +259,8 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(nxt.candidate_id, "fidelity-baseline")
 
     def test_recent_visual_failure_recovers_only_worst_scope_at_nearest_passing_ratio(self):
-        scope = "body|skin|0/bind"
+        region = "r-" + "1" * 64
+        scope = f"{region}/bind"
         evaluations = [
             evaluation_at(0.75, True, candidate_id="far-pass"),
             evaluation_at(0.50, True, candidate_id="near-pass"),
@@ -268,13 +269,14 @@ class SearchTests(unittest.TestCase):
 
         nxt = choose_next(evaluations, SearchBudget.experimental_default())
 
-        scope_hash = hashlib.sha256("body|skin|0".encode("utf-8")).hexdigest()[:8]
+        scope_hash = hashlib.sha256(region.encode("utf-8")).hexdigest()[:8]
         self.assertEqual(nxt.target_ratio, 0.25)
-        self.assertEqual(nxt.region_overrides, (("body|skin|0", 0.50),))
+        self.assertEqual(nxt.region_overrides, ((region, 0.50),))
         self.assertIn(scope_hash, nxt.candidate_id)
 
     def test_pending_regional_recovery_precedes_marginal_stop(self):
-        scope = "hand|skin|0/action"
+        region = "r-" + "2" * 64
+        scope = f"{region}/action"
         evaluations = [
             evaluation_at(0.75, True, total_bytes=1000, candidate_id="previous"),
             evaluation_at(
@@ -291,11 +293,11 @@ class SearchTests(unittest.TestCase):
 
         self.assertIsNotNone(nxt)
         self.assertEqual(nxt.target_ratio, 0.25)
-        self.assertEqual(nxt.region_overrides, (("hand|skin|0", 0.50),))
+        self.assertEqual(nxt.region_overrides, ((region, 0.50),))
 
     def test_regional_recovery_requires_no_existing_overrides_and_never_duplicates(self):
-        scope = "body|skin|0/bind"
-        region = "body|skin|0"
+        region = "r-" + "3" * 64
+        scope = f"{region}/bind"
         recovery_id = f"meshopt-r025-region-{hashlib.sha256(region.encode('utf-8')).hexdigest()[:8]}"
         evaluations = [
             evaluation_at(0.50, True, candidate_id="pass"),

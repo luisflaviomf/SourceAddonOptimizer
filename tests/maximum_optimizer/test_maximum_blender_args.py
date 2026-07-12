@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -9,7 +11,12 @@ from unittest import mock
 import batch_optimize_maximum as maximum
 from maximum_optimizer.domain import CandidateSpec
 from maximum_optimizer.qc_graph import parse_qc_graph, rewritten_qc_graph_texts
-from maximum_optimizer.regions import parse_region_scope, region_keys
+from maximum_optimizer.regions import (
+    build_region_manifest,
+    load_region_manifest_payload,
+    parse_region_scope,
+    resolve_region_assignments,
+)
 from maximum_optimizer.mesh_attributes import (
     build_wedge_mesh, interpolate_influences, recombine_full_attribute_vertices,
 )
@@ -42,6 +49,42 @@ class MaximumBlenderPureTests(unittest.TestCase):
                 self.skipTest(f"symlink creation unavailable: {exc}")
             with self.assertRaisesRegex(ValueError, "symlink"):
                 maximum.atomic_write_bytes(root, link / "out.json", b"bad")
+
+    def test_output_guard_rejects_mocked_reparse_component_before_resolve(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "junction").mkdir()
+            with mock.patch(
+                "batch_optimize_maximum._path_is_reparse_point",
+                side_effect=lambda path: Path(path).name == "junction",
+            ):
+                with self.assertRaisesRegex(ValueError, "reparse"):
+                    maximum.safe_output_path(root, root / "junction" / "out.json")
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
+    def test_output_guard_rejects_real_windows_junction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            junction = root / "junction"
+            created = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+                capture_output=True,
+                text=True,
+                shell=False,
+            )
+            if created.returncode != 0:
+                self.skipTest(f"junction creation unavailable: {created.stderr or created.stdout}")
+            try:
+                with self.assertRaisesRegex(ValueError, "reparse"):
+                    maximum.atomic_write_bytes(root, junction / "escape.bin", b"bad")
+                self.assertFalse((outside / "escape.bin").exists())
+            finally:
+                if junction.exists():
+                    os.rmdir(junction)
     def test_wedges_preserve_uv_hard_normal_material_and_bone_identity(self) -> None:
         positions = ((0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0))
         triangles = ((0, 1, 2), (0, 2, 3))
@@ -76,6 +119,16 @@ class MaximumBlenderPureTests(unittest.TestCase):
             ((('root', 1.0),),) * 4,
         )
         self.assertEqual(len(seam.positions), 4)
+
+    def test_lossless_recombine_uses_exact_float_signatures(self) -> None:
+        result = recombine_full_attribute_vertices(
+            (0, 2, 2, 1, 2, 2), (0, 0),
+            ((0.0, 0.0, 0.0), (1e-10, 0.0, 0.0), (0.0, 1.0, 0.0)),
+            ((0.0, 0.0, 1.0),) * 3,
+            ((0.0, 0.0),) * 3,
+            ((('root', 1.0),),) * 3,
+        )
+        self.assertNotEqual(result.indices[0], result.indices[3])
 
     def test_bone_interpolation_uses_ids_not_equal_weight_magnitudes(self) -> None:
         result = interpolate_influences(
@@ -151,39 +204,161 @@ class MaximumBlenderPureTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "DMX"):
                 maximum.reject_unsupported_dmx(graph)
     def test_region_schema_matches_renderer_and_targets_only_one_region(self) -> None:
-        descriptions = (("Body", ("paint",)), ("Antenna", ("metal",)))
-        keys = region_keys(descriptions)
+        observations = (
+            ("parts/body.smd", "Body", ("vehicles\\paint/azul", "Vidro/Ç")),
+            ("parts/body.smd", "Antenna", ("metal",)),
+        )
+        manifest = build_region_manifest(observations)
+        assignments = resolve_region_assignments(manifest, observations)
+        body_key = assignments[observations[0]]
+        antenna_key = assignments[observations[1]]
+        self.assertRegex(body_key, r"^r-[0-9a-f]{64}$")
+        self.assertRegex(antenna_key, r"^r-[0-9a-f]{64}$")
+        with self.assertRaises(TypeError):
+            manifest.by_key[body_key] = manifest.entries[0]  # type: ignore[index]
         payload = {
             "candidate_id": "regional",
             "engine": "meshoptimizer",
             "ratio": 0.25,
             "target_error": 0.01,
             "update_vertices": True,
-            "region_overrides": [{"region_key": keys[descriptions[1]], "ratio": 0.7}],
+            "region_overrides": [{"region_key": antenna_key, "ratio": 0.7}],
         }
         candidate = maximum.load_candidate_payload(payload)
-        ratios = maximum.resolve_region_ratios(descriptions, candidate.region_overrides, candidate.ratio)
-        self.assertEqual(ratios[descriptions[0]], 0.25)
-        self.assertEqual(ratios[descriptions[1]], 0.7)
-        self.assertEqual(parse_region_scope(f"{keys[descriptions[1]]}/bind"), (keys[descriptions[1]], "bind"))
+        ratios = maximum.resolve_region_ratios(
+            manifest, observations, candidate.region_overrides, candidate.ratio
+        )
+        self.assertEqual(ratios[observations[0]], 0.25)
+        self.assertEqual(ratios[observations[1]], 0.7)
+        self.assertEqual(parse_region_scope(f"{antenna_key}/bind"), (antenna_key, "bind"))
+
+        round_trip = load_region_manifest_payload(manifest.to_payload())
+        self.assertEqual(round_trip.entries, manifest.entries)
 
     def test_search_candidate_cache_payload_is_directly_consumable(self) -> None:
+        region_key = "r-" + "a" * 64
         spec = CandidateSpec(
             "regional", "meshoptimizer", 0.25, 0.01, "transfer-v1",
-            (("body|paint|0", 0.5),),
+            ((region_key, 0.5),),
         )
         candidate = maximum.load_candidate_payload(spec.cache_payload())
         self.assertEqual(candidate.ratio, 0.25)
         self.assertTrue(candidate.update_vertices)
-        self.assertEqual(candidate.region_overrides, (("body|paint|0", 0.5),))
+        self.assertEqual(candidate.region_overrides, ((region_key, 0.5),))
 
     def test_unknown_or_ambiguous_region_override_fails(self) -> None:
-        descriptions = (("Body", ("paint",)),)
+        observations = (("body.smd", "Body", ("paint",)),)
+        manifest = build_region_manifest(observations)
         with self.assertRaisesRegex(ValueError, "unknown region"):
-            maximum.resolve_region_ratios(descriptions, (("missing|none|0", 0.8),), 0.3)
-        duplicate = (("Body", ("paint",)), ("Body", ("paint",)))
-        with self.assertRaisesRegex(ValueError, "ambiguous"):
-            maximum.resolve_region_ratios(duplicate, (), 0.3)
+            maximum.resolve_region_ratios(
+                manifest, observations, (("r-" + "f" * 64, 0.8),), 0.3
+            )
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            build_region_manifest(observations + observations)
+
+    def test_region_manifest_rejects_hash_collision_missing_unknown_and_old_schema(self) -> None:
+        observations = (
+            ("a/body.smd", "Body.001", ("mat/ç",)),
+            ("a/body.smd", "Body.002", ("mat/ç",)),
+        )
+        with self.assertRaisesRegex(ValueError, "collision"):
+            build_region_manifest(observations, hasher=lambda _payload: "0" * 64)
+        manifest = build_region_manifest(observations)
+        with self.assertRaisesRegex(ValueError, "missing"):
+            resolve_region_assignments(manifest, observations[:1])
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            resolve_region_assignments(
+                manifest, observations + (("other.smd", "Other", ("mat",)),)
+            )
+        with self.assertRaisesRegex(ValueError, "schema"):
+            load_region_manifest_payload({"schema_version": 0, "regions": []})
+        noncanonical = manifest.to_payload()
+        noncanonical["regions"][0]["descriptor"]["materials"][0] = "MAT\\Ç"
+        with self.assertRaisesRegex(ValueError, "canonical"):
+            load_region_manifest_payload(noncanonical)
+
+    def test_two_object_region_override_changes_only_target_simplify_options(self) -> None:
+        class Material:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class Data:
+            def __init__(self, material: str) -> None:
+                self.materials = (Material(material),)
+
+        class Obj:
+            def __init__(self, name: str, material: str) -> None:
+                self.name = name
+                self.data = Data(material)
+
+        objects = (Obj("Body", "paint"), Obj("Antenna", "metal"))
+        observations = (
+            ("car/body.smd", "Body", ("paint",)),
+            ("car/body.smd", "Antenna", ("metal",)),
+        )
+        manifest = build_region_manifest(observations)
+        assignments = resolve_region_assignments(manifest, observations)
+        target_key = assignments[observations[1]]
+        candidate = maximum.CandidateConfig(
+            "regional", "meshoptimizer", 0.2, 0.01, True, ((target_key, 0.85),)
+        )
+        policy = maximum.SimplificationPolicy(
+            (0,), 0, maximum.GeometryClass(False, (1.0, 1.0, 1.0), 0)
+        )
+        captured = {}
+
+        def fake_optimizer(obj, config, ratio):
+            captured[obj.name] = maximum.make_simplify_options(config, ratio, policy)
+            return {"achieved_ratio": 0.99}
+
+        metrics = maximum.optimize_region_objects(
+            "car/body.smd", objects, candidate, manifest, optimizer=fake_optimizer
+        )
+        self.assertEqual(captured["Body"].target_ratio, 0.2)
+        self.assertEqual(captured["Antenna"].target_ratio, 0.85)
+        self.assertEqual({item["achieved_ratio"] for item in metrics}, {0.99})
+
+    def test_projection_material_plan_rejects_mixed_and_out_of_range_mappings(self) -> None:
+        self.assertEqual(
+            maximum.projection_vertex_materials(4, (0, 1, 2, 0, 2, 3), (1, 1), (0, 1), 2),
+            {0: 1, 1: 1, 2: 1, 3: 1},
+        )
+        with self.assertRaisesRegex(ValueError, "mixed incompatible material"):
+            maximum.projection_vertex_materials(4, (0, 1, 2, 0, 2, 3), (0, 1), (0, 1), 2)
+        with self.assertRaisesRegex(ValueError, "out of range"):
+            maximum.projection_vertex_materials(3, (0, 1, 2), (2,), (0, 1), 2)
+        with self.assertRaisesRegex(ValueError, "no compatible source"):
+            maximum.projection_vertex_materials(3, (0, 1, 2), (1,), (0,), 2)
+
+    def test_projection_uses_region_material_bvh_when_global_nearest_is_wrong(self) -> None:
+        positions = (
+            (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+            (0.0, 0.0, 0.01), (1.0, 0.0, 0.01), (0.0, 1.0, 0.01),
+        )
+        triangles = ((0, 1, 2), (3, 4, 5))
+
+        class FakeBvh:
+            def __init__(self, source_positions, polygons):
+                self.source_positions = source_positions
+                self.polygons = polygons
+
+            def find_nearest(self, _point):
+                triangle = self.polygons[0]
+                z = self.source_positions[triangle[0]][2]
+                return ((0.2, 0.2, z), None, 0, abs(0.009 - z))
+
+        buckets = maximum.build_region_material_bvhs(
+            positions,
+            triangles,
+            (0, 1),
+            vector_factory=lambda value: value,
+            bvh_factory=lambda verts, polygons: FakeBvh(verts, polygons),
+        )
+        projected, face_index, _distance = maximum.find_compatible_projection(
+            buckets, 0, (0.2, 0.2, 0.009)
+        )
+        self.assertEqual(projected, (0.2, 0.2, 0.0))
+        self.assertEqual(face_index, 0)
     def test_module_imports_without_blender_and_parses_strict_candidate(self) -> None:
         self.assertIsNone(maximum.bpy)
         with tempfile.TemporaryDirectory() as tmp:
@@ -197,7 +372,7 @@ class MaximumBlenderPureTests(unittest.TestCase):
                         "ratio": 0.35,
                         "target_error": 0.01,
                         "update_vertices": True,
-                        "region_overrides": [{"region_key": "body|paint|0", "ratio": 0.7}],
+                        "region_overrides": [{"region_key": "r-" + "1" * 64, "ratio": 0.7}],
                     }
                 ),
                 encoding="utf-8",
@@ -207,7 +382,7 @@ class MaximumBlenderPureTests(unittest.TestCase):
             )
         self.assertEqual(settings.candidate.candidate_id, "meshopt-r035")
         self.assertEqual(settings.candidate.ratio, 0.35)
-        self.assertEqual(settings.candidate.region_overrides, (("body|paint|0", 0.7),))
+        self.assertEqual(settings.candidate.region_overrides, (("r-" + "1" * 64, 0.7),))
 
     def test_candidate_rejects_unknown_fields_bool_numbers_and_traversal(self) -> None:
         valid = {
@@ -224,7 +399,7 @@ class MaximumBlenderPureTests(unittest.TestCase):
             {**valid, "target_error": float("inf")},
             {**valid, "candidate_id": "../escape"},
             {**valid, "engine": "blender"},
-            {**valid, "region_overrides": [{"region_key": "body|paint|0", "ratio": 0.0}]},
+            {**valid, "region_overrides": [{"region_key": "r-" + "b" * 64, "ratio": 0.0}]},
             {**valid, "region_overrides": [{"region_key": "bad", "ratio": 0.5}]},
         )
         for payload in mutations:

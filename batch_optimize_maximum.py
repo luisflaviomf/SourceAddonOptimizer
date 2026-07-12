@@ -12,6 +12,7 @@ import sys
 import tempfile
 import hashlib
 import shutil
+import stat
 from typing import Sequence
 
 try:
@@ -34,7 +35,14 @@ from maximum_optimizer.meshopt_bridge import (
     SimplifyOptions,
     simplify_mesh,
 )
-from maximum_optimizer.regions import is_region_key, region_keys
+from maximum_optimizer.regions import (
+    RegionManifest,
+    build_region_manifest,
+    is_region_key,
+    manifest_for_source,
+    normalized_source_identity,
+    resolve_region_assignments,
+)
 from maximum_optimizer.qc_graph import QcGraph, parse_qc_graph, rewritten_qc_graph_texts
 from maximum_optimizer.mesh_attributes import (
     barycentric_weights,
@@ -157,23 +165,78 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
 
 
 def resolve_region_ratios(
-    descriptions: Sequence[tuple[str, tuple[str, ...]]],
+    manifest: RegionManifest,
+    observations: Sequence[tuple[str, str, tuple[str, ...]]],
     overrides: Sequence[tuple[str, float]],
     default_ratio: float,
-) -> dict[tuple[str, tuple[str, ...]], float]:
-    keys = region_keys(descriptions)
-    by_key = {key: description for description, key in keys.items()}
-    result = {description: default_ratio for description in descriptions}
+) -> dict[tuple[str, str, tuple[str, ...]], float]:
+    assignments = resolve_region_assignments(manifest, observations)
+    by_key = {key: observation for observation, key in assignments.items()}
+    result = {observation: default_ratio for observation in observations}
     seen: set[str] = set()
     for key, ratio in overrides:
         if key in seen:
             raise ValueError(f"ambiguous duplicate region override: {key}")
         seen.add(key)
-        description = by_key.get(key)
-        if description is None:
+        observation = by_key.get(key)
+        if observation is None:
             raise ValueError(f"unknown region override: {key}")
-        result[description] = ratio
+        result[observation] = ratio
     return result
+
+
+def make_simplify_options(
+    candidate: CandidateConfig, ratio: float, policy: SimplificationPolicy
+) -> SimplifyOptions:
+    return SimplifyOptions(
+        target_ratio=ratio,
+        target_error=candidate.target_error,
+        update_vertices=candidate.update_vertices,
+        meshopt_options=policy.meshopt_options,
+    )
+
+
+def _object_region_observations(
+    source_identity: str, objects: Sequence[object]
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    return tuple(
+        (
+            source_identity,
+            str(obj.name),
+            tuple(str(material.name) if material else "none" for material in obj.data.materials),
+        )
+        for obj in objects
+    )
+
+
+def optimize_region_objects(
+    source_identity: str,
+    objects: Sequence[object],
+    candidate: CandidateConfig,
+    manifest: RegionManifest,
+    *,
+    optimizer=None,
+) -> list[dict[str, object]]:
+    if optimizer is None:
+        optimizer = _optimize_mesh_object
+    observations = _object_region_observations(source_identity, objects)
+    source_manifest = manifest_for_source(manifest, source_identity)
+    assignments = resolve_region_assignments(source_manifest, observations)
+    source_overrides = tuple(
+        (key, ratio)
+        for key, ratio in candidate.region_overrides
+        if key in source_manifest.by_key
+    )
+    ratios = resolve_region_ratios(
+        source_manifest, observations, source_overrides, candidate.ratio
+    )
+    return [
+        {
+            **optimizer(obj, candidate, ratios[observation]),
+            "region_key": assignments[observation],
+        }
+        for obj, observation in zip(objects, observations)
+    ]
 
 
 def reject_unsupported_dmx(graph: QcGraph) -> None:
@@ -527,6 +590,78 @@ def _vertex_source_attributes(obj: object) -> tuple[
     return positions, triangles, tuple(loop_normals), tuple(loop_uvs), material_ids, tuple(group_weights)
 
 
+def projection_vertex_materials(
+    vertex_count: int,
+    result_indices: Sequence[int],
+    result_material_ids: Sequence[int],
+    source_material_ids: Sequence[int],
+    material_slot_count: int,
+) -> dict[int, int]:
+    if vertex_count <= 0 or len(result_indices) % 3 or len(result_material_ids) != len(result_indices) // 3:
+        raise ValueError("projection topology/material counts are invalid")
+    if material_slot_count <= 0:
+        raise ValueError("projection material slot count is invalid")
+    source_materials = set()
+    for material in source_material_ids:
+        if type(material) is not int or material < 0 or material >= material_slot_count:
+            raise ValueError("source projection material is out of range")
+        source_materials.add(material)
+    result: dict[int, int] = {}
+    for triangle_index, material in enumerate(result_material_ids):
+        if type(material) is not int or material < 0 or material >= material_slot_count:
+            raise ValueError("result projection material is out of range")
+        if material not in source_materials:
+            raise ValueError("result projection has no compatible source material")
+        for vertex in result_indices[triangle_index * 3 : triangle_index * 3 + 3]:
+            if type(vertex) is not int or vertex < 0 or vertex >= vertex_count:
+                raise ValueError("projection vertex index is out of range")
+            previous = result.get(vertex)
+            if previous is not None and previous != material:
+                raise ValueError("projection vertex has mixed incompatible material corners")
+            result[vertex] = material
+    return result
+
+
+def build_region_material_bvhs(
+    positions: Sequence[Sequence[float]],
+    triangles: Sequence[Sequence[int]],
+    material_ids: Sequence[int],
+    *,
+    vector_factory,
+    bvh_factory,
+) -> dict[int, tuple[object, tuple[int, ...]]]:
+    if len(triangles) != len(material_ids):
+        raise ValueError("source projection material counts do not match triangles")
+    converted = [vector_factory(position) for position in positions]
+    faces_by_material: dict[int, list[int]] = defaultdict(list)
+    for face_index, (triangle, material) in enumerate(zip(triangles, material_ids)):
+        if len(triangle) != 3 or any(index < 0 or index >= len(converted) for index in triangle):
+            raise ValueError("source projection triangle is invalid")
+        faces_by_material[int(material)].append(face_index)
+    result: dict[int, tuple[object, tuple[int, ...]]] = {}
+    for material, face_indices in sorted(faces_by_material.items()):
+        polygons = [tuple(int(index) for index in triangles[face]) for face in face_indices]
+        result[material] = (bvh_factory(converted, polygons), tuple(face_indices))
+    return result
+
+
+def find_compatible_projection(
+    buckets: dict[int, tuple[object, tuple[int, ...]]], material: int, point: object
+) -> tuple[object, int, float]:
+    bucket = buckets.get(material)
+    if bucket is None:
+        raise RuntimeError(f"surface projection has no compatible region/material bucket: {material}")
+    bvh, face_indices = bucket
+    nearest = bvh.find_nearest(point)
+    if nearest is None or nearest[0] is None or nearest[2] is None:
+        raise RuntimeError("compatible surface projection failed")
+    local_face = int(nearest[2])
+    if local_face < 0 or local_face >= len(face_indices):
+        raise RuntimeError("compatible surface projection returned an invalid face")
+    distance = float(nearest[3]) if nearest[3] is not None else math.inf
+    return nearest[0], face_indices[local_face], distance
+
+
 def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float) -> dict[str, object]:
     from mathutils import Vector
     from mathutils.bvhtree import BVHTree
@@ -573,37 +708,36 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         material_ids=material_ids,
         vertex_flags=policy.vertex_flags,
     )
-    result = simplify_mesh(
-        source,
-        SimplifyOptions(
-            target_ratio=ratio,
-            target_error=candidate.target_error,
-            update_vertices=candidate.update_vertices,
-            meshopt_options=policy.meshopt_options,
-        ),
-    )
+    result = simplify_mesh(source, make_simplify_options(candidate, ratio, policy))
     if len(result.indices) >= len(source.indices) and ratio < 0.999999:
         raise RuntimeError("meshoptimizer did not reduce this mesh")
 
+    vertex_materials = projection_vertex_materials(
+        len(result.positions), result.indices, result.material_ids, material_ids, len(mesh.materials)
+    )
     used_vertices = set(result.indices)
     transferred: dict[int, tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float], tuple[tuple[str, float], ...]]] = {}
-    bvh = BVHTree.FromPolygons(
-        [Vector(position) for position in positions],
-        [tuple(triangle) for triangle in triangles],
-        all_triangles=True,
+    material_bvhs = build_region_material_bvhs(
+        positions,
+        triangles,
+        material_ids,
+        vector_factory=Vector,
+        bvh_factory=lambda vertices, polygons: BVHTree.FromPolygons(
+            vertices, polygons, all_triangles=True
+        ),
     )
     for index in used_vertices:
-        nearest = bvh.find_nearest(Vector(result.positions[index]))
-        if nearest is None or nearest[0] is None:
-            raise RuntimeError("surface projection failed")
-        projected = nearest[0]
-        face_index = int(nearest[2])
+        target_material = vertex_materials[index]
+        projected, face_index, nearest_distance = find_compatible_projection(
+            material_bvhs, target_material, Vector(result.positions[index])
+        )
         hint_face = wedges.source_loop_indices[index] // 3
+        if material_ids[hint_face] != target_material:
+            raise RuntimeError("projection hint has an incompatible region/material")
         hint_triangle = triangles[hint_face]
         hint_projected = closest_point_on_tri(
             Vector(result.positions[index]), *(Vector(positions[vertex]) for vertex in hint_triangle)
         )
-        nearest_distance = float(nearest[3]) if nearest[3] is not None else math.inf
         hint_distance = (hint_projected - Vector(result.positions[index])).length
         if hint_distance <= nearest_distance + max(1e-6, nearest_distance * 1e-4):
             projected = hint_projected
@@ -644,7 +778,9 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         if material.name not in mesh.materials:
             mesh.materials.append(material)
     for polygon, material_id in zip(mesh.polygons, result.material_ids):
-        polygon.material_index = min(int(material_id), max(0, len(mesh.materials) - 1))
+        if material_id < 0 or material_id >= len(mesh.materials):
+            raise RuntimeError("export material mapping is out of range")
+        polygon.material_index = int(material_id)
 
     uv_layer = mesh.uv_layers.new(name="UVMap")
     for loop in mesh.loops:
@@ -689,8 +825,26 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
     }
 
 
+def _describe_source_file(
+    source: Path, source_identity: str
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    assert bpy is not None
+    import batch_optimize_qc as source_tools
+
+    _clear_blender_scene()
+    source_tools.import_source_file(source)
+    mesh_objects = tuple(obj for obj in bpy.context.scene.objects if obj.type == "MESH")
+    if not mesh_objects:
+        raise RuntimeError(f"Source Tools imported no mesh from {source}")
+    return _object_region_observations(source_identity, mesh_objects)
+
+
 def _process_source_file(
-    source: Path, destination: Path, candidate: CandidateConfig
+    source: Path,
+    destination: Path,
+    candidate: CandidateConfig,
+    source_identity: str,
+    region_manifest: RegionManifest,
 ) -> dict[str, object]:
     assert bpy is not None
     import batch_optimize_qc as source_tools
@@ -702,18 +856,9 @@ def _process_source_file(
     mesh_objects = tuple(obj for obj in bpy.context.scene.objects if obj.type == "MESH")
     if not mesh_objects:
         raise RuntimeError(f"Source Tools imported no mesh from {source}")
-    descriptions = tuple(
-        (obj.name, tuple(material.name for material in obj.data.materials)) for obj in mesh_objects
+    object_metrics = optimize_region_objects(
+        source_identity, mesh_objects, candidate, region_manifest
     )
-    keys = region_keys(descriptions)
-    overrides = dict(candidate.region_overrides)
-    object_metrics = [
-        {
-            **_optimize_mesh_object(obj, candidate, overrides.get(keys[description], candidate.ratio)),
-            "region_key": keys[description],
-        }
-        for obj, description in zip(mesh_objects, descriptions)
-    ]
     destination = safe_output_path(source.parent, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=".maximum-export-", dir=destination.parent))
@@ -760,43 +905,84 @@ def _process_source_file(
         "influence_sets_before": before_audit.influence_sets,
         "influence_sets_after": after_audit.influence_sets,
         "objects": object_metrics,
-        "regions": [keys[description] for description in descriptions],
+        "regions": [item["region_key"] for item in object_metrics],
     }
 
 
-def _ensure_secure_directory(root: Path, directory: Path) -> None:
-    root = root.resolve(strict=True)
+def _path_is_reparse_point(path: Path) -> bool:
+    path = Path(path)
     try:
-        relative = directory.absolute().relative_to(root.absolute())
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    attributes = int(getattr(info, "st_file_attributes", 0))
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    return path.is_symlink() or bool(attributes & reparse_flag)
+
+
+def _raw_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _ensure_secure_directory(root: Path, directory: Path) -> Path:
+    raw_root = _raw_absolute(root)
+    if not os.path.lexists(raw_root) or not raw_root.is_dir():
+        raise ValueError(f"output root is not an existing directory: {raw_root}")
+    if _path_is_reparse_point(raw_root):
+        raise ValueError(f"output root cannot be a reparse point: {raw_root}")
+    resolved_root = raw_root.resolve(strict=True)
+    raw_directory = _raw_absolute(directory)
+    try:
+        relative = raw_directory.relative_to(raw_root)
     except ValueError as exc:
-        raise ValueError(f"output directory escapes root: {directory}") from exc
-    current = root
+        raise ValueError(f"output directory escapes root: {raw_directory}") from exc
+    current = raw_root
     for part in relative.parts:
         current = current / part
-        if current.is_symlink():
-            raise ValueError(f"output directory traverses symlink: {current}")
-        if current.exists() and not current.is_dir():
+        if os.path.lexists(current) and _path_is_reparse_point(current):
+            raise ValueError(f"output directory traverses reparse point: {current}")
+        if os.path.lexists(current) and not current.is_dir():
             raise ValueError(f"output parent is not a directory: {current}")
-        if not current.exists():
+        if not os.path.lexists(current):
             current.mkdir()
+        if _path_is_reparse_point(current):
+            raise ValueError(f"output directory became a reparse point: {current}")
+        try:
+            current.resolve(strict=True).relative_to(resolved_root)
+        except ValueError as exc:
+            raise ValueError(f"resolved output directory escapes root: {current}") from exc
+    resolved_directory = current.resolve(strict=True)
+    try:
+        resolved_directory.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"resolved output directory escapes root: {resolved_directory}") from exc
+    return resolved_directory
 
 
 def safe_output_path(root: Path, target: Path) -> Path:
-    root = Path(root)
-    if root.is_symlink():
-        raise ValueError("output root cannot be a symlink")
-    root = root.resolve(strict=True)
+    root = _raw_absolute(Path(root))
+    if _path_is_reparse_point(root):
+        raise ValueError("output root cannot be a reparse point")
+    resolved_root = root.resolve(strict=True)
     target = Path(target)
     if not target.is_absolute():
         target = root / target
-    _ensure_secure_directory(root, target.parent)
+    target = _raw_absolute(target)
+    resolved_parent = _ensure_secure_directory(root, target.parent)
     try:
-        target.absolute().relative_to(root.absolute())
+        target.relative_to(root)
+        resolved_parent.relative_to(resolved_root)
     except ValueError as exc:
         raise ValueError(f"output path escapes root: {target}") from exc
-    if target.is_symlink():
-        raise ValueError(f"output path cannot be a symlink: {target}")
-    return target
+    if os.path.lexists(target) and _path_is_reparse_point(target):
+        raise ValueError(f"output path cannot be a reparse point: {target}")
+    resolved_target = resolved_parent / target.name
+    if os.path.lexists(target):
+        try:
+            target.resolve(strict=True).relative_to(resolved_root)
+        except ValueError as exc:
+            raise ValueError(f"resolved output path escapes root: {target}") from exc
+    return resolved_target
 
 
 def atomic_write_bytes(root: Path, target: Path, data: bytes) -> Path:
@@ -837,20 +1023,70 @@ def run_blender(settings: Settings) -> dict[str, object]:
     if not qcs:
         raise ValueError(f"no source QC files found under {settings.root}")
 
+    parsed_graphs: list[tuple[Path, QcGraph]] = []
+    visual_sources: dict[str, Path] = {}
+    source_occurrences: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for qc in qcs:
+        graph = parse_qc_graph(qc, settings.root)
+        reject_unsupported_dmx(graph)
+        if not any(reference.role == "visual" for reference in graph.references):
+            raise ValueError(f"QC graph has no visual geometry: {qc}")
+        parsed_graphs.append((qc, graph))
+        for reference in graph.references:
+            if reference.role != "visual":
+                continue
+            source_identity = normalized_source_identity(
+                reference.source_path.relative_to(settings.root).as_posix()
+            )
+            existing = visual_sources.get(source_identity)
+            if existing is not None and existing != reference.source_path:
+                raise ValueError(f"ambiguous logical visual source identity: {source_identity}")
+            visual_sources[source_identity] = reference.source_path
+            occurrence = {
+                "graph_file": reference.graph_file.relative_to(settings.root).as_posix(),
+                "directive": reference.directive,
+                "line": reference.line,
+                "logical_path": source_identity,
+            }
+            if occurrence not in source_occurrences[source_identity]:
+                source_occurrences[source_identity].append(occurrence)
+
+    observations = tuple(
+        observation
+        for source_identity, source in sorted(visual_sources.items())
+        for observation in _describe_source_file(source, source_identity)
+    )
+    region_manifest = build_region_manifest(
+        observations, occurrences=source_occurrences
+    )
+    region_manifest_path = settings.root / "maximum_region_manifest.json"
+    atomic_write_bytes(
+        settings.root,
+        region_manifest_path,
+        (json.dumps(region_manifest.to_payload(), indent=2, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"),
+    )
+
     files: list[dict[str, object]] = []
     provenance: list[dict[str, object]] = []
     processed: dict[Path, tuple[Path, dict[str, object]]] = {}
     matched_regions: Counter[str] = Counter()
-    for qc in qcs:
-        graph = parse_qc_graph(qc, settings.root)
-        reject_unsupported_dmx(graph)
+    for qc, graph in parsed_graphs:
         optimized_sources: dict[Path, Path] = {}
         for reference in graph.references:
             source_hash = hashlib.sha256(reference.source_path.read_bytes()).hexdigest()
             if reference.role == "visual":
                 if reference.source_path not in processed:
                     destination = reference.source_path.parent / "output" / f"{reference.source_path.stem}_opt.smd"
-                    item = _process_source_file(reference.source_path, destination, settings.candidate)
+                    source_identity = normalized_source_identity(
+                        reference.source_path.relative_to(settings.root).as_posix()
+                    )
+                    item = _process_source_file(
+                        reference.source_path,
+                        destination,
+                        settings.candidate,
+                        source_identity,
+                        region_manifest,
+                    )
                     processed[reference.source_path] = (destination, item)
                     files.append(item)
                     for key in item["regions"]:
@@ -879,8 +1115,6 @@ def run_blender(settings: Settings) -> dict[str, object]:
                     "output_sha256": output_hash,
                 }
             )
-        if not any(reference.role == "visual" for reference in graph.references):
-            raise ValueError(f"QC graph has no visual geometry: {qc}")
         for output_path, text in rewritten_qc_graph_texts(graph, optimized_sources).items():
             atomic_write_bytes(settings.root, output_path, text.encode("utf-8"))
 
@@ -905,6 +1139,8 @@ def run_blender(settings: Settings) -> dict[str, object]:
         "attribute_repair_failures": 0,
         "files": files,
         "provenance": provenance,
+        "region_manifest": region_manifest_path.relative_to(settings.root).as_posix(),
+        "region_manifest_sha256": hashlib.sha256(region_manifest_path.read_bytes()).hexdigest(),
     }
     metrics_path = settings.root / "candidate_metrics.json"
     atomic_write_bytes(

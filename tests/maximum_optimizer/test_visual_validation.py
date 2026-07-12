@@ -573,6 +573,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertIsNone(args.poses)
         self.assertIsNone(args.materials_root)
         self.assertIsNone(args.vtfcmd)
+        self.assertIsNone(args.region_manifest)
         self.assertFalse(render_previews._is_extended_mode(args))
 
     def test_new_arguments_parse_passes_and_pose_frames_deterministically(self):
@@ -594,6 +595,8 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                 "materials",
                 "--vtfcmd",
                 "VTFCmd.exe",
+                "--region-manifest",
+                "maximum_region_manifest.json",
             ]
         )
 
@@ -602,6 +605,7 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         self.assertEqual(render_previews._parse_poses(args.poses), (("bind", 0), ("run", 12)))
         self.assertEqual(args.materials_root, "materials")
         self.assertEqual(args.vtfcmd, "VTFCmd.exe")
+        self.assertEqual(args.region_manifest, "maximum_region_manifest.json")
 
     def test_invalid_new_pass_or_pose_is_rejected(self):
         import render_previews
@@ -618,6 +622,12 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                     render_previews._parse_poses(raw)
         with self.assertRaisesRegex(ValueError, "bind"):
             render_previews._parse_poses("run:1")
+        args = render_previews._parse_args([
+            "--before", "before.smd", "--after", "after.smd", "--out", "renders",
+            "--passes", "textured,clay",
+        ])
+        with self.assertRaisesRegex(ValueError, "region manifest"):
+            render_previews._required_region_manifest(args)
 
     def test_vmt_base_texture_parser_and_manifest_writer_are_deterministic(self):
         import render_previews
@@ -660,27 +670,22 @@ class RenderPreviewArgumentTests(unittest.TestCase):
             self.assertEqual(entry["sha256"], _sha256(image_path))
             self.assertEqual(entry["image"], "clay/bind/front.png")
 
-    def test_region_keys_normalize_optimizer_and_blender_suffixes(self):
+    def test_renderer_consumes_explicit_shared_region_manifest(self):
         import render_previews
+        from maximum_optimizer.regions import build_region_manifest
 
-        keys = render_previews._region_keys(
-            [
-                ("Body_OPT.001", ("paint",)),
-                ("body", ("glass",)),
-                ("Body.002", ("paint",)),
-            ]
+        observations = (
+            ("models/car.smd", "Body_OPT.001", ("vehicles\\paint/Ç",)),
+            ("models/car.smd", "Body.002", ("vehicles/paint/ç",)),
         )
-
-        self.assertEqual(
-            keys,
-            {
-                ("Body_OPT.001", ("paint",)): "body|paint|0",
-                ("Body.002", ("paint",)): "body|paint|1",
-                ("body", ("glass",)): "body|glass|0",
-            },
-        )
-        with self.assertRaisesRegex(ValueError, "ambiguous"):
-            render_previews._region_keys([("Body", ("paint",)), ("Body", ("paint",))])
+        manifest = build_region_manifest(observations)
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "regions.json"
+            path.write_text(json.dumps(manifest.to_payload()), encoding="utf-8")
+            loaded = render_previews._load_region_manifest(path)
+        self.assertEqual(loaded.entries, manifest.entries)
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            build_region_manifest((observations[0], observations[0]))
 
     def test_barycentric_loop_attributes_preserve_seams_and_smooth_normals(self):
         import render_previews
