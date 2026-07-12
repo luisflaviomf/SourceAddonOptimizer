@@ -37,7 +37,7 @@ from maximum_optimizer.meshopt_bridge import (
     simplify_mesh,
 )
 from maximum_optimizer.compiler_aware import (
-    SmdAuditValidationError, allows_exact_fallback, engine_evidence, exact_source_payload,
+    SmdAuditValidationError, allows_strategy_exact_fallback, engine_evidence, exact_source_payload,
     move_modifier_first, preserve_whole_source, provenance_status, require_triangular_mesh,
 )
 from maximum_optimizer.importance_map import MeshImportanceInput, build_importance_weights
@@ -1254,6 +1254,21 @@ def require_direct_single_object(candidate: CandidateConfig, mesh_objects: Seque
         raise RuntimeError(f"{candidate.strategy} requires at least one mapped source object")
 
 
+def _write_round_export_fallback(
+    source: Path,
+    destination: Path,
+    candidate: CandidateConfig,
+    error: BaseException,
+) -> str:
+    if candidate.strategy != "round-planar-priority-v1" or not allows_strategy_exact_fallback(
+        error, strategy=candidate.strategy
+    ):
+        raise error
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(source.parent, destination, exact_source_payload(source.read_bytes()))
+    return str(error)
+
+
 def _process_source_file(
     source: Path,
     destination: Path,
@@ -1328,7 +1343,9 @@ def _process_source_file(
                 source_identity, mesh_objects, candidate, region_manifest, before_audit.materials,
             )
     except (ValueError, RuntimeError) as exc:
-        if candidate.strategy not in _BLENDER_STRATEGIES or not allows_exact_fallback(exc):
+        if candidate.strategy not in _BLENDER_STRATEGIES or not allows_strategy_exact_fallback(
+            exc, strategy=candidate.strategy
+        ):
             raise
         preserve_exact = True
         fallback_reason = str(exc)
@@ -1381,18 +1398,30 @@ def _process_source_file(
         )
         atomic_write_bytes(source.parent, destination, serialized.encode("utf-8"))
     else:
-        staging_dir = Path(tempfile.mkdtemp(prefix=".maximum-export-", dir=destination.parent))
-        staging = staging_dir / destination.name
         try:
-            source_tools.export_source_file(staging, staging.suffix.lstrip("."))
-            if not staging.is_file():
-                raise RuntimeError(f"Source Tools did not export {staging}")
-            with staging.open("r+b") as stream:
-                os.fsync(stream.fileno())
-            safe_output_path(source.parent, destination)
-            os.replace(staging, destination)
-        finally:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            staging_dir = Path(tempfile.mkdtemp(prefix=".maximum-export-", dir=destination.parent))
+            staging = staging_dir / destination.name
+            try:
+                source_tools.export_source_file(staging, staging.suffix.lstrip("."))
+                if not staging.is_file():
+                    raise RuntimeError(f"Source Tools did not export {staging}")
+                with staging.open("r+b") as stream:
+                    os.fsync(stream.fileno())
+                safe_output_path(source.parent, destination)
+                os.replace(staging, destination)
+            finally:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+        except (OSError, ValueError, RuntimeError) as exc:
+            fallback_reason = _write_round_export_fallback(
+                source, destination, candidate, exc
+            )
+            preserve_exact = True
+            for item in object_metrics:
+                item["attempted_achieved_ratio"] = item.get("achieved_ratio")
+                item["achieved_ratio"] = 1.0
+                item["preserved_exact"] = True
+                item["fallback_reason"] = fallback_reason
+                item["transfer"] = "exact-source-fallback-v1"
     if not destination.is_file():
         raise RuntimeError(f"Source Tools did not export {destination}")
     raw_export_sha256 = hashlib.sha256(destination.read_bytes()).hexdigest()
@@ -1410,7 +1439,9 @@ def _process_source_file(
         )
         validate_smd_audits(before_audit, after_audit)
     except RuntimeError as exc:
-        if candidate.strategy not in _BLENDER_STRATEGIES or not allows_exact_fallback(exc):
+        if candidate.strategy not in _BLENDER_STRATEGIES or not allows_strategy_exact_fallback(
+            exc, strategy=candidate.strategy
+        ):
             raise
         preserve_exact = True
         fallback_reason = str(exc)

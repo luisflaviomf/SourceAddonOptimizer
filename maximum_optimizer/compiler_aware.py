@@ -61,6 +61,14 @@ def allows_exact_fallback(error: object) -> bool:
     }
 
 
+def allows_strategy_exact_fallback(error: object, *, strategy: str) -> bool:
+    if strategy == "round-planar-priority-v1" and isinstance(
+        error, (RuntimeError, ValueError, OSError)
+    ):
+        return True
+    return allows_exact_fallback(error)
+
+
 def provenance_status(
     fallback_reason: str | None, *, strategy: str
 ) -> tuple[str, str]:

@@ -27,6 +27,31 @@ from maximum_optimizer.mesh_attributes import (
 
 
 class MaximumBlenderPureTests(unittest.TestCase):
+    def test_round_export_runtime_failure_writes_exact_source_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "wheel.smd"
+            destination = root / "output" / "wheel_opt.smd"
+            payload = b"version 1\r\ntriangles\r\nend\r\n\xff"
+            source.write_bytes(payload)
+            candidate = maximum.CandidateConfig(
+                "round",
+                "blender",
+                0.35,
+                0.0,
+                True,
+                (),
+                strategy="round-planar-priority-v1",
+                transfer="blender-native-v1",
+            )
+
+            reason = maximum._write_round_export_fallback(
+                source, destination, candidate, RuntimeError("export failed")
+            )
+
+            self.assertEqual(reason, "export failed")
+            self.assertEqual(destination.read_bytes(), payload)
+
     def test_round_planar_candidate_is_explicit_opt_in_blender_contract(self) -> None:
         payload = {
             "candidate_id": "round-planar-priority-r035",

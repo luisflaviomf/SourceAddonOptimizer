@@ -12,12 +12,25 @@ from maximum_optimizer.compiler_aware import (
     preserve_whole_source,
     exact_source_payload,
     allows_exact_fallback,
+    allows_strategy_exact_fallback,
     provenance_status,
     move_modifier_first,
 )
 
 
 class CompilerAwareTests(unittest.TestCase):
+    def test_round_research_runtime_failure_is_exact_fallback_only_for_that_strategy(self) -> None:
+        error = RuntimeError("Blender modifier exploded")
+
+        self.assertTrue(
+            allows_strategy_exact_fallback(error, strategy="round-planar-priority-v1")
+        )
+        self.assertFalse(
+            allows_strategy_exact_fallback(error, strategy="blender-adaptive-v1")
+        )
+        raw = b"version 1\r\ntriangles\r\nend\r\n\xff"
+        self.assertIs(exact_source_payload(raw), raw)
+
     def test_proxy_weights_compiled_vertices_more_than_triangles(self) -> None:
         self.assertEqual(compiler_proxy_bytes(100, 200), 10_600)
         self.assertLess(compiler_proxy_bytes(99, 205), compiler_proxy_bytes(100, 200))
