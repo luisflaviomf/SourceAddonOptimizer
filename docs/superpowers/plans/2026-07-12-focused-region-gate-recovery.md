@@ -20,24 +20,28 @@
   whole-visual index.
 - Schema-1 and schema-2 runs never call `focused_visual` and never write a
   whole-visual index.
-- Focus bounds are fixed: top-K maximum 4, eight angles, two passes, two poses, sixteen whole states, and three recovery rounds.
+- Focus bounds are fixed: base top-K maximum 4, adaptive-direct adds exactly one
+  isolated focus per changed direct source up to 8, eight angles, two passes, two
+  poses, sixteen whole states, and three donor-recovery rounds.
 - Recovery source manifests are limited to 4,096 regular files and 2 GiB; compiled
   composition manifests are limited to 64 regular artifacts and 2 GiB.
 - Donor inspection is limited to eight ordered snapshots per changed source; invalid
   snapshots in the ordered prefix consume the bound and the ninth is never touched.
-- A recovery composition changes at most four sources and consumes one recovery round
+- A focused-recovery composition changes at most four sources and consumes one recovery round
   and one `SearchBudget.max_candidates` slot before any mutation or process launch.
 - Under trusted schema 3, byte-exact composite recovery disables the legacy
   `search._regional_recovery` path; schema-1/schema-2 search remains unchanged.
 - Monaco uses exactly four terminal global direct ratios
-  `(0.50, 0.45, 0.40, 0.35)`, at most eight fallback sources, no Cartesian product,
+  `(0.50, 0.45, 0.40, 0.35)`, exactly the complete eligible set of 1..8 fallback
+  sources, no Cartesian product,
   bracket refinement, donor recovery, legacy regional recovery, filename trigger, or
   environment trigger.
 - The Monaco base is the smallest compiled ordinary `blender-adaptive-v1`
   evaluation that already passed structural, initial whole, and every focused gate;
   candidate ID breaks ties.
-- Every Monaco ratio is an independent schema-2 composite with one round at index 0,
-  rerenders all top-K focuses, and is outside the three-round donor-recovery bound.
+- Every Monaco ratio is an independent discriminated schema-2 composite with one round
+  at index 0, rerenders all base top-K focuses and one isolated focus for every changed
+  direct source, and is outside the three-round donor-recovery bound.
 - Every candidate still requires complete QC compilation, structural validation, whole visual validation, and focused validation before promotion.
 - No task changes the WPF or CLI surface.
 
@@ -1098,11 +1102,16 @@ enable schema 3 receive the current defaults and behavior.
 - Modify: `tests/maximum_optimizer/test_orchestrator.py`
 
 **Interfaces:**
-- `maximum_optimizer.domain` produces immutable `AdaptiveGraphOccurrenceProof`,
-  `AdaptiveSourceMetricsProof`, `AdaptiveCandidateMetricsProof`,
-  `DirectPrefilterProof`, `DirectSourceBuildRequest`, and `DirectSourceSnapshot`. A
-  direct snapshot contains exactly one contained regular `.smd` output and is not a
-  `RecoverySourceSnapshot`.
+- `maximum_optimizer.domain` produces immutable `AdaptiveGraphOccurrenceProof`, the
+  exact discriminated union `EligibleAdaptiveSourceProof |
+  IneligibleAdaptiveSourceProof`, `AdaptiveCandidateMetricsProof`,
+  `DirectPrefilterProof`, `DirectSourceBuildRequest`, and `DirectSourceSnapshot`. A direct snapshot contains
+  exactly one contained regular `.smd` output and is not a `RecoverySourceSnapshot`.
+- `maximum_optimizer.focused_cache` produces `AdaptiveDirectFocusProof` and
+  `AdaptiveDirectEvidence` beside `FocusedRenderEvidence`, avoiding a
+  `domain <-> focused_cache` import cycle.
+  `AdaptiveDirectEvidence` has exact kind `adaptive-direct-fallback-v1`, schema 2, and
+  `round_index == 0`; it cannot parse as `FocusedRecoveryEvidence`.
 - `maximum_optimizer.composite` produces
   `select_monaco_base(evaluations, retained_builds) -> CandidateEvaluation | None`,
   `select_exact_fallback_sources(base_build, base_snapshot, original_graph,
@@ -1113,7 +1122,10 @@ enable schema 3 receive the current defaults and behavior.
   tuple[CandidateSpec, ...]`. Task 6 extends the Task-5 compositor's snapshot
   resolver to `Mapping[str, RecoverySourceSnapshot | DirectSourceSnapshot]` and
   dispatches strictly by `SourceOverlay.mode`; the other two overlay modes never
-  accept a direct snapshot.
+  accept a direct snapshot. `CompositeRecipe.kind` and the corresponding composition
+  proof discriminator enforce 1..4 changed sources for `focused-recovery-v1` and 1..8
+  for `adaptive-direct-fallback-v1`; Task-5 behavior and its three-round bound remain
+  unchanged.
 - `maximum_optimizer.candidates` produces
   `build_direct_source_snapshot(request, workspace, tools, cancel_event) ->
   DirectSourceSnapshot` and never routes a composite `CandidateSpec.cache_payload()`
@@ -1122,8 +1134,10 @@ enable schema 3 receive the current defaults and behavior.
   `direct-degenerate-prefilter-v1`, eligibility reasons
   `ratio-preserved-exact-v1`/`approved-exact-source-fallback-v1`, and direct overlay
   reason `approved-direct-position-v1` exactly.
-- Each global ratio is an independent schema-2 composite containing one recovery
-  record at `round_index == 0`; it is outside the Task-5 donor round counter of three.
+- Each global ratio is an independent adaptive-direct schema-2 composite containing
+  one exact record at `round_index == 0`; it is outside the Task-5 donor round counter.
+  It rerenders the complete base top-K and exactly one isolated focus for every changed
+  direct source before final whole authorization.
 
   ```python
   @dataclass(frozen=True)
@@ -1135,7 +1149,8 @@ enable schema 3 receive the current defaults and behavior.
       role: Literal["visual"]
 
   @dataclass(frozen=True)
-  class AdaptiveSourceMetricsProof:
+  class EligibleAdaptiveSourceProof:
+      kind: Literal["eligible-exact-v1"]
       source_identity: str
       source_relative_path: str
       source_size: int
@@ -1143,13 +1158,30 @@ enable schema 3 receive the current defaults and behavior.
       output_relative_path: str
       output_size: int
       output_sha256: str
-      preserved_exact: bool
+      preserved_exact: Literal[True]
       eligibility_reason: Literal[
           "ratio-preserved-exact-v1",
           "approved-exact-source-fallback-v1",
-      ] | None
+      ]
       occurrences: tuple[AdaptiveGraphOccurrenceProof, ...]
       metrics_sha256: str
+
+  @dataclass(frozen=True)
+  class IneligibleAdaptiveSourceProof:
+      kind: Literal["ineligible-changed-v1"]
+      source_identity: str
+      source_relative_path: str
+      source_size: int
+      source_sha256: str
+      output_relative_path: str
+      output_size: int
+      output_sha256: str
+      preserved_exact: Literal[False]
+      ineligibility_reason: Literal["adaptive-output-changed-v1"]
+      occurrences: tuple[AdaptiveGraphOccurrenceProof, ...]
+      metrics_sha256: str
+
+  AdaptiveSourceMetricsProof = EligibleAdaptiveSourceProof | IneligibleAdaptiveSourceProof
 
   @dataclass(frozen=True)
   class AdaptiveCandidateMetricsProof:
@@ -1159,7 +1191,11 @@ enable schema 3 receive the current defaults and behavior.
       candidate_id: str
       candidate_cache_digest: str
       strategy: Literal["blender-adaptive-v1"]
+      base_spec_sha256: str
       source_manifest_sha256: str
+      source_snapshot_sha256: str
+      original_graph_sha256: str
+      candidate_graph_sha256: str
       raw_metrics_sha256: str
       sources: tuple[AdaptiveSourceMetricsProof, ...]
       evidence_sha256: str
@@ -1190,8 +1226,11 @@ enable schema 3 receive the current defaults and behavior.
       family_id: str
       family_input_sha256: str
       base_candidate_id: str
+      base_spec_sha256: str
       base_cache_digest: str
       base_source_manifest_sha256: str
+      base_source_snapshot_sha256: str
+      base_strategy: Literal["blender-adaptive-v1"]
       optimizer_contract_sha256: str
       whole_profile_sha256: str
       focused_profile_sha256: str
@@ -1202,6 +1241,7 @@ enable schema 3 receive the current defaults and behavior.
       source_sha256: str
       direct_ratio: float
       strategy: Literal["meshopt-direct-position-v1"]
+      transfer: Literal["direct-position-v1"]
       prefilter_version: Literal["direct-degenerate-prefilter-v1"]
       expected_prefilter: DirectPrefilterProof
       request_sha256: str
@@ -1223,34 +1263,68 @@ enable schema 3 receive the current defaults and behavior.
       preserved_exact: Literal[False]
       reason: Literal["approved-direct-position-v1"]
       snapshot_sha256: str
+
+  @dataclass(frozen=True)
+  class AdaptiveDirectFocusProof:
+      source_identity: str
+      target: FocusTarget
+      record: FocusedRenderEvidence
+      evidence_sha256: str
+
+  @dataclass(frozen=True)
+  class AdaptiveDirectEvidence:
+      schema: Literal[2]
+      kind: Literal["adaptive-direct-fallback-v1"]
+      round_index: Literal[0]
+      recipe: CompositeRecipe
+      composition: CompositionProof | None
+      changed_sources: tuple[ChangedSourceProof, ...]
+      compile_files: tuple[CompileFileProof, ...]
+      structural: StructuralRecoveryEvidence | None
+      base_focus_records: tuple[FocusedRenderEvidence, ...]
+      direct_focus_records: tuple[AdaptiveDirectFocusProof, ...]
+      final_whole: FinalWholeAuthorizationEvidence | None
+      terminal_status: Literal[
+          "composition_failed", "compile_failed", "structural_failed",
+          "focused_failed", "final_whole_failed", "authorized",
+      ]
+      evidence_sha256: str
   ```
 
-  `request_sha256` seals every request field except itself.
-  `metrics_sha256` seals the normalized per-source metrics and canonical grouped
-  occurrences; `AdaptiveCandidateMetricsProof.evidence_sha256` seals every field
-  except itself and must bind the same candidate/cache/source manifest as the selected
-  base snapshot. It inventories every paired visual SMD, not only eligible sources.
+  `request_sha256` seals every request field except itself and derives direct candidate
+  and cache identity. `metrics_sha256` seals the exact source variant and canonical
+  grouped occurrences; `AdaptiveCandidateMetricsProof.evidence_sha256` seals every
+  field except itself and must bind the same candidate/cache/source manifest/snapshot,
+  graph pair, and explicit base strategy as the selected base. Its `sources` exactly
+  inventories the complete original/base visual union, not only eligible sources.
   `snapshot_sha256` seals every snapshot field except itself and runtime-only
   `source_root`. `SourceOverlay.replacement_snapshot_sha256` may resolve to a
   `DirectSourceSnapshot` only when `mode == "direct-position"`; donor and
   exact-original modes continue to require `RecoverySourceSnapshot`.
+  `AdaptiveDirectEvidence.evidence_sha256` seals exact base-focus and direct-focus
+  matrices; its direct-source identities equal the changed-source identities exactly.
 
 - [ ] **Step 1: Write typed adaptive-metrics, direct-request, and snapshot RED tests**
 
   In `test_domain.py` and `test_composite.py`, construct each new type and mutate
-  every field. Require exact schema/keys, deep immutability, lowercase hashes,
-  finite non-bool ratio, exact threshold `1e-30`, coherent dropped counts/fraction,
+  every field. Require exact schema/keys, deep immutability, lowercase hashes, strict
+  parsing separation for eligible/ineligible source variants and adaptive-direct/
+  focused-recovery evidence, finite non-bool ratio, exact threshold `1e-30`, coherent
+  dropped counts/fraction, ratio application to the post-prefilter set, rejection of
+  prefilter-only savings,
   canonical source identity/path, fixed strategy/prefilter/
   reason enums, direct candidate/cache identity, one `.smd` output, changed bytes,
   decreasing triangle counts, and a seal over every canonical field except the
   runtime absolute root. Reject a snapshot presented as a complete recovery source
   tree, a second output, case aliases, reparse/special/escaping paths, stale current
   bytes, and per-ratio aggregate discovery/copy/hash beyond 4,096 files or 2 GiB.
-  Require the adaptive metrics proof to inventory every paired visual SMD in canonical
-  order, group only byte-identical occurrences, bind raw metrics plus base
-  candidate/cache/source manifest, and authorize eligibility only through the two
-  fixed reason enums. Reject an eligible-only/incomplete inventory and arbitrary
-  diagnostic exception text.
+  Require the adaptive metrics proof to inventory the complete original/base visual
+  identity union in canonical order, group only byte-identical occurrences, bind both
+  graph digests plus base candidate/spec/cache/source manifest/snapshot and explicit
+  `blender-adaptive-v1` identity, and authorize eligibility only through the two fixed
+  enums. Reject eligible-only/incomplete inventory, cross-kind optional fields,
+  arbitrary diagnostic text, focused-recovery with five changes, and adaptive-direct
+  with zero or nine changes; accept adaptive-direct with eight.
 
 - [ ] **Step 2: Write deterministic base and fallback-selector RED tests**
 
@@ -1260,14 +1334,16 @@ enable schema 3 receive the current defaults and behavior.
   schema-1/2 activation, environment-only activation, filename tokens, failed gates,
   missing retained build/snapshot, and stale base evidence.
 
-  Parse the sealed base candidate-metrics proof and both QC graphs. Select only paired
+  Parse the sealed base candidate-metrics proof and both QC graphs. First prove the
+  inventory equals their complete canonical visual union, then select only paired
   visual `.smd` identities with `preserved_exact == true` and fixed reason
   `ratio-preserved-exact-v1` or `approved-exact-source-fallback-v1`. Group repeated
   byte-identical graph occurrences, but reject conflicting duplicate provenance,
   animation/physics roles, DMX, ambiguous/case-colliding identities, arbitrary
-  exception strings, missing/stale outputs, and a ninth eligible source. Instrument
-  snapshot access and assert the ninth is rejected before any mini-build, hash, or
-  process. Assert zero eligible sources returns no proposal and consumes no budget.
+  exception strings, missing/stale or non-byte-identical original/base outputs, and a
+  ninth eligible source. Instrument reservation, snapshot/direct-cache open, copy,
+  hash, and process launch; assert zero and nine reject before all of them and consume
+  no budget. Assert eight returns all eight identities without truncation.
 
 - [ ] **Step 3: Write fixed-ratio terminal schedule RED tests**
 
@@ -1275,15 +1351,18 @@ enable schema 3 receive the current defaults and behavior.
   candidates (subject only to the existing outer attempt budget),
   the same ratio for every source within one candidate, no Cartesian product, and
   stable candidate IDs under shuffled metrics, graph occurrences, and snapshot-map
-  insertion order. Candidate/recipe hashes must change with any base cache/source
-  manifest, direct snapshot, prefilter proof, ratio, or source mutation.
+  insertion order. Candidate/recipe/cache hashes must change with either base or direct
+  strategy/transfer, base spec/cache/source manifest/snapshot, request/snapshot set,
+  prefilter proof, ratio, or source mutation.
 
   Feed pass/fail results for all four adaptive-direct specs back to `choose_next` and
   instrument `_narrowest_bracket`, donor recovery, and legacy `_regional_recovery`.
   Assert none is called for this terminal strategy and no midpoint/fifth ratio is
-  returned. Assert outer `SearchBudget.max_candidates` is reserved before opening a
-  direct snapshot or starting a mini-build; unavailable budget leaves all inputs
-  unopened.
+  returned. After complete inventory preflight, reserve the available fixed-ratio
+  prefix and report/event terminal capacity contiguously in ratio order. Assert every
+  reserved attempt terminates once and reservation precedes source/direct-cache open,
+  copy/hash, and mini-build. A cache hit consumes its reservation; unavailable budget
+  leaves all inputs unopened.
 
 - [ ] **Step 4: Run domain/composite/search tests and verify RED**
 
@@ -1298,9 +1377,8 @@ enable schema 3 receive the current defaults and behavior.
   `approved-exact-source-fallback-v1`, or null; retain raw exception text only in a
   diagnostic field excluded from eligibility. Emit the approved-fallback enum only
   after the existing typed exact-fallback predicate accepts the failure class/reason.
-  Build and seal the complete
-  `AdaptiveCandidateMetricsProof` against current no-follow bytes and the base
-  snapshot.
+  Build and seal the complete discriminated `AdaptiveCandidateMetricsProof` against
+  current no-follow bytes, both reparsed QC graph digests, and the base snapshot.
 
   Implement exact direct parsers/builders rather than adding optional fields to the generic
   search JSON. Each request binds family/input, immutable base candidate/cache/source
@@ -1313,8 +1391,11 @@ enable schema 3 receive the current defaults and behavior.
   exact equality with the complete reported proof: schema, strategy, threshold,
   source/dropped counts, dropped fraction, ordered triangle records, and digest.
   Require `applied == true`, `fallback_reason is None`, `preserved_exact == false`,
-  exact direct strategy/transfer, changed output hash, decreasing triangle count, and
-  a current one-file output proof. On any source failure, publish no partial recipe
+  exact direct strategy/transfer, changed output hash, strict post-prefilter triangle
+  decrease, and a current one-file output proof. Verify original/base input bytes are
+  byte-identical and preserve nodes, skeleton frames, materials, bones/weights, UVs,
+  normals, retained-corner attributes, and cyclic winding; only triangle membership/
+  order and position-remapped topology may change. On any source failure, publish no partial recipe
   for that ratio, record its reserved terminal failure, clean owned staging no-follow,
   and allow the next fixed ratio only if budget/cancellation permits.
 
@@ -1324,30 +1405,38 @@ enable schema 3 receive the current defaults and behavior.
   For one ratio, overlay all selected outputs on the same immutable ordinary base,
   set mode `direct-position`, no motivating region or donor focus refs, fixed reason
   `approved-direct-position-v1`, and the identical global ratio on every overlay.
-  Require exact unchanged bytes for every undeclared source and every QC file.
+  Require exact unchanged bytes for every undeclared source and every QC file. The
+  adaptive-direct changed partition equals the complete selected 1..8 identities;
+  Task-5 focused recovery remains limited to 1..4.
 
   Emit one complete `adaptive-direct-fallback-v1` recipe/spec per ratio. Each recipe
   is independent, has `round_index == 0`, and seals the base plus all sorted direct
-  requests/snapshots/prefilter proofs. Never carry an overlay from one ratio into
+  requests/snapshots/prefilter proofs and explicit base/direct strategy identities.
+  Materialize each ratio in a fresh same-volume private
+  `direct/<ratio-token>/<ordinal>-<identity-digest>/output.smd` layout; copy and
+  revalidate cache hits there, and never root a snapshot in shared cache storage.
+  Never carry an overlay from one ratio into
   another and never consume the three-round donor-recovery counter.
 
 - [ ] **Step 7: Require complete compile and schema-2 gates**
 
   Compile the complete composed QC and seal every current contained StudioMDL
   artifact, including required `.mdl/.vvd/.vtx/.ani/.phy` sidecars. Run structural
-  authorization, rerender all selected top-K focuses without reuse, and fold exactly
-  those records over the selected base candidate's sealed schema-1 initial
-  authorization in an independent `FocusedRecoveryContext`/schema-2 payload with one
-  record at round 0. The selected target/ranking prefix is immutable across that
-  ratio; no fresh ranking can silently drop a base target.
+  authorization, rerender every selected base top-K focus without reuse, then render
+  exactly one additional isolated direct focus for every changed source, even when it
+  overlaps a base target. Fold both exact current-file matrices over the selected
+  base's sealed schema-1 context in discriminated `AdaptiveDirectEvidence` schema 2
+  with one record at round 0. The base prefix and direct-source set are immutable; no
+  ranking can drop either.
   Only after structural and every focus pass, run exactly one fresh final whole gate
   and bind its whole index/render evidence to recipe, composition, compile manifest,
   and candidate/cache identity. Earlier terminal failure has no final-whole evidence.
 
   Only terminal `authorized` enters candidate cache, best update, winner selection,
-  or promotion. Keep the passing Blender base in evaluations. Cache restore must
-  revalidate direct snapshots/current source bytes and rerun structural, all focuses,
-  and final whole; cache diagnostics never authorize.
+  or promotion. Keep the passing Blender base in evaluations. Cache restore must copy
+  only the Task-7-compatible private whitelist, revalidate direct snapshots/current
+  source bytes and both strategy identities, and rerun structural, every base focus,
+  every changed-source isolated focus, and final whole; diagnostics never authorize.
 
 - [ ] **Step 8: Add compiled-byte, failure, and bound regression tests**
 
@@ -1357,20 +1446,26 @@ enable schema 3 receive the current defaults and behavior.
   final whole. Make every passing candidate, including the base, at least as large as
   original and assert original preservation.
 
-  Cover one direct source failure, prefilter self-reseal, same-size input/output
+  Cover one direct source failure, prefilter self-reseal and prefilter-only output,
+  same-size input/output
   mutation, source alias, incomplete compile sidecars, structural failure, focused
   failure, final-whole failure, cache hit, and cancellation before/within/after each
   mini-build and gate. Assert exactly four full-QC compile attempts maximum, no fifth
   ratio/bracket, no partial recipe/schema-2 authorization, no best update/promotion,
-  and schema-1/schema-2 behavior unchanged.
+  and schema-1/schema-2 behavior unchanged. Add schema/report/cache/current-byte tests
+  for cross-kind fields, round other than zero, incomplete inventory, missing or
+  duplicate changed-source focus, changed direct render bytes, stale private-cache
+  snapshot, base/direct strategy collision, reservation-before-I/O, and 4-vs-8 limits.
 
 - [ ] **Step 9: Run composite integration and commit checkpoint 6**
 
   Run:
   `python -m unittest tests.maximum_optimizer.test_domain tests.maximum_optimizer.test_composite tests.maximum_optimizer.test_candidates tests.maximum_optimizer.test_search tests.maximum_optimizer.test_focused_cache tests.maximum_optimizer.test_orchestrator -v`
 
-  Expected: zero failures; four terminal ratios only, independent schema-2 round-0
-  authorization, all top-K rerendered, and winner chosen from complete compiled bytes.
+  Expected: zero failures; four terminal ratios only, discriminated schema-2 round-0
+  authorization, all base top-K and all changed-source isolated focuses rerendered,
+  and winner chosen from complete compiled bytes. Default product activation remains
+  blocked.
 
   Commit:
   `git commit -m "feat: build bounded adaptive direct composites"`
@@ -1394,7 +1489,9 @@ enable schema 3 receive the current defaults and behavior.
   `complete.json`.
 - `payload/maximum_cache_record.json` uses exact schema 3 and one mutually
   exclusive `candidate_kind`: `legacy-ordinary-v1`, `schema3-ordinary-v1`,
-  `focused-recovery-v1`, or `adaptive-direct-fallback-v1`.
+  `focused-recovery-v1`, or `adaptive-direct-fallback-v1`. The adaptive kind binds
+  explicit base/direct strategy identities, complete adaptive inventory,
+  request/snapshot set digests, and exact base/direct focused matrices.
 - Legacy profile-schema-1/2 `MaximumRunReport` serialization remains byte-for-byte
   schema 1. Trusted profile schema 3 uses an exact conditional report schema 2 and a
   distinct exact schema-2 progress envelope.
@@ -1450,7 +1547,8 @@ enable schema 3 receive the current defaults and behavior.
 
   Enforce the physical whitelist: exact record and typed source/compile/composition/
   direct manifest files; contained `src/`, `compiled/`, and, for adaptive-direct only,
-  typed `direct/` snapshot outputs. Reject `logs/`, renders, focused snapshots,
+  typed `direct/<ratio>/<identity>/output.smd` snapshot outputs. Restore these files to
+  a fresh private same-volume root before constructing snapshots. Reject `logs/`, renders, focused snapshots,
   texture caches, temporary/quarantine names, extra images, and any unmanifested
   file before copying it. Exercise same-size tampering, source/material/direct proof
   changes, case aliases, absolute/UNC/drive/backslash/dot/parent paths, special files,
@@ -1475,7 +1573,8 @@ enable schema 3 receive the current defaults and behavior.
   status, compiled bytes, cache diagnostic, base candidate, nullable reserved round
   and direct ratio, selected-focus states, changed source identities, reused region
   keys, and nullable composition/compile/structural/schema-2/final-whole hashes.
-  Require one focus state per selected target. Report-only state is exactly
+  Require one base-focus state per selected top-K target and, for adaptive-direct, one
+  separate direct-focus state per changed source identity. Report-only state is exactly
   `passed`, `failed`, `cancelled`, or `unattempted`; only passed/failed attempted
   states carry an evidence hash. Recovery rounds are contiguous reserved `0..n-1`;
   adaptive-direct has exactly `[0]`. Changed/reused sets exactly partition selected
@@ -1490,8 +1589,9 @@ enable schema 3 receive the current defaults and behavior.
 
 - [ ] **Step 3: Write hard-bound RED tests**
 
-  Exercise top-K 5, 17 whole states, 3 poses, a fifth changed source, ninth Monaco
-  fallback, fifth direct ratio, fourth recovery round, and candidate-budget
+  Exercise top-K 5, 17 whole states, 3 poses, a fifth focused-recovery changed source,
+  zero/ninth Monaco changed source, missing/duplicate direct-source focus, fifth direct
+  ratio, fourth recovery round, and candidate-budget
   exhaustion. Each must reject before opening/hashing an excess snapshot, allocating
   staging, or starting a process. Add cache source file 4,097, compiled artifact 65,
   aggregate direct snapshot over its existing 4,096-file/2-GiB bound, sparse content
@@ -1501,10 +1601,10 @@ enable schema 3 receive the current defaults and behavior.
 
   Event history uses the derived hard bound
   `2 + family_count * (2 + (budget.max_candidates + 1) * candidate_event_bound)`,
-  where `candidate_event_bound = 2 + 13 + 2 * focused_top_k + 3 * 8`:
+  where `candidate_event_bound = 2 + 13 + 2 * focused_top_k + 5 * 8`:
   candidate start/finish, thirteen singleton typed stages, at most two per-focus
-  render/compare stages for four focuses, and three direct-source stages for eight
-  sources. The terminal/progress JSON 16-MiB bound remains authoritative even when
+  render/compare stages for four base focuses, and prepare/build/validate plus isolated
+  render/compare for eight direct sources. The terminal/progress JSON 16-MiB bound remains authoritative even when
   the derived count is larger. Events and summaries reserve room for terminal
   records; history is never silently truncated into a false-success report.
 
@@ -1528,9 +1628,10 @@ enable schema 3 receive the current defaults and behavior.
 
   On resume, dispatch by exact candidate kind. Legacy/ordinary rerun current
   structural, whole, and focused gates as applicable. Focused-recovery and
-  adaptive-direct entries first revalidate source/direct snapshots, recipe,
-  composition, and complete compile bytes, then rerun structural, **all selected
-  top-K focuses**, rebuild schema 2 from the sealed base initial context, and run
+  adaptive-direct entries first revalidate source/direct snapshots, both strategy
+  identities, complete inventory, recipe, composition, and compile bytes, then rerun
+  structural, **all selected base top-K focuses and every changed-source isolated
+  direct focus**, rebuild the correct discriminated schema 2 from the sealed base context, and run
   exactly one fresh final whole after focus pass. Stored prior hashes remain
   diagnostics and cannot enter the new authorization payload. Fresh and resume must
   return the same pass/fail and authorization semantics; cache-hit diagnostics alone

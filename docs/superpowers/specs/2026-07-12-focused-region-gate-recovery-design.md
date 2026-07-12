@@ -447,80 +447,105 @@ and non-focused search behavior remain unchanged.
 ## Monaco adaptive-direct composite
 
 The Monaco path is typed, not filename-based and not environment-gated. It activates
-only under trusted schema 3 after at least one completed ordinary
-`blender-adaptive-v1` evaluation has passed structural, initial whole, and every
-selected focused gate. Among those eligible ordinary evaluations, the immutable base
-is the one with the smallest actual compiled byte count, then candidate ID. Strategy,
-candidate metrics, source provenance, source snapshot, and current bytes prove
-eligibility; model/family filenames, path tokens, environment variables, and CLI
-switches never do.
+only inside the research Maximum runner under trusted schema 3 after at least one
+completed ordinary `blender-adaptive-v1` evaluation has passed structural, initial
+whole, and every selected focused gate. Among those eligible ordinary evaluations,
+the immutable base is the one with the smallest actual compiled byte count, then
+candidate ID. Strategy, candidate metrics, source provenance, source snapshot, and
+current bytes prove eligibility; model/family filenames, path tokens, environment
+variables, and CLI switches never do. Task 6 does not enable the default product path:
+production selection remains blocked until the later evidence/approval task changes
+that gate explicitly.
 
 The base publishes a sealed exact `AdaptiveCandidateMetricsProof` tied to its
-candidate/cache identity and `RecoverySourceSnapshot` source-manifest digest. It
-inventories every paired visual SMD, not only eligible sources, and contains canonical
-per-source input/output byte proofs plus grouped graph-occurrence proofs. The selector
-reparses the original and candidate QC graphs
-and groups repeated identical graph occurrences by canonical visual source identity.
-It selects only paired visual `.smd` outputs whose exact per-source metrics have
-`preserved_exact == true` and either fixed reason `ratio-preserved-exact-v1` or fixed
-reason `approved-exact-source-fallback-v1`. Arbitrary exception text is diagnostic
-only and never an authorization reason. Animation, physics/collision, DMX, missing or
-stale outputs, conflicting repeated occurrences, duplicate/case-colliding identities,
-unsealed metrics, and a ninth eligible source reject the Monaco proposal before a
-mini-build, snapshot open, hash, or process starts. No eligible source produces no
-Monaco candidates and consumes no budget.
+candidate/cache identity, explicit base strategy identity, both QC graph digests, and
+`RecoverySourceSnapshot` source-manifest/snapshot digests. Its `sources` field is an
+exact-key discriminated union in canonical source-identity order:
 
-Task 6 introduces a bounded `DirectSourceBuildRequest` and
-`DirectSourceSnapshot`; an isolated mini-source is not misrepresented as a complete
-`RecoverySourceSnapshot`. The request seals family/input, base candidate/cache/source
-manifest, optimizer/profile/dependency contracts, canonical source identity and
-current input proof, one global ratio, strategy
-`meshopt-direct-position-v1`, prefilter
+- `eligible-exact-v1` requires `preserved_exact == true`, byte-identical original/base
+  SMDs, and exactly one eligibility reason: `ratio-preserved-exact-v1` or
+  `approved-exact-source-fallback-v1`;
+- `ineligible-changed-v1` requires `preserved_exact == false`, no eligibility reason,
+  and a fixed machine ineligibility reason. Free-form diagnostics are excluded from
+  authorization seals.
+
+The proof inventories the complete union of visual SMD identities reparsed from the
+original and base QC graphs, not merely the eligible subset, and includes canonical
+grouped occurrences. Missing/unpaired identities, animation, physics/collision, DMX,
+stale outputs, conflicting repeated occurrences, duplicate/case-colliding identities,
+or unsealed metrics reject the proposal. Only after that in-memory inventory is
+complete is the eligible set counted. Zero eligible sources returns no proposal; more
+than eight rejects the complete proposal. Both happen before candidate reservation,
+source/direct-cache open, copy/hash, or process launch. The set is never truncated.
+
+Task 6 introduces a bounded `DirectSourceBuildRequest` and `DirectSourceSnapshot`; an
+isolated mini-source is not misrepresented as a complete `RecoverySourceSnapshot`.
+The request seals family/input, immutable base candidate/spec/cache/source
+manifest/snapshot, optimizer/profile/dependency contracts, explicit base strategy
+`blender-adaptive-v1` with its complete cache payload, canonical source identity and
+current input proof, one global ratio, explicit direct strategy/transfer
+`meshopt-direct-position-v1`/`direct-position-v1`, prefilter
 `direct-degenerate-prefilter-v1`, the exact expected prefilter proof recomputed from
-the request input bytes, and its own digest. The snapshot carries the request,
+the request input bytes, and its own digest. The snapshot carries the request, derived
 direct candidate/cache identity, one contained regular `.smd` output proof, input and
 output triangle counts, the exact recomputed prefilter proof, fixed reason
 `approved-direct-position-v1`, and a seal over every canonical field except its
-runtime absolute root. It contains exactly one output; across one ratio, the at-most
-eight snapshots remain within the existing 4,096-file/2-GiB source bound.
+runtime absolute root. Per-ratio request/snapshot set digests bind every sorted source;
+composite identity binds both strategies, immutable base, ratio, recipe, and both set
+digests. Across one ratio the at-most eight one-output snapshots remain within the
+4,096-file/2-GiB direct bound.
 
-The prefilter proof is authorization data, not a self-signed log. The builder
-recomputes `direct-degenerate-prefilter-v1` from the exact no-follow input bytes and
-requires exact canonical equality with the reported schema, threshold, dropped
-triangle ordinals/records, counts, and digest. A usable direct snapshot requires
-`applied == true`, `fallback_reason is None`, `preserved_exact == false`, finite
-strictly decreasing triangle counts, changed output bytes, the exact strategy and
-transfer contract, and current output bytes matching the sealed proof. A failure in
-one mini-source makes that global-ratio candidate terminally failed without publishing
-a partial recipe; later fixed ratios may still run if the outer candidate budget
-permits.
+The prefilter proof is independent authorization data, not a self-signed log and not
+part of Blender eligibility. The builder recomputes
+`direct-degenerate-prefilter-v1` from exact no-follow input bytes and requires exact
+canonical equality with schema, threshold, ordered dropped-triangle records, counts,
+fraction, and digest. The threshold is exactly `1e-30`; dropped count cannot exceed
+source triangle count, dropped fraction is the exact finite quotient, and the global
+simplification ratio applies to the post-prefilter triangle set. Prefilter-only removal
+cannot qualify as successful direct simplification or a separate saving claim. A
+usable snapshot requires `applied == true`, `fallback_reason is None`,
+`preserved_exact == false`, changed output bytes, a strict post-prefilter triangle
+decrease, exact strategy/transfer, and current output bytes matching the seal. One
+mini-source failure terminally fails that ratio without a partial recipe; later fixed
+ratios may run only when already reserved and not cancelled.
 
 `monaco_composite_specs` creates exactly the four terminal global ratios
-`(0.50, 0.45, 0.40, 0.35)`. Every selected source inside one variant receives the
-same ratio. Source order is canonical and cannot create a Cartesian product. Candidate
-and recipe identity bind the base cache/source manifest plus every sorted direct
-snapshot and prefilter proof. Adaptive-direct trails are terminal: `choose_next`
-never applies bracket refinement, midpoint generation, donor recovery, or legacy
-regional recovery, so there is no fifth ratio. The four scheduled variants still
-obey `SearchBudget.max_candidates`; unavailable outer budget stops before opening a
-snapshot or starting a mini-build.
+`(0.50, 0.45, 0.40, 0.35)`. Every selected source in one variant receives the same
+ratio; canonical order creates no Cartesian product. Adaptive-direct trails never use
+bracket refinement, midpoint generation, donor recovery, or legacy regional recovery.
+After complete zero/greater-than-eight preflight, the prefix allowed by the remaining
+`SearchBudget.max_candidates` is reserved contiguously in that ratio order, including
+report/event terminal capacity. No source snapshot or direct cache opens and no copy,
+hash, or process begins before its ratio reservation. A cache hit consumes its reserved
+attempt, and every reservation receives exactly one terminal result.
 
 Each ratio is an independent `adaptive-direct-fallback-v1` composite, not a donor
-recovery continuation. It has its own focused-evidence schema-2 payload with exactly
-one recovery record at `round_index == 0`; the four independent records do not consume
-or extend the donor-recovery maximum of three rounds and are never cumulative across
-ratios. Its direct `SourceOverlay` entries resolve only through the supplied
-`DirectSourceSnapshot` registry and require fixed mode/reason, ratio, direct
-candidate/cache identity, snapshot hash, and byte proof. The compositor overlays
-those outputs on the immutable ordinary base, changes no other source or QC byte, and
-recompiles the complete QC.
+continuation. It uses a discriminated schema-2 `AdaptiveDirectEvidence` whose exact
+kind is `adaptive-direct-fallback-v1` and whose only record has `round_index == 0`.
+Focused-recovery evidence cannot parse as this type; direct keys are forbidden in
+donor matrices and donor keys in direct matrices. These records do not consume the
+donor maximum of three and never accumulate across ratios. Direct overlays resolve
+only through `DirectSourceSnapshot`, use the fixed mode/reason/ratio/identity proofs,
+and cover all eligible sources. The 1..8 selected identities are the exact changed
+partition for adaptive-direct; focused recovery retains 1..4. `CompositeRecipe` and
+`CompositionProof` discriminate kind so neither limit can be borrowed.
 
-Every successfully composed ratio runs structural authorization, rerenders all
-selected top-K focuses without reuse, folds those records over the immutable base
-candidate's sealed schema-1 initial ranking/authorization through schema 2, and—only
-after the structural and focused set passes—runs exactly one fresh final whole render.
-The base selected prefix is fixed for that ratio; recomputing a ranking cannot remove
-or replace an initially selected target.
+For every selected SMD, original and ordinary-base current bytes must have equal size,
+SHA-256, and byte-for-byte content. The direct transform may change only triangle
+membership/order and position-remapped topology. Nodes, skeleton frames, material
+spelling/order, bone identities, weights, UVs, normals, retained-corner attributes,
+and cyclic winding provenance remain exact under the typed SMD parser. Composition
+copies the immutable base, replaces exactly the declared SMDs, proves every QC and
+undeclared source byte unchanged, and rejects same-size mutation.
+
+Every composed ratio runs structural authorization and two mandatory fresh focused
+sets without reuse: every selected base top-K focus, plus one isolated direct focus for
+every changed source identity. The direct focus is required even when that source
+appears inside a base top-K target, so no local defect can hide behind aggregate
+coverage. `AdaptiveDirectEvidence` seals both exact matrices and current render-file
+manifests over the immutable base schema-1 context and authorizes only if all records
+pass. The base prefix and canonical direct-source set are immutable; fresh ranking
+cannot remove either. Only then does exactly one fresh final whole render run.
 The final-whole evidence binds the composite recipe/composition, complete compile
 manifest, current candidate/cache identity, and fresh whole index. Only terminal
 `authorized` schema 2 can enter candidate cache, best update, winner selection, or
@@ -556,7 +581,12 @@ handle-verified bounded read before parsing.
 
 Payload paths are an exact whitelist: `maximum_cache_record.json`, typed files below
 `manifests/`, complete bounded `src/` and `compiled/` trees, and—only for
-adaptive-direct—typed bounded `direct/` snapshot outputs. Logs, renders, focused
+adaptive-direct—typed bounded
+`direct/<ratio-token>/<source-ordinal>-<identity-digest>/output.smd` snapshots plus
+their request/snapshot manifests. Every fresh build or cache restore first copies this
+whitelist through no-follow handles into a new same-volume, non-overlapping private
+candidate root. A `DirectSourceSnapshot` is rooted only in that private copy, never in
+shared cache storage or another ratio workspace. Logs, renders, focused
 snapshots, texture caches, temporary/quarantine files, extra images, absolute/UNC/
 drive/backslash/dot/parent aliases, case collisions, symlink/junction/reparse leaves
 or ancestors, special files, and unmanifested content are forbidden before copy.
@@ -590,22 +620,27 @@ direct mixed fields make the entry a miss.
 Prior whole/focused/schema-2/final evidence hashes live only in the record's bounded
 `prior_diagnostics` block. Cached `ValidationResult`, `passed`, terminal status, or
 old authorization payloads never authorize. Cache restoration validates current
-contained source/direct snapshots, recipe, composition, and complete compiled bytes
+contained source/direct snapshots, explicit strategy identities, complete adaptive
+inventory, recipe, composition, and complete compiled bytes
 before a build enters any retained registry. Legacy/ordinary hits rerun their current
-structural/whole/focused gates. A focused-recovery or adaptive-direct hit reruns
-structural validation, all selected top-K focuses, rebuilds schema 2 from the sealed
-ordinary-base initial context, and then runs exactly one fresh final whole gate after
-the focused set passes. Fresh and resume have identical authorization semantics;
+structural/whole/focused gates. A focused-recovery hit reruns structural validation and
+its selected top-K. An adaptive-direct hit reruns structural validation, the complete
+base top-K, and one isolated focus for every changed direct source. Each rebuilds its
+correct discriminated schema 2 from the sealed ordinary-base context and then runs
+exactly one fresh final whole gate after every required focus passes. Fresh and resume have identical authorization semantics;
 only cache-hit diagnostics may differ. Old schema, stale proof, same-size mutation,
 or corrupt content is a read-only miss followed only by safe direct-child no-follow
 invalidation.
 
-An adaptive-direct cache entry additionally binds every canonical
+An adaptive-direct cache entry additionally binds both explicit strategy identities,
+the complete adaptive source inventory, every canonical
 `DirectSourceBuildRequest`, `DirectSourceSnapshot`, recomputed prefilter proof, and
-the exact independent ratio recipe. Direct snapshots never enter the donor registry
+the exact independent ratio recipe, request/snapshot set digests, and discriminated
+round-0 evidence shape. Direct snapshots never enter the donor registry
 and cannot authorize donor/exact-original overlays. Restore reopens the one contained
 `.smd` output no-follow, revalidates input and output bytes plus the base snapshot,
-then reruns structural authorization, every selected focus, and the one final whole
+then reruns structural authorization, every base focus, every changed-source isolated
+focus, and the one final whole
 gate. A stale mini-source snapshot is a miss for that ratio, not permission to reuse
 schema-1 diagnostics.
 
@@ -797,6 +832,15 @@ Compile files are the complete required contained artifact set and seal kind, si
 and current hash. Structural and final-whole records bind those manifests and the
 composition/candidate/cache digests.
 
+The record matrix above is exact for `FocusedRecoveryEvidence`. Adaptive-direct never
+adds optional direct fields to that record. It uses exact `AdaptiveDirectEvidence`
+with `schema == 2`, `kind == "adaptive-direct-fallback-v1"`, `round_index == 0`,
+`base_focus_records`, and `direct_focus_records`. Its direct records are in canonical
+changed-source order, contain exactly one isolated record per changed identity, and
+have neither missing nor duplicate identities. Its terminal-status presence matrix is
+otherwise the same fail-closed progression through composition, compile, structural,
+focused, final whole, and authorized.
+
 For every round that reaches focus validation, selected targets partition exactly
 into dependency-affected rerun records and reusable prior evidence hashes. A reused
 focus names its immediately prior evidence hash. Folding starts with the exact initial
@@ -830,14 +874,16 @@ contained atomic helper that rejects a reparse `logs` leaf or ancestor.
 
 Schema-3 attempt summaries are exact bounded diagnostics, not copies of evidence.
 They name candidate ID/kind/engine/status, actual compiled bytes, cache-hit status,
-base candidate, nullable reserved round and direct ratio, selected-focus states,
-changed source identities, reused region keys, and nullable composition, compile,
+base candidate, nullable reserved round and direct ratio, base-focus states,
+changed source identities, adaptive-direct isolated source-focus states, reused region
+keys, and nullable composition, compile,
 structural, schema-2, and final-whole hashes. They never embed full material/source/
 render evidence, raw commands, absolute runtime paths, or caller-sized error text.
 Candidate IDs are at most 128 UTF-8 bytes, errors 4,096, and every list reuses its
 existing top-K/source/round/artifact/candidate-budget cardinality.
 
-Each selected target has exactly one report-only state: `passed`, `failed`,
+Each selected base target has exactly one report-only state, and adaptive-direct has
+exactly one additional state for every changed source identity: `passed`, `failed`,
 `cancelled`, or `unattempted`. Only attempted passed/failed states carry a focused
 evidence hash. Cancelled/unattempted summaries cannot be converted into
 `FocusedRenderEvidence` and never enter authoritative schema 2. Donor recovery report
@@ -859,9 +905,10 @@ cardinality fail closed. Events remain diagnostic.
 
 The event-count ceiling is derived before work as
 `2 + family_count * (2 + (SearchBudget.max_candidates + 1) * candidate_event_bound)`,
-where `candidate_event_bound = 2 + 13 + 2 * focused_top_k + 3 * 8`. This covers
+where `candidate_event_bound = 2 + 13 + 2 * focused_top_k + 5 * 8`. This covers
 candidate start/finish, thirteen singleton stages, two render/compare stages for each
-of at most four focuses, and three stages for each of at most eight direct sources.
+of at most four base focuses, and prepare/build/validate plus isolated render/compare
+for each of at most eight direct sources.
 The 16-MiB report bound is authoritative even when the derived ceiling is larger.
 Space for candidate/family/run terminal records is reserved; history is never silently
 truncated into a successful report or rewritten without bounds. After inventory and
@@ -887,20 +934,26 @@ The following are hard validation limits, not tunable environment variables:
 - passes: exactly `textured,clay`;
 - poses: maximum 2;
 - whole visual configurations: maximum 16 including LOD states;
-- focused renders per candidate: maximum 4;
+- base focused renders per candidate: maximum 4;
+- adaptive-direct isolated source focuses: exactly one per changed direct source,
+  maximum 8, in addition to the base focused prefix;
 - recovery rounds per base candidate: maximum 3;
-- changed sources per recovery composition: maximum 4;
+- changed sources per focused-recovery composition: maximum 4;
 - donor candidates inspected per changed source: maximum 8;
 - source-tree manifest: maximum 4,096 regular files and 2 GiB total bytes;
 - compiled composition manifest: maximum 64 regular artifacts and 2 GiB total bytes;
 - retained recovery registry: `SearchBudget.max_candidates` candidate snapshots plus
   exactly one original snapshot;
 - Monaco exact-fallback visual sources: maximum 8;
+- Monaco adaptive-direct changed sources: minimum 1, maximum 8; the complete eligible
+  set is used or the proposal is rejected, never truncated;
 - Monaco direct ratios: exactly 4 and no Cartesian expansion;
 - Monaco direct snapshots: exactly one contained regular `.smd` output each, with
   per-ratio aggregate discovery/copy/hash bounded by 4,096 files and 2 GiB;
-- Monaco schema-2 records: exactly one independent record at round index 0 per
-  global ratio, outside the three-round donor-recovery counter;
+- Monaco schema-2 records: exact discriminated adaptive-direct kind with one
+  independent record at round index 0 per global ratio, containing the complete base
+  top-K and one mandatory isolated focus per changed source, outside the three-round
+  donor-recovery counter;
 - candidate-cache combined payload: the sum of the existing source, compile, and
   direct class bounds plus at most six 16-MiB control/manifest files; transient
   workspace content is never included;
@@ -995,13 +1048,15 @@ mechanism. The default sentinel remains uncalibrated.
 - Recovery changes only declared source hashes and rerenders every affected focus.
 - Donors may be region-passing/global-failing but cannot cross contracts.
 - Exact fallback is explicit and auditable.
-- Monaco creates no more than four direct composite variants and touches only
-  approved exact-fallback visual SMDs.
+- Monaco creates no more than four direct composite variants, uses the complete
+  approved set of 1..8 exact-fallback visual SMDs, and rejects zero or more than eight
+  before reservation or I/O.
 - Monaco activation, base selection, and source eligibility use sealed typed strategy,
   metrics, provenance, and snapshot evidence; filenames and environment variables
   cannot activate or steer it.
-- Every Monaco ratio has an independent one-round schema-2 authorization, rerenders
-  all selected focuses, and runs at most one final whole gate before it can win.
+- Every Monaco ratio has independent discriminated round-0 schema-2 authorization,
+  rerenders all base top-K focuses plus one isolated focus for every changed direct
+  source, and runs at most one final whole gate before it can win.
 - Winner selection uses compiled bytes only after structural, whole, and focused
   gates pass.
 - Cache hits and misses produce the same authorization result.
