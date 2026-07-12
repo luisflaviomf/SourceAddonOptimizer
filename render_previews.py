@@ -713,12 +713,14 @@ def _source_material_files(
     )
     vmt_path = None
     vmt_root_index = -1
+    search_path_index = -1
     for root_index, root in enumerate(roots):
-        for candidate in candidates:
+        for candidate_index, candidate in enumerate(candidates):
             match = _contained_material_path(root, candidate.as_posix(), ".vmt")
             if match is not None and match.is_file():
                 vmt_path = match
                 vmt_root_index = root_index
+                search_path_index = candidate_index
                 break
         if vmt_path is not None:
             break
@@ -743,6 +745,7 @@ def _source_material_files(
     return {
         "vmt_path": vmt_path,
         "vmt_root_index": vmt_root_index,
+        "search_path_index": search_path_index,
         "vtf_path": vtf_path,
         "vtf_root_index": vtf_root_index,
     }
@@ -762,7 +765,9 @@ def _source_material_evidence(
     vmt_path = resolved["vmt_path"]
     vtf_path = resolved["vtf_path"]
     return {
+        "resolution_rule": "materials-root-order-then-qc-search-order-v1",
         "root_index": resolved["vmt_root_index"],
+        "search_path_index": resolved["search_path_index"],
         "vtf_root_index": resolved["vtf_root_index"],
         "vmt_sha256": hashlib.sha256(vmt_path.read_bytes()).hexdigest(),
         "vtf_sha256": hashlib.sha256(vtf_path.read_bytes()).hexdigest(),

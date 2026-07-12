@@ -1067,6 +1067,16 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                 convert.assert_called_once_with(
                     shared / "paint.vtf", root / "VTFCmd.exe", root / "cache"
                 )
+                evidence = render_previews._source_material_evidence(
+                    "paint",
+                    materials,
+                    search_paths=("models/first", "models/second"),
+                )
+                self.assertEqual(evidence["search_path_index"], 0)
+                self.assertEqual(
+                    evidence["resolution_rule"],
+                    "materials-root-order-then-qc-search-order-v1",
+                )
 
     def test_vmt_texture_alpha_is_opt_in_only(self):
         import render_previews
@@ -1117,6 +1127,11 @@ class RenderPreviewArgumentTests(unittest.TestCase):
                 search_paths=("models/diggercars/car", "models/diggercars/shared"),
             )
             self.assertEqual(evidence["root_index"], 1)
+            self.assertEqual(evidence["search_path_index"], 1)
+            self.assertEqual(
+                evidence["resolution_rule"],
+                "materials-root-order-then-qc-search-order-v1",
+            )
             self.assertEqual(
                 evidence["vmt_sha256"], hashlib.sha256((shared_path / "black.vmt").read_bytes()).hexdigest()
             )
