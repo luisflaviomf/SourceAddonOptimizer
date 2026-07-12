@@ -115,11 +115,12 @@ class MaximumBlenderPureTests(unittest.TestCase):
             data=SimpleNamespace(vertices=tuple(
                 SimpleNamespace(
                     index=index,
+                    co=(float(index), 0.0, 0.0),
                     groups=(SimpleNamespace(group=4, weight=1.0),)
                     if index in {0, 2, 4} else (),
                 )
                 for index in range(5)
-            ), loop_triangles=[object()] * 12),
+            ), loop_triangles=[SimpleNamespace(vertices=(0, 1, 2))] * 12),
         )
         obj.data.calc_loop_triangles = lambda: None
 
@@ -128,7 +129,7 @@ class MaximumBlenderPureTests(unittest.TestCase):
             applied.append(item)
             obj.modifiers.remove(item)
             if item.name == "MaximumRoundPlanar":
-                obj.data.loop_triangles = [object()] * 8
+                obj.data.loop_triangles = [SimpleNamespace(vertices=(0, 1, 2))] * 8
 
         fake_bpy = SimpleNamespace(
             context=SimpleNamespace(
@@ -138,11 +139,16 @@ class MaximumBlenderPureTests(unittest.TestCase):
         )
         obj.select_set = lambda selected: None
 
-        with mock.patch.object(maximum, "bpy", fake_bpy):
+        with mock.patch.object(maximum, "bpy", fake_bpy), mock.patch.object(
+            maximum,
+            "_verify_round_priority_survival",
+            wraps=maximum._verify_round_priority_survival,
+        ) as verify_priority:
             evidence = maximum._apply_round_planar_modifiers(
                 obj, ratio=0.35, priority_vertices=(0, 2, 4), planar_angle_degrees=1.0
             )
 
+        self.assertEqual(verify_priority.call_count, 2)
         self.assertEqual([item.type for item in applied], ["DECIMATE", "DECIMATE"])
         planar, collapse = applied
         self.assertEqual(planar.decimate_type, "DISSOLVE")
@@ -155,11 +161,20 @@ class MaximumBlenderPureTests(unittest.TestCase):
         self.assertEqual(collapse.vertex_group, "__maximum_round_priority_v1__")
         self.assertTrue(collapse.invert_vertex_group)
         self.assertEqual(obj.vertex_groups.group, None)
+        identity = maximum._round_priority_identities(
+            tuple(vertex.co for vertex in obj.data.vertices), (0, 2, 4)
+        )["sha256"]
         self.assertEqual(evidence, {
             "planar_angle_degrees": 1.0,
             "planar_triangles_after": 8,
             "priority_vertices_requested": 3,
             "priority_vertices_survived": 3,
+            "priority_geometric_vertices_requested": 3,
+            "priority_geometric_vertices_survived_planar": 3,
+            "priority_geometric_vertices_survived_collapse": 3,
+            "priority_identity_sha256_requested": identity,
+            "priority_identity_sha256_planar": identity,
+            "priority_identity_sha256_collapse": identity,
             "boundary_vertices_requested": 0,
             "boundary_edges_requested": 0,
             "boundary_vertices_survived_planar": 0,
@@ -204,6 +219,34 @@ class MaximumBlenderPureTests(unittest.TestCase):
                 positions, boundary_edges, moved, triangles
             )
 
+    def test_round_priority_survival_requires_every_canonical_geometric_identity(self) -> None:
+        positions = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                     (1.0, 1.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.0))
+        priority = (0, 1, 2, 3, 4)
+
+        requested = maximum._round_priority_identities(positions, priority)
+        survived = maximum._verify_round_priority_survival(
+            requested, positions
+        )
+
+        self.assertEqual(requested["count"], 4)
+        self.assertEqual(survived["count"], 4)
+        self.assertEqual(survived["sha256"], requested["sha256"])
+        drifted = positions[:-2] + ((0.0, 1.0 + 1e-6, 0.0), positions[-1])
+        self.assertEqual(
+            maximum._verify_round_priority_survival(requested, drifted)["sha256"],
+            requested["sha256"],
+        )
+        with self.assertRaisesRegex(maximum.SmdAuditValidationError, "priority vertex"):
+            maximum._verify_round_priority_survival(requested, positions[:3])
+        distinct = maximum._round_priority_identities(
+            ((0.0, 0.0, 0.0), (3e-6, 0.0, 0.0)), (0, 1)
+        )
+        with self.assertRaisesRegex(maximum.SmdAuditValidationError, "priority vertex"):
+            maximum._verify_round_priority_survival(
+                distinct, ((1.5e-6, 0.0, 0.0),)
+            )
+
     def test_round_evidence_records_admission_planar_and_priority_counts(self) -> None:
         from maximum_optimizer.round_planar_priority import (
             RoundBoundaryLoopAudit,
@@ -245,7 +288,13 @@ class MaximumBlenderPureTests(unittest.TestCase):
                 "planar_angle_degrees": 1.0,
                 "planar_triangles_after": 40,
                 "priority_vertices_requested": 3,
-                "priority_vertices_survived": 2,
+                "priority_vertices_survived": 3,
+                "priority_geometric_vertices_requested": 3,
+                "priority_geometric_vertices_survived_planar": 3,
+                "priority_geometric_vertices_survived_collapse": 3,
+                "priority_identity_sha256_requested": "identity",
+                "priority_identity_sha256_planar": "identity",
+                "priority_identity_sha256_collapse": "identity",
                 "boundary_vertices_requested": 24,
                 "boundary_edges_requested": 24,
                 "boundary_vertices_survived_planar": 24,
@@ -285,7 +334,13 @@ class MaximumBlenderPureTests(unittest.TestCase):
             "round_planar_angle_degrees": 1.0,
             "round_planar_triangles_after": 40,
             "round_priority_vertices_requested": 3,
-            "round_priority_vertices_survived": 2,
+            "round_priority_vertices_survived": 3,
+            "round_priority_geometric_vertices_requested": 3,
+            "round_priority_geometric_vertices_survived_planar": 3,
+            "round_priority_geometric_vertices_survived_collapse": 3,
+            "round_priority_identity_sha256_requested": "identity",
+            "round_priority_identity_sha256_planar": "identity",
+            "round_priority_identity_sha256_collapse": "identity",
             "round_boundary_vertices_requested": 24,
             "round_boundary_edges_requested": 24,
             "round_boundary_vertices_survived_planar": 24,

@@ -338,6 +338,112 @@ def _surviving_priority_vertices(obj: object, group: object) -> tuple[int, ...]:
     return surviving
 
 
+def _round_identity_sha256(
+    positions: Sequence[Sequence[float]],
+) -> str:
+    normalized = [
+        [0.0 if float(value) == 0.0 else float(value) for value in row]
+        for row in positions
+    ]
+    payload = json.dumps(
+        normalized, ensure_ascii=True, separators=(",", ":"), sort_keys=False
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _round_priority_identities(
+    positions: Sequence[Sequence[float]],
+    priority_vertices: Sequence[int],
+) -> dict[str, object]:
+    indices = tuple(sorted(set(priority_vertices)))
+    if not indices or any(index < 0 or index >= len(positions) for index in indices):
+        raise ValueError("round priority contains invalid or empty vertex identities")
+    priority_positions = tuple(positions[index] for index in indices)
+    canonical_ids, _ = _canonicalize_positions(
+        priority_positions, POSITION_SERIALIZATION_TOLERANCE
+    )
+    canonical_positions = tuple(sorted(
+        tuple(float(value) for value in priority_positions[index])
+        for index in set(canonical_ids)
+    ))
+    return {
+        "positions": canonical_positions,
+        "count": len(canonical_positions),
+        "sha256": _round_identity_sha256(canonical_positions),
+    }
+
+
+def _verify_round_priority_survival(
+    expected: dict[str, object],
+    actual_positions: Sequence[Sequence[float]],
+) -> dict[str, object]:
+    expected_positions = expected.get("positions")
+    if not isinstance(expected_positions, tuple) or not expected_positions:
+        raise ValueError("round priority identities are missing canonical positions")
+    actual_ids, _ = _canonicalize_positions(
+        actual_positions, POSITION_SERIALIZATION_TOLERANCE
+    )
+    actual_representatives = tuple(sorted(set(actual_ids)))
+    actual_cells: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+    for actual_index in actual_representatives:
+        cell = (
+            math.floor(
+                float(actual_positions[actual_index][0])
+                / POSITION_SERIALIZATION_TOLERANCE
+            ),
+            math.floor(
+                float(actual_positions[actual_index][1])
+                / POSITION_SERIALIZATION_TOLERANCE
+            ),
+            math.floor(
+                float(actual_positions[actual_index][2])
+                / POSITION_SERIALIZATION_TOLERANCE
+            ),
+        )
+        actual_cells[cell].append(actual_index)
+    matched_actual: set[int] = set()
+    matched_expected = []
+    for expected_index, expected_position in enumerate(expected_positions):
+        expected_cell = (
+            math.floor(
+                float(expected_position[0]) / POSITION_SERIALIZATION_TOLERANCE
+            ),
+            math.floor(
+                float(expected_position[1]) / POSITION_SERIALIZATION_TOLERANCE
+            ),
+            math.floor(
+                float(expected_position[2]) / POSITION_SERIALIZATION_TOLERANCE
+            ),
+        )
+        nearby = []
+        for x in range(expected_cell[0] - 1, expected_cell[0] + 2):
+            for y in range(expected_cell[1] - 1, expected_cell[1] + 2):
+                for z in range(expected_cell[2] - 1, expected_cell[2] + 2):
+                    nearby.extend(actual_cells.get((x, y, z), ()))
+        candidates = [
+            actual_index
+            for actual_index in nearby
+            if actual_index not in matched_actual
+            and all(
+                abs(
+                    float(expected_position[axis])
+                    - float(actual_positions[actual_index][axis])
+                ) <= POSITION_SERIALIZATION_TOLERANCE
+                for axis in range(3)
+            )
+        ]
+        if not candidates:
+            raise SmdAuditValidationError(
+                f"round priority vertex did not survive: {expected_index}"
+            )
+        matched_actual.add(min(candidates))
+        matched_expected.append(expected_position)
+    sha256 = _round_identity_sha256(matched_expected)
+    if len(matched_expected) != expected.get("count") or sha256 != expected.get("sha256"):
+        raise SmdAuditValidationError("round priority identity set changed")
+    return {"count": len(matched_expected), "sha256": sha256}
+
+
 def _verify_round_boundary_survival(
     expected_positions: Sequence[Sequence[float]],
     expected_edges: Sequence[tuple[int, int]],
@@ -442,6 +548,24 @@ def _round_evidence_payload(
         "round_planar_triangles_after": modifier_evidence["planar_triangles_after"],
         "round_priority_vertices_requested": modifier_evidence["priority_vertices_requested"],
         "round_priority_vertices_survived": modifier_evidence["priority_vertices_survived"],
+        "round_priority_geometric_vertices_requested": modifier_evidence[
+            "priority_geometric_vertices_requested"
+        ],
+        "round_priority_geometric_vertices_survived_planar": modifier_evidence[
+            "priority_geometric_vertices_survived_planar"
+        ],
+        "round_priority_geometric_vertices_survived_collapse": modifier_evidence[
+            "priority_geometric_vertices_survived_collapse"
+        ],
+        "round_priority_identity_sha256_requested": modifier_evidence[
+            "priority_identity_sha256_requested"
+        ],
+        "round_priority_identity_sha256_planar": modifier_evidence[
+            "priority_identity_sha256_planar"
+        ],
+        "round_priority_identity_sha256_collapse": modifier_evidence[
+            "priority_identity_sha256_collapse"
+        ],
         "round_boundary_vertices_requested": modifier_evidence["boundary_vertices_requested"],
         "round_boundary_edges_requested": modifier_evidence["boundary_edges_requested"],
         "round_boundary_vertices_survived_planar": modifier_evidence[
@@ -487,7 +611,10 @@ def _apply_round_planar_modifiers(
         raise RuntimeError("reserved round priority vertex group already exists")
     group = obj.vertex_groups.new(name="__maximum_round_priority_v1__")
     group.add(list(priority_vertices), 1.0, "REPLACE")
-    expected_positions = _round_object_geometry(obj)[0] if boundary_edges else ()
+    expected_positions = _round_object_geometry(obj)[0]
+    expected_priority = _round_priority_identities(
+        expected_positions, priority_vertices
+    )
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     try:
@@ -505,10 +632,12 @@ def _apply_round_planar_modifiers(
                 "round priority group did not survive planar dissolve"
             )
         surviving_vertices = _surviving_priority_vertices(obj, surviving_group)
-        obj.data.calc_loop_triangles()
-        planar_triangles_after = len(obj.data.loop_triangles)
+        planar_positions, planar_triangles = _round_object_geometry(obj)
+        planar_triangles_after = len(planar_triangles)
+        planar_priority = _verify_round_priority_survival(
+            expected_priority, planar_positions
+        )
         if boundary_edges:
-            planar_positions, planar_triangles = _round_object_geometry(obj)
             planar_boundary = _verify_round_boundary_survival(
                 expected_positions, boundary_edges, planar_positions, planar_triangles
             )
@@ -524,8 +653,11 @@ def _apply_round_planar_modifiers(
         collapse.invert_vertex_group = True
         collapse.vertex_group_factor = 1.0
         bpy.ops.object.modifier_apply(modifier=collapse.name)
+        collapse_positions, collapse_triangles = _round_object_geometry(obj)
+        collapse_priority = _verify_round_priority_survival(
+            expected_priority, collapse_positions
+        )
         if boundary_edges:
-            collapse_positions, collapse_triangles = _round_object_geometry(obj)
             collapse_boundary = _verify_round_boundary_survival(
                 expected_positions, boundary_edges, collapse_positions, collapse_triangles
             )
@@ -536,6 +668,12 @@ def _apply_round_planar_modifiers(
             "planar_triangles_after": planar_triangles_after,
             "priority_vertices_requested": len(tuple(priority_vertices)),
             "priority_vertices_survived": len(surviving_vertices),
+            "priority_geometric_vertices_requested": expected_priority["count"],
+            "priority_geometric_vertices_survived_planar": planar_priority["count"],
+            "priority_geometric_vertices_survived_collapse": collapse_priority["count"],
+            "priority_identity_sha256_requested": expected_priority["sha256"],
+            "priority_identity_sha256_planar": planar_priority["sha256"],
+            "priority_identity_sha256_collapse": collapse_priority["sha256"],
             "boundary_vertices_requested": len({
                 index for edge in boundary_edges for index in edge
             }),
