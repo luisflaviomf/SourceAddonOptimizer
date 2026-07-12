@@ -31,6 +31,7 @@ from maximum_optimizer.orchestrator import (
     _seal_cache_entry,
     _copy_selected_family,
     _promote_verified_tree,
+    _paired_representative_animation,
     _recover_output_transaction,
     _tree_manifest,
     _transaction_marker_path,
@@ -360,6 +361,31 @@ class OrchestratorTests(unittest.TestCase):
         )
         self.assertTrue(report.report_path.is_file())
         self.assertFalse(self.config.output_dir.exists())
+
+    def test_pre_set_cancel_persists_journal_before_sink_and_skips_model_scan(self):
+        cancel = threading.Event()
+        cancel.set()
+        seen = []
+        report_path = self.config.work_dir / "logs" / "maximum_report.json"
+        def sink(event):
+            self.assertTrue(report_path.is_file())
+            durable = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [item["kind"] for item in durable["events"]],
+                ["run_started", "run_cancelled"],
+            )
+            seen.append(event)
+        with patch("maximum_optimizer.orchestrator.scan_compiled_models") as scan:
+            report = run_maximum_addon(
+                self.config,
+                cancel_event=cancel,
+                adapters=self.adapters,
+                validator=self.structural,
+                event_sink=sink,
+            )
+        scan.assert_not_called()
+        self.assertTrue(report.cancelled)
+        self.assertEqual([item["kind"] for item in seen], ["run_started", "run_cancelled"])
 
     def test_event_order_and_partial_report_are_explicit(self):
         report = self.run_optimizer()
@@ -847,6 +873,48 @@ class OrchestratorTests(unittest.TestCase):
         with self.assertRaisesRegex(MaximumConfigError, "staging|marker"):
             _recover_output_transaction(destination)
         self.assertTrue(marker.exists())
+
+    def test_dangling_reparse_marker_fails_closed_before_run_mutation(self):
+        destination = self.root / "dangling-output"
+        marker = _transaction_marker_path(destination)
+        real_lexists = __import__("os").path.lexists
+        with patch(
+            "maximum_optimizer.orchestrator.os.path.lexists",
+            side_effect=lambda path: Path(path) == marker or real_lexists(path),
+        ), patch(
+            "maximum_optimizer.orchestrator._is_reparse",
+            side_effect=lambda path: Path(path) == marker,
+        ):
+            with self.assertRaisesRegex(MaximumConfigError, "marker|orphan"):
+                _recover_output_transaction(destination)
+
+    def test_animation_pair_requires_identical_frame_evidence(self):
+        original_root = self.root / "animation-original"
+        candidate_root = self.root / "animation-candidate"
+        original_root.mkdir()
+        candidate_root.mkdir()
+        mesh = 'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\nend\n'
+        for root, frames, qc_name in (
+            (original_root, (0, 10), "main.qc"),
+            (candidate_root, (0, 10, 20), "main_OPT.qc"),
+        ):
+            (root / "mesh.smd").write_text(mesh, encoding="utf-8")
+            animation = [
+                'version 1', 'nodes', '0 "root" -1', 'end', 'skeleton',
+            ]
+            for frame in frames:
+                animation.extend((f"time {frame}", "0 0 0 0 0 0 0"))
+            animation.extend(("end", "triangles", "end", ""))
+            (root / "anim.smd").write_text("\n".join(animation), encoding="utf-8")
+            (root / qc_name).write_text(
+                '$modelname "test.mdl"\n$body "body" "mesh.smd"\n'
+                '$sequence "idle" "anim.smd"\n',
+                encoding="utf-8",
+            )
+        from maximum_optimizer.qc_graph import parse_qc_graph
+        original_graph = parse_qc_graph(original_root / "main.qc", original_root)
+        candidate_graph = parse_qc_graph(candidate_root / "main_OPT.qc", candidate_root)
+        self.assertIsNone(_paired_representative_animation(original_graph, candidate_graph))
 
     def test_real_smd_deformation_evidence_classifies_rigid_one_bone_as_bind_only(self):
         rigid = self.root / "rigid.smd"

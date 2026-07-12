@@ -1041,7 +1041,7 @@ def _recover_output_transaction(destination: Path) -> None:
     marker = _transaction_marker_path(destination)
     backups = tuple(sorted(parent.glob(f".{destination.name}.maximum-backup-*")))
     stagings = tuple(sorted(parent.glob(f".{destination.name}.maximum-staging-*")))
-    if not marker.exists():
+    if not os.path.lexists(marker):
         if backups or stagings:
             raise MaximumConfigError("legacy output transaction orphan exists without a valid marker")
         return
@@ -1312,18 +1312,18 @@ def run_maximum_addon(
                 "report_path": "logs/maximum_report.json",
             }),
         )
-        for event in events:
-            try:
-                sink(dict(event))
-            except Exception:
-                pass
-        original = scan_compiled_models(config.addon_dir / "models")
+        original = _empty_snapshot(config.addon_dir / "models")
         empty = _empty_snapshot(config.work_dir)
         report = MaximumRunReport(
             1, "cancelled", original, empty, empty, original,
             {}, (), report_path, events, True,
         )
         atomic_write_json(report_path, report)
+        for event in events:
+            try:
+                sink(dict(event))
+            except Exception:
+                pass
         return report
     adapter_set = adapters or ProductionAdapters(config, cancel)
     structural_validator = validator or (
@@ -2134,20 +2134,19 @@ def _paired_representative_animation(
     after = refs(candidate_graph)
     if not before or not after or before.keys() != after.keys():
         return None
+    selected: tuple[Path, Path, int] | None = None
     for key in sorted(before):
         if len(before[key]) != len(after[key]):
             return None
-        original = before[key][0]
-        optimized = after[key][0]
-        original_frames = _smd_animation_frames(original.source_path)
-        optimized_frames = _smd_animation_frames(optimized.source_path)
-        representative = max(
-            (frame for frame in set(original_frames).intersection(optimized_frames) if frame > 0),
-            default=0,
-        )
-        if representative:
-            return original.source_path, optimized.source_path, representative
-    return None
+        for original, optimized in zip(before[key], after[key]):
+            original_frames = _smd_animation_frames(original.source_path)
+            optimized_frames = _smd_animation_frames(optimized.source_path)
+            if original_frames != optimized_frames:
+                return None
+            representative = max((frame for frame in original_frames if frame > 0), default=0)
+            if representative and selected is None:
+                selected = original.source_path, optimized.source_path, representative
+    return selected
 
 
 def _aggregate_visual_results(results: Sequence[tuple[str, ValidationResult]]) -> ValidationResult:
