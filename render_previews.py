@@ -145,6 +145,8 @@ def _parse_args(argv: list[str]):
     )
     ap.add_argument("--passes", default=None, help="Opt-in render passes: textured,clay")
     ap.add_argument("--poses", default=None, help="Opt-in pose frames as name:frame CSV")
+    ap.add_argument("--animation-before", default=None, help="Original animation SMD/DMX for representative poses")
+    ap.add_argument("--animation-after", default=None, help="Optimized animation SMD/DMX for representative poses")
     ap.add_argument("--materials-root", default=None, help="Source materials directory")
     ap.add_argument("--vtfcmd", default=None, help="Optional VTFCmd executable")
     ap.add_argument(
@@ -750,6 +752,38 @@ def _capture_regions(
     return regions
 
 
+def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
+    armatures = tuple(obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE")
+    if len(armatures) != 1:
+        raise RuntimeError(
+            f"representative-animation-unavailable: expected one armature, found {len(armatures)}"
+        )
+    armature = armatures[0]
+    for obj in bpy.context.scene.objects:
+        obj.select_set(False)
+    armature.select_set(True)
+    bpy.context.view_layer.objects.active = armature
+    _import_source(path)
+    armatures_after = tuple(obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE")
+    if len(armatures_after) != 1 or armatures_after[0] is not armature:
+        raise RuntimeError("representative-animation-unavailable: animation import is ambiguous")
+    action = getattr(getattr(armature, "animation_data", None), "action", None)
+    if action is None:
+        raise RuntimeError("representative-animation-unavailable: no action was assigned")
+    start, end = (float(value) for value in action.frame_range)
+    if any(frame < start or frame > end for name, frame in poses if name != "bind"):
+        raise RuntimeError("representative-animation-unavailable: pose is outside action frame range")
+    return armature, action
+
+
+def _set_pose_state(animation_binding, pose_name: str, frame: int, *, scene=None) -> None:
+    scene = scene or bpy.context.scene
+    if animation_binding is not None:
+        armature, action = animation_binding
+        armature.animation_data.action = None if pose_name == "bind" else action
+    scene.frame_set(frame)
+
+
 def _flatten_region(region: dict):
     positions = [
         position
@@ -1030,13 +1064,21 @@ def _capture_pose_snapshots(
     *,
     scene=None,
     capture=None,
+    animation_binding=None,
 ) -> dict[str, dict[str, dict]]:
     scene = scene or bpy.context.scene
     capture = capture or _capture_regions
     original_frame = scene.frame_current
     try:
-        return {pose_name: capture(objs, frame) for pose_name, frame in poses}
+        snapshots = {}
+        for pose_name, frame in poses:
+            if animation_binding is not None:
+                _set_pose_state(animation_binding, pose_name, frame, scene=scene)
+            snapshots[pose_name] = capture(objs, frame)
+        return snapshots
     finally:
+        if animation_binding is not None:
+            animation_binding[0].animation_data.action = animation_binding[1]
         scene.frame_set(original_frame)
 
 
@@ -1078,6 +1120,7 @@ def _render_extended_set(
     region_manifest: RegionManifest,
     source_identities: tuple[str, ...],
     source_material_evidence: dict[str, tuple[str, ...]],
+    animation_source: Path | None = None,
     *,
     fit=None,
 ) -> tuple[list[dict], dict[str, dict[str, dict]], tuple, dict]:
@@ -1100,6 +1143,11 @@ def _render_extended_set(
             raise RuntimeError(f"No mesh objects imported for region source: {src_path}")
         for obj in imported:
             obj["maximum_region_source_identity"] = source_identity
+    animation_binding = (
+        _apply_animation_source(animation_source, poses)
+        if animation_source is not None
+        else None
+    )
     objs = _get_mesh_objects()
     if not objs:
         raise RuntimeError(f"No mesh objects found for {label}: {src_paths}")
@@ -1115,6 +1163,7 @@ def _render_extended_set(
         capture=lambda captured_objects, frame: _capture_regions(
             captured_objects, frame, region_manifest, source_material_evidence
         ),
+        animation_binding=animation_binding,
     )
     bbox, evaluated_fit = _framing_from_snapshots(snapshots)
     center, ortho_scale, dist = fit or evaluated_fit
@@ -1131,7 +1180,7 @@ def _render_extended_set(
                 objs, blender_source_materials, materials_root, vtfcmd, texture_cache
             )
         for pose_name, frame in poses:
-            bpy.context.scene.frame_set(frame)
+            _set_pose_state(animation_binding, pose_name, frame)
             for angle in angles:
                 direction = ANGLE_DIRS[angle]
                 _set_camera_pose(cam_obj, center, direction, dist)
@@ -1166,6 +1215,10 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
     region_manifest = _load_region_manifest(region_manifest_path)
     if len(before) != len(after):
         raise ValueError("extended Maximum validation requires paired before/after sources")
+    if bool(args.animation_before) != bool(args.animation_after):
+        raise ValueError("extended Maximum validation requires paired animation sources")
+    animation_before = Path(args.animation_before).resolve(strict=True) if args.animation_before else None
+    animation_after = Path(args.animation_after).resolve(strict=True) if args.animation_after else None
     manifest_sources = {
         entry.descriptor.source_identity for entry in region_manifest.entries
     }
@@ -1198,6 +1251,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         region_manifest,
         source_identities_tuple,
         source_materials,
+        animation_before,
     )
     candidate_entries, candidate_snapshots, _, candidate_bbox = _render_extended_set(
         "after",
@@ -1213,6 +1267,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         region_manifest,
         source_identities_tuple,
         source_materials,
+        animation_after,
         fit=fit,
     )
     stride = 7

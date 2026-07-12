@@ -23,6 +23,7 @@ from .candidates import (
     CandidateTools,
     FidelityAdapter,
     MeshoptimizerAdapter,
+    _matching_qcs,
 )
 from .compiled_size import compare_snapshots, scan_compiled_models
 from .domain import (
@@ -31,12 +32,14 @@ from .domain import (
     CandidateSpec,
     CompiledSizeSnapshot,
     FamilyManifest,
+    GateFailure,
     SearchBudget,
     ValidationResult,
 )
 from .meshopt_bridge import MESHOPT_ENGINE_PREFERRED
 from .processes import ProcessCancelledError, run_process
 from .qc_inventory import _inventory_qc, build_family_manifests
+from .qc_graph import QcGraph, parse_qc_graph
 from .reporting import atomic_write_json, canonical_payload, deep_freeze, event_line
 from .search import choose_next, select_winner
 from .structural_validation import validate_structure
@@ -57,6 +60,8 @@ EVENT_KINDS = frozenset(
     }
 )
 _RATIOS = (0.75, 0.50, 0.35, 0.25, 0.15, 0.10, 0.05)
+_ENGINE_NAMES = frozenset({"fidelity", "blender", "meshoptimizer"})
+_IO_CHUNK_SIZE = 1024 * 1024
 
 
 class MaximumConfigError(ValueError):
@@ -293,27 +298,47 @@ def _existing_components(path: Path) -> tuple[Path, ...]:
     return tuple(components)
 
 
-def validate_run_paths(config: MaximumRunConfig, *, create: bool) -> None:
+def validate_source_path(path: Path, *, require_models: bool) -> None:
+    """Validate a user-supplied lexical source path before following it."""
+    path = Path(os.path.abspath(os.fspath(path)))
+    for component in _existing_components(path):
+        if _is_reparse(component):
+            raise MaximumConfigError(
+                f"addon path contains a symlink/junction/reparse component: {component.name}"
+            )
+    if _is_reparse(path) or not path.is_dir():
+        raise MaximumConfigError("addon_dir must be an existing non-reparse directory")
+    if require_models and not (path / "models").is_dir():
+        raise MaximumConfigError("addon_dir must contain models")
+    internal = _first_reparse(path)
+    if internal is not None:
+        raise MaximumConfigError(f"addon_dir contains a symlink or junction: {internal.name}")
+
+
+def validate_path_triplet(
+    addon_dir: Path,
+    output_dir: Path,
+    work_dir: Path,
+    *,
+    overwrite: bool,
+    require_models: bool = True,
+) -> None:
+    addon_dir = Path(os.path.abspath(os.fspath(addon_dir)))
+    output_dir = Path(os.path.abspath(os.fspath(output_dir)))
+    work_dir = Path(os.path.abspath(os.fspath(work_dir)))
+    validate_source_path(addon_dir, require_models=require_models)
     for label, path in (
-        ("addon", config.addon_dir),
-        ("output", config.output_dir),
-        ("work", config.work_dir),
+        ("output", output_dir),
+        ("work", work_dir),
     ):
         for component in _existing_components(path):
             if _is_reparse(component):
                 raise MaximumConfigError(
                     f"{label} path contains a symlink/junction/reparse component: {component.name}"
                 )
-    if _is_reparse(config.addon_dir) or not config.addon_dir.is_dir():
-        raise MaximumConfigError("addon_dir must be an existing non-reparse directory")
-    if not (config.addon_dir / "models").is_dir():
-        raise MaximumConfigError("addon_dir must contain models")
-    internal = _first_reparse(config.addon_dir)
-    if internal is not None:
-        raise MaximumConfigError(f"addon_dir contains a symlink or junction: {internal.name}")
-    resolved_addon = config.addon_dir.resolve(strict=True)
-    resolved_output = config.output_dir.resolve(strict=False)
-    resolved_work = config.work_dir.resolve(strict=False)
+    resolved_addon = addon_dir.resolve(strict=True)
+    resolved_output = output_dir.resolve(strict=False)
+    resolved_work = work_dir.resolve(strict=False)
     for first_name, first, second_name, second in (
         ("output", resolved_output, "addon", resolved_addon),
         ("work", resolved_work, "addon", resolved_addon),
@@ -321,11 +346,29 @@ def validate_run_paths(config: MaximumRunConfig, *, create: bool) -> None:
     ):
         if _overlaps(first, second):
             raise MaximumConfigError(f"{first_name} and {second_name} directories overlap")
-    for path, label in ((config.output_dir, "output"), (config.work_dir, "work")):
+    for path, label in ((output_dir, "output"), (work_dir, "work")):
         if _is_reparse(path):
             raise MaximumConfigError(f"{label} directory cannot be a symlink or junction")
-    if config.output_dir.exists() and not config.overwrite:
-        raise MaximumConfigError("output exists and overwrite is disabled")
+        if path.is_dir():
+            internal_reparse = _first_reparse(path)
+            if internal_reparse is not None:
+                raise MaximumConfigError(
+                    f"{label} directory contains a symlink or junction: {internal_reparse.name}"
+                )
+    if output_dir.exists():
+        if not output_dir.is_dir():
+            raise MaximumConfigError("output must be a directory when it already exists")
+        if not overwrite:
+            raise MaximumConfigError("output exists and overwrite is disabled")
+
+
+def validate_run_paths(config: MaximumRunConfig, *, create: bool) -> None:
+    validate_path_triplet(
+        config.addon_dir,
+        config.output_dir,
+        config.work_dir,
+        overwrite=config.overwrite,
+    )
     if create:
         config.output_dir.parent.mkdir(parents=True, exist_ok=True)
         config.work_dir.mkdir(parents=True, exist_ok=True)
@@ -377,7 +420,149 @@ def _validation_from_payload(payload: Mapping[str, Any]) -> ValidationResult:
     )
 
 
-def _dependency_proof(config: MaximumRunConfig) -> dict[str, object]:
+def _check_cancelled(cancel_event: threading.Event | None, message: str) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelledError(message)
+
+
+def _file_proof(
+    path: Path,
+    cancel_event: threading.Event | None = None,
+    *,
+    chunk_size: int = _IO_CHUNK_SIZE,
+) -> tuple[int, str]:
+    if type(chunk_size) is not int or chunk_size < 1:
+        raise ValueError("chunk_size must be a positive integer")
+    digest = hashlib.sha256()
+    size = 0
+    with Path(path).open("rb") as stream:
+        while True:
+            _check_cancelled(cancel_event, "cancelled while hashing files")
+            block = stream.read(chunk_size)
+            if not block:
+                break
+            digest.update(block)
+            size += len(block)
+    _check_cancelled(cancel_event, "cancelled while hashing files")
+    return size, digest.hexdigest()
+
+
+def _sha256_file(
+    path: Path,
+    cancel_event: threading.Event | None = None,
+    *,
+    chunk_size: int = _IO_CHUNK_SIZE,
+) -> str:
+    return _file_proof(path, cancel_event, chunk_size=chunk_size)[1]
+
+
+def _copy_file_cancellable(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    cancel_event: threading.Event | None,
+    *,
+    chunk_size: int = _IO_CHUNK_SIZE,
+) -> str:
+    source_path = Path(source)
+    destination_path = Path(destination)
+    if type(chunk_size) is not int or chunk_size < 1:
+        raise ValueError("chunk_size must be a positive integer")
+    _check_cancelled(cancel_event, "cancelled while copying files")
+    try:
+        with source_path.open("rb") as reader, destination_path.open("wb") as writer:
+            while True:
+                _check_cancelled(cancel_event, "cancelled while copying files")
+                block = reader.read(chunk_size)
+                if not block:
+                    break
+                writer.write(block)
+            writer.flush()
+        _check_cancelled(cancel_event, "cancelled while copying files")
+        shutil.copystat(source_path, destination_path, follow_symlinks=False)
+    except BaseException:
+        try:
+            if destination_path.exists() and not _is_reparse(destination_path):
+                destination_path.unlink()
+        except OSError:
+            pass
+        raise
+    return str(destination_path)
+
+
+def _copytree_cancellable(
+    source: Path,
+    destination: Path,
+    cancel_event: threading.Event | None,
+    *,
+    chunk_size: int = _IO_CHUNK_SIZE,
+) -> Path:
+    source = Path(source)
+    destination = Path(destination)
+    _check_cancelled(cancel_event, "cancelled before tree copy")
+    if _is_reparse(source) or not source.is_dir():
+        raise ValueError("copy source must be a non-reparse directory")
+    if os.path.lexists(destination):
+        raise ValueError("copy destination must not exist")
+    destination.mkdir(parents=True)
+    try:
+        for directory, directory_names, file_names in os.walk(source, followlinks=False):
+            _check_cancelled(cancel_event, "cancelled during tree copy")
+            parent = Path(directory)
+            relative_parent = parent.relative_to(source)
+            target_parent = destination / relative_parent
+            for name in directory_names:
+                child = parent / name
+                if _is_reparse(child):
+                    raise ValueError("copy source contains a reparse directory")
+                (target_parent / name).mkdir()
+            for name in file_names:
+                child = parent / name
+                if _is_reparse(child) or not stat.S_ISREG(child.lstat().st_mode):
+                    raise ValueError("copy source contains a reparse or special file")
+                _copy_file_cancellable(
+                    child,
+                    target_parent / name,
+                    cancel_event,
+                    chunk_size=chunk_size,
+                )
+        for directory, _directory_names, _file_names in os.walk(source, topdown=False):
+            parent = Path(directory)
+            shutil.copystat(
+                parent,
+                destination / parent.relative_to(source),
+                follow_symlinks=False,
+            )
+        _check_cancelled(cancel_event, "cancelled after tree copy")
+    except BaseException:
+        if destination.exists() and not _is_reparse(destination):
+            shutil.rmtree(destination, ignore_errors=True)
+        raise
+    return destination
+
+
+def _restore_cache_payload(
+    cache_entry: Path,
+    workspace: Path,
+    cancel_event: threading.Event | None,
+    *,
+    chunk_size: int = _IO_CHUNK_SIZE,
+) -> Path:
+    if workspace.exists():
+        if _is_reparse(workspace) or not workspace.is_dir():
+            raise ValueError("cache restore workspace is invalid")
+        shutil.rmtree(workspace)
+    return _copytree_cancellable(
+        cache_entry / "payload",
+        workspace,
+        cancel_event,
+        chunk_size=chunk_size,
+    )
+
+
+def _dependency_proof(
+    config: MaximumRunConfig,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, object]:
     paths: list[tuple[str, Path]] = [
         ("tool/python", Path(sys.executable)),
         ("tool/blender", config.blender_path),
@@ -405,6 +590,22 @@ def _dependency_proof(config: MaximumRunConfig) -> dict[str, object]:
     for root in sorted({path.resolve() for path in addon_roots if path.is_dir()}):
         for path in sorted((item for item in root.rglob("*") if item.is_file()), key=lambda item: item.relative_to(root).as_posix()):
             paths.append((f"blender_source_tools/{root.parent.parent.parent.name}/{path.relative_to(root).as_posix()}", path))
+    for origin, base in (("system", config.blender_path.parent), ("user", appdata)):
+        if not base.is_dir():
+            continue
+        containers = list(base.glob("*/extensions"))
+        if (base / "extensions").is_dir():
+            containers.append(base / "extensions")
+        for container in sorted({path.resolve() for path in containers}):
+            version = container.parent.name
+            for path in sorted(
+                (item for item in container.rglob("*") if item.is_file()),
+                key=lambda item: item.relative_to(container).as_posix(),
+            ):
+                paths.append((
+                    f"blender_extension/{origin}/{version}/{path.relative_to(container).as_posix()}",
+                    path,
+                ))
     paths.append((
         "tool/meshopt_bridge",
         config.repo_root / "maximum_optimizer" / "native" / "bin" / "win-x64" / "meshopt_bridge.dll",
@@ -412,12 +613,12 @@ def _dependency_proof(config: MaximumRunConfig) -> dict[str, object]:
     files: list[dict[str, object]] = []
     for label, path in paths:
         if path.is_file() and not _is_reparse(path):
-            content = path.read_bytes()
+            size, digest = _file_proof(path, cancel_event)
             files.append({
                 "label": label,
                 "state": "file",
-                "size": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
+                "size": size,
+                "sha256": digest,
             })
         else:
             files.append({"label": label, "state": "missing", "size": 0, "sha256": ""})
@@ -428,7 +629,12 @@ def _dependency_proof(config: MaximumRunConfig) -> dict[str, object]:
     return payload
 
 
-def _payload_file_manifest(root: Path) -> tuple[dict[str, object], ...]:
+def _payload_file_manifest(
+    root: Path,
+    cancel_event: threading.Event | None = None,
+    *,
+    chunk_size: int = _IO_CHUNK_SIZE,
+) -> tuple[dict[str, object], ...]:
     root = root.resolve(strict=True)
     entries: list[dict[str, object]] = []
     folded: set[str] = set()
@@ -449,17 +655,20 @@ def _payload_file_manifest(root: Path) -> tuple[dict[str, object], ...]:
             if relative.casefold() in folded:
                 raise ValueError("cache payload contains case-colliding paths")
             folded.add(relative.casefold())
-            content = path.read_bytes()
+            size, digest = _file_proof(path, cancel_event, chunk_size=chunk_size)
             entries.append({
                 "path": relative,
-                "size": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
+                "size": size,
+                "sha256": digest,
             })
     return tuple(sorted(entries, key=lambda item: str(item["path"])))
 
 
-def _seal_cache_entry(cache_entry: Path) -> None:
-    files = _payload_file_manifest(cache_entry / "payload")
+def _seal_cache_entry(
+    cache_entry: Path,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    files = _payload_file_manifest(cache_entry / "payload", cancel_event)
     record = next(
         (item for item in files if item["path"] == "maximum_cache_record.json"),
         None,
@@ -476,7 +685,10 @@ def _seal_cache_entry(cache_entry: Path) -> None:
     )
 
 
-def _verify_cache_entry(cache_entry: Path) -> bool:
+def _verify_cache_entry(
+    cache_entry: Path,
+    cancel_event: threading.Event | None = None,
+) -> bool:
     try:
         if _is_reparse(cache_entry) or _is_reparse(cache_entry / "payload"):
             return False
@@ -504,7 +716,7 @@ def _verify_cache_entry(cache_entry: Path) -> bool:
             ):
                 return False
             expected.append(item)
-        actual = list(_payload_file_manifest(cache_entry / "payload"))
+        actual = list(_payload_file_manifest(cache_entry / "payload", cancel_event))
         if expected != actual:
             return False
         record = next((item for item in actual if item["path"] == "maximum_cache_record.json"), None)
@@ -614,7 +826,10 @@ def _load_cached_build(
 
 
 def _copy_selected_family(
-    build: CandidateBuild, output_models: Path, model_rel: str
+    build: CandidateBuild,
+    output_models: Path,
+    model_rel: str,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, str]:
     source_root = build.compiled_models_dir.resolve()
     destination_root = output_models.resolve()
@@ -636,7 +851,7 @@ def _copy_selected_family(
         if not _within(destination.resolve(strict=False), destination_root):
             raise ValueError(f"candidate destination escapes models root: {logical}")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        _copy_file_cancellable(source, destination, cancel_event)
         promoted[relative.as_posix()] = str(provenance)
     return promoted
 
@@ -653,7 +868,12 @@ def _is_exact_family_artifact(logical: str, model_rel: str) -> bool:
     return False
 
 
-def _tree_manifest(root: Path) -> dict[str, dict[str, int | str]]:
+def _tree_manifest(
+    root: Path,
+    cancel_event: threading.Event | None = None,
+    *,
+    chunk_size: int = _IO_CHUNK_SIZE,
+) -> dict[str, dict[str, int | str]]:
     root = Path(root).resolve(strict=True)
     result: dict[str, dict[str, int | str]] = {}
     folded: set[str] = set()
@@ -670,10 +890,10 @@ def _tree_manifest(root: Path) -> dict[str, dict[str, int | str]]:
             if relative.casefold() in folded:
                 raise ValueError("tree contains case-colliding paths")
             folded.add(relative.casefold())
-            content = path.read_bytes()
+            size, digest = _file_proof(path, cancel_event, chunk_size=chunk_size)
             result[relative] = {
-                "size": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
+                "size": size,
+                "sha256": digest,
             }
     return dict(sorted(result.items()))
 
@@ -684,9 +904,18 @@ def _promote_verified_tree(
     expected: Mapping[str, Mapping[str, int | str]],
     *,
     manifest_reader: Callable[[Path], dict[str, dict[str, int | str]]] = _tree_manifest,
+    cancel_event: threading.Event | None = None,
 ) -> None:
-    if manifest_reader(staging) != dict(expected):
+    staging_manifest = (
+        _tree_manifest(staging, cancel_event)
+        if manifest_reader is _tree_manifest
+        else manifest_reader(staging)
+    )
+    if staging_manifest != dict(expected):
         raise ValueError("staging manifest does not match expected output manifest")
+    # This is the final cancellation barrier. From the first os.replace onward
+    # the transaction is deliberately non-interruptible and commits or rolls back.
+    _check_cancelled(cancel_event, "cancelled before atomic output promotion")
     backup: Path | None = None
     if destination.exists():
         backup = destination.parent / f".{destination.name}.maximum-backup-{uuid.uuid4().hex}"
@@ -722,8 +951,9 @@ def _promote_verified_tree(
 def _expected_output_manifest(
     addon_dir: Path,
     selected: Sequence[tuple[FamilyRunOutcome, CandidateBuild, FamilyManifest]],
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, dict[str, int | str]]:
-    expected = _tree_manifest(addon_dir)
+    expected = _tree_manifest(addon_dir, cancel_event)
     for outcome, build, manifest in selected:
         family_original = [
             logical for logical in expected
@@ -754,10 +984,10 @@ def _expected_output_manifest(
             source = build.compiled_models_dir.joinpath(*relative.parts)
             if _is_reparse(source) or not source.is_file():
                 raise ValueError(f"candidate family artifact is missing: {logical}")
-            content = source.read_bytes()
+            size, digest = _file_proof(source, cancel_event)
             expected[f"models/{relative.as_posix()}"] = {
-                "size": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
+                "size": size,
+                "sha256": digest,
             }
     return dict(sorted(expected.items()))
 
@@ -809,10 +1039,23 @@ def _worst(attempts: Sequence[AttemptReport]) -> tuple[dict[str, float], dict[st
         for result in (attempt.structural, attempt.visual):
             if result is None:
                 continue
+            result_scopes: dict[str, str] = {}
+            for failure in result.failures:
+                measured = failure.measured
+                if (
+                    failure.gate in result.metrics
+                    and not isinstance(measured, bool)
+                    and type(measured) in (int, float)
+                    and float(measured) == float(result.metrics[failure.gate])
+                ):
+                    result_scopes[failure.gate] = failure.scope
             for metric, value in result.metrics.items():
                 if metric not in metrics or value > metrics[metric]:
                     metrics[metric] = value
-                    scopes[metric] = result.worst_scope
+                    if metric in result_scopes:
+                        scopes[metric] = result_scopes[metric]
+                    else:
+                        scopes.pop(metric, None)
     return metrics, scopes
 
 
@@ -844,8 +1087,8 @@ def run_maximum_addon(
     )
     report_path = config.work_dir / "logs" / "maximum_report.json"
     versions = dict(adapter_set.tool_versions())
-    versions["profile_sha256"] = hashlib.sha256(config.profile_path.read_bytes()).hexdigest()
-    dependency = _dependency_proof(config)
+    versions["profile_sha256"] = _sha256_file(config.profile_path, cancel)
+    dependency = _dependency_proof(config, cancel)
     versions["dependency_digest"] = str(dependency["digest"])
     if any(
         not isinstance(key, str) or not key or not isinstance(value, str)
@@ -860,6 +1103,7 @@ def run_maximum_addon(
     cache = CandidateCache(config.work_dir / "cache")
     event_history: list[dict[str, Any]] = []
     candidate_counts: dict[str, int] = {}
+    candidate_indexes: dict[tuple[str, str], int] = {}
     tools = CandidateTools(
         sys.executable,
         config.blender_path,
@@ -895,13 +1139,28 @@ def run_maximum_addon(
             )
             if manifest_for_event is not None:
                 payload.setdefault("family_id", manifest_for_event.family_id)
+                payload.setdefault("family_index", manifests.index(manifest_for_event))
+                payload.setdefault("family_total", len(manifests) + len(missing_model_rels))
+            if kind.startswith("family_"):
+                if "index" in payload:
+                    payload.setdefault("family_index", payload["index"])
+                if "total" in payload:
+                    payload.setdefault("family_total", payload["total"])
         if "candidate" in payload:
             payload.setdefault("candidate_id", payload["candidate"])
         if kind == "candidate_started" and isinstance(family_rel, str):
             index = candidate_counts.get(family_rel, 0)
             candidate_counts[family_rel] = index + 1
+            candidate_indexes[(family_rel, str(payload.get("candidate", "")))] = index
             payload.setdefault("index", index)
             payload.setdefault("total", config.budget.max_candidates + 1)
+            payload.setdefault("candidate_index", index)
+            payload.setdefault("candidate_total", config.budget.max_candidates + 1)
+        elif isinstance(family_rel, str) and "candidate" in payload:
+            index = candidate_indexes.get((family_rel, str(payload["candidate"])))
+            if index is not None:
+                payload.setdefault("candidate_index", index)
+                payload.setdefault("candidate_total", config.budget.max_candidates + 1)
         if "status" in payload:
             payload.setdefault("gate_status", payload["status"])
         if kind == "best_updated" and "compiled_bytes" in payload:
@@ -1084,6 +1343,8 @@ def run_maximum_addon(
             or len({item.candidate_id for item in schedule}) != len(schedule)
             or any(
                 not isinstance(item, CandidateSpec)
+                or type(item.engine) is not str
+                or item.engine not in _ENGINE_NAMES
                 or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", item.candidate_id) is None
                 or not math.isfinite(item.target_ratio)
                 or not 0 < item.target_ratio <= 1
@@ -1136,14 +1397,12 @@ def run_maximum_addon(
             cache_hit = False
             try:
                 cache_entry = cache.lookup(key) if config.resume else None
-                if cache_entry is not None and not _verify_cache_entry(cache_entry):
+                if cache_entry is not None and not _verify_cache_entry(cache_entry, cancel):
                     cache.invalidate(key)
                     cache_entry = None
                 if cache_entry is not None:
                     try:
-                        if workspace.exists():
-                            shutil.rmtree(workspace)
-                        shutil.copytree(cache_entry / "payload", workspace)
+                        _restore_cache_payload(cache_entry, workspace, cancel)
                         build = _load_cached_build(
                             cache_entry,
                             spec,
@@ -1195,8 +1454,11 @@ def run_maximum_addon(
                         key,
                         workspace,
                         {"candidate": spec.candidate_id, "profile": profile.version},
+                        copy_function=lambda source, destination: _copy_file_cancellable(
+                            source, destination, cancel
+                        ),
                     )
-                    _seal_cache_entry(stored)
+                    _seal_cache_entry(stored, cancel)
                 size = _family_snapshot(scan_compiled_models(build.compiled_models_dir), manifest.model_rel)
                 evaluation = CandidateEvaluation(spec, size, structural, visual, build.compiled_models_dir)
                 evaluations.append(evaluation)
@@ -1336,6 +1598,8 @@ def run_maximum_addon(
             "family_finished",
             family=model_rel,
             family_id=family_id,
+            index=missing_index,
+            total=total_family_count,
             status=missing_status,
             reason=reason,
         )
@@ -1365,8 +1629,8 @@ def run_maximum_addon(
             for outcome in outcomes
             if outcome.status == "optimized"
         )
-        shutil.copytree(config.addon_dir, staging)
-        expected_output = _expected_output_manifest(config.addon_dir, selected_pairs)
+        _copytree_cancellable(config.addon_dir, staging, cancel)
+        expected_output = _expected_output_manifest(config.addon_dir, selected_pairs, cancel)
         for outcome in outcomes:
             if cancel.is_set():
                 raise ProcessCancelledError("cancelled during output staging")
@@ -1375,10 +1639,15 @@ def run_maximum_addon(
             build = selected_builds.get(outcome.family_id)
             if build is None:
                 raise RuntimeError(f"selected build is unavailable for {outcome.model_rel}")
-            _copy_selected_family(build, staging / "models", outcome.model_rel)
+            _copy_selected_family(build, staging / "models", outcome.model_rel, cancel)
         if cancel.is_set():
             raise ProcessCancelledError("cancelled before output promotion")
-        _promote_verified_tree(staging, config.output_dir, expected_output)
+        _promote_verified_tree(
+            staging,
+            config.output_dir,
+            expected_output,
+            cancel_event=cancel,
+        )
     except ProcessCancelledError:
         cancel.set()
         if staging.exists() and not staging.is_symlink():
@@ -1424,6 +1693,123 @@ def run_maximum_addon(
     )
     atomic_write_json(report_path, report)
     return report
+
+
+def _graph_visual_states(graph: QcGraph) -> tuple[tuple[Path, ...], ...]:
+    base = tuple(
+        reference.source_path
+        for reference in graph.references
+        if reference.role == "visual" and reference.directive != "$lod/replacemodel"
+    )
+    if not base:
+        raise ValueError("QC graph has no base visual sources")
+    states: list[tuple[Path, ...]] = [base]
+    groups: dict[str, list] = {}
+    for reference in graph.references:
+        if reference.directive == "$lod/replacemodel":
+            groups.setdefault(reference.group, []).append(reference)
+    for group, references in groups.items():
+        if not group or len(references) % 2:
+            raise ValueError("LOD replacement graph is ambiguous")
+        replacements = {
+            references[index].source_path: references[index + 1].source_path
+            for index in range(0, len(references), 2)
+        }
+        state = tuple(replacements.get(source, source) for source in base)
+        if state == base:
+            raise ValueError("LOD state does not replace a base source")
+        states.append(state)
+    return tuple(states)
+
+
+def _smd_animation_frames(path: Path) -> tuple[int, ...]:
+    if path.suffix.casefold() != ".smd":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeError):
+        return ()
+    in_skeleton = False
+    frames: list[int] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.casefold() == "skeleton":
+            in_skeleton = True
+        elif in_skeleton and stripped.casefold() == "end":
+            break
+        elif in_skeleton:
+            match = re.fullmatch(r"time\s+(-?\d+)", stripped, re.IGNORECASE)
+            if match:
+                frames.append(int(match.group(1)))
+    return tuple(dict.fromkeys(frames))
+
+
+def _paired_representative_animation(
+    original_graph: QcGraph,
+    candidate_graph: QcGraph,
+) -> tuple[Path, Path, int] | None:
+    def refs(graph: QcGraph):
+        return tuple(sorted(
+            (reference for reference in graph.references if reference.role == "animation"),
+            key=lambda item: (item.directive, item.logical_path.casefold()),
+        ))
+    before = refs(original_graph)
+    after = refs(candidate_graph)
+    if not before or len(before) != len(after):
+        return None
+    before_identity = tuple(
+        (item.directive, item.source_path.relative_to(original_graph.family_root).as_posix().casefold())
+        for item in before
+    )
+    after_identity = tuple(
+        (item.directive, item.source_path.relative_to(candidate_graph.family_root).as_posix().casefold())
+        for item in after
+    )
+    if before_identity != after_identity:
+        return None
+    for original, optimized in zip(before, after):
+        original_frames = _smd_animation_frames(original.source_path)
+        optimized_frames = _smd_animation_frames(optimized.source_path)
+        if original_frames == optimized_frames:
+            representative = max((frame for frame in original_frames if frame > 0), default=0)
+            if representative:
+                return original.source_path, optimized.source_path, representative
+    return None
+
+
+def _aggregate_visual_results(results: Sequence[tuple[str, ValidationResult]]) -> ValidationResult:
+    failures: list[GateFailure] = []
+    metrics: dict[str, float] = {}
+    worst_scope = ""
+    worst_score = math.inf
+    for state, result in results:
+        for name, value in result.metrics.items():
+            number = float(value)
+            if name == "fidelity_score":
+                metrics[name] = min(metrics.get(name, math.inf), number)
+            else:
+                metrics[name] = max(metrics.get(name, float("-inf")), number)
+        failures.extend(
+            GateFailure(
+                failure.gate,
+                f"{state}/{failure.scope}" if failure.scope else state,
+                failure.measured,
+                failure.limit,
+                failure.message,
+            )
+            for failure in result.failures
+        )
+        score = float(result.metrics.get("fidelity_score", 0.0 if not result.passed else 1.0))
+        result_scope = result.worst_scope or (result.failures[0].scope if result.failures else "")
+        if result_scope and score < worst_score:
+            worst_score = score
+            worst_scope = f"{state}/{result_scope}"
+    return ValidationResult(
+        all(result.passed for _, result in results),
+        tuple(failures),
+        metrics,
+        worst_scope,
+    )
 
 
 class ProductionAdapters:
@@ -1479,8 +1865,13 @@ class ProductionAdapters:
             adapter = FidelityAdapter(cancel_event=cancel_event)
         elif spec.engine == "blender":
             adapter = BlenderAdapter(cancel_event=cancel_event)
-        else:
+        elif spec.engine == "meshoptimizer":
             adapter = MeshoptimizerAdapter(cancel_event=cancel_event)
+        else:
+            raise CandidateBuildError(
+                f"unknown candidate engine: {spec.engine!r}",
+                stage="candidate-validation",
+            )
         return adapter.generate(manifest, spec, workspace, tools)
 
     def visual(
@@ -1493,7 +1884,12 @@ class ProductionAdapters:
         source_root = candidate.workspace / "render-source"
         if source_root.exists():
             shutil.rmtree(source_root)
-        shutil.copytree(manifest.source_dir, source_root)
+        render_root = candidate.workspace / "renders"
+        if render_root.exists():
+            if _is_reparse(render_root) or not render_root.is_dir():
+                raise CandidateBuildError("render root is unsafe", stage="render")
+            shutil.rmtree(render_root)
+        _copytree_cancellable(manifest.source_dir, source_root, self.cancel_event)
         expression = (
             "import sys;from pathlib import Path;"
             f"sys.path.insert(0,{str(self.config.repo_root)!r});"
@@ -1515,67 +1911,114 @@ class ProductionAdapters:
             )
         region_manifest = source_root / "maximum_region_manifest.json"
         candidate_source_root = candidate.workspace / "src"
-        optimized_fingerprint = _inventory_qc(
-            candidate.optimized_qc,
-            family_root=candidate_source_root,
-        )[0]
-        before_names = tuple(dict.fromkeys(
-            (*manifest.fingerprint.mesh_files, *manifest.fingerprint.lod_mesh_files)
-        ))
-        after_names = tuple(dict.fromkeys(
-            (*optimized_fingerprint.mesh_files, *optimized_fingerprint.lod_mesh_files)
-        ))
-        before = tuple(source_root / Path(*name.replace("\\", "/").split("/")) for name in before_names)
-        after = tuple(candidate.optimized_qc.parent / Path(*name.replace("\\", "/").split("/")) for name in after_names)
-        if not before or len(before) != len(after) or any(not path.is_file() for path in (*before, *after)):
+        original_qcs = _matching_qcs(manifest.source_dir, manifest.model_rel, optimized=False)
+        if len(original_qcs) != 1:
             raise CandidateBuildError(
-                "render source pairs are missing or ambiguous",
+                "original QC for render validation is missing or ambiguous",
                 stage="render",
             )
-        render_root = candidate.workspace / "renders"
-        command: list[str] = [
-            str(self.config.blender_path), "--background", "--python",
-            str(self.config.repo_root / "render_previews.py"), "--",
-        ]
-        for path in before:
-            command.extend(("--before", str(path)))
-        for path in after:
-            command.extend(("--after", str(path)))
-        command.extend((
-            "--out", str(render_root),
-            "--size", "512",
-            "--passes", "textured,clay",
-            "--poses",
-            (
-                "bind:0,representative:1"
-                if manifest.fingerprint.sequences or manifest.fingerprint.bones
-                else "bind:0"
-            ),
-            "--materials-root", str(self.config.addon_dir / "materials"),
-            "--region-manifest", str(region_manifest),
-        ))
+        try:
+            original_graph = parse_qc_graph(original_qcs[0], manifest.source_dir)
+            candidate_graph = parse_qc_graph(candidate.optimized_qc, candidate_source_root)
+            original_states = _graph_visual_states(original_graph)
+            candidate_states = _graph_visual_states(candidate_graph)
+        except (OSError, ValueError) as exc:
+            raise CandidateBuildError(f"render QC graph is invalid: {exc}", stage="render") from exc
+        if len(original_states) != len(candidate_states) or any(
+            len(before) != len(after)
+            for before, after in zip(original_states, candidate_states)
+        ):
+            raise CandidateBuildError("render LOD state pairs are ambiguous", stage="render")
+
+        animation = _paired_representative_animation(original_graph, candidate_graph)
+        animated = bool(manifest.fingerprint.sequences)
+        if animated and animation is None:
+            return ValidationResult(
+                False,
+                (GateFailure(
+                    "representative-animation-unavailable",
+                    manifest.model_rel,
+                    "missing-or-ambiguous",
+                    "paired-real-animation",
+                    "No paired real animation SMD with a common non-bind frame is available.",
+                ),),
+                {},
+                manifest.model_rel,
+            )
+        pose_arg = f"bind:0,representative:{animation[2]}" if animation else "bind:0"
         vtfcmd = self._vtfcmd()
-        if vtfcmd is not None:
-            command.extend(("--vtfcmd", str(vtfcmd)))
-        render_log = candidate.workspace / "logs" / "render.log"
-        result = run_process(
-            command,
-            cwd=self.config.repo_root,
-            log_path=render_log,
-            cancel_event=self.cancel_event,
-        )
-        if result.returncode != 0:
-            raise CandidateBuildError(
-                f"render validation exited with code {result.returncode}",
-                stage="render",
-                log_path=render_log,
+        state_results: list[tuple[str, ValidationResult]] = []
+        for state_index, (before_sources, after_sources) in enumerate(
+            zip(original_states, candidate_states)
+        ):
+            if self.cancel_event.is_set():
+                raise ProcessCancelledError("cancelled before render validation")
+            state_name = "base" if state_index == 0 else f"lod-{state_index}"
+            state_root = render_root / state_name
+            before = tuple(
+                source_root / source.relative_to(manifest.source_dir.resolve(strict=True))
+                for source in before_sources
             )
-        return compare_render_sets(render_root / "original", render_root / "optimized", profile)
+            after = tuple(after_sources)
+            if any(not path.is_file() for path in (*before, *after)):
+                raise CandidateBuildError("render source pairs are missing", stage="render")
+            command: list[str] = [
+                str(self.config.blender_path), "--background", "--python",
+                str(self.config.repo_root / "render_previews.py"), "--",
+            ]
+            for path in before:
+                command.extend(("--before", str(path)))
+            for path in after:
+                command.extend(("--after", str(path)))
+            command.extend((
+                "--out", str(state_root), "--size", "512",
+                "--passes", "textured,clay", "--poses", pose_arg,
+                "--materials-root", str(self.config.addon_dir / "materials"),
+                "--region-manifest", str(region_manifest),
+            ))
+            if animation is not None:
+                original_animation = source_root / animation[0].relative_to(
+                    manifest.source_dir.resolve(strict=True)
+                )
+                command.extend((
+                    "--animation-before", str(original_animation),
+                    "--animation-after", str(animation[1]),
+                ))
+            if vtfcmd is not None:
+                command.extend(("--vtfcmd", str(vtfcmd)))
+            render_log = candidate.workspace / "logs" / f"render-{state_name}.log"
+            process = run_process(
+                command,
+                cwd=self.config.repo_root,
+                log_path=render_log,
+                cancel_event=self.cancel_event,
+            )
+            if process.returncode != 0:
+                raise CandidateBuildError(
+                    f"render validation exited with code {process.returncode}",
+                    stage="render",
+                    log_path=render_log,
+                )
+            required = (
+                state_root / "original" / "render_manifest.json",
+                state_root / "optimized" / "render_manifest.json",
+            )
+            if any(not path.is_file() for path in required):
+                raise CandidateBuildError(
+                    "render validation produced no fresh manifest",
+                    stage="render",
+                    log_path=render_log,
+                )
+            state_results.append((
+                state_name,
+                compare_render_sets(state_root / "original", state_root / "optimized", profile),
+            ))
+        return _aggregate_visual_results(state_results)
 
     def tool_versions(self) -> Mapping[str, str]:
         def digest(path: Path) -> str:
             try:
-                return hashlib.sha256(path.read_bytes()).hexdigest()
+                return _sha256_file(path, self.cancel_event)
             except OSError:
                 return "missing"
         return {

@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from maximum_optimizer.candidates import CandidateBuild, CandidateBuildError
 from maximum_optimizer.domain import (
+    GateFailure,
     CandidateSpec,
     FamilyManifest,
     SearchBudget,
@@ -17,18 +18,26 @@ from maximum_optimizer.domain import (
     ValidationResult,
 )
 from maximum_optimizer.orchestrator import (
+    AttemptReport,
     MaximumConfigError,
     MaximumRunConfig,
     ProductionAdapters,
+    _aggregate_visual_results,
+    _copytree_cancellable,
+    _dependency_proof,
+    _restore_cache_payload,
+    _sha256_file,
     _seal_cache_entry,
     _copy_selected_family,
     _promote_verified_tree,
     _tree_manifest,
+    _verify_cache_entry,
+    _worst,
     validate_run_paths,
     run_maximum_addon,
 )
 from maximum_optimizer.reporting import canonical_json, event_line
-from maximum_optimizer.processes import ProcessResult
+from maximum_optimizer.processes import ProcessCancelledError, ProcessResult
 from maximum_optimizer.visual_validation import load_profile
 
 
@@ -207,6 +216,19 @@ class OrchestratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-finite"):
             canonical_json({"metric": float("nan")})
 
+    def test_per_lod_visual_aggregate_reports_worst_score_and_scope(self):
+        result = _aggregate_visual_results((
+            ("base", ValidationResult(True, metrics={"fidelity_score": 0.99, "rgb_mae": 0.01}, worst_scope="base-scope")),
+            ("lod-1", ValidationResult(False, (
+                GateFailure("rgb_mae", "lod-scope", 0.4, 0.2, "too large"),
+            ), {"fidelity_score": 0.40, "rgb_mae": 0.4}, "lod-scope")),
+        ))
+        self.assertFalse(result.passed)
+        self.assertEqual(result.metrics["fidelity_score"], 0.40)
+        self.assertEqual(result.metrics["rgb_mae"], 0.4)
+        self.assertEqual(result.worst_scope, "lod-1/lod-scope")
+        self.assertEqual(result.failures[0].scope, "lod-1/lod-scope")
+
     def test_inventory_exception_writes_failed_terminal_report(self):
         self.adapters.inventory = lambda _config: (_ for _ in ()).throw(RuntimeError("inventory boom"))
         report = self.run_optimizer()
@@ -282,6 +304,14 @@ class OrchestratorTests(unittest.TestCase):
             (self.config.output_dir / "models" / "not_decompiled.mdl").read_bytes(),
             b"n" * 77,
         )
+        missing_events = [
+            event for event in self.events
+            if event.get("family") == "not_decompiled.mdl"
+            and event["kind"] in {"family_started", "family_finished"}
+        ]
+        self.assertEqual(len(missing_events), 2)
+        self.assertTrue(all(event["family_index"] == 1 for event in missing_events))
+        self.assertTrue(all(event["family_total"] == 2 for event in missing_events))
 
     def test_cancelled_run_has_exact_terminal_event_and_never_promotes(self):
         self.adapters.cancel_on = "candidate-60"
@@ -310,10 +340,12 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(self.events[0]["report_path"], "logs/maximum_report.json")
         family_started = next(event for event in self.events if event["kind"] == "family_started")
         self.assertEqual(family_started["family_id"], self.family.family_id)
+        self.assertEqual(family_started["family_index"], 0)
+        self.assertEqual(family_started["family_total"], 1)
         candidate_started = next(event for event in self.events if event["kind"] == "candidate_started")
         self.assertIn("candidate_id", candidate_started)
-        self.assertIn("index", candidate_started)
-        self.assertIn("total", candidate_started)
+        self.assertEqual(candidate_started["candidate_index"], 0)
+        self.assertEqual(candidate_started["candidate_total"], self.config.budget.max_candidates + 1)
         final_payload = json.loads(report.report_path.read_text(encoding="utf-8"))
         self.assertEqual(final_payload["events"][-1]["kind"], "run_finished")
 
@@ -620,14 +652,56 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual((destination / "old.bin").read_bytes(), b"old")
         self.assertFalse((destination / "new.bin").exists())
 
-    def test_production_visual_command_uses_nested_family_root_all_lods_and_poses(self):
+    def test_promotion_honors_cancel_at_final_pre_replace_barrier(self):
+        staging = self.root / "cancel-staging"
+        destination = self.root / "cancel-output"
+        staging.mkdir()
+        destination.mkdir()
+        (staging / "new.bin").write_bytes(b"new")
+        (destination / "old.bin").write_bytes(b"old")
+        cancel = threading.Event()
+        cancel.set()
+        with self.assertRaises(ProcessCancelledError):
+            _promote_verified_tree(
+                staging, destination, _tree_manifest(staging), cancel_event=cancel
+            )
+        self.assertEqual((destination / "old.bin").read_bytes(), b"old")
+        self.assertTrue(staging.exists())
+
+    def test_promotion_is_non_interruptible_after_first_replace(self):
+        staging = self.root / "commit-staging"
+        destination = self.root / "commit-output"
+        staging.mkdir()
+        (staging / "new.bin").write_bytes(b"new")
+        expected = _tree_manifest(staging)
+        cancel = threading.Event()
+        real_replace = __import__("os").replace
+        def replace_then_cancel(source, target):
+            real_replace(source, target)
+            cancel.set()
+        with patch("maximum_optimizer.orchestrator.os.replace", side_effect=replace_then_cancel):
+            _promote_verified_tree(
+                staging, destination, expected, cancel_event=cancel
+            )
+        self.assertTrue(cancel.is_set())
+        self.assertEqual((destination / "new.bin").read_bytes(), b"new")
+
+    def test_production_visual_uses_nested_paths_real_animation_and_separate_lods(self):
         source = self.root / "production-source"
         source.mkdir()
         smd = "version 1\nnodes\n0 \"root\" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\nend\n"
         (source / "mesh.smd").write_text(smd, encoding="utf-8")
         (source / "lod.smd").write_text(smd, encoding="utf-8")
-        (source / "main.qc").write_text(
-            '$modelname "test.mdl"\n$body "body" "mesh.smd"\n$lod 10 { replacemodel "mesh.smd" "lod.smd" }\n',
+        animation_smd = smd.replace("time 0\n", "time 0\n").replace(
+            "0 0 0 0 0 0 0\nend\ntriangles",
+            "0 0 0 0 0 0 0\ntime 10\n0 1 0 0 0 0 0\nend\ntriangles",
+        )
+        (source / "anim.smd").write_text(animation_smd, encoding="utf-8")
+        (source / "nested").mkdir()
+        (source / "nested" / "main.qc").write_text(
+            '$modelname "test.mdl"\n$body "body" "../mesh.smd"\n'
+            '$lod 10 { replacemodel "../mesh.smd" "../lod.smd" }\n'
+            '$sequence "idle" "../anim.smd"\n',
             encoding="utf-8",
         )
         fp = StructuralFingerprint(
@@ -644,13 +718,18 @@ class OrchestratorTests(unittest.TestCase):
         (workspace / "logs").mkdir()
         (workspace / "src" / "mesh_OPT.smd").write_text(smd, encoding="utf-8")
         (workspace / "src" / "lod_OPT.smd").write_text(smd, encoding="utf-8")
+        (workspace / "src" / "anim.smd").write_text(animation_smd, encoding="utf-8")
         qc = nested / "main_OPT.qc"
         qc.write_text(
-            '$modelname "test.mdl"\n$body "body" "../mesh_OPT.smd"\n$lod 10 { replacemodel "../mesh_OPT.smd" "../lod_OPT.smd" }\n',
+            '$modelname "test.mdl"\n$body "body" "../mesh_OPT.smd"\n'
+            '$lod 10 { replacemodel "../mesh_OPT.smd" "../lod_OPT.smd" }\n'
+            '$sequence "idle" "../anim.smd"\n',
             encoding="utf-8",
         )
         compiled = workspace / "compiled"
         compiled.mkdir()
+        (workspace / "renders").mkdir()
+        (workspace / "renders" / "stale.txt").write_text("must disappear", encoding="utf-8")
         build = CandidateBuild(
             CandidateSpec("production", "blender", 0.5, 0.0, "test"),
             workspace, qc, compiled, {}, {"test.mdl": "candidate-compile"}, (),
@@ -661,8 +740,10 @@ class OrchestratorTests(unittest.TestCase):
             if "--python-expr" in command:
                 (workspace / "render-source" / "maximum_region_manifest.json").write_text("{}", encoding="utf-8")
             else:
-                (workspace / "renders" / "original").mkdir(parents=True)
-                (workspace / "renders" / "optimized").mkdir(parents=True)
+                out = Path(command[command.index("--out") + 1])
+                for side in ("original", "optimized"):
+                    (out / side).mkdir(parents=True)
+                    (out / side / "render_manifest.json").write_text("{}", encoding="utf-8")
             return ProcessResult(tuple(str(item) for item in command), 0, 0.01, kwargs["log_path"])
         adapter = ProductionAdapters(self.config, threading.Event())
         with (
@@ -671,14 +752,35 @@ class OrchestratorTests(unittest.TestCase):
         ):
             result = adapter.visual(manifest, build, build, load_profile(self.config.profile_path))
         self.assertTrue(result.passed)
-        render = commands[1]
-        before_values = [render[index + 1] for index, value in enumerate(render) if value == "--before"]
-        after_values = [render[index + 1] for index, value in enumerate(render) if value == "--after"]
-        self.assertEqual(len(before_values), 2)
-        self.assertEqual(len(after_values), 2)
-        self.assertTrue(any(value.endswith("lod.smd") for value in before_values))
-        self.assertTrue(any(value.endswith("lod_OPT.smd") for value in after_values))
-        self.assertEqual(render[render.index("--poses") + 1], "bind:0,representative:1")
+        self.assertFalse((workspace / "renders" / "stale.txt").exists())
+        renders = commands[1:]
+        self.assertEqual(len(renders), 2)
+        self.assertEqual([len([v for v in command if v == "--before"]) for command in renders], [1, 1])
+        self.assertTrue(renders[0][renders[0].index("--before") + 1].endswith("mesh.smd"))
+        self.assertTrue(renders[1][renders[1].index("--before") + 1].endswith("lod.smd"))
+        self.assertTrue(renders[1][renders[1].index("--after") + 1].endswith("lod_OPT.smd"))
+        for render in renders:
+            self.assertEqual(render[render.index("--poses") + 1], "bind:0,representative:10")
+            self.assertTrue(render[render.index("--animation-before") + 1].endswith("anim.smd"))
+            self.assertTrue(render[render.index("--animation-after") + 1].endswith("anim.smd"))
+
+        def no_fresh_output(command, **kwargs):
+            if "--python-expr" in command:
+                (workspace / "render-source" / "maximum_region_manifest.json").write_text("{}", encoding="utf-8")
+            return ProcessResult(tuple(str(item) for item in command), 0, 0.01, kwargs["log_path"])
+        with patch("maximum_optimizer.orchestrator.run_process", side_effect=no_fresh_output):
+            with self.assertRaisesRegex(CandidateBuildError, "fresh manifest"):
+                adapter.visual(manifest, build, build, load_profile(self.config.profile_path))
+
+        qc.write_text(
+            '$modelname "test.mdl"\n$body "body" "../mesh_OPT.smd"\n'
+            '$lod 10 { replacemodel "../mesh_OPT.smd" "../lod_OPT.smd" }\n',
+            encoding="utf-8",
+        )
+        with patch("maximum_optimizer.orchestrator.run_process", side_effect=no_fresh_output):
+            unavailable = adapter.visual(manifest, build, build, load_profile(self.config.profile_path))
+        self.assertFalse(unavailable.passed)
+        self.assertEqual(unavailable.failures[0].gate, "representative-animation-unavailable")
 
     def test_default_schedule_prefers_blender_when_meshopt_is_not_preferred(self):
         self.adapters.candidate_schedule = None
@@ -727,6 +829,191 @@ class OrchestratorTests(unittest.TestCase):
             with self.assertRaisesRegex(MaximumConfigError, "reparse"):
                 validate_run_paths(config, create=False)
         self.assertFalse(raw_output.exists())
+
+    def test_existing_work_tree_internal_reparse_is_rejected_before_mutation(self):
+        self.config.work_dir.mkdir(parents=True)
+        unsafe = self.config.work_dir / "src"
+        unsafe.mkdir()
+        sentinel = unsafe / "keep.txt"
+        sentinel.write_text("external", encoding="utf-8")
+        original_is_reparse = __import__(
+            "maximum_optimizer.orchestrator", fromlist=["_is_reparse"]
+        )._is_reparse
+        with patch(
+            "maximum_optimizer.orchestrator._is_reparse",
+            side_effect=lambda path: Path(path) == unsafe or original_is_reparse(Path(path)),
+        ):
+            with self.assertRaisesRegex(MaximumConfigError, "work.*symlink|work.*junction"):
+                validate_run_paths(self.config, create=False)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "external")
+
+    def test_existing_output_file_is_rejected_even_with_overwrite(self):
+        output_file = self.root / "existing-output"
+        output_file.write_bytes(b"not-a-directory")
+        config = MaximumRunConfig(
+            **{**self.config.to_kwargs(), "output_dir": output_file, "overwrite": True}
+        )
+
+        with self.assertRaisesRegex(MaximumConfigError, "output.*directory"):
+            validate_run_paths(config, create=False)
+
+        self.assertEqual(output_file.read_bytes(), b"not-a-directory")
+
+    def test_chunked_hash_observes_cancellation_between_chunks(self):
+        source = self.root / "large.bin"
+        source.write_bytes(b"abcdefgh")
+
+        class CancelAfterTwoChecks:
+            calls = 0
+
+            def is_set(self):
+                self.calls += 1
+                return self.calls >= 3
+
+        with self.assertRaises(ProcessCancelledError):
+            _sha256_file(source, CancelAfterTwoChecks(), chunk_size=2)
+
+    def test_chunked_tree_copy_observes_cancellation_during_a_file(self):
+        source = self.root / "copy-source"
+        source.mkdir()
+        (source / "large.bin").write_bytes(b"abcdefgh")
+        destination = self.root / "copy-destination"
+
+        class CancelAfterTwoChecks:
+            calls = 0
+
+            def is_set(self):
+                self.calls += 1
+                return self.calls >= 3
+
+        with self.assertRaises(ProcessCancelledError):
+            _copytree_cancellable(
+                source,
+                destination,
+                CancelAfterTwoChecks(),
+                chunk_size=2,
+            )
+
+        self.assertFalse((destination / "large.bin").exists())
+
+    def test_cache_restore_uses_cancellable_chunked_copy(self):
+        cache_entry = self.root / "cache-entry"
+        payload = cache_entry / "payload"
+        payload.mkdir(parents=True)
+        (payload / "large.bin").write_bytes(b"abcdefgh")
+        workspace = self.root / "restored-workspace"
+
+        class CancelAfterTwoChecks:
+            calls = 0
+
+            def is_set(self):
+                self.calls += 1
+                return self.calls >= 3
+
+        with self.assertRaises(ProcessCancelledError):
+            _restore_cache_payload(
+                cache_entry,
+                workspace,
+                CancelAfterTwoChecks(),
+                chunk_size=2,
+            )
+
+        self.assertFalse(workspace.exists())
+
+    def test_tree_manifest_observes_cancellation_while_hashing(self):
+        tree = self.root / "manifest-tree"
+        tree.mkdir()
+        (tree / "large.bin").write_bytes(b"abcdefgh")
+
+        class CancelAfterTwoChecks:
+            calls = 0
+
+            def is_set(self):
+                self.calls += 1
+                return self.calls >= 3
+
+        with self.assertRaises(ProcessCancelledError):
+            _tree_manifest(tree, CancelAfterTwoChecks(), chunk_size=2)
+
+    def test_cache_integrity_verification_observes_cancel_event(self):
+        entry = self.root / "verify-cache"
+        payload = entry / "payload"
+        payload.mkdir(parents=True)
+        (payload / "maximum_cache_record.json").write_text("{}", encoding="utf-8")
+        (payload / "large.bin").write_bytes(b"abcdefgh")
+        _seal_cache_entry(entry)
+        cancel = threading.Event()
+        cancel.set()
+        with self.assertRaises(ProcessCancelledError):
+            _verify_cache_entry(entry, cancel)
+
+    def test_dependency_proof_hashes_modern_blender_extensions(self):
+        extension = (
+            self.config.blender_path.parent
+            / "5.0"
+            / "extensions"
+            / "user_default"
+            / "source_tools"
+            / "__init__.py"
+        )
+        extension.parent.mkdir(parents=True)
+        extension.write_text("version = 1", encoding="utf-8")
+
+        first = _dependency_proof(self.config)
+        extension.write_text("version = 2", encoding="utf-8")
+        second = _dependency_proof(self.config)
+
+        labels = {entry["label"] for entry in first["files"]}
+        self.assertTrue(any(label.startswith("blender_extension/") for label in labels))
+        self.assertNotEqual(first["digest"], second["digest"])
+
+    def test_unknown_schedule_engine_is_rejected_before_candidate_build(self):
+        self.adapters.candidate_schedule = lambda _manifest: (
+            CandidateSpec("unknown-engine", "unknown", 0.5, 0.01, "test"),
+        )
+
+        report = self.run_optimizer()
+
+        self.assertEqual(report.families[0].status, "failed")
+        self.assertIn("schedule", report.families[0].reason)
+        self.assertEqual(self.adapters.calls, [("test.mdl", "roundtrip-control")])
+
+    def test_production_adapter_rejects_unknown_engine_explicitly(self):
+        adapter = ProductionAdapters(self.config, threading.Event())
+        spec = CandidateSpec("unknown-engine", "unknown", 0.5, 0.01, "test")
+
+        with self.assertRaisesRegex(CandidateBuildError, "unknown candidate engine"):
+            adapter.build(
+                self.family,
+                spec,
+                self.root / "unknown-workspace",
+                object(),
+                threading.Event(),
+            )
+
+    def test_worst_scopes_only_claim_scope_proven_for_each_metric(self):
+        structural = ValidationResult(
+            False,
+            failures=(GateFailure("surface_max", "nose", 2.0, 1.0, "too large"),),
+            metrics={"surface_max": 2.0, "rgb_mae": 0.25},
+            worst_scope="nose",
+        )
+        attempt = AttemptReport(
+            "candidate",
+            "blender",
+            "rejected",
+            None,
+            structural,
+            None,
+            False,
+            "",
+            {},
+        )
+
+        metrics, scopes = _worst((attempt,))
+
+        self.assertEqual(metrics, {"surface_max": 2.0, "rgb_mae": 0.25})
+        self.assertEqual(scopes, {"surface_max": "nose"})
 
 
 if __name__ == "__main__":

@@ -199,6 +199,11 @@ def _choose_maximum_work_dir(base: Path, *, overwrite: bool, resume: bool) -> Pa
     return base.parent / f"{base.name}_{_ts()}"
 
 
+def _lexical_absolute(raw: str | os.PathLike[str]) -> Path:
+    """Make a path absolute without erasing symlink/junction identity."""
+    return Path(os.path.abspath(os.fspath(Path(raw).expanduser())))
+
+
 def _choose_work_dir(base: Path, *, overwrite: bool) -> Path:
     if not base.exists():
         return base
@@ -1025,17 +1030,25 @@ def main(argv: list[str]) -> int:
             print(f"[ERROR] Missing required script: {p}")
             return 2
 
-    addon_path = Path(args.addon).expanduser().resolve()
+    maximum_mode = args.optimizer_mode == OPTIMIZER_MODE_MAXIMUM
+    addon_path = (
+        _lexical_absolute(args.addon)
+        if maximum_mode
+        else Path(args.addon).expanduser().resolve()
+    )
     if not addon_path.exists() or not addon_path.is_dir():
         print(f"[ERROR] Addon folder not found: {addon_path}")
         return 2
 
     if args.work:
-        work_base = Path(args.work).expanduser().resolve()
+        work_base = (
+            _lexical_absolute(args.work)
+            if maximum_mode
+            else Path(args.work).expanduser().resolve()
+        )
     else:
         work_root = Path.cwd() if getattr(sys, "frozen", False) else repo_root
         work_base = work_root / "work" / f"{addon_path.name}{args.suffix}"
-    maximum_mode = args.optimizer_mode == OPTIMIZER_MODE_MAXIMUM
     maximum_resume = bool(args.maximum_resume or args.resume_opt)
     work_dir = (
         _choose_maximum_work_dir(
@@ -1047,6 +1060,14 @@ def main(argv: list[str]) -> int:
         else _choose_work_dir(work_base, overwrite=bool(args.overwrite_work))
     )
 
+    if maximum_mode:
+        try:
+            from maximum_optimizer.orchestrator import validate_source_path
+            validate_source_path(addon_path, require_models=False)
+        except Exception as exc:
+            print(f"[ERROR] Maximum path preflight failed: {exc}")
+            return 2
+
     if _looks_like_addon_root(addon_path):
         addon_name = addon_path.name
         out_addon_base = addon_path.parent / f"{addon_name}{args.suffix}"
@@ -1055,6 +1076,18 @@ def main(argv: list[str]) -> int:
             if maximum_mode
             else _choose_dest_dir(out_addon_base, overwrite=bool(args.overwrite))
         )
+        if maximum_mode:
+            try:
+                from maximum_optimizer.orchestrator import validate_path_triplet
+                validate_path_triplet(
+                    addon_path,
+                    out_addon_dir,
+                    work_dir,
+                    overwrite=bool(args.overwrite),
+                )
+            except Exception as exc:
+                print(f"[ERROR] Maximum path preflight failed: {exc}")
+                return 2
         return _run_single_addon(
             args,
             repo_root=repo_root,
@@ -1089,6 +1122,73 @@ def main(argv: list[str]) -> int:
             )
         return 2
 
+    batch_units: list[tuple[Path, Path, Path]] = []
+    for unit_addon_path in addon_units:
+        unit_out_base = unit_addon_path.parent / f"{unit_addon_path.name}{args.suffix}"
+        unit_out_dir = (
+            _choose_maximum_dest_dir(unit_out_base, overwrite=bool(args.overwrite))
+            if maximum_mode
+            else unit_out_base
+        )
+        batch_units.append((unit_addon_path, unit_out_dir, work_dir / "units" / unit_addon_path.name))
+    if maximum_mode:
+        try:
+            from maximum_optimizer.orchestrator import validate_path_triplet
+            # The common batch work root must itself be disjoint from the selected container.
+            probe_output = addon_path.parent / f".{addon_path.name}.maximum-preflight-output"
+            validate_path_triplet(
+                addon_path,
+                probe_output,
+                work_dir,
+                overwrite=True,
+                require_models=False,
+            )
+            for unit_addon_path, unit_out_dir, unit_work_dir in batch_units:
+                validate_path_triplet(
+                    unit_addon_path,
+                    unit_out_dir,
+                    unit_work_dir,
+                    overwrite=bool(args.overwrite),
+                )
+            resolved_sources = tuple(path.resolve(strict=True) for path, _, _ in batch_units)
+            resolved_outputs = tuple(path.resolve(strict=False) for _, path, _ in batch_units)
+            resolved_works = tuple(path.resolve(strict=False) for _, _, path in batch_units)
+            def overlaps(first: Path, second: Path) -> bool:
+                try:
+                    first.relative_to(second)
+                    return True
+                except ValueError:
+                    try:
+                        second.relative_to(first)
+                        return True
+                    except ValueError:
+                        return False
+            for source_index, source in enumerate(resolved_sources):
+                for output_index, output in enumerate(resolved_outputs):
+                    if overlaps(source, output):
+                        raise ValueError(
+                            f"batch source {source_index} overlaps output {output_index}"
+                        )
+                for work_index, unit_work in enumerate(resolved_works):
+                    if overlaps(source, unit_work):
+                        raise ValueError(
+                            f"batch source {source_index} overlaps work {work_index}"
+                        )
+            for output_index, output in enumerate(resolved_outputs):
+                for other_index in range(output_index + 1, len(resolved_outputs)):
+                    if overlaps(output, resolved_outputs[other_index]):
+                        raise ValueError(
+                            f"batch outputs {output_index} and {other_index} overlap"
+                        )
+                for work_index, unit_work in enumerate(resolved_works):
+                    if overlaps(output, unit_work):
+                        raise ValueError(
+                            f"batch output {output_index} overlaps work {work_index}"
+                        )
+        except Exception as exc:
+            print(f"[ERROR] Maximum batch path preflight failed: {exc}")
+            return 2
+
     print(f"Addon input:  {addon_path}", flush=True)
     print(f"Addon output: {addon_path}", flush=True)
     print(f"Work dir:     {work_dir}", flush=True)
@@ -1108,14 +1208,11 @@ def main(argv: list[str]) -> int:
     total_before_bytes = 0
     total_after_bytes = 0
 
-    for index, unit_addon_path in enumerate(addon_units, start=1):
-        unit_out_base = unit_addon_path.parent / f"{unit_addon_path.name}{args.suffix}"
-        unit_out_dir = (
-            _choose_maximum_dest_dir(unit_out_base, overwrite=bool(args.overwrite))
-            if maximum_mode
-            else _choose_dest_dir(unit_out_base, overwrite=bool(args.overwrite))
-        )
-        unit_work_dir = work_dir / "units" / unit_addon_path.name
+    for index, (unit_addon_path, unit_out_dir, unit_work_dir) in enumerate(batch_units, start=1):
+        if not maximum_mode:
+            # Preserve the legacy per-unit timing: --overwrite may delete only
+            # the unit that is about to run, never later outputs in advance.
+            unit_out_dir = _choose_dest_dir(unit_out_dir, overwrite=bool(args.overwrite))
         unit_before_bytes = _sum_tree_bytes(unit_addon_path)
         total_before_bytes += unit_before_bytes
 

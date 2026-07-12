@@ -79,6 +79,112 @@ class MaximumCliTests(unittest.TestCase):
                 )
                 self.assertEqual(run_one.call_args.args[0].optimizer_mode, "fidelity")
 
+    def test_normal_batch_overwrite_does_not_delete_later_outputs_in_prepass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            container = root / "addons"
+            for unit in ("one", "two"):
+                (container / unit / "models").mkdir(parents=True)
+            first_output = container / "one_OPT"
+            second_output = container / "two_OPT"
+            first_output.mkdir()
+            second_output.mkdir()
+            (first_output / "sentinel.txt").write_text("first", encoding="utf-8")
+            second_sentinel = second_output / "sentinel.txt"
+            second_sentinel.write_text("second", encoding="utf-8")
+            for name in (
+                "batch_decompile_organize.py", "batch_optimize_qc.py",
+                "batch_compile_opt_qc.py", "batch_optimize_selective_policy.py",
+                "batch_optimize_round_parts_policy.py",
+            ):
+                (root / name).write_text("", encoding="utf-8")
+            observed = []
+            def run_one(*_args, **_kwargs):
+                observed.append(second_sentinel.exists())
+                return 1
+            with (
+                patch.object(build_optimized_addon, "_runtime_root", return_value=root),
+                patch.object(build_optimized_addon, "_run_single_addon", side_effect=run_one),
+            ):
+                rc = build_optimized_addon.main([
+                    str(container), "--optimizer-mode", "normal", "--suffix", "_OPT",
+                    "--overwrite", "--work", str(root / "work-normal"),
+                ])
+            self.assertEqual(rc, 1)
+            self.assertTrue(observed[0], "later output was deleted before the first unit ran")
+
+    def test_maximum_cli_preserves_lexical_path_until_reparse_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            addon = root / "addon-link"
+            (addon / "models").mkdir(parents=True)
+            for name in (
+                "batch_decompile_organize.py", "batch_optimize_qc.py",
+                "batch_compile_opt_qc.py", "batch_optimize_selective_policy.py",
+                "batch_optimize_round_parts_policy.py", "batch_optimize_maximum.py",
+                "render_previews.py",
+            ):
+                (root / name).write_text("", encoding="utf-8")
+            with (
+                patch.object(build_optimized_addon, "_runtime_root", return_value=root),
+                patch("maximum_optimizer.orchestrator._is_reparse", side_effect=lambda path: Path(path) == addon),
+                patch.object(build_optimized_addon, "_run_single_addon") as run_one,
+            ):
+                rc = build_optimized_addon.main([str(addon), "--optimizer-mode", "maximum"])
+            self.assertEqual(rc, 2)
+            run_one.assert_not_called()
+
+    def test_maximum_batch_preflights_all_units_before_creating_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            container = root / "addons"
+            for unit in ("one", "two"):
+                (container / unit / "models").mkdir(parents=True)
+            for name in (
+                "batch_decompile_organize.py", "batch_optimize_qc.py",
+                "batch_compile_opt_qc.py", "batch_optimize_selective_policy.py",
+                "batch_optimize_round_parts_policy.py", "batch_optimize_maximum.py",
+                "render_previews.py",
+            ):
+                (root / name).write_text("", encoding="utf-8")
+            work = container / "unsafe-work"
+            with (
+                patch.object(build_optimized_addon, "_runtime_root", return_value=root),
+                patch.object(build_optimized_addon, "_run_single_addon") as run_one,
+            ):
+                rc = build_optimized_addon.main([
+                    str(container), "--optimizer-mode", "maximum", "--work", str(work),
+                ])
+            self.assertEqual(rc, 2)
+            run_one.assert_not_called()
+            self.assertFalse(work.exists())
+
+    def test_maximum_batch_rejects_cross_unit_output_source_overlap_before_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            container = root / "addons"
+            for unit in ("one", "one_OPT"):
+                (container / unit / "models").mkdir(parents=True)
+            for name in (
+                "batch_decompile_organize.py", "batch_optimize_qc.py",
+                "batch_compile_opt_qc.py", "batch_optimize_selective_policy.py",
+                "batch_optimize_round_parts_policy.py", "batch_optimize_maximum.py",
+                "render_previews.py",
+            ):
+                (root / name).write_text("", encoding="utf-8")
+            work = root / "work-safe"
+            with (
+                patch.object(build_optimized_addon, "_runtime_root", return_value=root),
+                patch.object(build_optimized_addon, "_run_single_addon") as run_one,
+            ):
+                rc = build_optimized_addon.main([
+                    str(container), "--optimizer-mode", "maximum", "--suffix", "_OPT",
+                    "--overwrite", "--work", str(work),
+                ])
+            self.assertEqual(rc, 2)
+            run_one.assert_not_called()
+            self.assertFalse(work.exists())
+
     def test_worker_forwards_maximum_arguments_untouched(self):
         argv = ["addon", "--optimizer-mode", "maximum", "--maximum-resume"]
         with patch.object(worker_main.build_optimized_addon, "main", return_value=7) as target:

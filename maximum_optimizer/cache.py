@@ -173,6 +173,8 @@ class CandidateCache:
         key: CacheKey,
         source_dir: os.PathLike[str] | str,
         metadata: object,
+        *,
+        copy_function: Callable[[str, str], str | os.PathLike[str]] = shutil.copy2,
     ) -> Path:
         source = Path(source_dir)
         if _is_symlink(source):
@@ -193,7 +195,7 @@ class CandidateCache:
             f"{key.digest}.tmp-{os.getpid()}-",
         )
         staging.mkdir()
-        shutil.copytree(source, staging / "payload")
+        shutil.copytree(source, staging / "payload", copy_function=copy_function)
         _write_json(staging / "metadata.json", metadata)
         _write_json(staging / "complete.json", {"digest": key.digest})
 

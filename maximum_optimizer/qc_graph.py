@@ -30,6 +30,7 @@ class QcReference:
     role: str
     token_start: int
     token_end: int
+    group: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,7 +109,7 @@ def _lex(text: str) -> tuple[Token, ...]:
     return tuple(tokens)
 
 
-def _safe_relative(value: str, label: str) -> Path:
+def _safe_relative(value: str, label: str, *, allow_parent: bool = False) -> Path:
     normalized = value.replace("\\", "/").strip()
     posix = PurePosixPath(normalized)
     windows = PureWindowsPath(normalized)
@@ -117,18 +118,19 @@ def _safe_relative(value: str, label: str) -> Path:
         or posix.is_absolute()
         or windows.is_absolute()
         or windows.drive
-        or ".." in posix.parts
+        or (not allow_parent and ".." in posix.parts)
     ):
         raise ValueError(f"unsafe {label}: {value}")
     return Path(*posix.parts)
 
 
 def _contained_existing(root: Path, current_dir: Path, value: str, label: str) -> Path:
-    relative = _safe_relative(value, label)
+    relative = _safe_relative(value, label, allow_parent=True)
     unresolved = current_dir / relative
     current = root
     try:
-        relative_from_root = unresolved.absolute().relative_to(root.absolute())
+        lexical = Path(os.path.abspath(os.fspath(unresolved)))
+        relative_from_root = lexical.relative_to(Path(os.path.abspath(os.fspath(root))))
     except ValueError as exc:
         raise ValueError(f"{label} escapes family root: {value}") from exc
     for part in relative_from_root.parts:
@@ -225,12 +227,12 @@ def parse_qc_graph(root_qc: Path, family_root: Path) -> QcGraph:
         references: list[QcReference] = []
         includes: list[QcInclude] = []
 
-        def add_ref(token: Token, role: str, directive: str) -> None:
+        def add_ref(token: Token, role: str, directive: str, *, group: str = "") -> None:
             if token.value.casefold() == "blank":
                 return
             source = _contained_existing(root, path.parent, token.value, "source reference")
             references.append(
-                QcReference(path, directive, token.line, token.value, source, role, token.start, token.end)
+                QcReference(path, directive, token.line, token.value, source, role, token.start, token.end, group)
             )
 
         index = 0
@@ -271,7 +273,12 @@ def parse_qc_graph(root_qc: Path, family_root: Path) -> QcGraph:
                 }:
                     raise ValueError(f"unknown LOD geometry command at line {token.line}")
                 for source in sources:
-                    add_ref(source, "visual", "$lod/replacemodel")
+                    add_ref(
+                        source,
+                        "visual",
+                        "$lod/replacemodel",
+                        group=f"{path.relative_to(root).as_posix()}:{token.line}",
+                    )
             elif directive in {"$collisionmodel", "$collisionjoints"}:
                 sources = _source_tokens(args)
                 if len(sources) != 1:
