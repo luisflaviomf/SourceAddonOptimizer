@@ -160,6 +160,7 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
         self.assertEqual(tuple(item.status for item in result.attempts), ("cancelled", "cancelled"))
         self.assertIs(result.selected, result.base)
         self.assertFalse((root / "adaptive").exists())
+        self._authority_mock.assert_not_called()
 
     def test_schedule_never_reserves_more_than_four_fixed_ratios(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -279,6 +280,7 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
                 )},
             )
             events: list[tuple] = []
+            compiled_roots = {}
             mode = {"size": 40, "structural": True, "focus": True, "union": True,
                     "final": True, "cache": False, "score": 0.0}
 
@@ -294,6 +296,7 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
                 events.append(("compile", scheduled.ratio))
                 compiled = composed.workspace / "compiled/models"
                 compiled.mkdir(parents=True)
+                compiled_roots[composed.workspace.parent.name] = compiled
                 model = compiled / "task6.mdl"
                 model.write_bytes(b"x" * mode["size"])
                 proof = CompileFileProof(
@@ -372,7 +375,7 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
                     ),
                 )
 
-            def execute(name: str):
+            def execute(name: str, event: threading.Event | None = None):
                 return execute_adaptive_direct_schedule(
                     base_proof=self._proof(fixture, base),
                     coverage=fixture.coverage, remaining_candidates=1,
@@ -384,7 +387,7 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
                     rerender_base_focus=rerender,
                     render_source_union=source_union,
                     authorize_final_whole=final_whole,
-                    cancel_event=threading.Event(),
+                    cancel_event=event or threading.Event(),
                 )
 
             result = execute("adaptive")
@@ -400,12 +403,36 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
             cached_focus = execute("cached-focus")
             mode.update(cache=False, size=100, score=0.8)
             higher_fidelity_tie = execute("higher-fidelity-tie")
+            late_event = threading.Event()
+            original_create = AdaptiveDirectExecutionAttempt.create.__func__
+            def late_create(cls, ratio, status, **values):
+                attempt = original_create(cls, ratio, status, **values)
+                if status == "authorized":
+                    late_event.set()
+                return attempt
+            with mock.patch.object(
+                AdaptiveDirectExecutionAttempt, "create",
+                new=classmethod(late_create),
+            ):
+                late_cancel_race = execute("late-cancel-race", late_event)
+            original_authorized = compiled_roots["adaptive"] / "task6.mdl"
+            original_authorized.write_bytes(b"mutated-after-private-snapshot")
+            selected_artifact = (
+                result.selected.compiled_models_dir
+                / result.selected.size.artifacts[0].relative_path
+            )
+            private_snapshot_bytes = selected_artifact.read_bytes()
 
         self.assertEqual(
             result.attempts[0].status, "authorized", result.attempts[0].error
         )
         self.assertIs(result.selected, result.attempts[0].evaluation)
         self.assertEqual(result.selected.size.total_bytes, 40)
+        self.assertNotEqual(
+            result.attempts[0].build.compiled_models_dir,
+            root / "adaptive/compiled/models",
+        )
+        self.assertEqual(private_snapshot_bytes, b"x" * 40)
         valid_attempt = result.attempts[0]
         forged_validation = ValidationResult(
             True, metrics={"fidelity_score": 0.999}
@@ -433,11 +460,14 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
         self.assertEqual(cached_focus.attempts[0].status, "focused_failed")
         self.assertRegex(cached_focus.attempts[0].attempt_sha256, r"^[0-9a-f]{64}$")
         self.assertIs(higher_fidelity_tie.selected, higher_fidelity_tie.attempts[0].evaluation)
+        self.assertEqual(late_cancel_race.attempts[0].status, "authorized")
+        self.assertFalse(late_cancel_race.cancelled)
+        self.assertTrue(late_event.is_set())
         self.assertNotIn(("structural", True), events)
         self.assertNotIn(("final-whole", True), events)
-        self.assertEqual(sum(item[0] == "final-whole" for item in events), 4)
-        self.assertEqual(events.count(("source-union", "meshes/part-00.smd")), 4)
-        self.assertEqual(events.count(("source-union", "meshes/part-01.smd")), 4)
+        self.assertEqual(sum(item[0] == "final-whole" for item in events), 5)
+        self.assertEqual(events.count(("source-union", "meshes/part-00.smd")), 5)
+        self.assertEqual(events.count(("source-union", "meshes/part-01.smd")), 5)
 
     def test_requires_current_retained_proof_and_exact_bound_coverage_before_reservation(self) -> None:
         from maximum_optimizer.composite import build_adaptive_direct_coverage_manifest
@@ -588,6 +618,89 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
             self.assertEqual(result.attempts[0].status, "cancelled")
             self.assertTrue(result.cancelled)
             self.assertRegex(result.attempts[0].attempt_sha256, r"^[0-9a-f]{64}$")
+
+    def test_rejects_foreign_composition_and_compile_bindings_before_structural(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture_root = root / "fixture"; fixture_root.mkdir()
+            fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+            structural_calls = []
+            def foreign_compose(scheduled, _workspace, event):
+                return compose_candidate_sources(
+                    fixture.base_build, scheduled.spec.composite_recipe,
+                    fixture.resolver, root / "foreign-composition", event,
+                    coverage_manifest=fixture.coverage,
+                )
+            foreign = execute_adaptive_direct_schedule(**self._callbacks(
+                root, fixture, compose_candidate=foreign_compose,
+                compile_candidate=lambda *_: self.fail("foreign composition compiled"),
+                authorize_structural=lambda *_: structural_calls.append("foreign"),
+            ))
+            self.assertEqual(foreign.attempts[0].status, "composition_failed")
+
+        for forged_hash in (False, True):
+            with self.subTest(forged_hash=forged_hash), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); fixture_root = root / "fixture"; fixture_root.mkdir()
+                fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+                structural_calls = []
+                def compose(scheduled, workspace, event):
+                    return compose_candidate_sources(
+                        fixture.base_build, scheduled.spec.composite_recipe,
+                        fixture.resolver, workspace, event,
+                        coverage_manifest=fixture.coverage,
+                    )
+                def compile_candidate(scheduled, composed, _event):
+                    build_workspace = composed.workspace if forged_hash else root / "foreign-build"
+                    compiled = build_workspace / "compiled/models"; compiled.mkdir(parents=True)
+                    model = compiled / "task6.mdl"; model.write_bytes(b"compiled")
+                    proof = CompileFileProof("task6.mdl", ".mdl", 8, hashlib.sha256(b"compiled").hexdigest())
+                    build = CandidateBuild(
+                        scheduled.spec, build_workspace, composed.optimized_qc,
+                        compiled, {}, {}, (), None,
+                    )
+                    return AdaptiveDirectCompileResult.create(
+                        build, (proof,),
+                        "f" * 64 if forged_hash else composed.composition.evidence_sha256,
+                    )
+                result = execute_adaptive_direct_schedule(**self._callbacks(
+                    root, fixture, compose_candidate=compose,
+                    compile_candidate=compile_candidate,
+                    authorize_structural=lambda *_: structural_calls.append("ran"),
+                ))
+                self.assertEqual(result.attempts[0].status, "compile_failed")
+                self.assertEqual(structural_calls, [])
+
+    def test_revalidates_retained_base_after_ratio_callbacks_before_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture_root = root / "fixture"; fixture_root.mkdir()
+            fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+            base = self._callbacks(root, fixture)["base_proof"]
+            self._authority_mock.side_effect = (base, ValueError("base changed during ratio access"))
+            with self.assertRaisesRegex(ValueError, "base changed"):
+                execute_adaptive_direct_schedule(**self._callbacks(
+                    root, fixture, base_proof=base,
+                    compose_candidate=lambda *_: self.fail("composition ran"),
+                ))
+            self.assertEqual(self._authority_mock.call_count, 2)
+            self.assertFalse((root / "adaptive").exists())
+            self.assertEqual(tuple(root.glob(".adaptive.adaptive-reservation-*")), ())
+
+    def test_ratio_callback_workspace_collision_is_terminal_and_not_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture_root = root / "fixture"; fixture_root.mkdir()
+            fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+            collision = root / "adaptive"
+            def access(_ratio):
+                collision.mkdir()
+                (collision / "foreign.txt").write_text("foreign", encoding="utf-8")
+                return fixture.requests, fixture.snapshots
+            result = execute_adaptive_direct_schedule(**self._callbacks(
+                root, fixture, access_ratio=access,
+                compose_candidate=lambda *_: self.fail("collision composed"),
+            ))
+            self.assertEqual(result.attempts[0].status, "composition_failed")
+            self.assertRegex(result.attempts[0].attempt_sha256, r"^[0-9a-f]{64}$")
+            self.assertEqual((collision / "foreign.txt").read_text(encoding="utf-8"), "foreign")
+            self.assertEqual(tuple(root.glob(".adaptive.adaptive-reservation-*")), ())
 
     def test_attempt_cross_invariants_and_normative_tie_break(self) -> None:
         with self.assertRaises((TypeError, ValueError)):

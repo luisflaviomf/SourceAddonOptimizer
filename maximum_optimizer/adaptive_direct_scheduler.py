@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import math
 import os
 from pathlib import Path
 import threading
+import uuid
 from typing import Callable
 
 from .adaptive_direct_evidence import (
@@ -25,7 +26,10 @@ from .domain import (
     StructuralAuthorizationEvidence,
     validation_result_payload,
 )
-from .focused_cache import FinalWholeAuthorizationEvidence, FocusedRenderEvidence
+from .focused_cache import (
+    FinalWholeAuthorizationEvidence, FocusedRenderEvidence,
+    _copy_file_no_follow,
+)
 from .monaco_schedule import (
     MonacoCancelledReservation,
     MonacoFailedReservation,
@@ -37,9 +41,12 @@ from .monaco_selection import (
     RetainedMonacoBaseProof, require_current_retained_monaco_base,
 )
 from .processes import ProcessCancelledError
-from .production_adapters import AdaptiveDirectCompileResult
+from .production_adapters import (
+    AdaptiveDirectCompileResult, require_current_composed_source_tree,
+)
 from .reporting import canonical_json
 from .search import select_winner
+from .source_union import _quarantine_cleanup_if_owned, _workspace_root_identity
 
 
 def _evaluation_attempt_payload(value: CandidateEvaluation | None):
@@ -282,6 +289,20 @@ def _validate_workspace_root(root: Path, base_build: CandidateBuild) -> Path:
     return root
 
 
+def _cleanup_empty_owned_root(root: Path | None, identity) -> bool:
+    if root is None or identity is None or not os.path.lexists(root):
+        return False
+    try:
+        if _workspace_root_identity(root) != identity:
+            return False
+        with os.scandir(root) as entries:
+            if next(entries, None) is not None:
+                return False
+    except (OSError, ValueError):
+        return False
+    return _quarantine_cleanup_if_owned(root, identity)
+
+
 def _current_compile_files(
     compiled: AdaptiveDirectCompileResult, event: threading.Event,
 ) -> tuple:
@@ -319,6 +340,75 @@ def _size_from_compile_files(build: CandidateBuild, files) -> CompiledSizeSnapsh
     )
 
 
+def _require_compile_binding(
+    outcome: MonacoScheduledCandidate,
+    composed: ComposedSourceTree,
+    compiled: AdaptiveDirectCompileResult,
+    event: threading.Event,
+) -> None:
+    workspace = Path(composed.workspace)
+    compiled_root = Path(compiled.build.compiled_models_dir)
+    try:
+        relative = compiled_root.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError("adaptive-direct compiled root escapes reserved workspace") from exc
+    if (
+        compiled.composition_evidence_sha256 != composed.composition.evidence_sha256
+        or compiled.build.spec != outcome.spec
+        or Path(compiled.build.workspace) != workspace
+        or Path(compiled.build.optimized_qc) != Path(composed.optimized_qc)
+        or not relative.parts
+        or _has_reparse_ancestor(compiled_root)
+    ):
+        raise ValueError("adaptive-direct compile/composition binding differs")
+    _current_compile_files(compiled, event)
+
+
+def _snapshot_authorized_compile(
+    compiled: AdaptiveDirectCompileResult,
+    event: threading.Event,
+) -> AdaptiveDirectCompileResult:
+    source_root = Path(compiled.build.compiled_models_dir)
+    private_root = Path(compiled.build.workspace) / (
+        ".authorized-compile-" + uuid.uuid4().hex
+    )
+    identity = None
+    try:
+        private_root.mkdir(exist_ok=False)
+        identity = _workspace_root_identity(private_root)
+        models_root = private_root / "models"
+        models_root.mkdir()
+        for proof in compiled.compile_files:
+            if event.is_set():
+                raise ProcessCancelledError(
+                    "adaptive-direct cancelled during authorized compile snapshot"
+                )
+            source = source_root / Path(*proof.relative_path.split("/"))
+            destination = models_root / Path(*proof.relative_path.split("/"))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _copy_file_no_follow(
+                source, destination, event, contained_root=source_root,
+            )
+        replacement_build = replace(
+            compiled.build, compiled_models_dir=models_root,
+        )
+        replacement = AdaptiveDirectCompileResult.create(
+            replacement_build, compiled.compile_files,
+            compiled.composition_evidence_sha256,
+        )
+        _current_compile_files(replacement, event)
+        if _workspace_root_identity(private_root) != identity:
+            raise ValueError("adaptive-direct authorized compile ownership changed")
+        if event.is_set():
+            raise ProcessCancelledError(
+                "adaptive-direct cancelled after authorized compile snapshot"
+            )
+        return replacement
+    except BaseException:
+        _quarantine_cleanup_if_owned(private_root, identity)
+        raise
+
+
 def execute_adaptive_direct_schedule(
     *,
     base_proof: RetainedMonacoBaseProof,
@@ -340,10 +430,14 @@ def execute_adaptive_direct_schedule(
     Ratio slots are reserved by :func:`build_monaco_schedule` before its first
     ratio accessor is allowed to perform direct-source I/O.
     """
-    proof = require_current_retained_monaco_base(
-        base_proof,
-        None if cancel_event is not None and cancel_event.is_set() else cancel_event,
-    )
+    event = cancel_event or threading.Event()
+    pre_cancelled = event.is_set()
+    if pre_cancelled:
+        if not isinstance(base_proof, RetainedMonacoBaseProof):
+            raise TypeError("adaptive-direct retained base proof is invalid")
+        proof = base_proof
+    else:
+        proof = require_current_retained_monaco_base(base_proof, event)
     base_evaluation = proof.evaluation
     base_build = proof.build
     if (
@@ -379,21 +473,47 @@ def execute_adaptive_direct_schedule(
         if not callable(callback):
             raise TypeError("adaptive-direct scheduler callback is invalid")
     require_adaptive_direct_source_count(coverage.sources)
-    event = cancel_event or threading.Event()
+    if type(remaining_candidates) is not int or remaining_candidates < 0:
+        raise ValueError("adaptive-direct remaining candidate budget is invalid")
     root = _validate_workspace_root(Path(workspace_root), base_build)
-    schedule = build_monaco_schedule(
-        base_spec=base_evaluation.spec,
-        coverage=coverage,
-        remaining_candidates=remaining_candidates,
-        reserve=reserve_ratio,
-        access_ratio=access_ratio,
-        cancel_event=event,
-    )
+    reservation_root = None
+    reservation_identity = None
+    if remaining_candidates > 0 and not pre_cancelled:
+        reservation_root = root.with_name(
+            f".{root.name}.adaptive-reservation-{uuid.uuid4().hex}"
+        )
+        reservation_root.mkdir(exist_ok=False)
+        reservation_identity = _workspace_root_identity(reservation_root)
+    try:
+        schedule = build_monaco_schedule(
+            base_spec=base_evaluation.spec,
+            coverage=coverage,
+            remaining_candidates=remaining_candidates,
+            reserve=reserve_ratio,
+            access_ratio=access_ratio,
+            cancel_event=event,
+        )
+    except BaseException:
+        if reservation_root is not None:
+            _cleanup_empty_owned_root(reservation_root, reservation_identity)
+        raise
+    if not event.is_set():
+        try:
+            proof = require_current_retained_monaco_base(base_proof, event)
+        except BaseException:
+            if reservation_root is not None:
+                _cleanup_empty_owned_root(reservation_root, reservation_identity)
+            raise
+        if proof.evaluation is not base_evaluation or proof.build is not base_build:
+            if reservation_root is not None:
+                _cleanup_empty_owned_root(reservation_root, reservation_identity)
+            raise ValueError("adaptive-direct retained authority changed during schedule")
     attempts: list[AdaptiveDirectExecutionAttempt] = []
     scheduled = tuple(
         outcome for outcome in schedule
         if isinstance(outcome, MonacoScheduledCandidate)
     )
+    workspace_error = ""
     if scheduled:
         snapshots = tuple(
             snapshot for outcome in scheduled for snapshot in outcome.snapshots
@@ -403,8 +523,28 @@ def execute_adaptive_direct_schedule(
             or _overlaps(root, Path(snapshot.input_source_root))
             for snapshot in snapshots
         ):
-            raise ValueError("adaptive-direct workspace overlaps direct source inputs")
-        root.mkdir(exist_ok=False)
+            workspace_error = "adaptive-direct workspace overlaps direct source inputs"
+        elif reservation_root is None:
+            workspace_error = "adaptive-direct workspace reservation is unavailable"
+        else:
+            try:
+                with os.scandir(reservation_root) as entries:
+                    reservation_not_empty = next(entries, None) is not None
+                if (
+                    _workspace_root_identity(reservation_root) != reservation_identity
+                    or reservation_not_empty
+                    or os.path.lexists(root)
+                ):
+                    raise ValueError("adaptive-direct workspace reservation changed")
+                os.rename(reservation_root, root)
+                reservation_root = None
+                if _workspace_root_identity(root) != reservation_identity:
+                    raise ValueError("adaptive-direct workspace ownership changed")
+            except (OSError, ValueError) as exc:
+                workspace_error = str(exc)
+    if reservation_root is not None:
+        _cleanup_empty_owned_root(reservation_root, reservation_identity)
+        reservation_root = None
     for outcome in schedule:
         if isinstance(outcome, MonacoFailedReservation):
             attempts.append(AdaptiveDirectExecutionAttempt.create(
@@ -422,21 +562,39 @@ def execute_adaptive_direct_schedule(
         recipe = outcome.spec.composite_recipe
         composed = compiled = structural = None
         base_records = direct_records = ()
+        if workspace_error:
+            evidence = build_adaptive_direct_evidence(
+                terminal_status="composition_failed", recipe=recipe,
+                composition=None, changed_sources=(), compile_files=(),
+                structural=None, base_focus_records=(),
+                direct_focus_records=(), final_whole=None,
+            )
+            attempts.append(AdaptiveDirectExecutionAttempt.create(
+                outcome.ratio, "composition_failed",
+                candidate_id=outcome.spec.candidate_id,
+                evidence=evidence, recipe=recipe, error=workspace_error,
+            ))
+            continue
         try:
             if event.is_set():
                 raise ProcessCancelledError("adaptive-direct cancelled before composition")
             workspace = root / outcome.spec.candidate_id
             composed = compose_candidate(outcome, workspace, event)
-            if not isinstance(composed, ComposedSourceTree):
-                raise TypeError("adaptive-direct compositor returned an invalid result")
+            composed = require_current_composed_source_tree(
+                composed, workspace, recipe, event,
+                base_build=base_build,
+                snapshots_by_sha256={
+                    item.snapshot_sha256: item for item in outcome.snapshots
+                },
+                coverage_manifest=coverage,
+            )
             if event.is_set():
                 raise ProcessCancelledError("adaptive-direct cancelled after composition")
             stage = "compile"
             compiled = compile_candidate(outcome, composed, event)
             if not isinstance(compiled, AdaptiveDirectCompileResult):
                 raise TypeError("adaptive-direct compiler returned an invalid result")
-            if compiled.build.spec != outcome.spec:
-                raise ValueError("adaptive-direct compiled candidate identity differs")
+            _require_compile_binding(outcome, composed, compiled, event)
             if event.is_set():
                 raise ProcessCancelledError("adaptive-direct cancelled after compile")
 
@@ -563,6 +721,12 @@ def execute_adaptive_direct_schedule(
                 final_whole=final_whole,
             )
             current_files = _current_compile_files(compiled, event)
+            if event.is_set():
+                raise ProcessCancelledError(
+                    "adaptive-direct cancelled after final compile validation"
+                )
+            compiled = _snapshot_authorized_compile(compiled, event)
+            current_files = compiled.compile_files
             size = _size_from_compile_files(compiled.build, current_files)
             evaluation = CandidateEvaluation(
                 outcome.spec, size, structural.validation,
@@ -620,6 +784,9 @@ def execute_adaptive_direct_schedule(
         item.evaluation for item in attempts if item.status == "authorized"
     ]
     selected = select_winner([base_evaluation, *authorized])
+    cancelled = schedule.cancelled or any(
+        item.status == "cancelled" for item in attempts
+    )
     return AdaptiveDirectScheduleExecution(
-        base_evaluation, selected, tuple(attempts), schedule.cancelled or event.is_set(),
+        base_evaluation, selected, tuple(attempts), cancelled,
     )

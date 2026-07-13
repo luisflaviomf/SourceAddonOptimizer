@@ -14,6 +14,7 @@ from .composite import (
     build_adaptive_direct_source_union_target,
     build_source_tree_manifest, candidate_spec_sha256,
     revalidate_direct_source_snapshot, revalidate_recovery_snapshot,
+    validate_composition_proof,
 )
 from .domain import (
     AdaptiveDirectCoverageManifest, AdaptiveDirectCoverageSourceProof,
@@ -204,14 +205,66 @@ def validate_source_union_cli_contract(args) -> None:
         raise ValueError("source-union E2A accepts bind:0 only")
 
 
-def _current_composed_manifest(composed: ComposedSourceTree, event) -> None:
+def require_current_composed_source_tree(
+    composed: ComposedSourceTree,
+    expected_workspace: Path,
+    recipe,
+    event,
+    *,
+    base_build: CandidateBuild | None = None,
+    snapshots_by_sha256=None,
+    coverage_manifest: AdaptiveDirectCoverageManifest | None = None,
+) -> ComposedSourceTree:
+    if not isinstance(composed, ComposedSourceTree):
+        raise TypeError("adaptive-direct composed source is invalid")
+    workspace = Path(os.path.abspath(expected_workspace))
+    if (
+        not workspace.is_absolute()
+        or Path(os.path.abspath(composed.workspace)) != workspace
+        or composed.composition.kind != "adaptive-direct-fallback-v1"
+        or composed.composition.recipe_sha256 != recipe.recipe_sha256
+        or composed.source_manifest.digest
+        != composed.composition.composed_manifest_sha256
+    ):
+        raise ValueError("adaptive-direct composed source binding differs")
     root = composed.workspace / "src"
+    try:
+        composed.optimized_qc.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("adaptive-direct composed QC escapes reserved workspace") from exc
     if _has_reparse_ancestor(root) or _has_reparse_ancestor(composed.optimized_qc):
         raise ValueError("adaptive-direct composed source has reparse ancestry")
     graph = parse_qc_graph(composed.optimized_qc, root)
     current = build_source_tree_manifest(root, graph, "composite-source-v1", event)
     if current != composed.source_manifest or current.digest != composed.composition.composed_manifest_sha256:
         raise ValueError("adaptive-direct composed source changed before compile")
+    full = (base_build, snapshots_by_sha256, coverage_manifest)
+    if any(item is not None for item in full):
+        if (
+            not isinstance(base_build, CandidateBuild)
+            or type(snapshots_by_sha256) is not dict
+            or not isinstance(coverage_manifest, AdaptiveDirectCoverageManifest)
+            or base_build.source_snapshot is None
+        ):
+            raise TypeError("adaptive-direct composed authority inputs are incomplete")
+        base_root = Path(base_build.source_snapshot.source_root)
+        expected_qc = root / Path(base_build.optimized_qc).relative_to(base_root)
+        if composed.optimized_qc != expected_qc:
+            raise ValueError("adaptive-direct composed QC identity differs")
+        authoritative = validate_composition_proof(
+            recipe, snapshots_by_sha256, base_root, root, event,
+            coverage_manifest=coverage_manifest,
+            base_snapshot=base_build.source_snapshot,
+        )
+        if authoritative != composed.composition:
+            raise ValueError("adaptive-direct composition proof differs from current bytes")
+    return composed
+
+
+def _current_composed_manifest(composed: ComposedSourceTree, event) -> None:
+    require_current_composed_source_tree(
+        composed, composed.workspace, composed.composition, event,
+    )
 
 
 @dataclass(frozen=True)
