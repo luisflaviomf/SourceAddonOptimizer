@@ -7,10 +7,13 @@ import json
 import math
 import os
 from pathlib import Path
+import re
+import stat
 import threading
 from typing import Literal
+import uuid
 
-from .candidates import _direct_input_material_proofs
+from .candidates import _direct_input_material_proofs, _direct_prefilter_proof
 from .direct_source_runner import (
     _DeadlineEvent,
     _abspath,
@@ -20,8 +23,8 @@ from .direct_source_runner import (
     _directory_identity,
     _overlaps,
     _preserve_quarantine,
-    _publish_no_replace,
     _regular_identity,
+    _stat_is_reparse,
     _write_new,
 )
 from .domain import (
@@ -31,12 +34,15 @@ from .domain import (
     direct_source_request_payload,
 )
 from .focused_cache import (
+    _MaterialByteLimitError,
     _copy_file_no_follow,
     _file_proof,
     _has_reparse_ancestor,
     _read_regular_no_follow,
 )
 from .processes import ProcessCancelledError, ProcessResult, run_process
+from .regions import load_region_manifest_payload, normalized_region_material
+from .smd_contract import prefilter_direct_degenerate_smd
 from .visual_remapped_topology import (
     VisualRemappedTopologyProof,
     validate_visual_remapped_topology_smd,
@@ -55,6 +61,12 @@ _MAX_SOURCE_BYTES = 512 * 1024**2
 _MAX_ARTIFACT_FILES = 64
 _MAX_ARTIFACT_BYTES = 2 * 1024**3
 _MAX_PROCESS_SECONDS = 30 * 60.0
+_MAX_CONTROL_BYTES = 16 * 1024**2
+_ENGINE_CONTRACT = "meshoptimizer-visual-source-runner-v1"
+_MODEL_QC_BYTES = (
+    b'$modelname "maximum/visual-remapped.mdl"\n'
+    b'$body "body" "source.smd"\n'
+)
 
 
 def _canonical_digest(value: object) -> str:
@@ -73,11 +85,70 @@ def _is_sha(value: object) -> bool:
 
 
 @dataclass(frozen=True)
+class VisualRemappedSourceLineageProof:
+    schema: Literal[1]
+    prefilter: Literal["direct-degenerate-prefilter-v1"]
+    raw_size: int
+    raw_sha256: str
+    filtered_size: int
+    filtered_sha256: str
+    prefilter_evidence_sha256: str
+    proof_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.schema) is not int
+            or self.schema != 1
+            or self.prefilter != "direct-degenerate-prefilter-v1"
+            or type(self.raw_size) is not int
+            or self.raw_size < 1
+            or not _is_sha(self.raw_sha256)
+            or type(self.filtered_size) is not int
+            or self.filtered_size < 1
+            or not _is_sha(self.filtered_sha256)
+            or not _is_sha(self.prefilter_evidence_sha256)
+            or not _is_sha(self.proof_sha256)
+            or self.proof_sha256 != _canonical_digest(
+                _lineage_payload(self, include_seal=False)
+            )
+        ):
+            raise ValueError("visual remapped source lineage proof is invalid")
+
+
+def _lineage_payload(
+    value: VisualRemappedSourceLineageProof, *, include_seal: bool = True,
+) -> dict[str, object]:
+    payload = {
+        "schema": value.schema,
+        "prefilter": value.prefilter,
+        "raw_size": value.raw_size,
+        "raw_sha256": value.raw_sha256,
+        "filtered_size": value.filtered_size,
+        "filtered_sha256": value.filtered_sha256,
+        "prefilter_evidence_sha256": value.prefilter_evidence_sha256,
+    }
+    if include_seal:
+        payload["proof_sha256"] = value.proof_sha256
+    return payload
+
+
+def _lineage_from_payload(value: object) -> VisualRemappedSourceLineageProof:
+    fields = {
+        "schema", "prefilter", "raw_size", "raw_sha256", "filtered_size",
+        "filtered_sha256", "prefilter_evidence_sha256", "proof_sha256",
+    }
+    if type(value) is not dict or set(value) != fields:
+        raise ValueError("visual remapped source lineage fields are invalid")
+    return VisualRemappedSourceLineageProof(**value)
+
+
+@dataclass(frozen=True)
 class VisualRemappedSourceRequest:
     schema: Literal[1]
     source_request: DirectSourceBuildRequest
     input_size: int
     input_sha256: str
+    lineage: VisualRemappedSourceLineageProof
     requested_ratio: float
     strategy: Literal["meshopt-remapped-visual-v1"]
     transfer: Literal["visual-remapped-topology-v1"]
@@ -93,6 +164,13 @@ class VisualRemappedSourceRequest:
             or type(self.input_size) is not int
             or self.input_size < 1
             or not _is_sha(self.input_sha256)
+            or not isinstance(self.lineage, VisualRemappedSourceLineageProof)
+            or self.lineage.raw_size != self.source_request.source_size
+            or self.lineage.raw_sha256 != self.source_request.source_sha256
+            or self.lineage.filtered_size != self.input_size
+            or self.lineage.filtered_sha256 != self.input_sha256
+            or self.lineage.prefilter_evidence_sha256
+            != self.source_request.expected_prefilter.evidence_sha256
             or type(self.requested_ratio) is not float
             or not math.isfinite(self.requested_ratio)
             or self.requested_ratio != self.source_request.direct_ratio
@@ -118,6 +196,7 @@ def visual_remapped_source_request_payload(
         "source_request": direct_source_request_payload(request.source_request),
         "input_size": request.input_size,
         "input_sha256": request.input_sha256,
+        "lineage": _lineage_payload(request.lineage),
         "requested_ratio": request.requested_ratio,
         "strategy": request.strategy,
         "transfer": request.transfer,
@@ -133,7 +212,7 @@ def visual_remapped_source_request_from_payload(
     value: object,
 ) -> VisualRemappedSourceRequest:
     fields = {
-        "schema", "source_request", "input_size", "input_sha256",
+        "schema", "source_request", "input_size", "input_sha256", "lineage",
         "requested_ratio", "strategy", "transfer", "quality_status",
         "authorizing", "request_sha256",
     }
@@ -143,21 +222,63 @@ def visual_remapped_source_request_from_payload(
     copied["source_request"] = direct_source_request_from_payload(
         copied["source_request"]
     )
+    copied["lineage"] = _lineage_from_payload(copied["lineage"])
     return VisualRemappedSourceRequest(**copied)
 
 
 def visual_remapped_source_request(
-    source_request: DirectSourceBuildRequest, input_bytes: bytes,
+    source_request: DirectSourceBuildRequest,
+    input_bytes: bytes,
+    *,
+    raw_source_bytes: bytes | None = None,
 ) -> VisualRemappedSourceRequest:
     if not isinstance(source_request, DirectSourceBuildRequest):
         raise TypeError("visual remapped source base request is invalid")
     if type(input_bytes) is not bytes or not input_bytes:
         raise ValueError("visual remapped source input bytes are invalid")
+    raw_bytes = input_bytes if raw_source_bytes is None else raw_source_bytes
+    if type(raw_bytes) is not bytes or not raw_bytes:
+        raise ValueError("visual remapped source lineage raw bytes are invalid")
+    if (
+        len(raw_bytes) != source_request.source_size
+        or hashlib.sha256(raw_bytes).hexdigest() != source_request.source_sha256
+    ):
+        raise ValueError("visual remapped source lineage raw proof differs")
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("visual remapped source lineage raw bytes are not UTF-8") from exc
+    filtered = prefilter_direct_degenerate_smd(raw_text)
+    filtered_bytes = filtered.filtered_text.encode("utf-8")
+    if filtered_bytes != input_bytes:
+        raise ValueError("visual remapped source lineage filtered bytes differ")
+    if _direct_prefilter_proof(raw_text) != source_request.expected_prefilter:
+        raise ValueError("visual remapped source lineage prefilter proof differs")
+    lineage_values = dict(
+        schema=1,
+        prefilter="direct-degenerate-prefilter-v1",
+        raw_size=len(raw_bytes),
+        raw_sha256=hashlib.sha256(raw_bytes).hexdigest(),
+        filtered_size=len(input_bytes),
+        filtered_sha256=hashlib.sha256(input_bytes).hexdigest(),
+        prefilter_evidence_sha256=source_request.expected_prefilter.evidence_sha256,
+        proof_sha256="0" * 64,
+    )
+    provisional_lineage = VisualRemappedSourceLineageProof.__new__(
+        VisualRemappedSourceLineageProof
+    )
+    for name, item in lineage_values.items():
+        object.__setattr__(provisional_lineage, name, item)
+    lineage_values["proof_sha256"] = _canonical_digest(
+        _lineage_payload(provisional_lineage, include_seal=False)
+    )
+    lineage = VisualRemappedSourceLineageProof(**lineage_values)
     values = dict(
         schema=1,
         source_request=source_request,
         input_size=len(input_bytes),
         input_sha256=hashlib.sha256(input_bytes).hexdigest(),
+        lineage=lineage,
         requested_ratio=float(source_request.direct_ratio),
         strategy=_STRATEGY,
         transfer=_TRANSFER,
@@ -180,13 +301,20 @@ def visual_remapped_candidate_id(request: VisualRemappedSourceRequest) -> str:
     return f"visual-remapped-{request.request_sha256[:32]}"
 
 
-def visual_remapped_cache_digest(request: VisualRemappedSourceRequest) -> str:
+def visual_remapped_cache_digest(
+    request: VisualRemappedSourceRequest,
+    toolchain: "VisualRemappedToolchainProof",
+) -> str:
     if not isinstance(request, VisualRemappedSourceRequest):
         raise TypeError("visual remapped source request is invalid")
+    if not isinstance(toolchain, VisualRemappedToolchainProof):
+        raise TypeError("visual remapped source toolchain is invalid")
     return _canonical_digest({
         "schema": 1,
         "kind": "visual-remapped-source-v1",
         "request_sha256": request.request_sha256,
+        "engine_contract": _ENGINE_CONTRACT,
+        "toolchain_sha256": toolchain.toolchain_sha256,
     })
 
 
@@ -279,6 +407,27 @@ def _artifact_payload(value: SourceFileProof) -> dict[str, object]:
     }
 
 
+def _bytes_proof(payload: bytes) -> tuple[int, str]:
+    return len(payload), hashlib.sha256(payload).hexdigest()
+
+
+def _candidate_bytes(request: VisualRemappedSourceRequest) -> bytes:
+    candidate = {
+        "candidate_id": visual_remapped_candidate_id(request),
+        "engine": "meshoptimizer",
+        "ratio": request.requested_ratio,
+        "target_error": 0.01,
+        "update_vertices": False,
+        "region_overrides": [],
+        "strategy": _STRATEGY,
+        "direct_degenerate_prefilter": "direct-degenerate-prefilter-v1",
+        "transfer": _TRANSFER,
+    }
+    return json.dumps(
+        candidate, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+
+
 def _expected_artifact_kind(relative_path: str) -> str:
     folded = relative_path.casefold()
     if folded.endswith(".qc"):
@@ -315,27 +464,36 @@ class VisualRemappedSourceEvidence:
     evidence_sha256: str
 
     def __post_init__(self) -> None:
+        artifacts = tuple(self.artifacts)
+        if any(not isinstance(item, SourceFileProof) for item in artifacts):
+            raise ValueError("visual remapped source evidence artifacts are invalid")
         if (
             isinstance(self.request, VisualRemappedSourceRequest)
-            and self.cache_digest != visual_remapped_cache_digest(self.request)
+            and isinstance(self.toolchain, VisualRemappedToolchainProof)
+            and self.cache_digest
+            != visual_remapped_cache_digest(self.request, self.toolchain)
         ):
             raise ValueError("visual remapped source evidence cache digest is stale")
-        artifacts = tuple(self.artifacts)
         artifact_keys = tuple(item.relative_path for item in artifacts)
         required_artifacts = {
             "blender.log", "candidate.json", "candidate_metrics.json",
             "maximum_region_manifest.json", "model.qc",
-            "output/source_opt.smd", "source.smd",
+            "output/source_opt.smd", "raw-source.smd", "source.smd",
         }
         artifact_by_path = {item.relative_path: item for item in artifacts}
         output_artifact = artifact_by_path.get("output/source_opt.smd")
         source_artifact = artifact_by_path.get("source.smd")
+        raw_source_artifact = artifact_by_path.get("raw-source.smd")
+        candidate_artifact = artifact_by_path.get("candidate.json")
+        qc_artifact = artifact_by_path.get("model.qc")
         if (
             type(self.schema) is not int
             or self.schema != 1
             or not isinstance(self.request, VisualRemappedSourceRequest)
             or self.candidate_id != visual_remapped_candidate_id(self.request)
-            or self.cache_digest != visual_remapped_cache_digest(self.request)
+            or not isinstance(self.toolchain, VisualRemappedToolchainProof)
+            or self.cache_digest
+            != visual_remapped_cache_digest(self.request, self.toolchain)
             or self.quality_status != "unverified"
             or self.authorizing is not False
             or type(self.source_size) is not int
@@ -360,7 +518,6 @@ class VisualRemappedSourceEvidence:
             or self.removed_boundary_edges != self.topology.removed_boundary_edges
             or self.added_boundary_edges != self.topology.added_boundary_edges
             or not artifacts
-            or any(not isinstance(item, SourceFileProof) for item in artifacts)
             or artifact_keys != tuple(sorted(artifact_keys))
             or len(set(artifact_keys)) != len(artifact_keys)
             or not required_artifacts.issubset(artifact_keys)
@@ -374,10 +531,18 @@ class VisualRemappedSourceEvidence:
             or source_artifact is None
             or (source_artifact.size, source_artifact.sha256)
             != (self.source_size, self.source_sha256)
+            or raw_source_artifact is None
+            or (raw_source_artifact.size, raw_source_artifact.sha256)
+            != (self.request.lineage.raw_size, self.request.lineage.raw_sha256)
             or output_artifact is None
             or (output_artifact.size, output_artifact.sha256)
             != (self.output_size, self.output_sha256)
-            or not isinstance(self.toolchain, VisualRemappedToolchainProof)
+            or candidate_artifact is None
+            or (candidate_artifact.size, candidate_artifact.sha256)
+            != _bytes_proof(_candidate_bytes(self.request))
+            or qc_artifact is None
+            or (qc_artifact.size, qc_artifact.sha256)
+            != _bytes_proof(_MODEL_QC_BYTES)
             or type(self.engine_version) is not str
             or not self.engine_version
             or len(self.engine_version) > 128
@@ -476,20 +641,28 @@ class VisualRemappedRunnerTools:
         if (
             type(self.max_source_bytes) is not int
             or self.max_source_bytes < 1
+            or self.max_source_bytes > _MAX_SOURCE_BYTES
             or type(self.max_artifact_files) is not int
             or self.max_artifact_files < 1
+            or self.max_artifact_files > _MAX_ARTIFACT_FILES
             or type(self.max_artifact_bytes) is not int
             or self.max_artifact_bytes < 1
+            or self.max_artifact_bytes > _MAX_ARTIFACT_BYTES
             or type(self.max_process_seconds) not in (int, float)
             or not math.isfinite(float(self.max_process_seconds))
             or self.max_process_seconds <= 0
+            or self.max_process_seconds > _MAX_PROCESS_SECONDS
         ):
             raise ValueError("visual remapped runner budget is invalid")
+        batch_script = self.repo_root / "batch_optimize_maximum.py"
         if (
             not self.repo_root.is_dir()
             or not self.work_root.is_dir()
             or _has_reparse_ancestor(self.repo_root)
             or _has_reparse_ancestor(self.work_root)
+            or _has_reparse_ancestor(self.blender_exe)
+            or _has_reparse_ancestor(self.meshopt_dll)
+            or _has_reparse_ancestor(batch_script)
         ):
             raise ValueError("visual remapped runner roots are unavailable or unsafe")
         object.__setattr__(self, "_root_pins", (
@@ -505,6 +678,14 @@ class VisualRemappedRunnerTools:
 
 def _assert_tool_and_root_pins(tools: VisualRemappedRunnerTools) -> None:
     try:
+        if (
+            _has_reparse_ancestor(tools.repo_root)
+            or _has_reparse_ancestor(tools.work_root)
+            or _has_reparse_ancestor(tools.blender_exe)
+            or _has_reparse_ancestor(tools.meshopt_dll)
+            or _has_reparse_ancestor(tools.repo_root / "batch_optimize_maximum.py")
+        ):
+            raise ValueError("visual remapped runner path became unsafe")
         roots = (
             _directory_identity(tools.repo_root),
             _directory_identity(tools.work_root),
@@ -540,6 +721,39 @@ def _toolchain_proof(
     )
 
 
+@dataclass(frozen=True)
+class _ValidatedControlProof:
+    engine_version: str
+    metrics_size: int
+    metrics_sha256: str
+    manifest_size: int
+    manifest_sha256: str
+
+
+def _read_control_file(root: Path, name: str, event) -> bytes:
+    try:
+        return _read_regular_no_follow(
+            root / name, event, contained_root=root, max_bytes=_MAX_CONTROL_BYTES,
+        )
+    except _MaterialByteLimitError as exc:
+        raise ValueError("visual remapped control file limit exceeded") from exc
+
+
+def _manifest_materials(manifest) -> set[str]:
+    result: set[str] = set()
+    for entry in manifest.entries:
+        slots: list[int] = []
+        for material in entry.descriptor.materials:
+            match = re.fullmatch(r"slot:(\d+):(.+)", material)
+            if match is None:
+                raise ValueError("visual remapped region material lacks slot identity")
+            slots.append(int(match.group(1)))
+            result.add(normalized_region_material(match.group(2)))
+        if slots != list(range(len(slots))):
+            raise ValueError("visual remapped region material slots are not canonical")
+    return result
+
+
 def _validate_metrics(
     root: Path,
     request: VisualRemappedSourceRequest,
@@ -547,11 +761,9 @@ def _validate_metrics(
     event,
     *,
     max_source_bytes: int,
-) -> str:
-    raw = _read_regular_no_follow(
-        root / "candidate_metrics.json", event,
-        contained_root=root, max_bytes=max_source_bytes,
-    )
+) -> _ValidatedControlProof:
+    del max_source_bytes  # Control files have a separate, fixed authority cap.
+    raw = _read_control_file(root, "candidate_metrics.json", event)
     try:
         metrics = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -612,17 +824,53 @@ def _validate_metrics(
         or record.get("output_sha256") != topology.output_sha256
     ):
         raise ValueError("visual remapped runner provenance differs")
-    manifest_size, manifest_hash = _file_proof(
-        root / "maximum_region_manifest.json", event,
-        contained_root=root, max_bytes=max_source_bytes,
-    )
+    manifest_raw = _read_control_file(root, "maximum_region_manifest.json", event)
+    manifest_size, manifest_hash = _bytes_proof(manifest_raw)
     if (
         manifest_size < 1
         or metrics.get("region_manifest") != "maximum_region_manifest.json"
         or metrics.get("region_manifest_sha256") != manifest_hash
     ):
         raise ValueError("visual remapped runner region manifest proof differs")
-    return version
+    try:
+        manifest_payload = json.loads(manifest_raw.decode("utf-8"))
+        manifest = load_region_manifest_payload(manifest_payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ValueError("visual remapped runner region manifest is invalid") from exc
+    expected_materials = {
+        normalized_region_material(item.material)
+        for item in request.source_request.expected_materials
+    }
+    try:
+        observed_materials = _manifest_materials(manifest)
+    except ValueError as exc:
+        raise ValueError("visual remapped runner region manifest semantics differ") from exc
+    expected_occurrence = ("model.qc", "$body", 2, "source.smd")
+    if (
+        not manifest.entries
+        or observed_materials != expected_materials
+        or any(
+            entry.descriptor.source_identity != "source.smd"
+            or not entry.occurrences
+            or any(
+                (
+                    occurrence.graph_file, occurrence.directive,
+                    occurrence.line, occurrence.logical_path,
+                ) != expected_occurrence
+                for occurrence in entry.occurrences
+            )
+            for entry in manifest.entries
+        )
+    ):
+        raise ValueError("visual remapped runner region manifest semantics differ")
+    metrics_size, metrics_hash = _bytes_proof(raw)
+    return _ValidatedControlProof(
+        engine_version=version,
+        metrics_size=metrics_size,
+        metrics_sha256=metrics_hash,
+        manifest_size=manifest_size,
+        manifest_sha256=manifest_hash,
+    )
 
 
 def _build_evidence(
@@ -637,7 +885,7 @@ def _build_evidence(
         schema=1,
         request=request,
         candidate_id=visual_remapped_candidate_id(request),
-        cache_digest=visual_remapped_cache_digest(request),
+        cache_digest=visual_remapped_cache_digest(request, toolchain),
         quality_status="unverified",
         authorizing=False,
         source_size=request.input_size,
@@ -665,6 +913,99 @@ def _build_evidence(
         visual_remapped_source_evidence_payload(provisional, include_seal=False)
     )
     return VisualRemappedSourceEvidence(**values)
+
+
+def _require_artifact_bytes(
+    artifacts: tuple[SourceFileProof, ...],
+    relative_path: str,
+    expected: tuple[int, str],
+    label: str,
+) -> None:
+    artifact = next(
+        (item for item in artifacts if item.relative_path == relative_path), None,
+    )
+    if artifact is None or (artifact.size, artifact.sha256) != expected:
+        raise ValueError(f"visual remapped runner {label} artifact differs")
+
+
+def _directory_pin_matches(path: Path, expected: tuple[int, int, int]) -> bool:
+    try:
+        return (
+            not _has_reparse_ancestor(path)
+            and _directory_identity(path) == expected
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _publish_no_replace(
+    source: Path,
+    destination: Path,
+    event,
+    *,
+    source_root: Path,
+    expected_size: int,
+    expected_sha256: str,
+) -> tuple[int, int]:
+    """Publish without replacement and return the created hardlink identity."""
+    temporary = destination.with_name(
+        f".{destination.name}.visual-remapped-publish-{uuid.uuid4().hex}"
+    )
+    temporary_identity: tuple[int, int] | None = None
+    try:
+        ownership = _copy_file_no_follow(
+            source, temporary, event, contained_root=source_root,
+        )
+        temporary_identity = ownership[:2]
+        if _file_proof(temporary, event, max_bytes=expected_size) != (
+            expected_size, expected_sha256,
+        ):
+            raise ValueError("visual remapped runner private publication differs")
+        _cancel(event, "visual remapped runner cancelled before publication link")
+        os.link(temporary, destination, follow_symlinks=False)
+        published = os.lstat(destination)
+        if (
+            not stat.S_ISREG(published.st_mode)
+            or _stat_is_reparse(published)
+            or (int(published.st_dev), int(published.st_ino)) != temporary_identity
+        ):
+            raise ValueError("visual remapped runner publication identity differs")
+        return temporary_identity
+    except BaseException:
+        if temporary_identity is not None:
+            _remove_owned_publication(destination, temporary_identity)
+        raise
+    finally:
+        if os.path.lexists(temporary):
+            try:
+                current = os.lstat(temporary)
+                if (
+                    temporary_identity is not None
+                    and (int(current.st_dev), int(current.st_ino))
+                    == temporary_identity
+                    and stat.S_ISREG(current.st_mode)
+                    and not _stat_is_reparse(current)
+                ):
+                    temporary.unlink()
+            except OSError:
+                pass
+
+
+def _remove_owned_publication(
+    destination: Path, publication_identity: tuple[int, int],
+) -> None:
+    """Remove only the exact hardlink identity created by this invocation."""
+    try:
+        destination_info = os.lstat(destination)
+        if (
+            stat.S_ISREG(destination_info.st_mode)
+            and not _stat_is_reparse(destination_info)
+            and (int(destination_info.st_dev), int(destination_info.st_ino))
+            == publication_identity
+        ):
+            destination.unlink()
+    except OSError:
+        pass
 
 
 @dataclass(frozen=True)
@@ -719,19 +1060,31 @@ class BlenderVisualRemappedSourceRunner:
             or _overlaps(self.tools.work_root, destination)
         ):
             raise ValueError("visual remapped runner input/output boundary is unsafe")
+        output_parent_identity = _directory_identity(destination.parent)
         source_bytes = _read_regular_no_follow(
             source, event, contained_root=source.parent,
             max_bytes=self.tools.max_source_bytes,
         )
         if (
-            len(source_bytes) != request.input_size
-            or hashlib.sha256(source_bytes).hexdigest() != request.input_sha256
+            len(source_bytes) != request.lineage.raw_size
+            or hashlib.sha256(source_bytes).hexdigest()
+            != request.lineage.raw_sha256
         ):
             raise ValueError("visual remapped runner input byte proof differs")
         try:
-            source_text = source_bytes.decode("utf-8")
+            raw_source_text = source_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError("visual remapped runner input is not UTF-8") from exc
+        filtered = prefilter_direct_degenerate_smd(raw_source_text)
+        filtered_bytes = filtered.filtered_text.encode("utf-8")
+        if (
+            len(filtered_bytes) != request.input_size
+            or hashlib.sha256(filtered_bytes).hexdigest() != request.input_sha256
+            or _direct_prefilter_proof(raw_source_text)
+            != request.source_request.expected_prefilter
+        ):
+            raise ValueError("visual remapped runner source lineage proof differs")
+        source_text = filtered.filtered_text
         if (
             _direct_input_material_proofs(source_text)
             != request.source_request.expected_materials
@@ -749,33 +1102,19 @@ class BlenderVisualRemappedSourceRunner:
                 self.tools.work_root, request.request_sha256,
             )
             _copy_file_no_follow(
-                source, run_root / "source.smd", event, contained_root=source.parent,
+                source, run_root / "raw-source.smd", event,
+                contained_root=source.parent,
             )
             copied_source = _read_regular_no_follow(
-                run_root / "source.smd", event, contained_root=run_root,
+                run_root / "raw-source.smd", event, contained_root=run_root,
                 max_bytes=self.tools.max_source_bytes,
             )
             if copied_source != source_bytes:
                 raise ValueError("visual remapped runner source changed during snapshot")
-            _write_new(
-                run_root / "model.qc",
-                b'$modelname "maximum/visual-remapped.mdl"\n$body "body" "source.smd"\n',
-            )
-            candidate = {
-                "candidate_id": visual_remapped_candidate_id(request),
-                "engine": "meshoptimizer",
-                "ratio": request.requested_ratio,
-                "target_error": 0.01,
-                "update_vertices": False,
-                "region_overrides": [],
-                "strategy": _STRATEGY,
-                "direct_degenerate_prefilter": "direct-degenerate-prefilter-v1",
-                "transfer": _TRANSFER,
-            }
-            _write_new(
-                run_root / "candidate.json",
-                json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode("utf-8"),
-            )
+            _write_new(run_root / "source.smd", filtered_bytes)
+            _write_new(run_root / "model.qc", _MODEL_QC_BYTES)
+            candidate_bytes = _candidate_bytes(request)
+            _write_new(run_root / "candidate.json", candidate_bytes)
             command = (
                 str(self.tools.blender_exe),
                 "--background",
@@ -791,6 +1130,12 @@ class BlenderVisualRemappedSourceRunner:
                 str(self.tools.meshopt_dll),
             )
             deadline = _DeadlineEvent(event, float(self.tools.max_process_seconds))
+            # Revalidate immediately at the launch boundary.  Path-based process
+            # creation cannot be fully handle-relative on every supported runtime,
+            # so reparse ancestors are rejected and all bytes are checked again.
+            _assert_tool_and_root_pins(self.tools)
+            if _toolchain_proof(self.tools, event) != initial_tools:
+                raise ValueError("visual remapped runner tool changed before process")
             process = self.tools.process_runner(
                 command, run_root, run_root / "blender.log", deadline,
             )
@@ -828,7 +1173,7 @@ class BlenderVisualRemappedSourceRunner:
                 != hashlib.sha256(optimized_bytes).hexdigest()
             ):
                 raise ValueError("visual remapped runner topology byte proof differs")
-            engine_version = _validate_metrics(
+            controls = _validate_metrics(
                 run_root, request, topology, event,
                 max_source_bytes=self.tools.max_source_bytes,
             )
@@ -837,8 +1182,22 @@ class BlenderVisualRemappedSourceRunner:
                 max_files=self.tools.max_artifact_files,
                 max_bytes=self.tools.max_artifact_bytes,
             )
+            _require_artifact_bytes(
+                artifacts, "candidate.json", _bytes_proof(candidate_bytes), "candidate",
+            )
+            _require_artifact_bytes(
+                artifacts, "model.qc", _bytes_proof(_MODEL_QC_BYTES), "QC",
+            )
+            _require_artifact_bytes(
+                artifacts, "candidate_metrics.json",
+                (controls.metrics_size, controls.metrics_sha256), "validated",
+            )
+            _require_artifact_bytes(
+                artifacts, "maximum_region_manifest.json",
+                (controls.manifest_size, controls.manifest_sha256), "validated",
+            )
             evidence = _build_evidence(
-                request, topology, artifacts, initial_tools, engine_version,
+                request, topology, artifacts, initial_tools, controls.engine_version,
                 len(optimized_bytes),
             )
             if _directory_identity(run_root) != ownership:
@@ -853,11 +1212,23 @@ class BlenderVisualRemappedSourceRunner:
                 raise ValueError("visual remapped runner tool changed before publication")
             _assert_tool_and_root_pins(self.tools)
             _cancel(event, "visual remapped source runner cancelled before publication")
-            _publish_no_replace(
+            if not _directory_pin_matches(
+                destination.parent, output_parent_identity,
+            ):
+                raise ValueError("visual remapped runner output parent changed")
+            publication_identity = _publish_no_replace(
                 optimized, destination, event, source_root=run_root,
                 expected_size=len(optimized_bytes),
                 expected_sha256=topology.output_sha256,
             )
+            # A path-based hardlink is the remaining platform limitation.  The
+            # post-check detects a parent swap during publication and removes only
+            # the hardlink proven to share our owned source inode.
+            if not _directory_pin_matches(
+                destination.parent, output_parent_identity,
+            ):
+                _remove_owned_publication(destination, publication_identity)
+                raise ValueError("visual remapped runner output parent changed")
             return VisualRemappedRunResult(
                 request_sha256=request.request_sha256,
                 run_root=run_root,

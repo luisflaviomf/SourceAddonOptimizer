@@ -4,12 +4,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
 import unittest
 from unittest import mock
 
 from maximum_optimizer.processes import ProcessCancelledError, ProcessResult
+from maximum_optimizer.regions import build_region_manifest
+from maximum_optimizer.smd_contract import prefilter_direct_degenerate_smd
 from maximum_optimizer.visual_remapped_source_runner import (
     BlenderVisualRemappedSourceRunner,
     VisualRemappedRunnerTools,
@@ -58,7 +61,16 @@ class FakeVisualBlender:
         output = root / "output" / "source_opt.smd"
         output.parent.mkdir()
         output.write_bytes(output_bytes)
-        manifest_bytes = b"{}\n"
+        manifest = build_region_manifest(
+            (("source.smd", "body", ("slot:0:metal",)),),
+            occurrences={"source.smd": ({
+                "graph_file": "model.qc", "directive": "$body", "line": 2,
+                "logical_path": "source.smd",
+            },)},
+        )
+        manifest_bytes = (json.dumps(
+            manifest.to_payload(), sort_keys=True, separators=(",", ":"),
+        ) + "\n").encode("utf-8")
         (root / "maximum_region_manifest.json").write_bytes(manifest_bytes)
         metrics = {
             "schema_version": 1,
@@ -178,7 +190,10 @@ class VisualRemappedSourceRunnerTests(unittest.TestCase):
              evidence.topology.added_boundary_edges),
             (2, 2),
         )
-        self.assertEqual(evidence.cache_digest, visual_remapped_cache_digest(self.request))
+        self.assertEqual(
+            evidence.cache_digest,
+            visual_remapped_cache_digest(self.request, evidence.toolchain),
+        )
         self.assertEqual(
             visual_remapped_source_evidence_from_payload(
                 visual_remapped_source_evidence_payload(evidence)
@@ -467,6 +482,225 @@ class VisualRemappedSourceRunnerTests(unittest.TestCase):
                 self.input, collision, self.request, threading.Event(),
             )
         self.assertEqual(collision.read_bytes(), b"foreign")
+
+    def test_validated_metrics_bytes_are_the_bytes_sealed_in_artifacts(self) -> None:
+        import maximum_optimizer.visual_remapped_source_runner as runner_module
+
+        real_validate = runner_module._validate_metrics
+
+        def validate_then_swap(root, *args, **kwargs):
+            result = real_validate(root, *args, **kwargs)
+            path = Path(root) / "candidate_metrics.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["files"][0]["objects"][0]["strategy"] = (
+                "meshopt-direct-position-v1"
+            )
+            path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            return result
+
+        with mock.patch.object(
+            runner_module, "_validate_metrics", side_effect=validate_then_swap,
+        ), self.assertRaisesRegex(ValueError, "validated artifact"):
+            BlenderVisualRemappedSourceRunner(self.tools(FakeVisualBlender()))(
+                self.input, self.root / "metrics-race.smd", self.request,
+                threading.Event(),
+            )
+        self.assertFalse((self.root / "metrics-race.smd").exists())
+
+    def test_candidate_qc_and_manifest_are_exact_and_semantically_bound(self) -> None:
+        base = FakeVisualBlender()
+
+        def mutate_candidate(command, cwd, log_path, event):
+            result = base(command, cwd, log_path, event)
+            root = Path(cwd)
+            path = root / "candidate.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["ratio"] = 0.9
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return result
+
+        with self.assertRaisesRegex(ValueError, "candidate artifact"):
+            BlenderVisualRemappedSourceRunner(self.tools(mutate_candidate))(
+                self.input, self.root / "mutated-candidate.smd", self.request,
+                threading.Event(),
+            )
+
+        base = FakeVisualBlender()
+
+        def mutate_qc(command, cwd, log_path, event):
+            result = base(command, cwd, log_path, event)
+            (Path(cwd) / "model.qc").write_text(
+                '$body "wrong" "source.smd"\n', encoding="utf-8",
+            )
+            return result
+
+        with self.assertRaisesRegex(ValueError, "QC artifact"):
+            BlenderVisualRemappedSourceRunner(self.tools(mutate_qc))(
+                self.input, self.root / "mutated-qc.smd", self.request,
+                threading.Event(),
+            )
+
+        base = FakeVisualBlender()
+
+        def invalid_manifest(command, cwd, log_path, event):
+            result = base(command, cwd, log_path, event)
+            root = Path(cwd)
+            raw = b"{}\n"
+            (root / "maximum_region_manifest.json").write_bytes(raw)
+            metrics = json.loads(
+                (root / "candidate_metrics.json").read_text(encoding="utf-8")
+            )
+            metrics["region_manifest_sha256"] = hashlib.sha256(raw).hexdigest()
+            (root / "candidate_metrics.json").write_text(
+                json.dumps(metrics), encoding="utf-8",
+            )
+            return result
+
+        with self.assertRaisesRegex(ValueError, "region manifest"):
+            BlenderVisualRemappedSourceRunner(self.tools(invalid_manifest))(
+                self.input, self.root / "invalid-manifest.smd", self.request,
+                threading.Event(),
+            )
+
+    def test_output_parent_identity_change_before_publish_fails_closed(self) -> None:
+        import maximum_optimizer.visual_remapped_source_runner as runner_module
+
+        parent = self.root / "destination"
+        parent.mkdir()
+        detached = self.root / "destination-detached"
+        destination = parent / "candidate.smd"
+        real_publish = runner_module._publish_no_replace
+
+        def replace_parent(source, output, event, **kwargs):
+            os.rename(parent, detached)
+            parent.mkdir()
+            return real_publish(source, output, event, **kwargs)
+
+        with mock.patch.object(
+            runner_module, "_publish_no_replace", side_effect=replace_parent,
+        ), self.assertRaisesRegex(ValueError, "output parent changed"):
+            BlenderVisualRemappedSourceRunner(self.tools(FakeVisualBlender()))(
+                self.input, destination, self.request, threading.Event(),
+            )
+        self.assertFalse(destination.exists())
+        self.assertEqual(tuple(detached.iterdir()), ())
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction regression")
+    def test_tool_reparse_ancestor_is_rejected(self) -> None:
+        real = self.root / "real-tools"
+        real.mkdir()
+        (real / "blender.exe").write_bytes(b"blender")
+        (real / "meshopt.dll").write_bytes(b"meshopt")
+        alias = self.root / "tool-alias"
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(alias), str(real)],
+            capture_output=True, text=True,
+        )
+        if created.returncode:
+            self.skipTest(created.stdout + created.stderr)
+        try:
+            with self.assertRaisesRegex(ValueError, "unsafe"):
+                VisualRemappedRunnerTools(
+                    blender_exe=alias / "blender.exe", repo_root=self.repo_root,
+                    meshopt_dll=alias / "meshopt.dll", work_root=self.work_root,
+                    process_runner=FakeVisualBlender(),
+                )
+        finally:
+            subprocess.run(
+                ["cmd", "/c", "rmdir", str(alias)], capture_output=True,
+            )
+
+    def test_tools_are_revalidated_immediately_before_spawn(self) -> None:
+        import maximum_optimizer.visual_remapped_source_runner as runner_module
+
+        process = FakeVisualBlender()
+        real_acquire = runner_module._acquire_run_root
+
+        def acquire_then_mutate(*args, **kwargs):
+            result = real_acquire(*args, **kwargs)
+            self.meshopt.write_bytes(b"changed-before-spawn")
+            return result
+
+        with mock.patch.object(
+            runner_module, "_acquire_run_root", side_effect=acquire_then_mutate,
+        ), self.assertRaisesRegex(ValueError, "pin changed"):
+            BlenderVisualRemappedSourceRunner(self.tools(process))(
+                self.input, self.root / "pre-spawn.smd", self.request,
+                threading.Event(),
+            )
+        self.assertEqual(process.commands, [])
+
+    def test_source_request_lineage_rejects_prefix_transplant_and_allows_prefilter(self) -> None:
+        transplanted = self.source_text.replace('"root"', '"transplanted"')
+        with self.assertRaisesRegex(ValueError, "lineage"):
+            visual_remapped_source_request(
+                self.base_request, transplanted.encode("utf-8"),
+            )
+
+        degenerate = (
+            "metal\n"
+            "0 0 0 0 0 0 1 0 0\n"
+            "0 0 0 0 0 0 1 0 0\n"
+            "0 0 0 0 0 0 1 0 0\n"
+        )
+        raw_text = self.source_text.replace(
+            "triangles\n", "triangles\n" + degenerate, 1,
+        )
+        raw = raw_text.encode("utf-8")
+        filtered = prefilter_direct_degenerate_smd(raw_text).filtered_text.encode("utf-8")
+        request = visual_remapped_source_request(
+            _request(raw_text), filtered, raw_source_bytes=raw,
+        )
+        self.assertEqual(request.input_sha256, hashlib.sha256(filtered).hexdigest())
+        self.input.write_bytes(raw)
+        result = BlenderVisualRemappedSourceRunner(
+            self.tools(FakeVisualBlender())
+        )(
+            self.input, self.root / "legitimate-prefilter.smd", request,
+            threading.Event(),
+        )
+        self.assertEqual(result.evidence.source_sha256, request.input_sha256)
+
+    def test_cache_identity_changes_with_toolchain(self) -> None:
+        first = BlenderVisualRemappedSourceRunner(
+            self.tools(FakeVisualBlender())
+        )(self.input, self.root / "first.smd", self.request, threading.Event())
+        self.blender.write_bytes(b"new-blender")
+        self.meshopt.write_bytes(b"new-meshopt")
+        second = BlenderVisualRemappedSourceRunner(
+            self.tools(FakeVisualBlender())
+        )(self.input, self.root / "second.smd", self.request, threading.Event())
+        self.assertNotEqual(first.evidence.toolchain, second.evidence.toolchain)
+        self.assertNotEqual(first.evidence.cache_digest, second.evidence.cache_digest)
+
+    def test_control_and_configured_budgets_fail_early(self) -> None:
+        with self.assertRaisesRegex(ValueError, "budget"):
+            self.tools(FakeVisualBlender(), max_artifact_files=65)
+        with self.assertRaisesRegex(ValueError, "budget"):
+            self.tools(FakeVisualBlender(), max_artifact_bytes=2 * 1024**3 + 1)
+
+        base = FakeVisualBlender()
+
+        def huge_metrics(command, cwd, log_path, event):
+            result = base(command, cwd, log_path, event)
+            with (Path(cwd) / "candidate_metrics.json").open("ab") as stream:
+                stream.write(b" " * (16 * 1024**2 + 1))
+            return result
+
+        with self.assertRaisesRegex(ValueError, "control.*limit"):
+            BlenderVisualRemappedSourceRunner(self.tools(huge_metrics))(
+                self.input, self.root / "huge-control.smd", self.request,
+                threading.Event(),
+            )
+
+    def test_direct_construction_with_bad_artifact_type_fails_as_value_error(self) -> None:
+        from dataclasses import replace
+
+        evidence = BlenderVisualRemappedSourceRunner(
+            self.tools(FakeVisualBlender())
+        )(self.input, self.root / "candidate.smd", self.request, threading.Event()).evidence
+        with self.assertRaises(ValueError):
+            replace(evidence, artifacts=(object(),))
 
 
 if __name__ == "__main__":
