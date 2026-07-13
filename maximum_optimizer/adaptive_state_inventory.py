@@ -32,6 +32,7 @@ from .smd_state_contracts import (
     SmdAnimationPairInput,
     build_smd_equivalence_contract,
     build_smd_pose_contract,
+    build_smd_skeleton_pair_contract,
     build_smd_skeleton_contract,
 )
 
@@ -340,8 +341,19 @@ def build_production_adaptive_direct_state_inventory(
         source_path = Path(original_snapshot.source_root).joinpath(
             *PurePosixPath(proof.relative_path).parts
         )
+        candidate_proof = candidate_proofs[identity]
+        candidate_path = Path(candidate_snapshot.source_root).joinpath(
+            *PurePosixPath(candidate_proof.relative_path).parts
+        )
         skeleton = build_smd_skeleton_contract(
             source_path, Path(original_snapshot.source_root), proof, cancel_event
+        )
+        candidate_skeleton = build_smd_skeleton_contract(
+            candidate_path, Path(candidate_snapshot.source_root), candidate_proof,
+            cancel_event,
+        )
+        skeleton_pair = build_smd_skeleton_pair_contract(
+            skeleton, candidate_skeleton,
         )
         pose = build_smd_pose_contract(
             skeleton, animation_pair=bound_pairs.get(identity),
@@ -350,7 +362,7 @@ def build_production_adaptive_direct_state_inventory(
         equivalence = build_smd_equivalence_contract(
             identity, proof, skeleton, pose
         )
-        contracts[identity] = (skeleton, pose, equivalence)
+        contracts[identity] = (skeleton_pair, pose, equivalence)
 
     rows = []
     for state in states:
@@ -359,7 +371,7 @@ def build_production_adaptive_direct_state_inventory(
             if proof is None:
                 raise ValueError("active QC state source is outside complete metric union")
             dependency = bound_dependencies[active.source_identity]
-            skeleton, pose, equivalence = contracts[active.source_identity]
+            skeleton_pair, pose, equivalence = contracts[active.source_identity]
             rows.append(build_adaptive_direct_state_inventory_row(
                 occurrence_key=_occurrence_key(state.state_key, active),
                 source_identity=active.source_identity,
@@ -374,7 +386,7 @@ def build_production_adaptive_direct_state_inventory(
                 source_sha256=proof.sha256,
                 component_keys=dependency.component_keys,
                 material_region_keys=dependency.material_region_keys,
-                skeleton_contract_sha256=skeleton.skeleton_contract_sha256,
+                skeleton_contract_sha256=skeleton_pair.skeleton_pair_sha256,
                 pose_keys=pose.pose_keys,
                 component_manifest_sha256=dependency.component_manifest_sha256,
                 material_contract_sha256=dependency.material_contract_sha256,

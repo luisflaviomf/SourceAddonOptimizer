@@ -12,6 +12,7 @@ from maximum_optimizer.smd_state_contracts import (
     SmdAnimationPairInput,
     build_smd_equivalence_contract,
     build_smd_pose_contract,
+    build_smd_skeleton_pair_contract,
     build_smd_skeleton_contract,
 )
 
@@ -43,6 +44,33 @@ def _proof(root: Path, path: Path, kind: str) -> SourceFileProof:
 
 
 class SmdStateContractTests(unittest.TestCase):
+    def test_skeleton_pair_seals_exact_nodes_hierarchy_and_bind_equivalence(self) -> None:
+        with tempfile.TemporaryDirectory() as original_raw, tempfile.TemporaryDirectory() as candidate_raw:
+            original_root = Path(original_raw); candidate_root = Path(candidate_raw)
+            original_path = original_root / "body.smd"
+            candidate_path = candidate_root / "body.smd"
+            original_path.write_bytes(_smd())
+            candidate_path.write_bytes(_smd())
+            original = build_smd_skeleton_contract(
+                original_path, original_root,
+                _proof(original_root, original_path, "visual-source"), None,
+            )
+            candidate = build_smd_skeleton_contract(
+                candidate_path, candidate_root,
+                _proof(candidate_root, candidate_path, "visual-source"), None,
+            )
+            comparison = build_smd_skeleton_pair_contract(original, candidate)
+            self.assertEqual(comparison.original_skeleton_sha256, original.skeleton_contract_sha256)
+            self.assertEqual(comparison.candidate_skeleton_sha256, candidate.skeleton_contract_sha256)
+            with self.assertRaisesRegex(ValueError, "nodes|hierarchy|bind|equivalent"):
+                changed_path = candidate_root / "changed.smd"
+                changed_path.write_bytes(_smd().replace(b'1 "child" 0', b'1 "other" 0'))
+                changed = build_smd_skeleton_contract(
+                    changed_path, candidate_root,
+                    _proof(candidate_root, changed_path, "visual-source"), None,
+                )
+                build_smd_skeleton_pair_contract(original, changed)
+
     def test_public_contracts_reject_forged_seals(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw); path = root / "body.smd"; path.write_bytes(_smd())

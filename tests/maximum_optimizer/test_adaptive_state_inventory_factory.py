@@ -26,6 +26,7 @@ from maximum_optimizer.domain import (
     CandidateSpec,
     EligibleAdaptiveSourceProof,
     FamilyManifest,
+    IneligibleAdaptiveSourceProof,
     StructuralFingerprint,
     adaptive_direct_state_inventory_from_payload,
     adaptive_direct_state_inventory_payload,
@@ -168,6 +169,67 @@ class InventoryFixture:
 
 
 class AdaptiveStateInventoryFactoryTests(unittest.TestCase):
+    def test_factory_rejects_candidate_skeleton_hierarchy_difference(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = InventoryFixture(Path(raw))
+            candidate_path = fixture.candidate_root / "output" / "door_opt.smd"
+            candidate_path.write_bytes(
+                candidate_path.read_bytes().replace(b'0 "root" -1', b'0 "changed" -1')
+            )
+            candidate_graph = parse_qc_graph(
+                fixture.candidate_qc, fixture.candidate_root,
+            )
+            candidate_manifest = build_source_tree_manifest(
+                fixture.candidate_root, candidate_graph, "candidate-source-v1", None,
+            )
+            fixture.candidate_snapshot = build_recovery_source_snapshot(
+                kind="candidate", candidate_id=fixture.spec.candidate_id,
+                candidate_cache_digest=fixture.cache_digest,
+                source_root=fixture.candidate_root, source_manifest=candidate_manifest,
+                family_id=fixture.manifest.family_id,
+                family_input_sha256=fixture.manifest.input_hash,
+                optimizer_contract_sha256=optimizer_contract_sha256(fixture.spec),
+                whole_profile_sha256=H["1"], focused_profile_sha256=H["2"],
+                dependency_proof_sha256=H["3"], focused_evidence=(),
+            )
+            candidate_files = {
+                item.file_identity: item for item in candidate_manifest.files
+                if item.kind == "visual-source"
+            }
+            sources = []
+            for metric in fixture.metrics.sources:
+                output = candidate_files[metric.source_identity]
+                common = dict(
+                    source_identity=metric.source_identity,
+                    source_relative_path=metric.source_relative_path,
+                    source_size=metric.source_size, source_sha256=metric.source_sha256,
+                    output_relative_path=output.relative_path,
+                    output_size=output.size, output_sha256=output.sha256,
+                    occurrences=metric.occurrences,
+                )
+                if metric.source_identity == "door.smd":
+                    sources.append(IneligibleAdaptiveSourceProof.create(
+                        ineligibility_reason="adaptive-output-changed-v1", **common,
+                    ))
+                else:
+                    sources.append(EligibleAdaptiveSourceProof.create(
+                        eligibility_reason="ratio-preserved-exact-v1", **common,
+                    ))
+            fixture.metrics = build_adaptive_candidate_metrics_proof(
+                family_id=fixture.manifest.family_id,
+                family_input_sha256=fixture.manifest.input_hash,
+                candidate_id=fixture.spec.candidate_id,
+                candidate_cache_digest=fixture.cache_digest,
+                base_spec_sha256=candidate_spec_sha256(fixture.spec),
+                source_manifest_sha256=candidate_manifest.digest,
+                source_snapshot_sha256=fixture.candidate_snapshot.snapshot_sha256,
+                original_graph_sha256=qc_graph_sha256(fixture.original_graph),
+                candidate_graph_sha256=qc_graph_sha256(candidate_graph),
+                raw_metrics_sha256=H["9"], sources=tuple(sources),
+            )
+            with self.assertRaisesRegex(ValueError, "skeleton|nodes|hierarchy|bind"):
+                fixture.build()
+
     def test_dependency_contract_rejects_forged_seal(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = InventoryFixture(Path(raw))

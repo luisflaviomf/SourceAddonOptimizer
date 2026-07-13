@@ -109,6 +109,34 @@ class SmdSkeletonContract:
 
 
 @dataclass(frozen=True)
+class SmdSkeletonPairContract:
+    schema: int
+    algorithm: str
+    original_skeleton_sha256: str
+    candidate_skeleton_sha256: str
+    shared_nodes_bind_sha256: str
+    skeleton_pair_sha256: str
+
+    def __post_init__(self) -> None:
+        payload = {
+            "schema": self.schema, "algorithm": self.algorithm,
+            "original_skeleton_sha256": self.original_skeleton_sha256,
+            "candidate_skeleton_sha256": self.candidate_skeleton_sha256,
+            "shared_nodes_bind_sha256": self.shared_nodes_bind_sha256,
+        }
+        if (
+            type(self.schema) is not int or self.schema != 1
+            or self.algorithm != "smd-original-candidate-skeleton-equivalence-v1"
+            or any(_SHA256_RE.fullmatch(value or "") is None for value in (
+                self.original_skeleton_sha256, self.candidate_skeleton_sha256,
+                self.shared_nodes_bind_sha256, self.skeleton_pair_sha256,
+            ))
+            or _seal(payload) != self.skeleton_pair_sha256
+        ):
+            raise ValueError("SMD skeleton pair contract is invalid or its seal differs")
+
+
+@dataclass(frozen=True)
 class SmdAnimationPairInput:
     original_path: Path
     original_root: Path
@@ -241,6 +269,16 @@ def smd_skeleton_contract_payload(value: SmdSkeletonContract) -> dict[str, objec
         "nodes": [_node_payload(item) for item in value.nodes],
         "bind": [_transform_payload(item) for item in value.bind],
         "skeleton_contract_sha256": value.skeleton_contract_sha256,
+    }
+
+
+def smd_skeleton_pair_contract_payload(value: SmdSkeletonPairContract) -> dict[str, object]:
+    return {
+        "schema": value.schema, "algorithm": value.algorithm,
+        "original_skeleton_sha256": value.original_skeleton_sha256,
+        "candidate_skeleton_sha256": value.candidate_skeleton_sha256,
+        "shared_nodes_bind_sha256": value.shared_nodes_bind_sha256,
+        "skeleton_pair_sha256": value.skeleton_pair_sha256,
     }
 
 
@@ -409,6 +447,28 @@ def build_smd_skeleton_contract(
         1, "smd-nodes-bind-v1", proof.size, proof.sha256,
         nodes, bind_frames[0], _seal(unsigned),
     )
+
+
+def build_smd_skeleton_pair_contract(
+    original: SmdSkeletonContract, candidate: SmdSkeletonContract,
+) -> SmdSkeletonPairContract:
+    if not isinstance(original, SmdSkeletonContract) or not isinstance(
+        candidate, SmdSkeletonContract
+    ):
+        raise TypeError("skeleton comparison requires typed original/candidate contracts")
+    if original.nodes != candidate.nodes or original.bind != candidate.bind:
+        raise ValueError("original/candidate skeleton nodes, hierarchy, or bind are not equivalent")
+    shared = _seal({
+        "nodes": [_node_payload(item) for item in original.nodes],
+        "bind": [_transform_payload(item) for item in original.bind],
+    })
+    unsigned = {
+        "schema": 1, "algorithm": "smd-original-candidate-skeleton-equivalence-v1",
+        "original_skeleton_sha256": original.skeleton_contract_sha256,
+        "candidate_skeleton_sha256": candidate.skeleton_contract_sha256,
+        "shared_nodes_bind_sha256": shared,
+    }
+    return SmdSkeletonPairContract(**unsigned, skeleton_pair_sha256=_seal(unsigned))
 
 
 def build_smd_pose_contract(
