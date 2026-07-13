@@ -12,6 +12,8 @@ from typing import Callable
 
 from .adaptive_direct_evidence import (
     AdaptiveDirectEvidence,
+    adaptive_direct_evidence_from_payload,
+    adaptive_direct_evidence_payload,
     build_adaptive_direct_evidence,
 )
 from .candidates import CandidateBuild
@@ -487,7 +489,7 @@ def _size_from_compile_files(build: CandidateBuild, files) -> CompiledSizeSnapsh
 
 def _require_current_authorized_attempt(
     attempt: AdaptiveDirectExecutionAttempt,
-) -> None:
+) -> AdaptiveDirectExecutionAttempt:
     if (
         attempt.status != "authorized"
         or attempt.build is None
@@ -495,14 +497,48 @@ def _require_current_authorized_attempt(
         or attempt.evaluation is None
     ):
         raise ValueError("adaptive-direct terminal attempt is not authorized")
+    evidence = adaptive_direct_evidence_from_payload(
+        adaptive_direct_evidence_payload(attempt.evidence)
+    )
+    current = AdaptiveDirectExecutionAttempt(
+        ratio=attempt.ratio,
+        status=attempt.status,
+        candidate_id=attempt.candidate_id,
+        evaluation=attempt.evaluation,
+        build=attempt.build,
+        evidence=evidence,
+        error=attempt.error,
+        recipe=attempt.recipe,
+        attempt_sha256=attempt.attempt_sha256,
+    )
     compiled = AdaptiveDirectCompileResult.create(
-        attempt.build, attempt.evidence.compile_files,
-        attempt.evidence.composition.evidence_sha256,
+        current.build, current.evidence.compile_files,
+        current.evidence.composition.evidence_sha256,
     )
     # Attempt creation is the cancellation linearization point.  This final
     # byte check must still finish if cancellation is observed immediately
     # afterwards, otherwise a stale authorized result could escape.
     _current_compile_files(compiled, threading.Event())
+    return current
+
+
+def _revalidate_terminal_authorities(
+    attempts: list[AdaptiveDirectExecutionAttempt], *, isolate: bool,
+) -> None:
+    for index, attempt in enumerate(attempts):
+        if attempt.status != "authorized":
+            continue
+        try:
+            current = _require_current_authorized_attempt(attempt)
+        except Exception as exc:
+            attempts[index] = AdaptiveDirectExecutionAttempt.create(
+                attempt.ratio, "final_whole_failed",
+                candidate_id=attempt.candidate_id, recipe=attempt.recipe,
+                error=str(exc) or "adaptive-direct terminal authority changed",
+            )
+        else:
+            if isolate:
+                attempts[index] = current
 
 
 def _resolve_terminal_selection(
@@ -514,17 +550,7 @@ def _resolve_terminal_selection(
 ) -> AdaptiveDirectScheduleExecution:
     resolved = list(attempts)
     while True:
-        for index, attempt in enumerate(resolved):
-            if attempt.status != "authorized":
-                continue
-            try:
-                _require_current_authorized_attempt(attempt)
-            except (OSError, ValueError) as exc:
-                resolved[index] = AdaptiveDirectExecutionAttempt.create(
-                    attempt.ratio, "final_whole_failed",
-                    candidate_id=attempt.candidate_id, recipe=attempt.recipe,
-                    error=str(exc) or "adaptive-direct terminal compile changed",
-                )
+        _revalidate_terminal_authorities(resolved, isolate=False)
         authorized = [
             item.evaluation for item in resolved if item.status == "authorized"
         ]
@@ -537,26 +563,36 @@ def _resolve_terminal_selection(
             raise ValueError(
                 "adaptive-direct retained authority changed at terminal selection"
             )
-        if selected is base_evaluation:
+        # The retained-base authority call above is an external callback and a
+        # final TOCTOU boundary.  Reparse every authorized evidence object
+        # again, then retain private parsed copies for the returned result.
+        _revalidate_terminal_authorities(resolved, isolate=True)
+        final_authorized = [
+            item.evaluation for item in resolved if item.status == "authorized"
+        ]
+        final_selected = select_winner([base_evaluation, *final_authorized])
+        if final_selected is not selected:
+            continue
+        if final_selected is base_evaluation:
             return AdaptiveDirectScheduleExecution(
                 base_evaluation, base_evaluation, tuple(resolved), cancelled,
             )
         index = next(
             position for position, item in enumerate(resolved)
-            if item.status == "authorized" and item.evaluation is selected
+            if item.status == "authorized" and item.evaluation is final_selected
         )
         attempt = resolved[index]
         try:
-            _require_current_authorized_attempt(attempt)
-        except (OSError, ValueError) as exc:
+            resolved[index] = _require_current_authorized_attempt(attempt)
+        except Exception as exc:
             resolved[index] = AdaptiveDirectExecutionAttempt.create(
                 attempt.ratio, "final_whole_failed",
                 candidate_id=attempt.candidate_id, recipe=attempt.recipe,
-                error=str(exc) or "adaptive-direct terminal compile changed",
+                error=str(exc) or "adaptive-direct terminal authority changed",
             )
             continue
         return AdaptiveDirectScheduleExecution(
-            base_evaluation, selected, tuple(resolved), cancelled,
+            base_evaluation, final_selected, tuple(resolved), cancelled,
         )
 
 

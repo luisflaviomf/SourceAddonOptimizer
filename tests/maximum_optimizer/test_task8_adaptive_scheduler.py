@@ -388,6 +388,88 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
             self.assertIsNone(attempt.evidence)
             self.assertIs(result.selected, base)
 
+    def test_terminal_reparse_revokes_mutated_focused_or_attempt_seal(self) -> None:
+        for target in ("base-focus", "direct-focus", "attempt"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                fixture_root = root / "fixture"; fixture_root.mkdir()
+                fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+                callbacks, base = self._authorized_callbacks(root, fixture)
+                base = replace(base, size=CompiledSizeSnapshot(
+                    base.size.root, 100, {".mdl": 100}, {},
+                    (ArtifactStat("base.mdl", ".mdl", 100),),
+                ))
+                callbacks["base_proof"] = self._proof(fixture, base)
+                original = AdaptiveDirectExecutionAttempt.create.__func__
+
+                def mutate_after_create(cls, ratio, status, **values):
+                    attempt = original(cls, ratio, status, **values)
+                    if status == "authorized":
+                        if target == "base-focus":
+                            record = attempt.evidence.base_focus_records[0]
+                            object.__setattr__(record, "evidence_sha256", "0" * 64)
+                        elif target == "direct-focus":
+                            record = attempt.evidence.direct_focus_records[0]
+                            object.__setattr__(record, "evidence_sha256", "0" * 64)
+                        else:
+                            object.__setattr__(attempt, "attempt_sha256", "0" * 64)
+                    return attempt
+
+                with mock.patch.object(
+                    AdaptiveDirectExecutionAttempt, "create",
+                    new=classmethod(mutate_after_create),
+                ):
+                    result = execute_adaptive_direct_schedule(**callbacks)
+                attempt = result.attempts[0]
+                self.assertEqual(attempt.status, "final_whole_failed")
+                self.assertIsNone(attempt.build)
+                self.assertIsNone(attempt.evidence)
+                self.assertIs(result.selected, base)
+
+    def test_all_authorities_are_revalidated_after_terminal_callback(self) -> None:
+        for direct_wins in (False, True):
+            with self.subTest(direct_wins=direct_wins), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                fixture_root = root / "fixture"; fixture_root.mkdir()
+                fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+                callbacks, base = self._authorized_callbacks(root, fixture)
+                if direct_wins:
+                    base = replace(base, size=CompiledSizeSnapshot(
+                        base.size.root, 100, {".mdl": 100}, {},
+                        (ArtifactStat("base.mdl", ".mdl", 100),),
+                    ))
+                    callbacks["base_proof"] = self._proof(fixture, base)
+                captured = {}
+                original = AdaptiveDirectExecutionAttempt.create.__func__
+
+                def capture_attempt(cls, ratio, status, **values):
+                    attempt = original(cls, ratio, status, **values)
+                    if status == "authorized":
+                        captured["attempt"] = attempt
+                    return attempt
+
+                mutated = False
+
+                def mutate_during_terminal_authority(proof, _event=None):
+                    nonlocal mutated
+                    attempt = captured.get("attempt")
+                    if attempt is not None and not mutated:
+                        mutated = True
+                        record = attempt.evidence.direct_focus_records[0]
+                        object.__setattr__(record, "evidence_sha256", "0" * 64)
+                    return proof
+
+                self._authority_mock.side_effect = mutate_during_terminal_authority
+                with mock.patch.object(
+                    AdaptiveDirectExecutionAttempt, "create",
+                    new=classmethod(capture_attempt),
+                ):
+                    result = execute_adaptive_direct_schedule(**callbacks)
+                self.assertTrue(mutated)
+                self.assertIs(result.selected, base)
+                self.assertEqual(result.attempts[0].status, "final_whole_failed")
+                self.assertIsNone(result.attempts[0].evidence)
+
     def test_base_selected_after_callback_is_revalidated_immediately_before_return(self) -> None:
         from maximum_optimizer import adaptive_direct_scheduler as module
 
