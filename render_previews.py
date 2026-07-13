@@ -2651,7 +2651,7 @@ def _bounded_file_proof(path: Path, *, max_bytes: int) -> dict:
 def _animation_toolchain_proof() -> dict:
     global _ANIMATION_TOOLCHAIN_PROOF
     if _ANIMATION_TOOLCHAIN_PROOF is not None:
-        return dict(_ANIMATION_TOOLCHAIN_PROOF)
+        return json.loads(_ANIMATION_TOOLCHAIN_PROOF.decode("utf-8"))
     blender_path = Path(getattr(bpy.app, "binary_path", ""))
     modules = tuple(importlib.import_module(name) for name in (
         "io_scene_valvesource.import_smd", "io_scene_valvesource.utils",
@@ -2672,8 +2672,8 @@ def _animation_toolchain_proof() -> dict:
     proof["toolchain_sha256"] = hashlib.sha256(
         _canonical_json(unsigned).encode("utf-8")
     ).hexdigest()
-    _ANIMATION_TOOLCHAIN_PROOF = proof
-    return dict(proof)
+    _ANIMATION_TOOLCHAIN_PROOF = _canonical_json(proof).encode("utf-8")
+    return json.loads(_ANIMATION_TOOLCHAIN_PROOF.decode("utf-8"))
 
 
 def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
@@ -2686,7 +2686,7 @@ def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
     try:
         resolved_source = path.resolve(strict=True)
         before_source = resolved_source.lstat()
-        if not stat.S_ISREG(before_source.st_mode) or before_source.st_size > 256 * 1024 * 1024:
+        if not stat.S_ISREG(before_source.st_mode) or before_source.st_size > 64 * 1024 * 1024:
             raise RuntimeError("representative-animation-unavailable: exact source byte cap exceeded")
         source_bytes = resolved_source.read_bytes()
         after_source = resolved_source.lstat()
@@ -2764,8 +2764,8 @@ def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
         raise RuntimeError("representative-animation-unavailable: exactly one new action was not assigned")
     slot = getattr(armature.animation_data, "action_slot", None)
     slots = tuple(getattr(action, "slots", ()))
-    if slot is None or slot not in slots:
-        raise RuntimeError("representative-animation-unavailable: active Blender5 action slot differs")
+    if len(slots) != 1 or slot is None or slot not in slots:
+        raise RuntimeError("representative-animation-unavailable: exactly one active Blender5 action slot is required")
     slot_name = str(getattr(slot, "name_display", getattr(slot, "name", "")))
     if slot_name.casefold() != path.stem.casefold():
         raise RuntimeError("representative-animation-unavailable: action slot stem differs")
@@ -2804,12 +2804,22 @@ def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
     armature_bone_names = {bone.name for bone in tuple(getattr(armature.pose, "bones", ())) }
     bone_path = re.compile(r'^pose\.bones\["([^"]+)"\]\.(location|rotation_euler|rotation_quaternion|scale)$')
     curve_inventory = []
+    seen_curve_channels = set()
     keyed_frames = set()
     for curve in fcurves:
         match = bone_path.fullmatch(str(getattr(curve, "data_path", "")))
         if match is None or match.group(1) not in armature_bone_names or match.group(1) not in set(source_bones.values()):
             raise RuntimeError("representative-animation-unavailable: active slot bone channel differs")
+        array_index = int(curve.array_index)
+        maximum_index = 3 if match.group(2) == "rotation_quaternion" else 2
+        if not 0 <= array_index <= maximum_index:
+            raise RuntimeError("representative-animation-unavailable: active slot array index differs")
+        channel_identity = (str(curve.data_path), array_index)
+        if channel_identity in seen_curve_channels:
+            raise RuntimeError("representative-animation-unavailable: duplicate active slot channel")
+        seen_curve_channels.add(channel_identity)
         points = []
+        curve_frames = set()
         for keyframe in tuple(getattr(curve, "keyframe_points", ())):
             co = tuple(float(value) for value in keyframe.co)
             if len(co) != 2 or any(not math.isfinite(value) for value in co):
@@ -2817,12 +2827,15 @@ def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
             frame = co[0]
             if frame != int(frame) or not 0 <= int(frame) < len(source_times):
                 raise RuntimeError("representative-animation-unavailable: action keyframe ordinal differs")
+            if int(frame) in curve_frames:
+                raise RuntimeError("representative-animation-unavailable: duplicate action keyframe ordinal")
+            curve_frames.add(int(frame))
             keyed_frames.add(int(frame))
             points.append([frame, co[1]])
         if not points:
             raise RuntimeError("representative-animation-unavailable: empty active slot fcurve")
         curve_inventory.append({
-            "array_index": int(curve.array_index),
+            "array_index": array_index,
             "data_path": str(curve.data_path),
             "keyframes": points,
         })
@@ -2979,6 +2992,13 @@ def _build_evaluated_region_pose_proof(
         or selected_bone not in influenced_bones
     ):
         raise ValueError("evaluated region pose authority is invalid")
+    if (
+        type(action_proof.get("source_times")) is not list
+        or any(type(value) is not int for value in action_proof["source_times"])
+        or frame >= len(action_proof["source_times"])
+        or action_proof["source_times"][frame] != source_time
+    ):
+        raise ValueError("evaluated region pose frame/source time differs from action proof")
     squared = []
     for (_bind_identity, bind_vertices), (_pose_identity, posed_vertices) in zip(bind, posed):
         for rest, animated in zip(bind_vertices, posed_vertices):
@@ -2988,6 +3008,15 @@ def _build_evaluated_region_pose_proof(
             squared.append(value)
     if not squared:
         raise ValueError("evaluated region pose has no vertices")
+    maximum_displacement = math.sqrt(max(squared))
+    rms_displacement = math.sqrt(sum(squared) / len(squared))
+    moved_vertex_count = sum(value > 0.0 for value in squared)
+    if (
+        moved_vertex_count == 0
+        or maximum_displacement <= 1e-12
+        or rms_displacement <= 1e-12
+    ):
+        raise ValueError("evaluated region pose requires nonzero regional delta above threshold")
     unsigned = {
         "action_sha256": action_proof["action_sha256"],
         "animation_input_sha256": action_proof["animation_input_sha256"],
@@ -2998,10 +3027,10 @@ def _build_evaluated_region_pose_proof(
         "frame": frame,
         "influenced_bones": list(influenced_bones),
         "kind": "blender-evaluated-region-pose-delta-v1",
-        "maximum_displacement": math.sqrt(max(squared)),
-        "moved_vertex_count": sum(value > 0.0 for value in squared),
+        "maximum_displacement": maximum_displacement,
+        "moved_vertex_count": moved_vertex_count,
         "posed_geometry_sha256": _evaluated_vertex_snapshot_hash(posed),
-        "rms_displacement": math.sqrt(sum(squared) / len(squared)),
+        "rms_displacement": rms_displacement,
         "selected_bone": selected_bone,
         "source_time": source_time,
         "toolchain_sha256": action_proof["toolchain"]["toolchain_sha256"],

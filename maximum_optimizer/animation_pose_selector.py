@@ -27,9 +27,9 @@ _TRANSFORM = re.compile(
     r"([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s*$"
 )
 _ZERO = (Decimal(0),) * 6
-_MAX_EXACT_FILE_BYTES = 256 * 1024 * 1024
+_MAX_EXACT_FILE_BYTES = 64 * 1024 * 1024
 _MAX_EXACT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
-_MAX_ANIMATION_PAIRS = 256
+_MAX_ANIMATION_PAIRS = 64
 _MAX_GEOMETRY_FILES = 256
 _MAX_BONES = 4096
 _MAX_FRAMES = 4096
@@ -298,6 +298,9 @@ def _decode_png_rgba8(path: Path) -> tuple[tuple[int, int], bytes]:
     width = height = None
     compressed = bytearray()
     saw_end = False
+    saw_idat = False
+    idat_closed = False
+    chunk_index = 0
     while offset < len(payload):
         if len(payload) - offset < 12:
             raise ValueError("pose pixel gate PNG chunk is truncated")
@@ -308,10 +311,19 @@ def _decode_png_rgba8(path: Path) -> tuple[tuple[int, int], bytes]:
         kind = payload[offset + 4:offset + 8]
         data = payload[offset + 8:offset + 8 + size]
         crc = struct.unpack(">I", payload[offset + 8 + size:end])[0]
+        if (
+            len(kind) != 4
+            or any(not (65 <= value <= 90 or 97 <= value <= 122) for value in kind)
+        ):
+            raise ValueError("pose pixel gate PNG chunk type is invalid")
         if zlib.crc32(kind + data) != crc:
             raise ValueError("pose pixel gate PNG chunk CRC differs")
+        if chunk_index == 0 and kind != b"IHDR":
+            raise ValueError("pose pixel gate PNG header must be first")
+        if kind not in {b"IHDR", b"PLTE", b"IDAT", b"IEND"} and not (kind[0] & 0x20):
+            raise ValueError("pose pixel gate PNG has unknown critical chunk")
         if kind == b"IHDR":
-            if width is not None or len(data) != 13:
+            if chunk_index != 0 or width is not None or len(data) != 13:
                 raise ValueError("pose pixel gate PNG header is invalid")
             width, height, depth, color, compression, filtering, interlace = struct.unpack(
                 ">IIBBBBB", data,
@@ -322,17 +334,26 @@ def _decode_png_rgba8(path: Path) -> tuple[tuple[int, int], bytes]:
                 or (depth, color, compression, filtering, interlace) != (8, 6, 0, 0, 0)
             ):
                 raise ValueError("pose pixel gate requires bounded non-interlaced RGBA8 PNG")
+        elif kind == b"PLTE":
+            if width is None or saw_idat or not data or len(data) > 768 or len(data) % 3:
+                raise ValueError("pose pixel gate PNG palette order is invalid")
         elif kind == b"IDAT":
+            if width is None or idat_closed:
+                raise ValueError("pose pixel gate PNG data chunk order is invalid")
+            saw_idat = True
             compressed.extend(data)
             if len(compressed) > _MAX_IMAGE_BYTES:
                 raise ValueError("pose pixel gate compressed byte cap exceeded")
         elif kind == b"IEND":
-            if size != 0:
+            if size != 0 or width is None or not saw_idat:
                 raise ValueError("pose pixel gate PNG end chunk is invalid")
             saw_end = True
             offset = end
             break
+        elif saw_idat:
+            idat_closed = True
         offset = end
+        chunk_index += 1
     if width is None or height is None or not saw_end or offset != len(payload) or not compressed:
         raise ValueError("pose pixel gate PNG inventory is incomplete")
     row_bytes = width * 4
@@ -530,6 +551,9 @@ def verify_pose_pixel_gate(
         )
     bind_bundle = _canonical_hash(bind_inventory)
     posed_bundle = _canonical_hash(posed_inventory)
+    camera_payload = [
+        {"key": key, "direction": list(directions[key])} for key in bind_keys
+    ]
     unsigned = {
         "bind_pixel_bundle_sha256": bind_bundle,
         "changed_fraction": changed_fraction,
@@ -539,7 +563,7 @@ def verify_pose_pixel_gate(
         "mean_absolute_error": mean_absolute_error,
         "minimum_changed_fraction": float(minimum_changed_fraction),
         "minimum_silhouette_pixels": minimum_silhouette_pixels,
-        "camera_directions": {key: directions[key] for key in bind_keys},
+        "camera_directions": camera_payload,
         "qualified_silhouette_views": list(qualified),
         "posed_pixel_bundle_sha256": posed_bundle,
         "total_pixels": total_pixels,
@@ -555,9 +579,7 @@ def verify_pose_pixel_gate(
         bind_pixel_bundle_sha256=bind_bundle,
         posed_pixel_bundle_sha256=posed_bundle,
         views=tuple(views),
-        camera_directions=tuple(
-            {"key": key, "direction": list(directions[key])} for key in bind_keys
-        ),
+        camera_directions=tuple(camera_payload),
         qualified_silhouette_views=qualified,
         evidence_sha256=_canonical_hash(unsigned),
     )
@@ -639,17 +661,30 @@ def _geometry_extents(
         merged_vertex_keys: set[
             tuple[tuple[float, float, float], tuple[tuple[int, float], ...]]
         ] = set()
+        expecting_material = True
+        remaining_vertices = 0
+        saw_triangle_end = False
         for line in lines[start + 1:]:
-            if line.strip().casefold() == "end":
-                break
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if expecting_material:
+                if stripped.casefold() == "end":
+                    saw_triangle_end = True
+                    break
+                expecting_material = False
+                remaining_vertices = 3
+                continue
+            if stripped.casefold() == "end":
+                raise ValueError(f"exact geometry triangle is incomplete: {path}")
             tokens = line.split()
             if len(tokens) < 9:
-                continue
+                raise ValueError(f"invalid exact geometry vertex in {path}")
             try:
                 parent = int(tokens[0])
                 position = tuple(float(tokens[index]) for index in range(1, 4))
-            except ValueError:
-                continue
+            except ValueError as exc:
+                raise ValueError(f"invalid exact geometry vertex in {path}") from exc
             if parent not in geometry_to_expected or any(not math.isfinite(value) for value in position):
                 raise ValueError(f"non-finite or unknown exact geometry vertex lineage in {path}")
             vertices += 1
@@ -659,6 +694,11 @@ def _geometry_extents(
             if len(tokens) >= 10:
                 try:
                     link_count = int(tokens[9])
+                    if (
+                        not 0 <= link_count <= _MAX_BONES
+                        or len(tokens) != 10 + link_count * 2
+                    ):
+                        raise ValueError
                     if link_count > 0:
                         weighted = []
                     for offset in range(link_count):
@@ -676,6 +716,9 @@ def _geometry_extents(
             normalized_weights = tuple(
                 (bone, weight / weight_sum) for bone, weight in sorted(weighted)
             )
+            remaining_vertices -= 1
+            if remaining_vertices == 0:
+                expecting_material = True
             merge_key = (position, normalized_weights)
             if merge_key in merged_vertex_keys:
                 continue
@@ -689,6 +732,10 @@ def _geometry_extents(
                     for axis, value in enumerate(position):
                         bounds[bone][0][axis] = min(bounds[bone][0][axis], value)
                         bounds[bone][1][axis] = max(bounds[bone][1][axis], value)
+        if not saw_triangle_end:
+            if not expecting_material:
+                raise ValueError(f"exact geometry triangle is incomplete: {path}")
+            raise ValueError(f"exact geometry triangle end is missing: {path}")
     if not inventory or not bounds:
         raise ValueError("exact geometry inventory has no weighted mesh vertices")
     frozen_bounds = {
@@ -704,7 +751,7 @@ def _geometry_extents(
     assert canonical_bind is not None
     return frozen_bounds, _canonical_hash({
         "inventory": inventory,
-        "kind": "exact-source-weighted-geometry-allowlist-v2",
+        "kind": "exact-source-weighted-geometry-allowlist-v3",
     }), canonical_bind, tuple(geometry_vertices)
 
 
@@ -994,8 +1041,10 @@ def select_animation_pose(
     for animation_path, reference_path, animation_relative, animation, reference in parsed_pairs:
         if len(reference.frames) != 1:
             raise ValueError("exact corrective animation must contain exactly one reference frame")
-        reference_frame = reference.frames[min(reference.frames)]
-        for frame_ordinal, (source_time, transforms) in enumerate(sorted(animation.frames.items())):
+        reference_frame = next(iter(reference.frames.values()))
+        if not reference_frame:
+            raise ValueError("exact corrective animation frame must not be empty")
+        for frame_ordinal, (source_time, transforms) in enumerate(animation.frames.items()):
             displacement, rms_displacement = _regional_skin_displacement(
                 transforms, geometry_bind,
                 animation.parents, geometry_vertices,
@@ -1055,15 +1104,21 @@ def select_animation_pose(
     unsigned = {
         "animation_relative_path": animation_relative,
         "animation_sha256": animation_sha,
+        "baseline": "geometry-rest",
         "bone_index": bone_index,
         "bone_name": bone_name,
         "candidate_inputs_consulted": False,
+        "corrective_used_as_baseline": False,
+        "displacement": displacement,
         "displacement_squared": displacement_squared,
         "frame": frame,
         "geometry_inventory_sha256": geometry_inventory_sha256,
+        "pose_name": Path(animation_relative).stem.casefold(),
         "reference_relative_path": _relative(reference_path, root),
         "reference_sha256": reference_sha,
-        "rms_displacement": format(rms_displacement, ".17g"),
+        "raw_render_max_displacement": displacement,
+        "raw_render_rms_displacement": rms_displacement,
+        "rms_displacement": rms_displacement,
         "selector": "exact-raw-render-region-displacement-v3",
         "selector_input_sha256": selector_input_sha256,
         "source_time": source_time,

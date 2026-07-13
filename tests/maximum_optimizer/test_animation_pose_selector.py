@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -233,6 +235,10 @@ class AnimationPoseSelectorTests(unittest.TestCase):
         self.assertGreater(proof.mean_absolute_error, 0.0)
         self.assertNotEqual(proof.bind_pixel_bundle_sha256, proof.posed_pixel_bundle_sha256)
         self.assertEqual(len(proof.evidence_sha256), 64)
+        payload = proof.to_payload()
+        seal = payload.pop("evidence_sha256")
+        from maximum_optimizer.animation_pose_selector import _canonical_hash
+        self.assertEqual(_canonical_hash(payload), seal)
 
     def test_pixel_gate_ignores_invisible_rgb_and_requires_every_view(self) -> None:
         from maximum_optimizer.animation_pose_selector import verify_pose_pixel_gate
@@ -318,6 +324,30 @@ class AnimationPoseSelectorTests(unittest.TestCase):
         self.assertEqual(selected.source_time, 30)
         self.assertEqual(selected.to_payload()["source_time"], 30)
 
+    def test_selector_frame_ordinal_follows_textual_time_block_order(self) -> None:
+        from maximum_optimizer.animation_pose_selector import select_animation_pose
+
+        header = _smd(bones=self.bones, frames={}).split("skeleton", 1)[0]
+        animation = header + """skeleton
+time 7
+0 0 0 0 0 0 -1.570796
+1 0 0 0 0 0 0.2
+time 3
+0 0 0 0 0 0 -1.570796
+1 0 0 0 0 0 2.0
+end
+"""
+        (self.root / "hood.smd").write_text(animation, encoding="utf-8")
+
+        selected = select_animation_pose(
+            self.root, source_root=self.root,
+            animation_pairs=(("hood.smd", "hood_corrective_animation.smd"),),
+            geometry_paths=("body.smd",),
+        )
+
+        self.assertEqual(selected.frame, 1)
+        self.assertEqual(selected.source_time, 3)
+
     def test_missing_animation_transform_inherits_nonzero_geometry_bind(self) -> None:
         from maximum_optimizer.animation_pose_selector import select_animation_pose
 
@@ -333,7 +363,8 @@ class AnimationPoseSelectorTests(unittest.TestCase):
         rows.extend(("end", ""))
         body.write_text("\n".join(rows), encoding="utf-8")
         (self.root / "hood_corrective_animation.smd").write_text(
-            _smd(bones=self.bones, frames={0: {}}), encoding="utf-8",
+            _smd(bones=self.bones, frames={0: {0: (10, 0, 0, 0, 0, 0)}}),
+            encoding="utf-8",
         )
         (self.root / "hood.smd").write_text(
             _smd(bones=self.bones, frames={0: {1: (0, 5, 0, 0, 0, 0.1)}}),
@@ -363,7 +394,8 @@ class AnimationPoseSelectorTests(unittest.TestCase):
         # Source Tools merges mesh vertices by (coordinate, weights); repeated
         # triangle corners must not bias the evaluated-vertex RMS.
         rows.extend(("material",) + tuple(
-            "1 10 6 0 0 0 1 0 0 1 1 1.0" for _ in range(3)
+            f"1 10 6 0 {index} 1 {index / 10} {index / 20} 1 1 1 1.0"
+            for index in range(3)
         ))
         rows.extend(("end", ""))
         (self.root / "body.smd").write_text("\n".join(rows), encoding="utf-8")
@@ -420,13 +452,78 @@ class AnimationPoseSelectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             self.select()
 
+    def test_empty_corrective_frame_is_rejected_but_compatible_subset_is_valid(self) -> None:
+        (self.root / "hood_corrective_animation.smd").write_text(
+            _smd(bones=self.bones, frames={0: {}}), encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "corrective.*empty"):
+            self.select()
+        (self.root / "hood_corrective_animation.smd").write_text(
+            _smd(bones=self.bones, frames={0: {
+                0: (0, 0, 0, 0, 0, -1.570796),
+            }}), encoding="utf-8",
+        )
+        self.assertEqual(self.select().animation_relative_path, "hood.smd")
+
+    def test_malformed_geometry_vertex_and_negative_link_count_are_rejected(self) -> None:
+        body = self.root / "body.smd"
+        original = body.read_text(encoding="utf-8")
+        lines = original.splitlines()
+        vertex_index = next(
+            index for index, line in enumerate(lines)
+            if len(line.split()) >= 12 and line.split()[0].lstrip("-").isdigit()
+        )
+        malformed = list(lines)
+        malformed[vertex_index] = malformed[vertex_index].replace(
+            malformed[vertex_index].split()[1], "broken", 1,
+        )
+        body.write_text("\n".join(malformed) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "geometry vertex"):
+            self.select()
+
+        negative = list(lines)
+        tokens = negative[vertex_index].split()
+        tokens[9:] = ["-1"]
+        negative[vertex_index] = " ".join(tokens)
+        body.write_text("\n".join(negative) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "weights"):
+            self.select()
+
+    def test_geometry_triangle_inventory_requires_complete_triplets_and_end(self) -> None:
+        body = self.root / "body.smd"
+        original = body.read_text(encoding="utf-8")
+        lines = original.splitlines()
+        last_end = max(index for index, line in enumerate(lines) if line.strip() == "end")
+        body.write_text("\n".join(lines[:last_end]) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "triangle.*end"):
+            self.select()
+
+        lines = original.splitlines()
+        last_end = max(index for index, line in enumerate(lines) if line.strip() == "end")
+        del lines[last_end - 1]
+        body.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "triangle.*complete"):
+            self.select()
+
+    def test_selection_payload_seal_is_exactly_self_verifiable(self) -> None:
+        from maximum_optimizer.animation_pose_selector import _canonical_hash
+
+        payload = self.select().to_payload()
+        seal = payload.pop("selection_sha256")
+        self.assertEqual(_canonical_hash(payload), seal)
+
     def test_external_charger_fixture_matches_blender_evaluated_vertices(self) -> None:
-        from maximum_optimizer.animation_pose_selector import select_animation_pose
+        from maximum_optimizer.animation_pose_selector import _parse_animation, select_animation_pose
 
         raw_root = os.environ.get("MAXIMUM_CHARGER_FIXTURE_ROOT")
         if raw_root is None:
             self.skipTest("MAXIMUM_CHARGER_FIXTURE_ROOT is not configured")
         root = Path(raw_root).resolve(strict=True)
+        corrective = _parse_animation(
+            root / "charger_anims" / "hood2_corrective_animation.smd",
+        )
+        self.assertEqual(len(corrective.bones), 32)
+        self.assertEqual(len(next(iter(corrective.frames.values()))), 2)
         arguments = dict(
             source_root=root,
             animation_pairs=(("hood2.smd", "hood2_corrective_animation.smd"),),
@@ -442,6 +539,18 @@ class AnimationPoseSelectorTests(unittest.TestCase):
         # Independent Blender 5.0.1 + Source Tools evaluated-vertex probe.
         self.assertLess(abs(first.displacement - 94.9086307914813), 5e-5)
         self.assertLess(abs(first.rms_displacement - 67.92508631579854), 5e-5)
+
+    def test_selector_enforces_pair_and_exact_file_caps_before_parsing(self) -> None:
+        from maximum_optimizer import animation_pose_selector as module
+
+        with patch.object(module, "_MAX_ANIMATION_PAIRS", 1), self.assertRaisesRegex(
+            ValueError, "allowlist count",
+        ):
+            self.select()
+        with patch.object(module, "_MAX_EXACT_FILE_BYTES", 8), self.assertRaisesRegex(
+            ValueError, "paired exact animation",
+        ):
+            self.select()
 
     def test_pixel_gate_rejects_untyped_keys_pre_read_byte_cap_and_wrong_size(self) -> None:
         from maximum_optimizer import animation_pose_selector as module
@@ -465,6 +574,45 @@ class AnimationPoseSelectorTests(unittest.TestCase):
                 camera_directions={"front": (1, 0, 0)},
                 required_size=(512, 512),
             )
+
+    def test_png_decoder_rejects_idat_before_ihdr(self) -> None:
+        from maximum_optimizer import animation_pose_selector as module
+
+        valid = self.root / "valid.png"
+        invalid = self.root / "idat-first.png"
+        Image.new("RGBA", (8, 8), (255, 255, 255, 255)).save(valid)
+        payload = valid.read_bytes()
+        signature = payload[:8]
+        chunks = []
+        offset = 8
+        while offset < len(payload):
+            size = int.from_bytes(payload[offset:offset + 4], "big")
+            end = offset + size + 12
+            chunks.append(payload[offset:end])
+            offset = end
+        ihdr = next(chunk for chunk in chunks if chunk[4:8] == b"IHDR")
+        idat = next(chunk for chunk in chunks if chunk[4:8] == b"IDAT")
+        remaining = [chunk for chunk in chunks if chunk not in (ihdr, idat)]
+        invalid.write_bytes(signature + idat + ihdr + b"".join(remaining))
+
+        with self.assertRaisesRegex(ValueError, "header.*first|order"):
+            module._decode_png_rgba8(invalid)
+
+    def test_png_decoder_rejects_unknown_critical_chunk(self) -> None:
+        from maximum_optimizer import animation_pose_selector as module
+
+        valid = self.root / "valid-critical.png"
+        invalid = self.root / "unknown-critical.png"
+        Image.new("RGBA", (8, 8), (255, 255, 255, 255)).save(valid)
+        payload = valid.read_bytes()
+        ihdr_size = int.from_bytes(payload[8:12], "big") + 12
+        insertion = 8 + ihdr_size
+        kind = b"ABCD"
+        critical = struct.pack(">I", 0) + kind + struct.pack(">I", zlib.crc32(kind))
+        invalid.write_bytes(payload[:insertion] + critical + payload[insertion:])
+
+        with self.assertRaisesRegex(ValueError, "critical"):
+            module._decode_png_rgba8(invalid)
 
 
 if __name__ == "__main__":
