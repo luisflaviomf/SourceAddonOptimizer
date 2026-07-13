@@ -1,23 +1,36 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Protocol
 
 from vehicle_steer_turn_basis_fix import apply_under_root
 
-from .domain import CandidateSpec, FamilyManifest, RecoverySourceSnapshot
+from .domain import (
+    CandidateSpec, DirectDroppedTriangleProof, DirectSourceBuildRequest,
+    DirectSourceSnapshot, FamilyManifest, RecoverySourceSnapshot,
+)
+from .focused_cache import (
+    _copy_file_no_follow, _file_proof, _has_reparse_ancestor,
+    _read_regular_no_follow,
+)
 from .processes import ProcessResult, run_process
 from .qc_inventory import _inventory_qc
+from .smd_contract import parse_smd_triangles, prefilter_direct_degenerate_smd
 
 
 ProcessRunner = Callable[[Sequence[str | Path], Path, Path, threading.Event], ProcessResult]
+DirectSourceRunner = Callable[
+    [Path, Path, DirectSourceBuildRequest, threading.Event | None], None
+]
+_DIRECT_BYTE_LIMIT = 2 * 1024 ** 3
 
 
 def _freeze(value: object) -> object:
@@ -73,6 +86,175 @@ class CandidateBuild:
             self.source_snapshot, RecoverySourceSnapshot
         ):
             raise TypeError("candidate source snapshot is invalid")
+
+
+@dataclass(frozen=True)
+class DirectSourceTools:
+    source_root: Path
+    runner: DirectSourceRunner
+
+    def __post_init__(self) -> None:
+        raw = Path(os.path.abspath(Path(self.source_root).expanduser()))
+        if not raw.is_dir() or _has_reparse_ancestor(raw):
+            raise ValueError("direct source root is unavailable or unsafe")
+        root = raw.resolve(strict=True)
+        if not callable(self.runner):
+            raise TypeError("direct source runner is invalid")
+        object.__setattr__(self, "source_root", root)
+
+
+def _direct_cancel(cancel_event: threading.Event | None, message: str) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        from .processes import ProcessCancelledError
+        raise ProcessCancelledError(message)
+
+
+def _direct_prefilter_proof(text: str):
+    evidence = prefilter_direct_degenerate_smd(text).evidence
+    triangles = tuple(DirectDroppedTriangleProof(
+        item["ordinal"], item["material"], tuple(item["primary_bones"]),
+        item["reason"], item["source_sha256"],
+    ) for item in evidence["triangles"])
+    from .composite import build_direct_prefilter_proof
+    return build_direct_prefilter_proof(
+        source_triangle_count=evidence["source_triangle_count"], triangles=triangles,
+    )
+
+
+def _direct_prefix(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    index = next((i for i, line in enumerate(lines) if line.strip().casefold() == "triangles"), -1)
+    if index < 0:
+        raise ValueError("direct SMD triangles section is missing")
+    return "".join(lines[: index + 1])
+
+
+def _validate_direct_smd_output(filtered_text: str, output_text: str) -> tuple[int, int]:
+    if _direct_prefix(filtered_text) != _direct_prefix(output_text):
+        raise RuntimeError("direct output changed nodes or skeleton frames")
+    source = parse_smd_triangles(filtered_text)
+    output = parse_smd_triangles(output_text)
+    if not 0 < len(output.triangles) < len(source.triangles):
+        raise ValueError("direct output did not strictly reduce post-prefilter triangles")
+    source_material_order = tuple(dict.fromkeys(item.material for item in source.triangles))
+    output_material_order = tuple(dict.fromkeys(item.material for item in output.triangles))
+    positions = [source_material_order.index(item) for item in output_material_order if item in source_material_order]
+    if len(positions) != len(output_material_order) or positions != sorted(positions):
+        raise RuntimeError("direct output changed material spelling or order")
+    corners_by_material: dict[str, set[tuple[str, ...]]] = {}
+    for triangle in source.triangles:
+        corners_by_material.setdefault(triangle.material, set()).update(
+            corner.tokens for corner in triangle.corners
+        )
+    for triangle in output.triangles:
+        allowed = corners_by_material.get(triangle.material, set())
+        if any(corner.tokens not in allowed for corner in triangle.corners):
+            raise RuntimeError("direct output changed retained corner attributes")
+        a, b, c = (corner.position for corner in triangle.corners)
+        ab = tuple(b[i] - a[i] for i in range(3)); ac = tuple(c[i] - a[i] for i in range(3))
+        cross = (
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        )
+        average_normal = tuple(sum(corner.normal[i] for corner in triangle.corners) for i in range(3))
+        if sum(cross[i] * average_normal[i] for i in range(3)) <= 0.0:
+            raise RuntimeError("direct output reversed cyclic winding provenance")
+    return len(source.triangles), len(output.triangles)
+
+
+def build_direct_source_snapshot(
+    request: DirectSourceBuildRequest,
+    workspace: Path,
+    tools: DirectSourceTools,
+    cancel_event: threading.Event | None,
+) -> DirectSourceSnapshot:
+    """Build one isolated, non-resumable direct-position SMD snapshot."""
+    if not isinstance(request, DirectSourceBuildRequest) or not isinstance(tools, DirectSourceTools):
+        raise TypeError("direct source build inputs are invalid")
+    if request.strategy != "meshopt-direct-position-v1" or request.transfer != "direct-position-v1":
+        raise ValueError("direct source build strategy is invalid")
+    if not request.source_relative_path.casefold().endswith(".smd"):
+        raise ValueError("direct source input must be an SMD")
+    source_root = tools.source_root
+    workspace = Path(workspace).expanduser()
+    if not workspace.is_absolute():
+        workspace = Path(os.path.abspath(workspace))
+    workspace = Path(os.path.abspath(workspace))
+    if _overlaps(workspace, source_root):
+        raise ValueError("direct workspace overlaps source root")
+    if workspace.exists() or not workspace.parent.is_dir() or _has_reparse_ancestor(workspace.parent):
+        raise ValueError("direct workspace must be fresh and safe")
+    source = source_root.joinpath(*PurePosixPath(request.source_relative_path).parts)
+    created = False
+    try:
+        _direct_cancel(cancel_event, "direct source build cancelled before workspace")
+        workspace.mkdir()
+        created = True
+        exact_input = workspace / "source.smd"
+        _copy_file_no_follow(source, exact_input, cancel_event, contained_root=source_root)
+        size, digest = _file_proof(
+            exact_input, cancel_event, contained_root=workspace, max_bytes=_DIRECT_BYTE_LIMIT,
+        )
+        if (size, digest) != (request.source_size, request.source_sha256):
+            raise ValueError("direct source current bytes differ from request")
+        raw = _read_regular_no_follow(
+            exact_input, cancel_event, contained_root=workspace, max_bytes=_DIRECT_BYTE_LIMIT,
+        )
+        try:
+            source_text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("direct source SMD is not UTF-8") from exc
+        computed_prefilter = _direct_prefilter_proof(source_text)
+        if computed_prefilter != request.expected_prefilter:
+            raise ValueError("direct source prefilter differs from expected proof")
+        prefilter = prefilter_direct_degenerate_smd(source_text)
+        filtered_bytes = prefilter.filtered_text.encode("utf-8")
+        filtered_path = workspace / "prefiltered.smd"
+        with filtered_path.open("xb") as stream:
+            stream.write(filtered_bytes); stream.flush(); os.fsync(stream.fileno())
+        output = workspace / "output.smd"
+        _direct_cancel(cancel_event, "direct source build cancelled before runner")
+        tools.runner(filtered_path, output, request, cancel_event)
+        _direct_cancel(cancel_event, "direct source build cancelled after runner")
+        from .composite import _safe_tree_files, build_direct_source_snapshot as seal_snapshot
+        paths = _safe_tree_files(workspace, cancel_event)
+        with os.scandir(workspace) as scan:
+            entries = tuple(scan)
+        if (
+            {path.name for path in paths} != {"source.smd", "prefiltered.smd", "output.smd"}
+            or {entry.name for entry in entries} != {"source.smd", "prefiltered.smd", "output.smd"}
+            or any(not entry.is_file(follow_symlinks=False) for entry in entries)
+        ):
+            raise ValueError("direct runner output inventory is not exact")
+        if _file_proof(exact_input, cancel_event, contained_root=workspace, max_bytes=_DIRECT_BYTE_LIMIT) != (size, digest):
+            raise ValueError("direct runner mutated exact input")
+        filtered_size, filtered_hash = _file_proof(
+            filtered_path, cancel_event, contained_root=workspace, max_bytes=_DIRECT_BYTE_LIMIT,
+        )
+        if (filtered_size, filtered_hash) != (len(filtered_bytes), hashlib.sha256(filtered_bytes).hexdigest()):
+            raise ValueError("direct runner mutated prefiltered input")
+        output_bytes = _read_regular_no_follow(
+            output, cancel_event, contained_root=workspace, max_bytes=_DIRECT_BYTE_LIMIT,
+        )
+        try:
+            output_text = output_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("direct output SMD is not UTF-8") from exc
+        triangles_before, triangles_after = _validate_direct_smd_output(
+            prefilter.filtered_text, output_text
+        )
+        exact_input.unlink(); filtered_path.unlink()
+        return seal_snapshot(
+            request=request, source_root=workspace, output_relative_path="output.smd",
+            output_size=len(output_bytes), output_sha256=hashlib.sha256(output_bytes).hexdigest(),
+            triangles_before=triangles_before, triangles_after=triangles_after,
+            prefilter=computed_prefilter, cancel_event=cancel_event,
+        )
+    except BaseException:
+        if created and workspace.exists() and not workspace.is_symlink():
+            shutil.rmtree(workspace)
+        raise
 
 
 class CandidateBuildError(RuntimeError):

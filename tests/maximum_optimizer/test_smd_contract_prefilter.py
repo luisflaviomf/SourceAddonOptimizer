@@ -25,6 +25,18 @@ def _fixture(*, retained_normal: str = "0 0 1") -> str:
 
 
 class DirectDegeneratePrefilterTests(unittest.TestCase):
+    def test_float64_threshold_boundary_is_deterministic(self) -> None:
+        def triangle(height: str) -> str:
+            return (
+                'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+                '0 0 0 0 0 0 0\nend\ntriangles\nmetal\n'
+                '0 0 0 0 0 0 1 0 0\n0 1 0 0 0 0 1 1 0\n'
+                f'0 0 {height} 0 0 0 1 0 1\nend\n'
+            )
+        at = prefilter_direct_degenerate_smd(triangle("1e-15"))
+        above = prefilter_direct_degenerate_smd(triangle("1.0000000000000002e-15"))
+        self.assertEqual(at.dropped_source_triangles, (0,))
+        self.assertEqual(above.dropped_source_triangles, ())
     def test_drops_only_zero_area_and_binds_deterministic_evidence(self) -> None:
         source = _fixture()
 
@@ -42,7 +54,7 @@ class DirectDegeneratePrefilterTests(unittest.TestCase):
         self.assertEqual(result.evidence["triangles"], [{
             "ordinal": 0,
             "material": "metal",
-            "primary_bones": ["root", "root", "root"],
+            "primary_bones": ["root"],
             "reason": "cross-squared-at-most-1e-30",
             "source_sha256": result.evidence["triangles"][0]["source_sha256"],
         }])

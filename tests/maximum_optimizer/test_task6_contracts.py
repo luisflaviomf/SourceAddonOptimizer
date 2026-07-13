@@ -452,20 +452,20 @@ class DirectContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             replace(request, source_coverage_sha256=H["f"])
 
-    def test_request_rejects_dropped_triangle_from_different_source(self) -> None:
+    def test_request_seals_independent_dropped_triangle_record_hash(self) -> None:
         triangle = DirectDroppedTriangleProof(0, "paint", ("root",), "cross-squared-at-most-1e-30", H["2"])
         mismatched = build_direct_prefilter_proof(source_triangle_count=10, triangles=(triangle,))
-        with self.assertRaises(ValueError):
-            build_direct_source_request(
-                family_id=H["0"], family_input_sha256=H["1"], base_candidate_id="base",
-                base_spec_sha256=H["2"], base_cache_digest=H["3"],
-                base_source_manifest_sha256=H["4"], base_source_snapshot_sha256=H["5"],
-                coverage_manifest_sha256=H["a"], source_coverage_sha256=H["b"],
-                optimizer_contract_sha256=H["6"], whole_profile_sha256=H["7"],
-                focused_profile_sha256=H["8"], dependency_proof_sha256=H["9"],
-                source_identity="body.smd", source_relative_path="body.smd", source_size=100,
-                source_sha256=H["1"], direct_ratio=0.5, expected_prefilter=mismatched,
-            )
+        request = build_direct_source_request(
+            family_id=H["0"], family_input_sha256=H["1"], base_candidate_id="base",
+            base_spec_sha256=H["2"], base_cache_digest=H["3"],
+            base_source_manifest_sha256=H["4"], base_source_snapshot_sha256=H["5"],
+            coverage_manifest_sha256=H["a"], source_coverage_sha256=H["b"],
+            optimizer_contract_sha256=H["6"], whole_profile_sha256=H["7"],
+            focused_profile_sha256=H["8"], dependency_proof_sha256=H["9"],
+            source_identity="body.smd", source_relative_path="body.smd", source_size=100,
+            source_sha256=H["1"], direct_ratio=0.5, expected_prefilter=mismatched,
+        )
+        self.assertEqual(request.expected_prefilter.triangles[0].source_sha256, H["2"])
 
 
 class SourceUnionContracts(unittest.TestCase):

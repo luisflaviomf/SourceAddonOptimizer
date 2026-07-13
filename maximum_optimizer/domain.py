@@ -1151,8 +1151,6 @@ class DirectSourceBuildRequest:
         _require_text(self.base_candidate_id, "direct base candidate")
         _require_relative(self.source_identity, "direct source identity"); _require_relative(self.source_relative_path, "direct source path"); _require_size(self.source_size, "direct source size"); _require_ratio(self.direct_ratio, "direct ratio")
         if not isinstance(self.expected_prefilter, DirectPrefilterProof): raise TypeError("direct expected prefilter is invalid")
-        if any(item.source_sha256 != self.source_sha256 for item in self.expected_prefilter.triangles):
-            raise ValueError("direct prefilter triangle source mismatch")
         if _require_sha256(self.request_sha256, "direct request hash") != _seal(direct_source_request_payload(self, include_seal=False)): raise ValueError("direct request seal mismatch")
 
 

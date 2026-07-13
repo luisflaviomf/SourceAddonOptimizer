@@ -178,10 +178,10 @@ def prefilter_direct_degenerate_smd(
             records.append({
                 "ordinal": ordinal,
                 "material": triangle.material,
-                "primary_bones": [
+                "primary_bones": sorted({
                     node_names.get(int(corner.tokens[0]), corner.tokens[0])
                     for corner in triangle.corners
-                ],
+                }, key=lambda value: (value.casefold(), value)),
                 "reason": "cross-squared-at-most-1e-30",
                 "source_sha256": hashlib.sha256(raw_record).hexdigest(),
             })
