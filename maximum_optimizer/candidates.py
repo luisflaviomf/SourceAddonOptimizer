@@ -30,6 +30,7 @@ from .qc_inventory import _inventory_qc
 from .smd_contract import (
     direct_smd_input_material_inventory, parse_smd_triangles,
     prefilter_direct_degenerate_smd,
+    match_direct_output_triangle_ordinals,
 )
 
 
@@ -216,24 +217,8 @@ def _validate_direct_smd_output(
     }
     if any(output_counts[material] > targets[material] for material in source_material_order):
         raise ValueError("direct output exceeds deterministic post-prefilter ratio target")
-    source_cycles: dict[str, dict[tuple[tuple[str, ...], ...], int]] = {}
-    for ordinal, triangle in enumerate(source.triangles):
-        tokens = tuple(corner.tokens for corner in triangle.corners)
-        values = source_cycles.setdefault(triangle.material, {})
-        for offset in range(3):
-            cycle = tokens[offset:] + tokens[:offset]
-            if cycle in values:
-                raise RuntimeError("direct source triangle cycle provenance is ambiguous")
-            values[cycle] = ordinal
-    used_cycles: set[int] = set()
+    match_direct_output_triangle_ordinals(filtered_text, output_text)
     for triangle in output.triangles:
-        tokens = tuple(corner.tokens for corner in triangle.corners)
-        source_ordinal = source_cycles.get(triangle.material, {}).get(tokens)
-        if source_ordinal is None:
-            raise RuntimeError("direct output changed retained corner cycle or winding")
-        if source_ordinal in used_cycles:
-            raise RuntimeError("direct output duplicated a retained source triangle")
-        used_cycles.add(source_ordinal)
         a, b, c = (corner.position for corner in triangle.corners)
         ab = tuple(b[i] - a[i] for i in range(3)); ac = tuple(c[i] - a[i] for i in range(3))
         cross = (

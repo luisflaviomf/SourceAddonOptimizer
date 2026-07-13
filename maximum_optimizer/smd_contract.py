@@ -138,6 +138,37 @@ def direct_smd_material_counts(text: str) -> tuple[tuple[str, int], ...]:
     )
 
 
+def match_direct_output_triangle_ordinals(
+    filtered_text: str, output_text: str,
+) -> tuple[int, ...]:
+    """Map each exact retained output triangle to its post-prefilter source ordinal."""
+    source = parse_smd_triangles(filtered_text)
+    output = parse_smd_triangles(output_text)
+    direct_smd_material_counts(filtered_text)
+    direct_smd_material_counts(output_text)
+    source_cycles: dict[str, dict[tuple[tuple[str, ...], ...], int]] = {}
+    for ordinal, triangle in enumerate(source.triangles):
+        tokens = tuple(corner.tokens for corner in triangle.corners)
+        values = source_cycles.setdefault(triangle.material, {})
+        for offset in range(3):
+            cycle = tokens[offset:] + tokens[:offset]
+            if cycle in values:
+                raise RuntimeError("direct source triangle cycle provenance is ambiguous")
+            values[cycle] = ordinal
+    result: list[int] = []
+    used: set[int] = set()
+    for triangle in output.triangles:
+        tokens = tuple(corner.tokens for corner in triangle.corners)
+        source_ordinal = source_cycles.get(triangle.material, {}).get(tokens)
+        if source_ordinal is None:
+            raise RuntimeError("direct output changed retained corner cycle or winding")
+        if source_ordinal in used:
+            raise RuntimeError("direct output duplicated a retained source triangle")
+        used.add(source_ordinal)
+        result.append(source_ordinal)
+    return tuple(result)
+
+
 def direct_smd_input_material_inventory(
     text: str,
 ) -> tuple[tuple[str, int, str], ...]:
