@@ -125,6 +125,78 @@ class LvsSourcePrepFixture(unittest.TestCase):
             {path.relative_to(self.output).as_posix() for path in self.output.rglob("*") if path.is_file()},
         )
 
+    def test_final_verifier_failure_rolls_back_owned_output_and_allows_retry(self):
+        from maximum_optimizer import lvs_source_prep as module
+
+        manifest = load_lvs_source_manifest(self.corpus)
+        original_verify = module.verify_prepared_lvs_source_root
+
+        def fail_only_published(candidate_manifest, root):
+            if Path(root).absolute() == self.output.absolute():
+                raise CorpusError("forced final verification failure")
+            return original_verify(candidate_manifest, root)
+
+        with mock.patch.object(
+            module,
+            "verify_prepared_lvs_source_root",
+            side_effect=fail_only_published,
+        ):
+            with self.assertRaisesRegex(CorpusError, "forced final verification failure"):
+                prepare_lvs_source_root(
+                    manifest=manifest,
+                    control_root=self.control,
+                    output_root=self.output,
+                )
+
+        self.assertFalse(os.path.lexists(self.output))
+        self.assertEqual((), tuple(self.root.glob(f".{self.output.name}.cleanup-*")))
+        self.assertEqual((), tuple(self.root.glob(f".{self.output.name}.lvs-source-prep-*")))
+        retry = prepare_lvs_source_root(
+            manifest=manifest,
+            control_root=self.control,
+            output_root=self.output,
+        )
+        self.assertEqual(10, retry.file_count)
+
+    def test_final_verifier_hostile_mutation_preserves_published_output(self):
+        from maximum_optimizer import lvs_source_prep as module
+
+        manifest = load_lvs_source_manifest(self.corpus)
+        original_verify = module.verify_prepared_lvs_source_root
+        hostile = self.output / "hostile-after-publish.txt"
+
+        def mutate_only_published(candidate_manifest, root):
+            root = Path(root).absolute()
+            if root == self.output.absolute():
+                hostile.write_bytes(b"foreign")
+                raise CorpusError("forced hostile final verification failure")
+            return original_verify(candidate_manifest, root)
+
+        with mock.patch.object(
+            module,
+            "_remove_private_staging",
+            wraps=module._remove_private_staging,
+        ) as cleanup, mock.patch.object(
+            module,
+            "verify_prepared_lvs_source_root",
+            side_effect=mutate_only_published,
+        ):
+            with self.assertRaisesRegex(
+                CorpusError, "forced hostile final verification failure"
+            ):
+                prepare_lvs_source_root(
+                    manifest=manifest,
+                    control_root=self.control,
+                    output_root=self.output,
+                )
+
+        self.assertTrue(self.output.is_dir())
+        self.assertEqual(b"foreign", hostile.read_bytes())
+        self.assertTrue(any(
+            Path(call.args[0]).absolute() == self.output.absolute()
+            for call in cleanup.call_args_list
+        ))
+
     def test_ignores_undeclared_regular_input_artifacts_but_publishes_exact_manifest(self):
         first = self.families[0]
         extra = (

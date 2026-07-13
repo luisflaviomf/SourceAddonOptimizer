@@ -546,6 +546,7 @@ def prepare_lvs_source_root(
     ownership: _StagingOwnership | None = _StagingOwnership(
         _owned_identity(staging, directory=True)
     )
+    published = False
     try:
         for logical, declaration, source in plan:
             destination = staging.joinpath(*PurePosixPath(logical).parts)
@@ -562,7 +563,9 @@ def prepare_lvs_source_root(
         if os.path.lexists(output):
             raise CorpusError(f"prepared LVS source root appeared during publication: {output}")
         os.rename(staging, output)
+        published = True
+        prepared = verify_prepared_lvs_source_root(manifest, output)
     except BaseException:
-        _remove_private_staging(staging, ownership)
+        _remove_private_staging(output if published else staging, ownership)
         raise
-    return verify_prepared_lvs_source_root(manifest, output)
+    return prepared
