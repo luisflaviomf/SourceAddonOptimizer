@@ -27,7 +27,7 @@ The proof binds:
 - strategy and transfer identities;
 - SHA-256 of exact source and output UTF-8 bytes;
 - source/output triangle counts and reduction ratio;
-- ordered per-material source, target, and output counts;
+- deterministic global triangle target and ordered per-material source/output counts;
 - source connected-component count and complete output coverage;
 - retained-cycle and remapped-cycle counts;
 - exact boundary-edge counts;
@@ -50,8 +50,8 @@ Topology is evaluated per exact material and exact-position connected component.
 
 The output must:
 
-1. preserve the source prefix through the `triangles` marker and contain no trailing data after `end`;
-2. strictly reduce triangles and not exceed `max(1, floor(source material triangles * requested ratio))` for any material;
+1. preserve the source prefix through the `triangles` marker modulo CRLF/LF encoding and contain no trailing data after `end`;
+2. strictly reduce triangles and not exceed `max(material count, floor(total source triangles * requested ratio))` globally;
 3. preserve exact material spelling and first-occurrence order;
 4. contain only nondegenerate triangles with three distinct exact corner payloads and position cross-product squared greater than `1e-30`;
 5. contain no duplicate oriented or reverse-oriented triangle cycle;
@@ -61,6 +61,8 @@ The output must:
 9. not increase maximum edge valence or aggregate nonmanifold excess (`sum(max(0, valence - 2))`) in any component;
 10. not increase same-direction manifold-edge conflicts in any component;
 11. not increase faces whose geometric normal is in the opposite hemisphere from all three retained exact corner normals.
+
+Every material must retain at least one triangle and may never exceed its own source count. The target is deliberately global: a visually sensitive or heavily locked material may retain a larger fraction when another material can safely absorb more of the reduction. The proof records this adaptive allocation instead of presenting a misleading uniform per-material target.
 
 These checks limit connectivity changes to structurally conservative remapping. They do not estimate silhouette, shading quality, UV distortion across new edges, animation quality, or compiled size.
 

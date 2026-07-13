@@ -51,7 +51,6 @@ class RemappedMaterialProof:
     ordinal: int
     material: str
     triangles_before: int
-    target_triangles: int
     triangles_after: int
     source_components: int
     covered_components: int
@@ -64,12 +63,11 @@ class RemappedMaterialProof:
             or not self.material
             or any(type(value) is not int for value in (
                 self.triangles_before,
-                self.target_triangles,
                 self.triangles_after,
                 self.source_components,
                 self.covered_components,
             ))
-            or not 0 < self.triangles_after <= self.target_triangles <= self.triangles_before
+            or not 0 < self.triangles_after <= self.triangles_before
             or not 0 < self.covered_components == self.source_components
         ):
             raise ValueError("remapped material proof is invalid")
@@ -134,6 +132,7 @@ class RemappedTopologyProof:
     source_sha256: str
     output_sha256: str
     triangles_before: int
+    global_target_triangles: int
     triangles_after: int
     retained_cycles: int
     remapped_cycles: int
@@ -159,7 +158,8 @@ class RemappedTopologyProof:
 
     def __post_init__(self) -> None:
         integer_names = (
-            "triangles_before", "triangles_after", "retained_cycles", "remapped_cycles",
+            "triangles_before", "global_target_triangles", "triangles_after",
+            "retained_cycles", "remapped_cycles",
             "source_component_count", "covered_component_count", "source_boundary_edges",
             "output_boundary_edges", "source_nonmanifold_excess",
             "output_nonmanifold_excess", "source_max_edge_valence",
@@ -168,7 +168,8 @@ class RemappedTopologyProof:
             "output_orientation_conflicts",
         )
         if (
-            self.schema != 1
+            type(self.schema) is not int
+            or self.schema != 1
             or self.strategy != STRATEGY
             or self.transfer != TRANSFER
             or self.quality_status != "unverified"
@@ -186,6 +187,9 @@ class RemappedTopologyProof:
             ))
             or any(type(getattr(self, name)) is not int or getattr(self, name) < 0 for name in integer_names)
             or not 0 < self.triangles_after < self.triangles_before
+            or self.global_target_triangles
+            != max(len(self.materials), math.floor(self.triangles_before * self.requested_ratio))
+            or self.triangles_after > self.global_target_triangles
             or self.retained_cycles + self.remapped_cycles != self.triangles_after
             or self.covered_component_count != self.source_component_count
             or self.source_boundary_edges != self.output_boundary_edges
@@ -208,11 +212,6 @@ class RemappedTopologyProof:
             or sum(item.source_components for item in self.materials) != self.source_component_count
             or sum(item.covered_components for item in self.materials) != self.covered_component_count
             or len({item.material for item in self.materials}) != len(self.materials)
-            or any(
-                item.target_triangles
-                != max(1, math.floor(item.triangles_before * self.requested_ratio))
-                for item in self.materials
-            )
             or any(value >= self.triangles_before * 3 for value in self.output_source_corner_ordinals)
             or sum(item.source_triangles for item in self.components) != self.triangles_before
             or sum(item.output_triangles for item in self.components) != self.triangles_after
@@ -258,7 +257,8 @@ def remapped_topology_proof_from_payload(value: object) -> RemappedTopologyProof
     expected = {
         "schema", "strategy", "transfer", "quality_status", "quality_claim",
         "requested_ratio", "source_sha256", "output_sha256", "triangles_before",
-        "triangles_after", "retained_cycles", "remapped_cycles", "source_component_count",
+        "global_target_triangles", "triangles_after", "retained_cycles", "remapped_cycles",
+        "source_component_count",
         "covered_component_count", "source_boundary_edges", "output_boundary_edges",
         "source_boundary_sha256", "output_boundary_sha256",
         "source_nonmanifold_excess", "output_nonmanifold_excess",
@@ -270,7 +270,7 @@ def remapped_topology_proof_from_payload(value: object) -> RemappedTopologyProof
     if type(value) is not dict or set(value) != expected:
         raise ValueError("remapped topology proof fields are invalid")
     material_fields = {
-        "ordinal", "material", "triangles_before", "target_triangles", "triangles_after",
+        "ordinal", "material", "triangles_before", "triangles_after",
         "source_components", "covered_components",
     }
     component_fields = {
@@ -311,7 +311,7 @@ def _prefix(text: str) -> str:
     lines = text.splitlines(keepends=True)
     for index, line in enumerate(lines):
         if line.strip().casefold() == "triangles":
-            return "".join(lines[: index + 1])
+            return "\n".join(item.rstrip("\r\n") for item in lines[: index + 1]) + "\n"
     raise ValueError("remapped SMD triangles section is missing")
 
 
@@ -591,12 +591,16 @@ def validate_remapped_topology_smd(
         raise ValueError("remapped source exceeds component cap")
     source_counts = Counter(triangle.material for triangle in source.triangles)
     output_counts = Counter(triangle.material for triangle in output.triangles)
-    targets = {
-        material: max(1, math.floor(source_counts[material] * ratio))
+    global_target = max(
+        len(source_materials), math.floor(len(source.triangles) * ratio)
+    )
+    if len(output.triangles) > global_target:
+        raise ValueError("remapped output exceeds deterministic global ratio target")
+    if any(
+        not 0 < output_counts[material] <= source_counts[material]
         for material in source_materials
-    }
-    if any(output_counts[material] > targets[material] for material in source_materials):
-        raise ValueError("remapped output exceeds deterministic material ratio target")
+    ):
+        raise ValueError("remapped output has an invalid material allocation")
 
     source_oriented_cycles = {
         (triangle.material, cycle)
@@ -667,7 +671,6 @@ def validate_remapped_topology_smd(
             ordinal=ordinal,
             material=material,
             triangles_before=source_counts[material],
-            target_triangles=targets[material],
             triangles_after=output_counts[material],
             source_components=len(material_components),
             covered_components=sum(component in covered for component in material_components),
@@ -717,6 +720,7 @@ def validate_remapped_topology_smd(
         source_sha256=_sha256(source_bytes),
         output_sha256=_sha256(output_bytes),
         triangles_before=len(source.triangles),
+        global_target_triangles=global_target,
         triangles_after=len(output.triangles),
         retained_cycles=retained,
         remapped_cycles=len(output.triangles) - retained,

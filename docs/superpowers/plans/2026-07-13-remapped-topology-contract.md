@@ -40,7 +40,7 @@ Expected: FAIL because `maximum_optimizer.remapped_topology` does not exist.
 
 - [ ] **Step 3: Implement the minimal proof and valid remap path**
 
-Implement immutable proof dataclasses, strict prefix/EOF/material/ratio checks, exact same-material full-token corner lookup, deterministic component-local ordinal selection, retained/new-cycle counts, and canonical SHA-256 payload sealing.
+Implement immutable proof dataclasses, strict prefix/EOF/material checks, a deterministic global ratio target with nonempty/non-increasing per-material allocation, exact same-material full-token corner lookup, deterministic component-local ordinal selection, retained/new-cycle counts, and canonical SHA-256 payload sealing.
 
 - [ ] **Step 4: Run the focused test and verify GREEN**
 
@@ -50,7 +50,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Add adversarial RED tests**
 
-Add one focused test per invariant: synthesized payload, material borrowing, component bridge/deletion, ambiguous duplicate provenance, boundary replacement, duplicate/reversed triangle, degenerate triangle, increased nonmanifold excess/max valence, increased directed manifold conflict, increased all-normal-opposite faces, ratio excess, each fixed cap, and tampered proof payload.
+Add one focused test per invariant: synthesized payload, material borrowing, adaptive material allocation under the global target, component bridge/deletion, ambiguous duplicate provenance, boundary replacement, duplicate/reversed triangle, degenerate triangle, increased nonmanifold excess/max valence, increased directed manifold conflict, increased all-normal-opposite faces, global ratio excess, each fixed cap, and tampered proof payload.
 
 - [ ] **Step 6: Run adversarial tests and verify RED**
 

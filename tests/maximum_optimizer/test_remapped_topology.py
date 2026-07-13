@@ -25,6 +25,7 @@ POSITIONS = {
     "h": ("4", "1", "0"),
     "i": ("3", "1", "0"),
     "j": ("3.5", "0.5", "0"),
+    "k": ("2.5", "0.5", "0"),
 }
 
 
@@ -87,6 +88,30 @@ def _two_diagonals(*, materials: tuple[str, str] = ("metal", "metal")) -> str:
     ])
 
 
+def _adaptive_material_source() -> str:
+    return _smd([
+        ("metal", ("a", "b", "e")),
+        ("metal", ("b", "c", "e")),
+        ("metal", ("c", "d", "e")),
+        ("metal", ("d", "a", "e")),
+        ("glass", ("f", "g", "j")),
+        ("glass", ("g", "h", "j")),
+        ("glass", ("h", "i", "j")),
+        ("glass", ("i", "k", "j")),
+        ("glass", ("k", "f", "j")),
+    ])
+
+
+def _adaptive_material_output() -> str:
+    return _smd([
+        ("metal", ("a", "b", "c")),
+        ("metal", ("a", "c", "d")),
+        ("glass", ("f", "g", "h")),
+        ("glass", ("f", "h", "i")),
+        ("glass", ("f", "i", "k")),
+    ])
+
+
 def _reseal(payload: dict) -> dict:
     copied = dict(payload)
     copied.pop("proof_sha256", None)
@@ -97,6 +122,14 @@ def _reseal(payload: dict) -> dict:
 
 
 class RemappedTopologyContractTests(unittest.TestCase):
+    def test_equivalent_prefix_line_endings_are_accepted(self) -> None:
+        source = _fan_source().replace("\n", "\r\n")
+
+        proof = validate_remapped_topology_smd(source, _diagonal_output(), 0.5)
+
+        self.assertEqual(proof.triangles_before, 4)
+        self.assertEqual(proof.triangles_after, 2)
+
     def test_accepts_exact_remapped_cycle_and_seals_deterministic_provenance(self) -> None:
         source = _fan_source()
         output = _diagonal_output()
@@ -113,6 +146,7 @@ class RemappedTopologyContractTests(unittest.TestCase):
         self.assertEqual(first.quality_status, "unverified")
         self.assertIsNone(first.quality_claim)
         self.assertEqual((first.triangles_before, first.triangles_after), (4, 2))
+        self.assertEqual(first.global_target_triangles, 2)
         self.assertEqual((first.retained_cycles, first.remapped_cycles), (0, 2))
         self.assertEqual(first.source_component_count, 1)
         self.assertEqual(first.covered_component_count, 1)
@@ -132,10 +166,26 @@ class RemappedTopologyContractTests(unittest.TestCase):
             first,
         )
 
-    def test_rejects_resealed_non_deterministic_material_target(self) -> None:
+    def test_allows_adaptive_material_allocation_under_global_target(self) -> None:
+        proof = validate_remapped_topology_smd(
+            _adaptive_material_source(), _adaptive_material_output(), 0.56
+        )
+
+        self.assertEqual((proof.triangles_before, proof.global_target_triangles), (9, 5))
+        self.assertEqual(
+            [(item.material, item.triangles_before, item.triangles_after) for item in proof.materials],
+            [("metal", 4, 2), ("glass", 5, 3)],
+        )
+
+        with self.assertRaisesRegex(ValueError, "global ratio target"):
+            validate_remapped_topology_smd(
+                _adaptive_material_source(), _adaptive_material_output(), 0.5
+            )
+
+    def test_rejects_resealed_non_deterministic_global_target(self) -> None:
         proof = validate_remapped_topology_smd(_fan_source(), _diagonal_output(), 0.5)
         payload = remapped_topology_proof_payload(proof)
-        payload["materials"][0]["target_triangles"] = 3
+        payload["global_target_triangles"] = 3
         _reseal(payload)
 
         with self.assertRaisesRegex(ValueError, "relationships"):
