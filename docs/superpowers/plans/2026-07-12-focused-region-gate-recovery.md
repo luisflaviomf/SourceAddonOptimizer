@@ -1285,6 +1285,21 @@ enable schema 3 receive the current defaults and behavior.
       evidence_sha256: str
 
   @dataclass(frozen=True)
+  class DirectMaterialTriangleProof:
+      ordinal: int
+      material: str
+      triangles_before: int
+      target_triangles: int
+      triangles_after: int
+
+  @dataclass(frozen=True)
+  class DirectInputMaterialProof:
+      ordinal: int
+      material: str
+      triangles_before: int
+      source_sha256: str
+
+  @dataclass(frozen=True)
   class DirectSourceBuildRequest:
       schema: Literal[1]
       family_id: str
@@ -1309,6 +1324,7 @@ enable schema 3 receive the current defaults and behavior.
       transfer: Literal["direct-position-v1"]
       prefilter_version: Literal["direct-degenerate-prefilter-v1"]
       expected_prefilter: DirectPrefilterProof
+      expected_materials: tuple[DirectInputMaterialProof, ...]
       request_sha256: str
 
   @dataclass(frozen=True)
@@ -1318,11 +1334,13 @@ enable schema 3 receive the current defaults and behavior.
       direct_candidate_id: str
       direct_cache_digest: str
       source_root: Path
+      input_source_root: Path
       output_relative_path: str
       output_size: int
       output_sha256: str
       triangles_before: int
       triangles_after: int
+      material_triangles: tuple[DirectMaterialTriangleProof, ...]
       prefilter: DirectPrefilterProof
       fallback_reason: None
       preserved_exact: Literal[False]
@@ -1532,7 +1550,9 @@ enable schema 3 receive the current defaults and behavior.
   search JSON. Each request binds family/input, immutable base candidate ID,
   `base_spec_sha256`, base cache digest, source manifest and source snapshot digests,
   explicit `base_strategy="blender-adaptive-v1"` and its full cache payload,
-  optimizer/profile/dependency contracts, canonical input proof, one global ratio,
+  optimizer/profile/dependency contracts, canonical input proof, one candidate-wide
+  ratio shared by every selected source, the canonical post-prefilter material
+  order/count records with a per-material SHA-256 over the exact ordered SMD records,
   fixed direct strategy/transfer/prefilter, and request digest. Build each selected
   source in a fresh non-overlapping canonical mini-QC workspace through no-follow
   handles and cancellation barriers.
@@ -1545,11 +1565,32 @@ enable schema 3 receive the current defaults and behavior.
   source/dropped counts, dropped fraction, ordered triangle records, and digest.
   Require `applied == true`, `fallback_reason is None`, `preserved_exact == false`,
   exact direct strategy/transfer, changed output hash, strict post-prefilter triangle
-  decrease, and a current one-file output proof. Verify original/base input bytes are
+  decrease, and a current one-file output proof. Apply that shared ratio independently
+  to each post-prefilter material subset exactly as the native bridge does: preserve
+  the complete material set and first-occurrence order, cap each material at
+  `max(1, floor(before * ratio))`, and seal the canonical ordinal
+  `{material,before,target,after}` matrix in `DirectSourceSnapshot`. Matrix totals
+  must equal the source-level totals; do not interpret the ratio as one global
+  total-triangle cap across materials. Each request `DirectInputMaterialProof` seals
+  ordinal, exact material spelling, `before`, and the SHA-256 of the concatenation,
+  in source order, of that material's complete SMD records (material line plus three
+  corners); the `before` sum equals the exact post-prefilter count. Bind every
+  snapshot material and `before` value to the request's sealed
+  `DirectInputMaterialProof` rather than
+  accepting caller-authored counts. `DirectSourceSnapshot.input_source_root` is an
+  absolute runtime-only path excluded from the seal; every parser/restore call must
+  explicitly reroot both runtime roots. During runtime revalidation, read the current
+  request source under that root through no-follow handles, recompute the full
+  prefilter and expected-material records, then parse the current output SMD and
+  validate retained cycles, material order, ratio caps, and exact `after` counts
+  against the recomputed input before schedule/recipe/cache use. Verify original/base
+  input bytes are
   byte-identical and preserve nodes, skeleton frames, materials, bones/weights, UVs,
   normals, retained-corner attributes, and cyclic winding; only triangle membership/
   order and position-remapped topology may change. On any source failure, publish no partial recipe
-  for that ratio, record its reserved terminal failure, clean owned staging no-follow,
+  for that ratio, record its reserved terminal failure, atomically detach owned
+  staging to an unpredictable same-parent quarantine name, clean only that detached
+  tree without following symlinks/junctions/reparse points,
   and allow the next fixed ratio only if budget/cancellation permits.
 
 - [ ] **Step 6: Assemble byte-exact independent composites**
@@ -1602,7 +1643,9 @@ enable schema 3 receive the current defaults and behavior.
   or promotion. Keep the passing Blender base in evaluations. At the Task-6
   checkpoint, reopen and reauthorize only the just-published or concurrently adopted
   `final/payload`; there is no cross-run resume hit. Task 7 later adds the exact
-  whitelist, record/report schema, pre-build lookup, private restore, and fresh rerun
+  whitelist, record/report schema, pre-build lookup, private restore, explicit
+  rerooting of each direct snapshot's runtime-only `input_source_root` to the private
+  restored base copy, and fresh rerun
   of structural, every base focus, every changed-source union focus, and final whole
   exactly once. Stored diagnostics never authorize in either task.
 

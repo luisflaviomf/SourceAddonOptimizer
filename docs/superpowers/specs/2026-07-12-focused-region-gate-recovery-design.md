@@ -500,14 +500,22 @@ isolated mini-source is not misrepresented as a complete `RecoverySourceSnapshot
 The request seals family/input, immutable base candidate/spec/cache/source
 manifest/snapshot, optimizer/profile/dependency contracts, explicit base strategy
 `blender-adaptive-v1` with its complete cache payload, canonical source identity and
-current input proof, one global ratio, explicit direct strategy/transfer
+current input proof, one candidate-wide ratio shared by every selected source,
+explicit direct strategy/transfer
 `meshopt-direct-position-v1`/`direct-position-v1`, prefilter
 `direct-degenerate-prefilter-v1`, the exact expected prefilter proof recomputed from
-the request input bytes, the exact coverage-manifest digest, and its own digest. The snapshot carries the request, derived
-direct candidate/cache identity, one contained regular `.smd` output proof, input and
-output triangle counts, the exact recomputed prefilter proof, fixed reason
-`approved-direct-position-v1`, and a seal over every canonical field except its
-runtime absolute root. Per-ratio request/snapshot set digests bind every sorted source;
+the request input bytes, the canonical post-prefilter material order/count records
+with a per-material digest over the exact ordered SMD records, the exact
+coverage-manifest digest, and its own digest.
+The snapshot carries the request, derived direct candidate/cache identity, a
+runtime-only absolute `input_source_root`, one contained regular `.smd` output proof,
+input and
+output triangle counts, the exact sealed per-material triangle matrix, the exact
+recomputed prefilter proof, fixed reason
+`approved-direct-position-v1`, and a seal over every canonical field except its two
+runtime absolute roots. Parsing or restoring a snapshot must explicitly reroot both
+its output root and `input_source_root`; neither path is inferred from serialized
+content. Per-ratio request/snapshot set digests bind every sorted source;
 composite identity binds both strategies, immutable base, coverage manifest, ratio,
 recipe, and both set digests. The coverage digest is repeated exactly in each request,
 the request-set digest, recipe, candidate spec/cache payload, cache record, and
@@ -519,14 +527,38 @@ part of Blender eligibility. The builder recomputes
 `direct-degenerate-prefilter-v1` from exact no-follow input bytes and requires exact
 canonical equality with schema, threshold, ordered dropped-triangle records, counts,
 fraction, and digest. The threshold is exactly `1e-30`; dropped count cannot exceed
-source triangle count, dropped fraction is the exact finite quotient, and the global
-simplification ratio applies to the post-prefilter triangle set. Prefilter-only removal
+source triangle count, and dropped fraction is the exact finite quotient. The same
+candidate ratio is sent to every selected source, matching the native bridge, but it
+is applied independently to each post-prefilter material subset. For a material with
+`before` triangles the exact cap is `max(1, floor(before * ratio))`; the complete
+material set and first-occurrence order are preserved. Each request input-material
+record contains the canonical ordinal, exact material spelling, `before`, and the
+SHA-256 of the concatenation, in source order, of that material's complete SMD triangle
+records (material line plus three corner lines); the `before` sum equals the exact
+post-prefilter triangle count. `DirectSourceSnapshot` seals a
+canonical ordinal matrix of material name, `before`, cap, and achieved `after`, and
+the matrix totals must equal the source-level triangle totals. This is not a global
+total-triangle cap across materials. Every snapshot `before` value and material order
+must equal the request's sealed `DirectInputMaterialProof` exactly; callers
+cannot self-author those values after the runner returns. Revalidation reads the
+current request source beneath `input_source_root` through no-follow handles,
+recomputes the complete prefilter plus input-material records, and requires exact
+request equality. It then reparses the current output SMD and validates its retained
+corner cycles, material order, ratio caps, and exact `after` matrix against that
+recomputed input before the snapshot can authorize a schedule, recipe, or cache
+identity. Prefilter-only removal
 cannot qualify as successful direct simplification or a separate saving claim. A
 usable snapshot requires `applied == true`, `fallback_reason is None`,
 `preserved_exact == false`, changed output bytes, a strict post-prefilter triangle
 decrease, exact strategy/transfer, and current output bytes matching the seal. One
 mini-source failure terminally fails that ratio without a partial recipe; later fixed
 ratios may run only when already reserved and not cancelled.
+
+Every failed or cancelled mini-build first atomically renames its owned workspace to
+an unpredictable same-parent quarantine name. Cleanup traverses only that detached
+owned name, treats symlinks/junctions/reparse points as leaf entries, and never follows
+a path that can still be addressed through the former workspace name. A quarantine
+failure may leak owned bytes but must not traverse or delete outside the owned tree.
 
 `monaco_composite_specs` creates exactly the four terminal global ratios
 `(0.50, 0.45, 0.40, 0.35)`. Every selected source in one variant receives the same
@@ -619,7 +651,9 @@ reserved and built. The direct workspace uses the future-compatible
 `direct/<ratio-token>/<source-ordinal>-<identity-digest>/output.smd` shape, but Task 7
 alone introduces the exact whitelist, outer/record schemas, report schema, pre-build
 lookup, and private resume restore described below. Task-7 restore copies whitelisted
-bytes into a new private root and reruns current structural, base top-K, every
+bytes into a new private root, explicitly reroots every direct snapshot's
+`input_source_root` to the private restored base copy, and reruns current structural,
+base top-K, every
 source-union proof, and final whole exactly once.
 
 ## Task-7 cache design and resume contract
