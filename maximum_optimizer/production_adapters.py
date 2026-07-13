@@ -31,12 +31,20 @@ from .source_union import (
     SourceUnionMaterialBinding, SourceUnionMaskObservation,
     SourceUnionWorkspaceLease,
     SourceUnionRenderOutput, _quarantine_cleanup_if_owned,
+    _workspace_root_identity,
     validate_adaptive_direct_source_union,
 )
 from .source_components import (
     SourceComponentManifest, build_source_component_transfer,
     current_filtered_source_component_bytes, require_current_source_component_transfer,
     source_component_manifest_payload, source_component_transfer_payload,
+)
+from .source_materials import (
+    SourceUnionMaterialContract,
+    materialize_private_source_union_material_roots,
+    require_current_source_union_material_contract,
+    source_union_material_contract_payload,
+    source_union_material_render_evidence,
 )
 from .visual_validation import (
     FidelityProfile, SourceUnionComparisonContract,
@@ -47,6 +55,17 @@ from .visual_validation import (
 _HASH = re.compile(r"[0-9a-f]{64}")
 _ANGLES = ("front", "back", "left", "right", "top", "bottom", "iso1", "iso2")
 _CAMERAS = tuple(f"camera-{index:02d}" for index in range(8))
+
+
+def _material_tree_cleanup_is_authorized(
+    material_tree: Path, owned_identity: tuple[int, int, int] | None,
+) -> bool:
+    if owned_identity is None or not os.path.lexists(material_tree):
+        return True
+    try:
+        return _workspace_root_identity(material_tree) == owned_identity
+    except (OSError, ValueError):
+        return False
 
 
 def _cancel(event: threading.Event | None, message: str) -> None:
@@ -269,7 +288,10 @@ def _write_private_bytes_fsync(path: Path, payload: bytes) -> None:
 def _assert_source_union_workspace_root(
     workspace: Path, *, authorized: bool,
 ) -> None:
-    expected = {"inputs", "control", "raw", "source-union-render.log"}
+    expected = {
+        "inputs", "control", "raw", "material-roots",
+        "source-union-render.log",
+    }
     if authorized:
         expected.add("authorized")
     if _has_reparse_ancestor(workspace):
@@ -378,6 +400,22 @@ def _assert_exact_source_union_raw(raw: Path, target, event) -> None:
         for raw_side, _side, source, _destination in _raw_mapping(target)
     }
     _assert_safe_tree(raw, event, expected, max_files=len(expected))
+
+
+def _assert_source_union_raw_material_evidence(
+    raw: Path, expected_evidence: tuple[dict[str, object], ...], event,
+) -> None:
+    expected = list(expected_evidence)
+    for raw_side, label in (("original", "reference"), ("optimized", "candidate")):
+        manifest = _raw_manifest(raw / raw_side, label, event)
+        entries = manifest.get("entries")
+        if type(entries) is not list or len(entries) != 16:
+            raise ValueError("source-union raw material entry cardinality differs")
+        for entry in entries:
+            if type(entry) is not dict or entry.get("resolved_materials") != (
+                expected if entry.get("pass") == "textured" else []
+            ):
+                raise ValueError("source-union raw material evidence differs")
 
 
 def _normalize_source_union_raw(raw: Path, authorized: Path, target, comparison, event) -> None:
@@ -537,6 +575,7 @@ class AdaptiveDirectProductionBoundary:
         source_proof: AdaptiveDirectCoverageSourceProof,
         snapshot: DirectSourceSnapshot, profile: FidelityProfile,
         component_manifest: SourceComponentManifest,
+        material_contract: SourceUnionMaterialContract,
         tools: SourceUnionRenderTools, workspace: Path,
         cancel_event: threading.Event,
     ) -> AdaptiveDirectSourceUnionRecord:
@@ -548,6 +587,7 @@ class AdaptiveDirectProductionBoundary:
             isinstance(snapshot, DirectSourceSnapshot), isinstance(profile, FidelityProfile),
             isinstance(tools, SourceUnionRenderTools),
             isinstance(component_manifest, SourceComponentManifest),
+            isinstance(material_contract, SourceUnionMaterialContract),
         )):
             raise TypeError("adaptive-direct source-union production inputs are invalid")
         candidate_build = candidate_compile.build
@@ -661,6 +701,24 @@ class AdaptiveDirectProductionBoundary:
         _source_bytes, filtered_reference_bytes, candidate_bytes, component_transfer = (
             validate_current_inputs(cancel_event)
         )
+        if any((
+            material_contract.source_identity != source_proof.source_identity,
+            material_contract.filtered_source_sha256
+            != component_manifest.filtered_source_sha256,
+            tuple(item.material_region_key for item in material_contract.bindings)
+            != source_proof.material_region_keys,
+            len(material_contract.roots) != len(tools.materials_roots),
+            any(
+                witness.material_contract_sha256
+                != material_contract.material_contract_sha256
+                for witness in source_proof.witnesses
+            ),
+        )):
+            raise ValueError("source-union runtime material binding differs")
+        require_current_source_union_material_contract(
+            material_contract, filtered_source_bytes=filtered_reference_bytes,
+            roots=tools.materials_roots, cancel_event=cancel_event,
+        )
         target = build_adaptive_direct_source_union_target(
             source_proof=source_proof,
             coverage_manifest_sha256=coverage.coverage_manifest_sha256,
@@ -670,9 +728,9 @@ class AdaptiveDirectProductionBoundary:
         validate_source_union_pose_bindings(
             pose_bindings, target.pose_keys, pose_contract, cancel_event
         )
-        material_contract = source_proof.witnesses[0].material_contract_sha256
+        material_contract_sha256 = material_contract.material_contract_sha256
         material_bindings = tuple(
-            SourceUnionMaterialBinding(key, material_contract)
+            SourceUnionMaterialBinding(key, material_contract_sha256)
             for key in source_proof.material_region_keys
         )
         comparison = SourceUnionComparisonContract.create(
@@ -681,10 +739,86 @@ class AdaptiveDirectProductionBoundary:
             source_coverage_sha256=target.source_coverage_sha256,
             reference_source_sha256=component_manifest.filtered_source_sha256,
             candidate_source_sha256=snapshot.output_sha256,
-            material_contract_sha256=material_contract,
+            material_contract_sha256=material_contract_sha256,
             pose_frames=(("bind", 0),), union_key=target.union_key,
         )
         holder: dict[str, object] = {}
+        material_tree = workspace / "material-roots"
+        expected_material_paths = {
+            f"root-{item.root_index:03d}/{item.path}"
+            for item in material_contract.files
+        }
+
+        def validate_current_materials(event) -> tuple[dict[str, object], ...]:
+            private_roots = holder.get("private_material_roots")
+            private_root_identities = holder.get("private_material_root_identities")
+            material_tree_identity = holder.get("material_tree_identity")
+            if (
+                type(private_roots) is not tuple
+                or len(private_roots) != len(material_contract.roots)
+                or type(private_root_identities) is not tuple
+                or len(private_root_identities) != len(private_roots)
+                or not isinstance(material_tree_identity, tuple)
+            ):
+                raise ValueError("source-union private material roots are unavailable")
+            try:
+                current_material_tree_identity = _workspace_root_identity(material_tree)
+            except FileNotFoundError:
+                raise ValueError("source-union private material roots are unavailable")
+            except (OSError, ValueError) as exc:
+                ownership_lease.preserve_unowned_descendant()
+                raise ValueError("source-union private material root was replaced") from exc
+            if current_material_tree_identity != material_tree_identity:
+                ownership_lease.preserve_unowned_descendant()
+                raise ValueError("source-union private material root was replaced")
+            for private_root, expected_identity in zip(
+                private_roots, private_root_identities
+            ):
+                try:
+                    current_identity = _workspace_root_identity(private_root)
+                except FileNotFoundError:
+                    raise ValueError("source-union private material child is unavailable")
+                except (OSError, ValueError) as exc:
+                    ownership_lease.preserve_unowned_descendant()
+                    raise ValueError(
+                        "source-union private material child was replaced"
+                    ) from exc
+                if current_identity != expected_identity:
+                    ownership_lease.preserve_unowned_descendant()
+                    raise ValueError(
+                        "source-union private material child was replaced"
+                    )
+            _assert_safe_tree(
+                material_tree, event, expected_material_paths,
+                max_files=512, max_bytes=512 * 1024 * 1024,
+            )
+            original_authorization = require_current_source_union_material_contract(
+                material_contract, filtered_source_bytes=filtered_reference_bytes,
+                roots=tools.materials_roots, cancel_event=event,
+            )
+            private_authorization = require_current_source_union_material_contract(
+                material_contract, filtered_source_bytes=filtered_reference_bytes,
+                roots=private_roots, cancel_event=event,
+            )
+            if (
+                original_authorization.material_contract_sha256
+                != material_contract_sha256
+                or private_authorization.material_contract_sha256
+                != material_contract_sha256
+            ):
+                raise ValueError("source-union current material hash differs")
+            original_evidence = source_union_material_render_evidence(
+                original_authorization
+            )
+            private_evidence = source_union_material_render_evidence(
+                private_authorization
+            )
+            if original_evidence != private_evidence:
+                raise ValueError("source-union private material evidence differs")
+            expected = holder.get("material_evidence")
+            if expected is not None and original_evidence != expected:
+                raise ValueError("source-union current material evidence changed")
+            return original_evidence
 
         def render_fresh(request, output_root: Path, event):
             inputs = output_root / "inputs"; control = output_root / "control"
@@ -702,6 +836,21 @@ class AdaptiveDirectProductionBoundary:
                 or current_transfer != component_transfer
             ):
                 raise ValueError("source-union current inputs changed before render")
+            require_current_source_union_material_contract(
+                material_contract, filtered_source_bytes=current_filtered,
+                roots=tools.materials_roots, cancel_event=event,
+            )
+            private_material_roots = materialize_private_source_union_material_roots(
+                material_contract, tools.materials_roots, material_tree, event,
+                filtered_source_bytes=current_filtered,
+            )
+            holder["material_tree_identity"] = _workspace_root_identity(material_tree)
+            holder["private_material_roots"] = tuple(private_material_roots)
+            holder["private_material_root_identities"] = tuple(
+                _workspace_root_identity(path) for path in private_material_roots
+            )
+            material_evidence = validate_current_materials(event)
+            holder["material_evidence"] = material_evidence
             _write_private_bytes_fsync(reference_input, current_filtered)
             _write_private_bytes_fsync(candidate_input, current_candidate)
             _copy_file_no_follow(tools.renderer_script, renderer_input, event, contained_root=tools.renderer_script.parent)
@@ -736,7 +885,11 @@ class AdaptiveDirectProductionBoundary:
                     component_transfer
                 ),
                 "material_region_keys": list(target.material_region_keys),
-                "material_contract_sha256": material_contract,
+                "material_contract_sha256": material_contract_sha256,
+                "material_contract": source_union_material_contract_payload(
+                    material_contract
+                ),
+                "material_render_evidence": list(material_evidence),
                 "pose_frames": {"bind": 0}, "angles": list(_ANGLES),
                 "cameras": list(_CAMERAS), "renderer_sha256": tools.renderer_sha256,
             })
@@ -755,11 +908,13 @@ class AdaptiveDirectProductionBoundary:
                 "--source-union-contract", str(contract_path),
                 "--source-union-visibility-out", str(visibility_path),
             ]
-            for root in tools.materials_roots: command.extend(("--materials-root", str(root)))
+            for root in private_material_roots:
+                command.extend(("--materials-root", str(root)))
             if tools.vtfcmd is not None: command.extend(("--vtfcmd", str(tools.vtfcmd)))
             command.extend(("--texture-cache", str(private_texture_cache)))
             if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
                 raise ValueError("source-union dependency changed before Blender")
+            validate_current_materials(event)
             process = self._process_runner(
                 tuple(command), tools.renderer_script.parent,
                 output_root / "source-union-render.log", event,
@@ -784,6 +939,7 @@ class AdaptiveDirectProductionBoundary:
                 raise ValueError("source-union private texture cache is unsafe") from cache_error
             if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
                 raise ValueError("source-union dependency changed during Blender")
+            validate_current_materials(event)
             if any(_has_reparse_ancestor(path) for path in (inputs, control, raw)):
                 raise ValueError("source-union process output has reparse ancestry")
             if os.path.lexists(authorized):
@@ -800,6 +956,9 @@ class AdaptiveDirectProductionBoundary:
                 max_files=2,
             )
             _assert_exact_source_union_raw(raw, target, event)
+            _assert_source_union_raw_material_evidence(
+                raw, material_evidence, event
+            )
             for path, expected in (
                 (reference_input, comparison.reference_source_sha256),
                 (candidate_input, comparison.candidate_source_sha256),
@@ -847,12 +1006,21 @@ class AdaptiveDirectProductionBoundary:
                 candidate_dir != authorized / "source-union" / target.union_key / "candidate",
             )):
                 raise ValueError("source-union comparator directories differ")
+            current_material_evidence = validate_current_materials(cancel_event)
+            _assert_source_union_raw_material_evidence(
+                raw, current_material_evidence, cancel_event
+            )
             _prove_source_union_bijection(raw, authorized, target, comparison, cancel_event)
             result = compare_source_union_render_sets(
                 raw / "original", raw / "optimized", expected_profile,
                 expected_contract=comparison,
             )
             _prove_source_union_bijection(raw, authorized, target, comparison, cancel_event)
+            if validate_current_materials(cancel_event) != current_material_evidence:
+                raise ValueError("source-union materials changed during comparison")
+            _assert_source_union_raw_material_evidence(
+                raw, current_material_evidence, cancel_event
+            )
             return result
 
         def validate_render_workspace_current(event) -> None:
@@ -894,6 +1062,12 @@ class AdaptiveDirectProductionBoundary:
             _prove_source_union_bijection(
                 raw, authorized, target, comparison, event
             )
+            current_material_evidence = validate_current_materials(event)
+            if current_material_evidence != holder.get("material_evidence"):
+                raise ValueError("source-union final material evidence differs")
+            _assert_source_union_raw_material_evidence(
+                raw, current_material_evidence, event
+            )
             _assert_source_union_workspace_root(workspace, authorized=True)
 
         ownership_lease = SourceUnionWorkspaceLease()
@@ -919,5 +1093,9 @@ class AdaptiveDirectProductionBoundary:
             validate_render_workspace_current(cancel_event)
             return record
         except BaseException:
-            _quarantine_cleanup_if_owned(workspace, ownership_lease.identity)
+            if ownership_lease.cleanup_authorized and _material_tree_cleanup_is_authorized(
+                material_tree, holder.get("material_tree_identity")
+                if isinstance(holder.get("material_tree_identity"), tuple) else None,
+            ):
+                _quarantine_cleanup_if_owned(workspace, ownership_lease.identity)
             raise

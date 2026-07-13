@@ -31,9 +31,16 @@ from maximum_optimizer.production_adapters import (
 from tests.maximum_optimizer.test_task6_direct_compositor import DirectCompositorFixture, _smd
 from maximum_optimizer.source_components import (
     build_source_component_manifest,
+    current_filtered_source_component_bytes,
     source_component_manifest_from_payload,
     source_component_transfer_from_payload,
     validate_source_component_transfer_against_manifest,
+)
+from maximum_optimizer.source_materials import (
+    build_source_union_material_contract,
+    require_current_source_union_material_contract,
+    source_union_material_contract_payload,
+    source_union_material_render_evidence,
 )
 from tests.maximum_optimizer.test_task6_source_union_comparator import (
     _contract as unused_contract,
@@ -144,6 +151,17 @@ class SourceUnionRunner:
         (raw / "original").mkdir(parents=True); (raw / "optimized").mkdir(parents=True)
         _write_union_side(raw / "original", "reference", contract)
         _write_union_side(raw / "optimized", "candidate", contract)
+        for side in ("original", "optimized"):
+            manifest_path = raw / side / "render_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for entry in manifest["entries"]:
+                entry["resolved_materials"] = (
+                    payload["material_render_evidence"]
+                    if entry["pass"] == "textured" else []
+                )
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True), encoding="utf-8",
+            )
         if self.missing_image:
             next((raw / "optimized").rglob("*.png")).unlink()
         if self.raw_mutator is not None:
@@ -183,18 +201,63 @@ class ProductionAdapterContractTests(unittest.TestCase):
             missing_component=missing_component
         )
         component_manifest = build_source_component_manifest(source_bytes)
-        return DirectCompositorFixture(
+        material_first = root / "materials-first"
+        material_second = root / "materials-second"
+        (material_first / "vehicles").mkdir(parents=True)
+        (material_second / "textures").mkdir(parents=True)
+        (material_first / "vehicles/paint.vmt").write_text(
+            'VertexLitGeneric { "$basetexture" "textures/paint" }',
+            encoding="utf-8",
+        )
+        (material_second / "textures/paint.vtf").write_bytes(b"paint texture")
+        filtered = current_filtered_source_component_bytes(component_manifest, source_bytes)
+        material_contract = build_source_union_material_contract(
+            source_identity="meshes/part-00.smd",
+            filtered_source_bytes=filtered,
+            requests=({
+                "material_region_key": "material-000",
+                "smd_material": "paint",
+                "search_paths": ("vehicles",),
+            },),
+            roots=(material_first, material_second),
+            cancel_event=threading.Event(),
+        )
+        fixture = DirectCompositorFixture(
             root,
             components=tuple(item.component_key for item in component_manifest.components),
+            states=("damaged", "default"),
             component_manifest_sha256=component_manifest.component_manifest_sha256,
+            material_contract_sha256=material_contract.material_contract_sha256,
             visual_source_bytes=source_bytes,
             direct_output_bytes=candidate_bytes,
-        ), component_manifest
+        )
+        fixture.material_contract = material_contract
+        fixture.material_roots = (material_first, material_second)
+        return fixture, component_manifest
+
+    def _material_contract_variant(
+        self, fixture, component_manifest, *, source_identity=None,
+        filtered_source_bytes=None, material_region_key="material-000",
+    ):
+        source_path = fixture.base_root / fixture.requests[0].source_relative_path
+        filtered = filtered_source_bytes or current_filtered_source_component_bytes(
+            component_manifest, source_path.read_bytes()
+        )
+        return build_source_union_material_contract(
+            source_identity=source_identity or fixture.requests[0].source_identity,
+            filtered_source_bytes=filtered,
+            requests=({
+                "material_region_key": material_region_key,
+                "smd_material": "paint", "search_paths": ("vehicles",),
+            },),
+            roots=fixture.material_roots, cancel_event=threading.Event(),
+        )
 
     def _render_case(
         self, root: Path, runner, workspace: Path, component_manifest, *,
         dependency_provider=None, base_build=None, candidate_transform=None,
         event=None, source_proof=None, snapshot=None, tools_texture_cache=None,
+        material_contract=None, material_roots=None,
     ):
         fixture = runner.fixture
         spec = CandidateSpec(
@@ -231,6 +294,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
         if not blender.exists(): blender.write_bytes(b"blender")
         tools = SourceUnionRenderTools(
             blender, renderer_script, hashlib.sha256(renderer_script.read_bytes()).hexdigest(),
+            materials_roots=material_roots or fixture.material_roots,
             texture_cache=tools_texture_cache,
             dependency_digest_provider=dependency_provider or (
                 lambda _event: fixture.requests[0].dependency_proof_sha256
@@ -247,6 +311,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
             coverage=fixture.coverage, source_proof=source,
             snapshot=snapshot or fixture.snapshots[0],
             component_manifest=component_manifest,
+            material_contract=material_contract or fixture.material_contract,
             profile=profile, tools=tools, workspace=workspace,
             cancel_event=event or threading.Event(),
         )
@@ -536,6 +601,12 @@ class ProductionAdapterContractTests(unittest.TestCase):
             first = self._render_case(root, runner, root / "union-one", component_manifest)
             second = self._render_case(root, runner, root / "union-two", component_manifest)
             self.assertTrue(first.validation.passed)
+            self.assertEqual(len(fixture.coverage.sources[0].witnesses), 2)
+            self.assertTrue(all(
+                witness.material_contract_sha256
+                == fixture.material_contract.material_contract_sha256
+                for witness in fixture.coverage.sources[0].witnesses
+            ))
             self.assertEqual(first.evidence_sha256, second.evidence_sha256)
             self.assertEqual(len(runner.commands), 2)
             command = runner.commands[0]
@@ -550,6 +621,17 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 "front,back,left,right,top,bottom,iso1,iso2",
             )
             self.assertEqual(command[command.index("--poses") + 1], "bind:0")
+            material_args = tuple(
+                Path(command[index + 1]) for index, item in enumerate(command)
+                if item == "--materials-root"
+            )
+            self.assertEqual(len(material_args), len(fixture.material_roots))
+            self.assertTrue(all(
+                path.parent == root / "union-one" / "material-roots"
+                for path in material_args
+            ))
+            self.assertTrue(all(path not in fixture.material_roots for path in material_args))
+            self.assertFalse(any("source-materials-acquire" in str(path) for path in material_args))
             private_cache = Path(command[command.index("--texture-cache") + 1])
             self.assertTrue(str(private_cache).startswith(str(root / "union-one")))
             self.assertFalse(private_cache.exists())
@@ -558,6 +640,54 @@ class ProductionAdapterContractTests(unittest.TestCase):
             self.assertTrue(str(before).startswith(str(root / "union-one")))
             self.assertTrue(str(after).startswith(str(root / "union-one")))
             contract = runner.contracts[0]
+            authorization = require_current_source_union_material_contract(
+                fixture.material_contract,
+                filtered_source_bytes=current_filtered_source_component_bytes(
+                    component_manifest,
+                    (fixture.base_root / fixture.requests[0].source_relative_path).read_bytes(),
+                ),
+                roots=fixture.material_roots, cancel_event=threading.Event(),
+            )
+            expected_material_evidence = list(
+                source_union_material_render_evidence(authorization)
+            )
+            self.assertEqual(
+                contract["material_contract"],
+                source_union_material_contract_payload(fixture.material_contract),
+            )
+            self.assertEqual(
+                contract["material_render_evidence"], expected_material_evidence,
+            )
+            self.assertEqual(
+                contract["material_contract_sha256"],
+                fixture.material_contract.material_contract_sha256,
+            )
+            self.assertEqual(
+                contract["comparison_contract"]["material_contract_sha256"],
+                fixture.material_contract.material_contract_sha256,
+            )
+            expected_control_fields = {
+                "schema", "kind", "target_sha256", "comparison_contract",
+                "source_identity", "source_coverage_sha256", "component_keys",
+                "component_manifest", "candidate_component_transfer",
+                "material_region_keys", "material_contract_sha256",
+                "material_contract", "material_render_evidence",
+                "pose_frames", "angles", "cameras", "renderer_sha256",
+            }
+            self.assertEqual(set(contract), expected_control_fields)
+            for raw_side in ("original", "optimized"):
+                manifest = json.loads((
+                    root / "union-one" / "raw" / raw_side / "render_manifest.json"
+                ).read_text(encoding="utf-8"))
+                self.assertEqual(
+                    manifest["material_contract_sha256"],
+                    fixture.material_contract.material_contract_sha256,
+                )
+                for entry in manifest["entries"]:
+                    self.assertEqual(
+                        entry["resolved_materials"],
+                        expected_material_evidence if entry["pass"] == "textured" else [],
+                    )
             parsed_manifest = source_component_manifest_from_payload(
                 contract["component_manifest"]
             )
@@ -580,6 +710,47 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 contract["comparison_contract"]["reference_source_sha256"],
                 component_manifest.filtered_source_sha256,
             )
+
+    def test_source_union_material_contract_binding_rejects_before_e1(self) -> None:
+        for label in ("source", "filter", "region", "witness", "root-order"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                fixture, components = self._render_fixture(root)
+                if label == "source":
+                    contract = self._material_contract_variant(
+                        fixture, components, source_identity="meshes/wrong.smd",
+                    )
+                elif label == "filter":
+                    source_path = fixture.base_root / fixture.requests[0].source_relative_path
+                    filtered = current_filtered_source_component_bytes(
+                        components, source_path.read_bytes()
+                    ).replace(b"0 0 0 0 0 0 1", b"0 0.25 0 0 0 0 1", 1)
+                    contract = self._material_contract_variant(
+                        fixture, components, filtered_source_bytes=filtered,
+                    )
+                elif label == "region":
+                    contract = self._material_contract_variant(
+                        fixture, components, material_region_key="wrong-region",
+                    )
+                elif label == "witness":
+                    texture = fixture.material_roots[1] / "textures/paint.vtf"
+                    texture.write_bytes(b"other texture")
+                    contract = self._material_contract_variant(fixture, components)
+                else:
+                    contract = fixture.material_contract
+                runner = SourceUnionRunner(fixture)
+                workspace = root / "union"
+                with self.assertRaises(ValueError):
+                    self._render_case(
+                        root, runner, workspace, components,
+                        material_contract=contract,
+                        material_roots=(
+                            tuple(reversed(fixture.material_roots))
+                            if label == "root-order" else None
+                        ),
+                    )
+                self.assertEqual(runner.commands, [])
+                self.assertFalse(workspace.exists())
 
     def test_source_union_ignores_poisoned_shared_texture_cache_and_uses_fresh_private_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -705,11 +876,27 @@ class ProductionAdapterContractTests(unittest.TestCase):
             value = json.loads(path.read_text(encoding="utf-8"))
             value["entries"].append(dict(value["entries"][0]))
             path.write_text(json.dumps(value), encoding="utf-8")
+        def missing_textured_material(raw, _payload):
+            path = raw / "optimized" / "render_manifest.json"
+            value = json.loads(path.read_text(encoding="utf-8"))
+            next(
+                item for item in value["entries"] if item["pass"] == "textured"
+            )["resolved_materials"] = []
+            path.write_text(json.dumps(value), encoding="utf-8")
+        def material_on_clay(raw, payload):
+            path = raw / "original" / "render_manifest.json"
+            value = json.loads(path.read_text(encoding="utf-8"))
+            next(
+                item for item in value["entries"] if item["pass"] == "clay"
+            )["resolved_materials"] = payload["material_render_evidence"]
+            path.write_text(json.dumps(value), encoding="utf-8")
         for label, mutation, structural in (
             ("nested-extra", nested_extra, False), ("extra-file", extra_file, True),
             ("jpeg", jpeg, True), ("same-size", same_size, True),
             ("swapped", swapped, False),
             ("duplicate-entry", duplicate_entry, True),
+            ("missing-textured-material", missing_textured_material, True),
+            ("material-on-clay", material_on_clay, True),
         ):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
@@ -724,7 +911,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     self.assertFalse(record.validation.passed)
 
     def test_source_union_revalidates_dependency_and_all_current_bytes_after_process(self) -> None:
-        def mutate_named(command, _payload, _event, flag):
+        def mutate_named(command, _payload, _event, flag, fixture):
             if flag == "source":
                 path = next(item for item in command if item.endswith("reference.smd"))
                 path = Path(path)
@@ -735,15 +922,47 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 path = Path(command[command.index("--python") + 1])
             elif flag == "contract":
                 path = Path(command[command.index("--source-union-contract") + 1])
+            elif flag == "original-vmt":
+                path = fixture.material_roots[0] / "vehicles/paint.vmt"
+            elif flag == "original-vtf":
+                path = fixture.material_roots[1] / "textures/paint.vtf"
+            elif flag == "private-vmt":
+                roots = [
+                    Path(command[index + 1]) for index, item in enumerate(command)
+                    if item == "--materials-root"
+                ]
+                path = roots[0] / "vehicles/paint.vmt"
+            elif flag == "private-vtf":
+                roots = [
+                    Path(command[index + 1]) for index, item in enumerate(command)
+                    if item == "--materials-root"
+                ]
+                path = roots[1] / "textures/paint.vtf"
+            elif flag == "shadow":
+                shadow = fixture.material_roots[0] / "textures/paint.vtf"
+                shadow.parent.mkdir()
+                shadow.write_bytes(b"higher priority")
+                return
+            else:
+                roots = [
+                    Path(command[index + 1]) for index, item in enumerate(command)
+                    if item == "--materials-root"
+                ]
+                (roots[0] / "extra.vtf").write_bytes(b"extra")
+                return
             data = bytearray(path.read_bytes()); data[len(data) // 2] ^= 1; path.write_bytes(data)
 
-        for flag in ("source", "candidate", "renderer", "contract"):
+        for flag in (
+            "source", "candidate", "renderer", "contract",
+            "original-vmt", "original-vtf", "private-vmt", "private-vtf",
+            "shadow", "private-extra",
+        ):
             with self.subTest(flag=flag), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
                 runner = SourceUnionRunner(
                     fixture,
                     after_output=lambda command, payload, event, flag=flag: mutate_named(
-                        command, payload, event, flag
+                        command, payload, event, flag, fixture
                     ),
                 )
                 workspace = root / "union"
@@ -814,6 +1033,82 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 self._render_case(root, runner, workspace, components)
             self.assertEqual(marker.read_bytes(), b"preserve")
             self.assertEqual(runner.commands, [])
+
+    def test_source_union_rejects_replaced_private_material_root_and_preserves_winner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            state = {"winner_identity": None}
+
+            def replace_material_root(command, _payload, _event):
+                output_root = Path(command[command.index("--out") + 1]).parent
+                material_tree = output_root / "material-roots"
+                winner = root / "external-material-winner"
+                shutil.copytree(material_tree, winner)
+                (winner / "external.marker").write_bytes(b"preserve")
+                info = os.lstat(winner)
+                state["winner_identity"] = (
+                    int(info.st_dev), int(info.st_ino),
+                    int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1e9))),
+                )
+                shutil.rmtree(material_tree)
+                os.rename(winner, material_tree)
+
+            workspace = root / "union"
+            with self.assertRaises(ValueError):
+                self._render_case(
+                    root,
+                    SourceUnionRunner(fixture, after_output=replace_material_root),
+                    workspace, components,
+                )
+            self.assertTrue(workspace.exists())
+            material_tree = workspace / "material-roots"
+            info = os.lstat(material_tree)
+            self.assertEqual(
+                state["winner_identity"],
+                (
+                    int(info.st_dev), int(info.st_ino),
+                    int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1e9))),
+                ),
+            )
+            self.assertEqual(
+                (material_tree / "external.marker").read_bytes(), b"preserve",
+            )
+            self.assertEqual(
+                tuple(workspace.parent.glob(".material-roots.source-materials-acquire-*")),
+                (),
+            )
+
+    def test_source_union_rejects_replaced_private_material_child_and_preserves_winner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+
+            def replace_material_child(command, _payload, _event):
+                output_root = Path(command[command.index("--out") + 1]).parent
+                child = output_root / "material-roots/root-000"
+                winner = root / "external-root-000"
+                shutil.copytree(child, winner)
+                (winner / "external.marker").write_bytes(b"preserve")
+                shutil.rmtree(child)
+                os.rename(winner, child)
+
+            workspace = root / "union"
+            with self.assertRaises(ValueError):
+                self._render_case(
+                    root,
+                    SourceUnionRunner(fixture, after_output=replace_material_child),
+                    workspace, components,
+                )
+            self.assertTrue(workspace.exists())
+            self.assertEqual(
+                (workspace / "material-roots/root-000/external.marker").read_bytes(),
+                b"preserve",
+            )
+            self.assertEqual(
+                tuple(workspace.parent.glob(".material-roots.source-materials-acquire-*")),
+                (),
+            )
 
     @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
     def test_source_union_rejects_compiled_root_junction_and_preserves_external_tree(self) -> None:
@@ -934,7 +1229,8 @@ class ProductionAdapterContractTests(unittest.TestCase):
         for label in (
             "source", "candidate", "renderer", "compiled", "dependency",
             "raw", "authorized", "contract", "private", "raw-manifest",
-            "visibility",
+            "visibility", "material-original", "material-private",
+            "material-shadow", "material-extra",
         ):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
@@ -975,6 +1271,26 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     elif label == "visibility":
                         path = Path(args[1]).parents[1] / "control" / "source-union-visibility.json"
                         data = bytearray(path.read_bytes()); data[len(data) // 2] ^= 1; path.write_bytes(data)
+                    elif label == "material-original":
+                        path = fixture.material_roots[1] / "textures/paint.vtf"
+                        data = bytearray(path.read_bytes())
+                        data[len(data) // 2] ^= 1
+                        path.write_bytes(data)
+                    elif label == "material-private":
+                        path = (
+                            Path(args[1]).parents[1]
+                            / "material-roots/root-001/textures/paint.vtf"
+                        )
+                        data = bytearray(path.read_bytes())
+                        data[len(data) // 2] ^= 1
+                        path.write_bytes(data)
+                    elif label == "material-shadow":
+                        path = fixture.material_roots[0] / "textures/paint.vtf"
+                        path.parent.mkdir()
+                        path.write_bytes(b"higher priority")
+                    elif label == "material-extra":
+                        path = Path(args[1]).parents[1] / "material-roots/root-000/extra.vtf"
+                        path.write_bytes(b"extra")
                     else:
                         state["digest"] = "0" * 64
                     return result

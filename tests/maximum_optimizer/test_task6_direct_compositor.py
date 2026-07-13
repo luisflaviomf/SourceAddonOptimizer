@@ -69,8 +69,11 @@ class DirectCompositorFixture:
     def __init__(
         self, root: Path, visual_count: int = 2, ratio: float = 0.5,
         *, components: tuple[str, ...] = ("component-000",),
+        states: tuple[str, ...] = ("default",),
         poses: tuple[str, ...] = ("bind",),
         component_manifest_sha256: str = H["3"],
+        material_contract_sha256: str = H["4"],
+        material_region_keys: tuple[str, ...] = ("material-000",),
         visual_source_bytes: bytes | None = None,
         direct_output_bytes: bytes | None = None,
     ) -> None:
@@ -128,9 +131,12 @@ class DirectCompositorFixture:
             if item.kind == "visual-source"
         }
         coverage_sources = tuple(coverage_source(
-            identity, source_size=proof.size, source_sha256=proof.sha256,
+            identity, states=states,
+            source_size=proof.size, source_sha256=proof.sha256,
             components=components, poses=poses,
             component_manifest_sha256=component_manifest_sha256,
+            material_contract_sha256=material_contract_sha256,
+            material_region_keys=material_region_keys,
         ) for identity, proof in sorted(by_identity.items()))
         old_metrics = metrics_for_coverage(coverage_sources)
         old_inventory = inventory_for_coverage(coverage_sources)

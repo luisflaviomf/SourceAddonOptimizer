@@ -110,13 +110,15 @@ def witness(
     source: str = "body.smd", *, ordinal: int = 0, state: str = "default",
     source_size: int = 100, source_sha256: str = H["1"],
     component_manifest_sha256: str = H["3"],
+    material_contract_sha256: str = H["4"],
 ) -> AdaptiveDirectCoverageOccurrenceProof:
     return AdaptiveDirectCoverageOccurrenceProof.create(
         occurrence_key=f"occ-{hashlib.sha256(source.encode()).hexdigest()[:8]}-{ordinal:04d}", source_identity=source,
         graph_relative_path="main.qc", directive="$body", line=ordinal + 1,
         state_key=state, bodygroup_key="body", lod_key="lod0", skin_key="skin0",
         source_size=source_size, source_sha256=source_sha256, component_manifest_sha256=component_manifest_sha256,
-        material_contract_sha256=H["4"], skeleton_contract_sha256=H["5"],
+        material_contract_sha256=material_contract_sha256,
+        skeleton_contract_sha256=H["5"],
         pose_contract_sha256=H["6"], equivalence_class_sha256=H["7"],
     )
 
@@ -127,18 +129,22 @@ def coverage_source(
     poses: tuple[str, ...] = ("bind",),
     source_size: int = 100, source_sha256: str = H["1"],
     component_manifest_sha256: str = H["3"],
+    material_contract_sha256: str = H["4"],
+    material_region_keys: tuple[str, ...] = ("material-000",),
 ) -> AdaptiveDirectCoverageSourceProof:
     witnesses = tuple(witness(
         source, ordinal=i, state=state,
         source_size=source_size, source_sha256=source_sha256,
         component_manifest_sha256=component_manifest_sha256,
+        material_contract_sha256=material_contract_sha256,
     ) for i, state in enumerate(states))
     return AdaptiveDirectCoverageSourceProof.create(
         source_identity=source, eligibility_kind="eligible-exact-v1",
         source_size=source_size, source_sha256=source_sha256,
         occurrence_keys=tuple(item.occurrence_key for item in witnesses),
         state_keys=states, component_keys=components,
-        material_region_keys=("material-000",), skeleton_contract_sha256=H["5"],
+        material_region_keys=material_region_keys,
+        skeleton_contract_sha256=H["5"],
         pose_keys=poses, equivalence_class_sha256=H["7"], witnesses=witnesses,
         metrics_sha256=source_metrics(
             source, source_size=source_size, source_sha256=source_sha256,

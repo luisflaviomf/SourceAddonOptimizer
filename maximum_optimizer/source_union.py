@@ -134,11 +134,17 @@ SourceUnionComparator = Callable[[Path, Path, FidelityProfile], ValidationResult
 @dataclass
 class SourceUnionWorkspaceLease:
     identity: tuple[int, int, int] | None = None
+    cleanup_authorized: bool = True
 
     def acquire(self, identity: tuple[int, int, int]) -> None:
         if self.identity is not None or not isinstance(identity, tuple) or len(identity) != 3:
             raise ValueError("source-union workspace lease acquisition is invalid")
         self.identity = identity
+
+    def preserve_unowned_descendant(self) -> None:
+        if self.identity is None:
+            raise ValueError("source-union workspace lease is not acquired")
+        self.cleanup_authorized = False
 
 
 def _cancel(cancel_event: threading.Event | None, message: str) -> None:
@@ -445,5 +451,6 @@ def validate_adaptive_direct_source_union(
             raise ValueError("source-union workspace identity changed before return")
         return record
     except BaseException:
-        _quarantine_cleanup_if_owned(workspace, owned_identity)
+        if ownership_lease is None or ownership_lease.cleanup_authorized:
+            _quarantine_cleanup_if_owned(workspace, owned_identity)
         raise
