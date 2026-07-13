@@ -246,6 +246,31 @@
       "infrastructure_failures": 0
     },
     {
+      "family_id": "toyota_supra",
+      "candidate_label": "pre-recovery-r015",
+      "classification": "fresh-whole-negative-anchor",
+      "whole_metrics": {"silhouette_iou": 0.003722240242505781, "rgb_mae": 0.0014828500433097724, "edge_error": 0.042159054615138934, "surface_bidirectional_p95": 0.0008101334201085235, "surface_max": 0.006765567413580035, "normal_angle_p95": 155.27409144608524, "uv_error_p95": 1.4876667430295063, "skinning_error_p95": 0.0},
+      "infrastructure_failures": 0,
+      "texture_missing_entries": 0
+    },
+    {
+      "family_id": "nissan_skyline_gtr32",
+      "candidate_label": "pre-recovery-r015",
+      "classification": "fresh-whole-negative-anchor",
+      "whole_metrics": {"silhouette_iou": 0.005288662419869139, "rgb_mae": 0.002382890845005365, "edge_error": 0.14244016345592528, "surface_bidirectional_p95": 0.0037614573715330072, "surface_max": 0.01099992422872018, "normal_angle_p95": 155.56616929868818, "uv_error_p95": 19.711197268572946, "skinning_error_p95": 0.0},
+      "infrastructure_failures": 0,
+      "texture_missing_entries": 0
+    },
+    {
+      "family_id": "dodge_monaco_police",
+      "candidate_label": "pre-recovery-r040-v3",
+      "classification": "whole-metric-false-negative-anchor",
+      "whole_metrics": {"silhouette_iou": 0.001657094748831911, "rgb_mae": 0.00028103043662209003, "edge_error": 0.025606469002695417, "surface_bidirectional_p95": 0.0007125893718980321, "surface_max": 0.006156751507814842, "normal_angle_p95": 179.99897066422085, "uv_error_p95": 6.534609763645413, "skinning_error_p95": 0.0},
+      "focused_counterevidence": "The associated police_gear/body21 r040-e020 focused negatives fail edge, surface and silhouette caps even though the whole maxima look competitive.",
+      "infrastructure_failures": 0,
+      "texture_missing_entries": 0
+    },
+    {
       "family_id": "wheel_round_surrogate",
       "classification": "fresh-negative-sweep",
       "candidates": [
@@ -263,7 +288,51 @@
       {"label": "wheel-r050-whole", "png_count": 64, "pixel_bundle_sha256": "e6a71e3b6e844d792f676864698b9eb6a96f7e5e19a506b9255fa0695cd96972"},
       {"label": "wheel-v4-r0475-whole", "png_count": 64, "pixel_bundle_sha256": "357e5795a029cf0f6f80916d07588802b42950234d9795f5b488c941d23cb11c"},
       {"label": "wheel-r050-focused-top3", "png_count": 96, "pixel_bundle_sha256": "4032d315143509bf0ad6efb8d9f3544e350baed5163eec876c7a6b3159da4c49"},
-      {"label": "wheel-v4-r0475-focused-top3", "png_count": 96, "pixel_bundle_sha256": "fcb12a41cd161d9cf8dd6bb457af2f9bc78774b68fed65cb6f9a8e8450180a72"}
+      {"label": "wheel-v4-r0475-focused-top3", "png_count": 96, "pixel_bundle_sha256": "fcb12a41cd161d9cf8dd6bb457af2f9bc78774b68fed65cb6f9a8e8450180a72"},
+      {"label": "supra-body12-r030-e020-focused-accepted", "png_count": 32, "pixel_bundle_sha256": "c3398d426d0e4825d837f6d0e7b5027151ade0ebabcbd304c82b0dc2f082330c"},
+      {"label": "supra-body12-r0275-e020-focused-rejected", "png_count": 32, "pixel_bundle_sha256": "e56cecdc15159c369552018481919c676fd04fc5d56e0599fe4716ef2113bc0c"},
+      {"label": "skyline-recovered-winner-whole", "png_count": 288, "pixel_bundle_sha256": "d8b5e9bf2447cdaea89ea568ce632a9f5f4b979c9102355447bfff32eda3ed43"},
+      {"label": "skyline-r015-whole-rejected", "png_count": 288, "pixel_bundle_sha256": "f28a093f716cdbde0b31bb1c4da8c936582114d8767fb15bd78be8fd451cac27"},
+      {"label": "monaco-body21-r050-e010-focused", "png_count": 32, "pixel_bundle_sha256": "082910d24afa1fa24937c225af255cf2cf92422f6007364499aa5340bc33b870"}
+    ]
+  },
+  "gate_freeze_proposal": {
+    "status": "not-freezable-as-current-single-scope-profile",
+    "authorizing": false,
+    "reason": "A single global maximum envelope must be widened to normal_angle_p95 near 180 degrees, uv_error_p95 near 20 and surface_max above 0.0107 to admit current whole-family positives. Those same limits cannot reject severe local defects. Monaco r040 demonstrates the masking directly: whole maxima look competitive while focused police_gear/body21 evidence fails strongly.",
+    "proposed_two_scope_contract": {
+      "whole_configuration_caps": {
+        "silhouette_iou": 0.006,
+        "rgb_mae": 0.002,
+        "edge_error": 0.078678,
+        "surface_bidirectional_p95": 0.0016,
+        "surface_max": 0.0111,
+        "normal_angle_p95": 180.0,
+        "uv_error_p95": 20.0,
+        "skinning_error_p95": 0.0
+      },
+      "focused_region_caps": {
+        "silhouette_iou": 0.04,
+        "rgb_mae": 0.002,
+        "edge_error": 0.078678,
+        "surface_bidirectional_p95": 0.0015,
+        "surface_max": 0.0053,
+        "normal_angle_p95": 114.0,
+        "uv_error_p95": 1.0,
+        "skinning_error_p95": 0.0
+      }
+    },
+    "calibration_separation": {
+      "supra_r030_accept_vs_r0275_reject": "edge_error 0.0590242553 versus 0.0818032928 around the proposed 0.078678 cap",
+      "monaco_r050_accept_vs_r040_reject": "accepted focused edge maxima 0.0474814203 versus rejected minima 0.1104170184; rejected surface p95 minima 0.002627349 exceed 0.0015",
+      "skyline_whole_winner_vs_r015_reject": "winner edge/rgb/p95 0.075194006/0.001790158/0.001564495 versus 0.142440163/0.002382891/0.003761457",
+      "repeatability": "Every repeated decoded RGBA pixel bundle is byte-identical."
+    },
+    "activation_requirements": [
+      "Add an explicit validation scope to the fidelity contract so whole and focused comparisons use distinct immutable caps.",
+      "Add schema/loader tests that reject scope mixing and missing focused evidence.",
+      "Review the proposed caps without consulting holdout evidence, then freeze their hashes before holdout execution.",
+      "Keep the resulting profile non-authorizing until the sealed holdout run completes."
     ]
   },
   "conclusions": [
@@ -271,11 +340,12 @@
     "Skyline trunk r060/e005 is the only tested hybrid that is a clear regional Pareto winner over the prior candidate and over trunk r050/e010.",
     "Monaco, Supra, and Charger hybrids are conditional trade-offs: they improve important regional image metrics but spend compiled bytes and do not improve every geometry maximum.",
     "Whole-model maxima can hide severe local damage; focused regional renders are mandatory for candidate selection.",
-    "The evidence supports continued adaptive per-region search, not activation of a calibrated profile."
+    "The extended negative/repeat matrix is complete for the planned re-openable sources and every repeat is pixel-exact.",
+    "The evidence supports continued adaptive per-region search and a two-scope gate contract, not activation of the current single-scope calibrated profile."
   ],
   "evidence_seal": {
     "algorithm": "sha256",
     "scope": "canonical-json-without-evidence_seal",
-    "sha256": "a5cc78c860964110bd4119afb2052420da5c106f2f23a2da0cdc3bc92a58ebd2"
+    "sha256": "c7c0bfcf00714f44972ce72c78f9b5935c592f5d51e1d903b191a2824ca2fc16"
   }
 }
