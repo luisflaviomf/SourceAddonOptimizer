@@ -150,7 +150,15 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
             '"$translucent" "1" "$translucent" "0" }',
             encoding="utf-8",
         )
-        evidence = source_union_material_render_evidence(self.build())
+        contract = self.build()
+        authorization = require_current_source_union_material_contract(
+            contract, filtered_source_bytes=self.filtered,
+            roots=self.roots, cancel_event=threading.Event(),
+        )
+        self.assertIsNotNone(authorization)
+        with self.assertRaises(TypeError):
+            source_union_material_render_evidence(contract)
+        evidence = source_union_material_render_evidence(authorization)
         self.assertEqual(evidence[0]["shader"], "refract")
         self.assertTrue(evidence[0]["uses_texture_alpha"])
         self.assertEqual(
@@ -175,7 +183,7 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
                 source_union_material_contract_payload(contract)
             ), contract,
         )
-        require_current_source_union_material_contract(
+        authorization = require_current_source_union_material_contract(
             contract, filtered_source_bytes=filtered,
             roots=self.roots, cancel_event=threading.Event(),
         )
@@ -187,7 +195,7 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
             contract, filtered_source_bytes=filtered,
             roots=private, cancel_event=threading.Event(),
         )
-        evidence = source_union_material_render_evidence(contract)
+        evidence = source_union_material_render_evidence(authorization)
         self.assertEqual(set(evidence[0]), MATERIAL_EVIDENCE_FIELDS)
         self.assertEqual(evidence[0]["material_identity"], "paint-region")
         self.assertEqual(
@@ -293,6 +301,91 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
         ).hexdigest()
         with self.assertRaisesRegex(ValueError, "relation"):
             source_union_material_contract_from_payload(payload)
+
+    def test_render_evidence_rejects_resealed_vmt_to_vtf_semantic_swap(self) -> None:
+        materials = ("first", "second")
+        for material in materials:
+            (self.first / f"vehicles/{material}.vmt").write_text(
+                f'VertexLitGeneric {{ "$basetexture" "textures/{material}" }}',
+                encoding="utf-8",
+            )
+            (self.second / f"textures/{material}.vtf").write_bytes(material.encode())
+        filtered = _multi_material_smd(materials)
+        contract = build_source_union_material_contract(
+            source_identity="meshes/body.smd", filtered_source_bytes=filtered,
+            requests=tuple({
+                "material_region_key": f"{material}-region",
+                "smd_material": material, "search_paths": ("vehicles",),
+            } for material in materials),
+            roots=self.roots, cancel_event=threading.Event(),
+        )
+        payload = source_union_material_contract_payload(contract)
+        first, second = payload["bindings"]
+        for field in ("texture_identity", "vtf_file_index", "vtf_path"):
+            first[field], second[field] = second[field], first[field]
+        unsigned = dict(payload); unsigned.pop("material_contract_sha256")
+        payload["material_contract_sha256"] = hashlib.sha256(
+            canonical_json(unsigned).encode()
+        ).hexdigest()
+        forged = source_union_material_contract_from_payload(payload)
+        with self.assertRaisesRegex(ValueError, "current material"):
+            require_current_source_union_material_contract(
+                forged, filtered_source_bytes=filtered,
+                roots=self.roots, cancel_event=threading.Event(),
+            )
+        with self.assertRaises(TypeError):
+            source_union_material_render_evidence(forged)
+
+    def test_invalid_request_control_fails_before_any_selected_file_read(self) -> None:
+        from maximum_optimizer import source_materials as module
+        for searches in (
+            ("vehicles", "../escape"),
+            tuple(f"search-{index:05d}" for index in range(10_001)),
+        ):
+            requests = ({**self.requests[0], "search_paths": searches},)
+            with self.subTest(count=len(searches)), mock.patch(
+                "maximum_optimizer.source_materials._read_regular_no_follow",
+                wraps=module._read_regular_no_follow,
+            ) as reader, self.assertRaises(ValueError):
+                build_source_union_material_contract(
+                    source_identity="meshes/body.smd",
+                    filtered_source_bytes=self.filtered, requests=requests,
+                    roots=self.roots, cancel_event=threading.Event(),
+                )
+            reader.assert_not_called()
+
+    def test_nested_payload_collections_and_strings_are_bounded(self) -> None:
+        contract = self.build()
+        mutations = []
+        too_many_searches = source_union_material_contract_payload(contract)
+        too_many_searches["bindings"][0]["search_paths"] = [
+            f"search-{index:03d}" for index in range(65)
+        ]
+        mutations.append(too_many_searches)
+        too_many_directives = source_union_material_contract_payload(contract)
+        too_many_directives["bindings"][0]["duplicate_root_directives"] = [{
+            "directive": f"$duplicate-{index:03d}", "ignored_values": ["x"],
+        } for index in range(65)]
+        mutations.append(too_many_directives)
+        too_many_values = source_union_material_contract_payload(contract)
+        too_many_values["bindings"][0]["duplicate_root_directives"] = [{
+            "directive": "$duplicate", "ignored_values": [
+                f"value-{index:03d}" for index in range(65)
+            ],
+        }]
+        mutations.append(too_many_values)
+        long_value = source_union_material_contract_payload(contract)
+        long_value["bindings"][0]["duplicate_root_directives"] = [{
+            "directive": "$duplicate", "ignored_values": ["x" * 4097],
+        }]
+        mutations.append(long_value)
+        for forged in mutations:
+            unsigned = dict(forged); unsigned.pop("material_contract_sha256")
+            forged["material_contract_sha256"] = hashlib.sha256(
+                canonical_json(unsigned).encode()
+            ).hexdigest()
+            with self.subTest(forged=forged["bindings"][0]), self.assertRaises(ValueError):
+                source_union_material_contract_from_payload(forged)
 
     def test_material_region_bound_allows_65_and_rejects_257(self) -> None:
         materials = tuple(f"material-{index:03d}" for index in range(65))

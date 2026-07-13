@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat
@@ -32,6 +33,12 @@ _MAX_BINDINGS = 256
 _MAX_FILES = 512
 _MAX_BYTES = 512 * 1024 * 1024
 _MAX_VMT_BYTES = 8 * 1024 * 1024
+_MAX_TEXT_CHARS = 4096
+_MAX_SEARCH_PATHS = 64
+_MAX_DUPLICATE_DIRECTIVES = 64
+_MAX_IGNORED_VALUES = 64
+_MAX_DUPLICATE_VALUES_TOTAL = 1024
+_CURRENT_MATERIAL_AUTHORITY = object()
 
 
 def _cancel(event, message: str) -> None:
@@ -39,9 +46,17 @@ def _cancel(event, message: str) -> None:
         raise ProcessCancelledError(message)
 
 
-def _relative(value: str, label: str) -> str:
-    if type(value) is not str or not value or any(char in value for char in "\r\n\0"):
+def _bounded_text(value: str, label: str) -> str:
+    if (
+        type(value) is not str or not value or len(value) > _MAX_TEXT_CHARS
+        or any(char in value for char in "\r\n\0")
+    ):
         raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _relative(value: str, label: str) -> str:
+    _bounded_text(value, label)
     posix = PurePosixPath(value.replace("\\", "/"))
     windows = PureWindowsPath(value)
     if posix.is_absolute() or windows.is_absolute() or windows.drive or ".." in posix.parts:
@@ -53,8 +68,7 @@ def _relative(value: str, label: str) -> str:
 
 
 def _smd_material_spelling(value: str) -> str:
-    if type(value) is not str or not value or any(char in value for char in "\r\n\0"):
-        raise ValueError("source-union SMD material is invalid")
+    _bounded_text(value, "source-union SMD material")
     normalized = value.replace("\\", "/")
     raw_parts = normalized.split("/")
     posix = PurePosixPath(normalized)
@@ -68,8 +82,7 @@ def _smd_material_spelling(value: str) -> str:
 
 
 def _lookup_path(value: str, suffix: str, label: str) -> str:
-    if type(value) is not str or not value or any(char in value for char in "\r\n\0"):
-        raise ValueError(f"{label} is invalid")
+    _bounded_text(value, label)
     normalized = value.replace("\\", "/")
     parts = normalized.split("/")
     windows = PureWindowsPath(value)
@@ -127,6 +140,7 @@ class SourceUnionMaterialFile:
             type(self.root_index) is not int or self.root_index < 0
             or self.kind not in {"vmt", "vtf"}
             or type(self.size) is not int or self.size < 0
+            or type(self.sha256) is not str or len(self.sha256) != 64
             or _HASH.fullmatch(self.sha256 or "") is None
         ):
             raise ValueError("source-union material file is invalid")
@@ -154,8 +168,18 @@ class SourceUnionMaterialBindingProof:
     duplicate_root_directives: tuple[DuplicateDirectiveProof, ...]
 
     def __post_init__(self) -> None:
+        if type(self.search_paths) not in (tuple, list) or type(
+            self.duplicate_root_directives
+        ) not in (tuple, list):
+            raise ValueError("source-union material binding collections are invalid")
         searches = tuple(self.search_paths)
         duplicates = tuple(self.duplicate_root_directives)
+        if any(
+            not isinstance(item, DuplicateDirectiveProof)
+            or type(item.ignored_values) not in (tuple, list)
+            for item in duplicates
+        ):
+            raise ValueError("source-union material duplicate directives are invalid")
         duplicate_names = tuple(item.directive for item in duplicates)
         if (
             type(self.material_region_key) is not str or not self.material_region_key
@@ -167,12 +191,21 @@ class SourceUnionMaterialBindingProof:
             or type(self.shader) is not str or not self.shader
             or type(self.texture_directive) is not str or not self.texture_directive
             or type(self.uses_texture_alpha) is not bool
-            or any(not isinstance(item, DuplicateDirectiveProof) for item in duplicates)
+            or len(searches) > _MAX_SEARCH_PATHS
+            or len(duplicates) > _MAX_DUPLICATE_DIRECTIVES
             or duplicate_names != tuple(sorted(set(duplicate_names)))
+            or sum(len(item.ignored_values) for item in duplicates) > _MAX_DUPLICATE_VALUES_TOTAL
             or any(
                 item.directive != item.directive.casefold() or not item.directive
+                or len(item.directive) > _MAX_TEXT_CHARS
                 or not item.ignored_values
+                or len(item.ignored_values) > _MAX_IGNORED_VALUES
                 or any(type(value) is not str for value in item.ignored_values)
+                or any(
+                    not value or len(value) > _MAX_TEXT_CHARS
+                    or any(char in value for char in "\r\n\0")
+                    for value in item.ignored_values
+                )
                 for item in duplicates
             )
         ):
@@ -182,6 +215,8 @@ class SourceUnionMaterialBindingProof:
         _relative(self.vmt_path, "source-union material VMT path")
         _relative(self.texture_identity, "source-union material texture identity")
         _relative(self.vtf_path, "source-union material VTF path")
+        _bounded_text(self.shader, "source-union material shader")
+        _bounded_text(self.texture_directive, "source-union material texture directive")
         if (
             self.shader not in render_previews._SUPPORTED_VMT_SHADERS
             or self.texture_directive != (
@@ -261,7 +296,11 @@ class SourceUnionMaterialContract:
             or self.kind != "adaptive-direct-source-union-material-v1"
             or self.resolution_rule != "materials-root-order-then-qc-search-order-v1"
             or _relative(self.source_identity, "source-union material source") != self.source_identity
+            or type(self.filtered_source_sha256) is not str
+            or len(self.filtered_source_sha256) != 64
             or _HASH.fullmatch(self.filtered_source_sha256 or "") is None
+            or type(self.material_contract_sha256) is not str
+            or len(self.material_contract_sha256) != 64
             or _HASH.fullmatch(self.material_contract_sha256 or "") is None
             or not roots or len(roots) > _MAX_ROOTS
             or tuple(item.root_index for item in roots) != tuple(range(len(roots)))
@@ -306,6 +345,23 @@ class SourceUnionMaterialContract:
         object.__setattr__(self, "bindings", bindings)
 
 
+@dataclass(frozen=True)
+class CurrentSourceUnionMaterialAuthorization:
+    material_contract_sha256: str
+    _render_evidence_json: str
+    _authority: object
+
+    def __post_init__(self) -> None:
+        if (
+            self._authority is not _CURRENT_MATERIAL_AUTHORITY
+            or type(self.material_contract_sha256) is not str
+            or len(self.material_contract_sha256) != 64
+            or _HASH.fullmatch(self.material_contract_sha256) is None
+            or type(self._render_evidence_json) is not str
+        ):
+            raise ValueError("source-union current material authorization is invalid")
+
+
 def source_union_material_contract_payload(value: SourceUnionMaterialContract) -> dict[str, object]:
     if not isinstance(value, SourceUnionMaterialContract):
         raise TypeError("source-union material contract is invalid")
@@ -322,6 +378,12 @@ def source_union_material_contract_from_payload(value: object) -> SourceUnionMat
         type(value[name]) is not list for name in ("roots", "files", "bindings")
     ):
         raise ValueError("source-union material contract payload fields are invalid")
+    if (
+        not 0 < len(value["roots"]) <= _MAX_ROOTS
+        or not 0 < len(value["files"]) <= _MAX_FILES
+        or not 0 < len(value["bindings"]) <= _MAX_BINDINGS
+    ):
+        raise ValueError("source-union material contract payload bounds are invalid")
     roots = []
     for raw in value["roots"]:
         if type(raw) is not dict or set(raw) != {"root_index", "root_identity"}:
@@ -346,12 +408,23 @@ def source_union_material_contract_from_payload(value: object) -> SourceUnionMat
             type(raw) is not dict or set(raw) != binding_fields
             or type(raw["search_paths"]) is not list
             or type(raw["duplicate_root_directives"]) is not list
+            or len(raw["search_paths"]) > _MAX_SEARCH_PATHS
+            or len(raw["duplicate_root_directives"]) > _MAX_DUPLICATE_DIRECTIVES
         ):
             raise ValueError("source-union material binding payload fields are invalid")
         duplicates = []
+        total_ignored = 0
         for item in raw["duplicate_root_directives"]:
-            if type(item) is not dict or set(item) != {"directive", "ignored_values"} or type(item["ignored_values"]) is not list:
+            if (
+                type(item) is not dict
+                or set(item) != {"directive", "ignored_values"}
+                or type(item["ignored_values"]) is not list
+                or len(item["ignored_values"]) > _MAX_IGNORED_VALUES
+            ):
                 raise ValueError("source-union duplicate directive payload fields are invalid")
+            total_ignored += len(item["ignored_values"])
+            if total_ignored > _MAX_DUPLICATE_VALUES_TOTAL:
+                raise ValueError("source-union duplicate directive payload bounds are invalid")
             duplicates.append(DuplicateDirectiveProof(item["directive"], tuple(item["ignored_values"])))
         copied = dict(raw); copied["search_paths"] = tuple(copied["search_paths"])
         copied["duplicate_root_directives"] = tuple(duplicates)
@@ -402,16 +475,16 @@ def build_source_union_material_contract(
 ) -> SourceUnionMaterialContract:
     if type(filtered_source_bytes) is not bytes:
         raise TypeError("source-union filtered source must be bytes")
+    if type(requests) not in (tuple, list) or type(roots) not in (tuple, list):
+        raise ValueError("source-union material request/root collections are invalid")
+    if len(requests) > _MAX_BINDINGS:
+        raise ValueError("source-union SMD material request cardinality differs")
+    if len(roots) > _MAX_ROOTS:
+        raise ValueError("source-union material root bound exceeded")
     text = filtered_source_bytes.decode("utf-8", errors="strict")
     materials = tuple(item[0] for item in direct_smd_material_counts(text))
     request_values = tuple(requests)
     raw_roots = tuple(Path(os.path.abspath(root)) for root in roots)
-    if (
-        not raw_roots or len(raw_roots) > _MAX_ROOTS
-        or any(_has_reparse_ancestor(root) or not root.is_dir() for root in raw_roots)
-    ):
-        raise ValueError("source-union material roots are unsafe")
-    root_values = tuple(root.resolve(strict=True) for root in raw_roots)
     if len(request_values) != len(materials) or len(materials) > _MAX_BINDINGS:
         raise ValueError("source-union SMD material request cardinality differs")
     parsed_requests = []
@@ -423,7 +496,27 @@ def build_source_union_material_contract(
         searches = tuple(raw["search_paths"])
         if raw["smd_material"] != smd_material:
             raise ValueError("source-union SMD material order differs")
-        parsed_requests.append((raw["material_region_key"], smd_material, searches))
+        region = _relative(raw["material_region_key"], "source-union material region key")
+        _smd_material_spelling(smd_material)
+        if len(searches) > _MAX_SEARCH_PATHS:
+            raise ValueError("source-union material search path bound exceeded")
+        canonical_searches = tuple(
+            _relative(item, "source-union material search path") for item in searches
+        )
+        if len({item.casefold() for item in canonical_searches}) != len(canonical_searches):
+            raise ValueError("source-union material search paths are duplicated")
+        parsed_requests.append((region, smd_material, canonical_searches))
+    if (
+        len({item[0].casefold() for item in parsed_requests}) != len(parsed_requests)
+        or len({item[1].casefold() for item in parsed_requests}) != len(parsed_requests)
+    ):
+        raise ValueError("source-union material requests are duplicated")
+    if (
+        not raw_roots or len(raw_roots) > _MAX_ROOTS
+        or any(_has_reparse_ancestor(root) or not root.is_dir() for root in raw_roots)
+    ):
+        raise ValueError("source-union material roots are unsafe")
+    root_values = tuple(root.resolve(strict=True) for root in raw_roots)
     file_values: dict[tuple[int, str], SourceUnionMaterialFile] = {}
     planned_sizes: dict[tuple[int, str], int] = {}
     planned_total = 0
@@ -568,7 +661,7 @@ def build_source_union_material_contract(
 def require_current_source_union_material_contract(
     contract: SourceUnionMaterialContract, *, filtered_source_bytes: bytes,
     roots, cancel_event,
-) -> None:
+) -> CurrentSourceUnionMaterialAuthorization:
     if not isinstance(contract, SourceUnionMaterialContract):
         raise TypeError("source-union material contract is invalid")
     requests = tuple({
@@ -586,6 +679,12 @@ def require_current_source_union_material_contract(
         raise ValueError("source-union current material contract is unavailable") from exc
     if current != contract:
         raise ValueError("source-union current material contract differs")
+    evidence = _render_evidence_for_contract(current)
+    return CurrentSourceUnionMaterialAuthorization(
+        current.material_contract_sha256,
+        canonical_json(list(evidence)),
+        _CURRENT_MATERIAL_AUTHORITY,
+    )
 
 
 def materialize_private_source_union_material_roots(
@@ -645,7 +744,7 @@ def materialize_private_source_union_material_roots(
         raise
 
 
-def source_union_material_render_evidence(
+def _render_evidence_for_contract(
     contract: SourceUnionMaterialContract,
 ) -> tuple[dict[str, object], ...]:
     files = contract.files
@@ -664,3 +763,14 @@ def source_union_material_render_evidence(
             _duplicate_payload(value) for value in item.duplicate_root_directives
         ],
     } for item in contract.bindings)
+
+
+def source_union_material_render_evidence(
+    authorization: CurrentSourceUnionMaterialAuthorization,
+) -> tuple[dict[str, object], ...]:
+    if type(authorization) is not CurrentSourceUnionMaterialAuthorization:
+        raise TypeError("source-union current material authorization is required")
+    raw = json.loads(authorization._render_evidence_json)
+    if type(raw) is not list or any(type(item) is not dict for item in raw):
+        raise ValueError("source-union current material evidence is invalid")
+    return tuple(raw)
