@@ -35,6 +35,14 @@ from .smd_state_contracts import (
     build_smd_skeleton_pair_contract,
     build_smd_skeleton_contract,
 )
+from .source_components import (
+    SourceComponentManifest,
+    source_component_manifest_payload,
+)
+from .source_materials import (
+    SourceUnionMaterialContract,
+    source_union_material_contract_payload,
+)
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -64,10 +72,8 @@ class AdaptiveStateSourceDependencies:
     source_identity: str
     source_size: int
     source_sha256: str
-    component_keys: tuple[str, ...]
-    material_region_keys: tuple[str, ...]
-    component_manifest_sha256: str
-    material_contract_sha256: str
+    component_manifest: SourceComponentManifest
+    material_contract: SourceUnionMaterialContract
     dependency_sha256: str
 
     def __post_init__(self) -> None:
@@ -76,21 +82,55 @@ class AdaptiveStateSourceDependencies:
         )
         if type(self.source_size) is not int or self.source_size < 0:
             raise ValueError("adaptive state dependency source size is invalid")
-        components = _canonical_tuple(self.component_keys, "component dependencies")
-        materials = _canonical_tuple(self.material_region_keys, "material dependencies")
         _sha256(self.source_sha256, "adaptive state dependency source hash")
-        _sha256(self.component_manifest_sha256, "component dependency manifest")
-        _sha256(self.material_contract_sha256, "material dependency contract")
+        if not isinstance(self.component_manifest, SourceComponentManifest) or not isinstance(
+            self.material_contract, SourceUnionMaterialContract
+        ):
+            raise TypeError("adaptive state dependencies require typed component/material contracts")
+        components = _canonical_tuple(
+            tuple(item.component_key for item in self.component_manifest.components),
+            "component dependencies",
+        )
+        materials = _canonical_tuple(
+            tuple(item.material_region_key for item in self.material_contract.bindings),
+            "material dependencies",
+        )
+        if (
+            self.component_manifest.source_sha256 != self.source_sha256
+            or self.material_contract.source_identity != identity
+            or self.material_contract.filtered_source_sha256
+            != self.component_manifest.filtered_source_sha256
+        ):
+            raise ValueError("adaptive state typed dependencies differ from source bytes or identity")
         _sha256(self.dependency_sha256, "adaptive state dependency seal")
         object.__setattr__(self, "source_identity", identity)
-        object.__setattr__(self, "component_keys", components)
-        object.__setattr__(self, "material_region_keys", materials)
         if hashlib.sha256(canonical_json(_dependency_payload(self)).encode("utf-8")).hexdigest() != self.dependency_sha256:
             raise ValueError("adaptive state dependency seal mismatch")
+
+    @property
+    def component_keys(self) -> tuple[str, ...]:
+        return tuple(item.component_key for item in self.component_manifest.components)
+
+    @property
+    def material_region_keys(self) -> tuple[str, ...]:
+        return tuple(item.material_region_key for item in self.material_contract.bindings)
+
+    @property
+    def component_manifest_sha256(self) -> str:
+        return self.component_manifest.component_manifest_sha256
+
+    @property
+    def material_contract_sha256(self) -> str:
+        return self.material_contract.material_contract_sha256
 
     @classmethod
     def create(cls, **values) -> "AdaptiveStateSourceDependencies":
         raw = dict(values)
+        if set(raw) != {
+            "source_identity", "source_size", "source_sha256",
+            "component_manifest", "material_contract",
+        }:
+            raise TypeError("adaptive state dependencies require typed component/material authority")
         provisional = object.__new__(cls)
         for name, value in raw.items():
             object.__setattr__(provisional, name, value)
@@ -105,10 +145,8 @@ def _dependency_payload(value: AdaptiveStateSourceDependencies) -> dict[str, obj
         "source_identity": value.source_identity,
         "source_size": value.source_size,
         "source_sha256": value.source_sha256,
-        "component_keys": list(value.component_keys),
-        "material_region_keys": list(value.material_region_keys),
-        "component_manifest_sha256": value.component_manifest_sha256,
-        "material_contract_sha256": value.material_contract_sha256,
+        "component_manifest": source_component_manifest_payload(value.component_manifest),
+        "material_contract": source_union_material_contract_payload(value.material_contract),
     }
 
 

@@ -32,7 +32,10 @@ from maximum_optimizer.domain import (
     adaptive_direct_state_inventory_payload,
 )
 from maximum_optimizer.qc_graph import parse_qc_graph
+from maximum_optimizer.smd_contract import prefilter_direct_degenerate_smd
 from maximum_optimizer.smd_state_contracts import SmdAnimationPairInput
+from maximum_optimizer.source_components import build_source_component_manifest
+from maximum_optimizer.source_materials import build_source_union_material_contract
 
 
 H = {character: character * 64 for character in "0123456789abcdef"}
@@ -41,7 +44,9 @@ H = {character: character * 64 for character in "0123456789abcdef"}
 def _smd() -> bytes:
     return (
         'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
-        '0 0 0 0 0 0 0\nend\ntriangles\nend\n'
+        '0 0 0 0 0 0 0\nend\ntriangles\npaint\n'
+        '0 0 0 0 0 0 1 0 0\n0 1 0 0 0 0 1 1 0\n'
+        '0 0 1 0 0 0 1 0 1\nend\n'
     ).encode()
 
 
@@ -63,6 +68,13 @@ class InventoryFixture:
     def __init__(self, root: Path) -> None:
         self.original_root = root / "original"; self.original_root.mkdir(parents=True)
         self.candidate_root = root / "candidate"; (self.candidate_root / "output").mkdir(parents=True)
+        self.material_root = root / "materials"
+        (self.material_root / "vehicles").mkdir(parents=True)
+        (self.material_root / "textures").mkdir(parents=True)
+        (self.material_root / "vehicles" / "paint.vmt").write_text(
+            'VertexLitGeneric { "$basetexture" "textures/paint" }', encoding="utf-8",
+        )
+        (self.material_root / "textures" / "paint.vtf").write_bytes(b"paint")
         for name in ("fixed.smd", "door.smd"):
             (self.original_root / name).write_bytes(_smd())
             (self.candidate_root / "output" / name.replace(".smd", "_opt.smd")).write_bytes(_smd())
@@ -160,15 +172,25 @@ class InventoryFixture:
             candidate_graph_sha256=qc_graph_sha256(self.candidate_graph),
             raw_metrics_sha256=H["9"], sources=tuple(metric_sources),
         )
-        self.dependencies = {
-            identity: AdaptiveStateSourceDependencies.create(
-                source_identity=identity, source_size=proof.size,
-                source_sha256=proof.sha256, component_keys=("component-000",),
-                material_region_keys=("material-000",),
-                component_manifest_sha256=H["4"], material_contract_sha256=H["5"],
+        self.dependencies = {}
+        for identity, proof in original_files.items():
+            source_bytes = (self.original_root / proof.relative_path).read_bytes()
+            components = build_source_component_manifest(source_bytes)
+            filtered = prefilter_direct_degenerate_smd(
+                source_bytes.decode("utf-8")
+            ).filtered_text.encode("utf-8")
+            materials = build_source_union_material_contract(
+                source_identity=identity, filtered_source_bytes=filtered,
+                requests=({
+                    "material_region_key": "material-000", "smd_material": "paint",
+                    "search_paths": ("vehicles",),
+                },), roots=(self.material_root,), cancel_event=threading.Event(),
             )
-            for identity, proof in original_files.items()
-        }
+            self.dependencies[identity] = AdaptiveStateSourceDependencies.create(
+                source_identity=identity, source_size=proof.size,
+                source_sha256=proof.sha256, component_manifest=components,
+                material_contract=materials,
+            )
 
     def build(self, *, dependencies=None, animation_pairs=None):
         return build_production_adaptive_direct_state_inventory(
@@ -285,6 +307,15 @@ class AdaptiveStateInventoryFactoryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "seal"):
                 replace(dependency, dependency_sha256=H["f"])
 
+    def test_dependency_contract_rejects_hash_only_authority(self) -> None:
+        with self.assertRaises(TypeError):
+            AdaptiveStateSourceDependencies.create(
+                source_identity="body.smd", source_size=1, source_sha256=H["1"],
+                component_keys=("component-000",),
+                material_region_keys=("material-000",),
+                component_manifest_sha256=H["4"], material_contract_sha256=H["5"],
+            )
+
     def test_factory_emits_only_active_rows_for_complete_bodygroup_skin_product(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = InventoryFixture(Path(raw))
@@ -321,16 +352,13 @@ class AdaptiveStateInventoryFactoryTests(unittest.TestCase):
                 fixture.build(dependencies=missing)
             forged = dict(fixture.dependencies)
             current = forged["door.smd"]
-            forged["door.smd"] = AdaptiveStateSourceDependencies.create(
-                source_identity=current.source_identity,
-                source_size=current.source_size, source_sha256=H["f"],
-                component_keys=current.component_keys,
-                material_region_keys=current.material_region_keys,
-                component_manifest_sha256=current.component_manifest_sha256,
-                material_contract_sha256=current.material_contract_sha256,
-            )
             with self.assertRaisesRegex(ValueError, "depend|bytes"):
-                fixture.build(dependencies=forged)
+                forged["door.smd"] = AdaptiveStateSourceDependencies.create(
+                    source_identity=current.source_identity,
+                    source_size=current.source_size, source_sha256=H["f"],
+                    component_manifest=current.component_manifest,
+                    material_contract=current.material_contract,
+                )
 
     def test_factory_final_revalidation_catches_source_mutation_during_row_sealing(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
