@@ -1492,7 +1492,7 @@ class CandidateSpec:
             ):
                 raise ValueError("focused recovery candidate id must derive from full recipe")
             if self.composite_recipe.kind == "adaptive-direct-fallback-v1" and (
-                self.candidate_id != "adaptive-direct-" + self.composite_recipe.recipe_sha256
+                self.candidate_id != "recovery-" + self.composite_recipe.recipe_sha256
                 or self.target_ratio != self.composite_recipe.direct_ratio
                 or self.region_overrides
             ):

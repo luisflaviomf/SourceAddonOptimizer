@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import re
 from typing import Callable
 
-from .composite import adaptive_direct_recipe, candidate_spec_sha256, optimizer_contract_sha256
+from .composite import (
+    adaptive_direct_recipe, candidate_spec_sha256, optimizer_contract_sha256,
+    revalidate_direct_source_snapshot,
+)
 from .domain import (
     AdaptiveDirectCoverageManifest,
     CandidateSpec,
@@ -15,9 +19,11 @@ from .domain import (
     direct_source_snapshot_payload,
 )
 from .reporting import canonical_json
+from .processes import ProcessCancelledError
 
 
 MONACO_DIRECT_RATIOS = (0.50, 0.45, 0.40, 0.35)
+_HASH = re.compile(r"[0-9a-f]{64}")
 
 
 def _digest(value: object) -> str:
@@ -52,8 +58,56 @@ class MonacoScheduledCandidate:
     def __post_init__(self) -> None:
         if self.ratio != self.reservation.ratio:
             raise ValueError("Monaco scheduled ratio differs from reservation")
-        object.__setattr__(self, "requests", tuple(self.requests))
-        object.__setattr__(self, "snapshots", tuple(self.snapshots))
+        requests = tuple(self.requests); snapshots = tuple(self.snapshots)
+        request_ids = tuple(item.source_identity for item in requests if isinstance(item, DirectSourceBuildRequest))
+        snapshot_ids = tuple(item.request.source_identity for item in snapshots if isinstance(item, DirectSourceSnapshot))
+        if len(request_ids) != len(requests) or request_ids != tuple(sorted(request_ids, key=lambda item: (item.casefold(), item))) or len({item.casefold() for item in request_ids}) != len(request_ids):
+            raise ValueError("Monaco scheduled requests are not canonical")
+        if len(snapshot_ids) != len(snapshots) or snapshot_ids != request_ids or any(snapshot.request != request for request, snapshot in zip(requests, snapshots)):
+            raise ValueError("Monaco scheduled snapshots differ from requests")
+        if not requests or any(request.direct_ratio != self.ratio for request in requests):
+            raise ValueError("Monaco scheduled request ratios differ")
+        coverage = requests[0].coverage_manifest_sha256
+        if any(request.coverage_manifest_sha256 != coverage for request in requests):
+            raise ValueError("Monaco scheduled coverage differs")
+        expected_requests = _request_set_digest(coverage, self.ratio, requests)
+        expected_snapshots = _snapshot_set_digest(coverage, self.ratio, snapshots)
+        if _HASH.fullmatch(self.request_set_sha256 or "") is None or self.request_set_sha256 != expected_requests or _HASH.fullmatch(self.snapshot_set_sha256 or "") is None or self.snapshot_set_sha256 != expected_snapshots:
+            raise ValueError("Monaco scheduled set digest mismatch")
+        if not isinstance(self.spec, CandidateSpec) or self.spec.composite_recipe is None or self.spec.composite_recipe.coverage_manifest_sha256 != coverage or self.spec.composite_recipe.direct_request_set_sha256 != self.request_set_sha256 or self.spec.composite_recipe.direct_snapshot_set_sha256 != self.snapshot_set_sha256 or self.spec.target_ratio != self.ratio:
+            raise ValueError("Monaco scheduled spec binding mismatch")
+        object.__setattr__(self, "requests", requests); object.__setattr__(self, "snapshots", snapshots)
+
+
+@dataclass(frozen=True)
+class MonacoFailedReservation:
+    reservation: MonacoRatioReservation
+    ratio: float
+    terminal_status: str
+    failure_reason: str
+
+    def __post_init__(self) -> None:
+        if self.ratio != self.reservation.ratio or self.terminal_status != "failed" or self.failure_reason != "ratio-input-failed-v1":
+            raise ValueError("Monaco failed reservation matrix is invalid")
+
+
+MonacoScheduleOutcome = MonacoScheduledCandidate | MonacoFailedReservation
+
+
+def _request_set_digest(coverage_sha256: str, ratio: float, requests) -> str:
+    return _digest({
+        "schema": 1, "kind": "adaptive-direct-request-set-v1",
+        "coverage_manifest_sha256": coverage_sha256, "ratio": ratio,
+        "requests": [direct_source_request_payload(item) for item in requests],
+    })
+
+
+def _snapshot_set_digest(coverage_sha256: str, ratio: float, snapshots) -> str:
+    return _digest({
+        "schema": 1, "kind": "adaptive-direct-snapshot-set-v1",
+        "coverage_manifest_sha256": coverage_sha256, "ratio": ratio,
+        "snapshots": [direct_source_snapshot_payload(item) for item in snapshots],
+    })
 
 
 def _canonical_ratio_inputs(
@@ -70,6 +124,7 @@ def _canonical_ratio_inputs(
         raise ValueError("Monaco direct snapshots are invalid")
     requests = tuple(sorted(requests, key=lambda item: (item.source_identity.casefold(), item.source_identity)))
     snapshots = tuple(sorted(snapshots, key=lambda item: (item.request.source_identity.casefold(), item.request.source_identity)))
+    snapshots = tuple(revalidate_direct_source_snapshot(item) for item in snapshots)
     eligible = tuple(item for item in coverage.sources if item.eligibility_kind == "eligible-exact-v1")
     expected_identities = tuple(item.source_identity for item in eligible)
     request_identities = tuple(item.source_identity for item in requests)
@@ -115,18 +170,8 @@ def _scheduled_candidate(
     requests, snapshots = _canonical_ratio_inputs(
         base_spec=base_spec, coverage=coverage, ratio=ratio, raw=raw,
     )
-    request_set_sha256 = _digest({
-        "schema": 1, "kind": "adaptive-direct-request-set-v1",
-        "coverage_manifest_sha256": coverage.coverage_manifest_sha256,
-        "ratio": ratio,
-        "requests": [direct_source_request_payload(item) for item in requests],
-    })
-    snapshot_set_sha256 = _digest({
-        "schema": 1, "kind": "adaptive-direct-snapshot-set-v1",
-        "coverage_manifest_sha256": coverage.coverage_manifest_sha256,
-        "ratio": ratio,
-        "snapshots": [direct_source_snapshot_payload(item) for item in snapshots],
-    })
+    request_set_sha256 = _request_set_digest(coverage.coverage_manifest_sha256, ratio, requests)
+    snapshot_set_sha256 = _snapshot_set_digest(coverage.coverage_manifest_sha256, ratio, snapshots)
     overlays = tuple(SourceOverlay(
         source_identity=request.source_identity,
         mode="direct-position",
@@ -161,7 +206,7 @@ def _scheduled_candidate(
         overlays=overlays,
     )
     spec = CandidateSpec(
-        "adaptive-direct-" + recipe.recipe_sha256,
+        "recovery-" + recipe.recipe_sha256,
         base_spec.engine, ratio, base_spec.target_error, base_spec.repair_profile,
         (), strategy=base_spec.strategy, update_vertices=base_spec.update_vertices,
         transfer=base_spec.transfer, composite_recipe=recipe,
@@ -177,7 +222,7 @@ def build_monaco_schedule(
     remaining_candidates: int,
     reserve: Callable[[int, float], str],
     access_ratio: Callable[[float], object],
-) -> tuple[MonacoScheduledCandidate, ...]:
+) -> tuple[MonacoScheduleOutcome, ...]:
     if not isinstance(base_spec, CandidateSpec) or base_spec.composite_recipe is not None or base_spec.strategy != "blender-adaptive-v1":
         raise ValueError("Monaco schedule base spec is not ordinary blender-adaptive")
     if not isinstance(coverage, AdaptiveDirectCoverageManifest):
@@ -193,7 +238,17 @@ def build_monaco_schedule(
         MonacoRatioReservation(index, ratio, reserve(index, ratio))
         for index, ratio in enumerate(prefix)
     )
-    return tuple(_scheduled_candidate(
-        base_spec=base_spec, coverage=coverage, reservation=item,
-        raw=access_ratio(item.ratio),
-    ) for item in reservations)
+    outcomes = []
+    for item in reservations:
+        try:
+            outcomes.append(_scheduled_candidate(
+                base_spec=base_spec, coverage=coverage, reservation=item,
+                raw=access_ratio(item.ratio),
+            ))
+        except ProcessCancelledError:
+            raise
+        except Exception:
+            outcomes.append(MonacoFailedReservation(
+                item, item.ratio, "failed", "ratio-input-failed-v1",
+            ))
+    return tuple(outcomes)
