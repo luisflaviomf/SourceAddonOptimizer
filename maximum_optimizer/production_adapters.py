@@ -45,18 +45,7 @@ class SourceUnionPoseBinding:
             if self.frame != 0 or any(value is not None for value in values):
                 raise ValueError("bind pose cannot carry animation state")
             return
-        if any(value is None for value in values):
-            raise ValueError("anchor pose requires paired animation proofs")
-        before = Path(self.animation_before)
-        after = Path(self.animation_after)
-        if not before.is_absolute() or not after.is_absolute():
-            raise ValueError("anchor animation paths must be absolute")
-        if any(_HASH.fullmatch(value or "") is None for value in (
-            self.animation_before_sha256, self.animation_after_sha256,
-        )):
-            raise ValueError("anchor animation hashes are invalid")
-        object.__setattr__(self, "animation_before", before)
-        object.__setattr__(self, "animation_after", after)
+        raise ValueError("source-union anchor unavailable without sealed preflight proof")
 
     @classmethod
     def bind(cls, pose_contract_sha256: str) -> "SourceUnionPoseBinding":
@@ -67,31 +56,12 @@ class SourceUnionPoseBinding:
         cls, pose_key: str, frame: int, before: Path, after: Path,
         before_sha256: str, after_sha256: str, pose_contract_sha256: str,
     ) -> "SourceUnionPoseBinding":
-        if frame <= 0:
-            raise ValueError("anchor frame must be positive")
-        return cls(
-            pose_key, frame, Path(before), Path(after), before_sha256, after_sha256,
-            pose_contract_sha256,
-        )
+        raise ValueError("source-union anchor unavailable without sealed preflight proof")
 
     def revalidate(self, cancel_event: threading.Event | None) -> None:
         if self.pose_key == "bind":
             return
-        for path, expected in (
-            (self.animation_before, self.animation_before_sha256),
-            (self.animation_after, self.animation_after_sha256),
-        ):
-            _cancel(cancel_event, "cancelled during source-union animation validation")
-            if _has_reparse_ancestor(path):
-                raise ValueError("source-union animation has reparse ancestry")
-            _size, digest = _file_proof(path, cancel_event, contained_root=path.parent)
-            if digest != expected:
-                raise ValueError("source-union animation proof is stale")
-        from .orchestrator import _smd_animation_frames
-        before_frames = _smd_animation_frames(self.animation_before)
-        after_frames = _smd_animation_frames(self.animation_after)
-        if not before_frames or before_frames != after_frames or self.frame not in before_frames:
-            raise ValueError("source-union anchor frame is absent or animation frames differ")
+        raise ValueError("source-union anchor unavailable without sealed preflight proof")
 
 
 def validate_source_union_pose_bindings(
@@ -102,9 +72,10 @@ def validate_source_union_pose_bindings(
 ) -> None:
     values = tuple(bindings)
     if (
-        not 1 <= len(values) <= 2
+        len(values) != 1
         or any(not isinstance(item, SourceUnionPoseBinding) for item in values)
         or tuple(item.pose_key for item in values) != tuple(pose_keys)
+        or tuple(pose_keys) != ("bind",)
         or values[0].pose_key != "bind"
         or any(item.pose_contract_sha256 != pose_contract_sha256 for item in values)
     ):
@@ -138,11 +109,9 @@ def validate_source_union_cli_contract(args) -> None:
             raise ValueError("source-union pose command is malformed")
         parsed.append((match.group(1), int(match.group(2))))
     if (
-        not 1 <= len(parsed) <= 2 or parsed[0] != ("bind", 0)
-        or len({name.casefold() for name, _frame in parsed}) != len(parsed)
-        or (len(parsed) == 2 and parsed[1][1] <= 0)
+        parsed != [("bind", 0)]
     ):
-        raise ValueError("source-union poses must be bind plus optional anchor")
+        raise ValueError("source-union E2A accepts bind:0 only")
 
 
 def _current_composed_manifest(composed: ComposedSourceTree, event) -> None:
@@ -260,12 +229,14 @@ class ProductionAdapters:
                 cancel_event, process_runner=self._process_runner,
             )
             _cancel(cancel_event, "cancelled after adaptive-direct compile")
+            _current_composed_manifest(composed, cancel_event)
             if _has_reparse_ancestor(workspace / "compiled") or _has_reparse_ancestor(workspace / "logs"):
                 raise ValueError("adaptive-direct compile output has reparse ancestry")
             _reject_compile_extras(manifest, build)
             proofs = _current_recovery_compile_files(manifest, build, cancel_event)
             if _current_recovery_compile_files(manifest, build, cancel_event) != proofs:
                 raise ValueError("adaptive-direct compiled bytes changed during proof")
+            _current_composed_manifest(composed, cancel_event)
             return AdaptiveDirectCompileResult(
                 build, proofs, composed.composition.evidence_sha256
             )

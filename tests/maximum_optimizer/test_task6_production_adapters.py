@@ -29,11 +29,15 @@ def _fingerprint() -> StructuralFingerprint:
 
 
 class CompileRunner:
-    def __init__(self, model_rel: str, *, extra=False, missing=None, set_event=None) -> None:
+    def __init__(
+        self, model_rel: str, *, extra=False, missing=None, set_event=None,
+        mutate_source: Path | None = None,
+    ) -> None:
         self.model_rel = model_rel
         self.extra = extra
         self.missing = missing
         self.set_event = set_event
+        self.mutate_source = mutate_source
         self.commands = []
 
     def __call__(self, command, cwd, log_path, cancel_event):
@@ -55,6 +59,9 @@ class CompileRunner:
         }), encoding="utf-8")
         if self.set_event is not None:
             self.set_event.set()
+        if self.mutate_source is not None:
+            data = self.mutate_source.read_bytes()
+            self.mutate_source.write_bytes(bytes((data[0] ^ 1,)) + data[1:])
         return ProcessResult(command, 0, 0.01, Path(log_path))
 
 
@@ -134,6 +141,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
         for poses, angles in (
             ("bind:0,garbage", "front,back,left,right,top,bottom,iso1,iso2"),
             ("bind:0,bind:0", "front,back,left,right,top,bottom,iso1,iso2"),
+            ("bind:0,turn:12", "front,back,left,right,top,bottom,iso1,iso2"),
             ("bind:0", "wrong"),
         ):
             with self.subTest(poses=poses, angles=angles), self.assertRaises(ValueError):
@@ -144,7 +152,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     "--source-union-visibility-out", "visibility.json",
                 ]))
 
-    def test_pose_binding_supports_bind_and_proven_anchor_but_rejects_stale(self) -> None:
+    def test_pose_binding_accepts_bind_and_fails_closed_for_unsealed_anchor(self) -> None:
         bind = SourceUnionPoseBinding.bind("6" * 64)
         self.assertEqual((bind.pose_key, bind.frame), ("bind", 0))
         with tempfile.TemporaryDirectory() as temporary:
@@ -155,19 +163,16 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 'time 0\n0 0 0 0 0 0 0\ntime 12\n0 0 0 0 0 0 0\nend\n'
             ).encode()
             before.write_bytes(animation); after.write_bytes(animation)
-            anchor = SourceUnionPoseBinding.anchor(
-                "turn", 12, before, after,
-                hashlib.sha256(before.read_bytes()).hexdigest(),
-                hashlib.sha256(after.read_bytes()).hexdigest(),
-                "6" * 64,
-            )
-            anchor.revalidate(threading.Event())
-            validate_source_union_pose_bindings(
-                (bind, anchor), ("bind", "turn"), "6" * 64, threading.Event()
-            )
-            before.write_bytes(b"stale animation")
             with self.assertRaises(ValueError):
-                anchor.revalidate(threading.Event())
+                SourceUnionPoseBinding.anchor(
+                    "turn", 12, before, after,
+                    hashlib.sha256(before.read_bytes()).hexdigest(),
+                    hashlib.sha256(after.read_bytes()).hexdigest(),
+                    "6" * 64,
+                )
+            validate_source_union_pose_bindings(
+                (bind,), ("bind",), "6" * 64, threading.Event()
+            )
         with self.assertRaises(ValueError):
             SourceUnionPoseBinding("turn", 12, None, None, None, None, "6" * 64)
         with self.assertRaises(ValueError):
@@ -222,6 +227,19 @@ class ProductionAdapterContractTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self._compile_case(root, runner)
             self.assertEqual(len(runner.commands), 1)
+            self.assertFalse((root / "composed" / "compiled").exists())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture_runner = CompileRunner("task6.mdl")
+
+            # Obtain the deterministic composed source path through the same helper
+            # shape, then let the runner mutate it same-size before returning.
+            def attach_mutator(composed):
+                fixture_runner.mutate_source = composed.workspace / "src/meshes/part-00.smd"
+
+            with self.assertRaises(ValueError):
+                self._compile_case(root, fixture_runner, mutate_composed=attach_mutator)
+            self.assertEqual(len(fixture_runner.commands), 1)
             self.assertFalse((root / "composed" / "compiled").exists())
             self.assertFalse((root / "composed" / "logs").exists())
         with tempfile.TemporaryDirectory() as temporary:
