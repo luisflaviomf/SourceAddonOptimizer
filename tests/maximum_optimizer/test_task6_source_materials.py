@@ -14,6 +14,7 @@ from maximum_optimizer.reporting import canonical_json
 from maximum_optimizer.processes import ProcessCancelledError
 from maximum_optimizer.visual_validation import MATERIAL_EVIDENCE_FIELDS
 from maximum_optimizer.source_materials import (
+    SourceUnionMaterialOwnershipConflict,
     build_source_union_material_contract,
     materialize_private_source_union_material_roots,
     require_current_source_union_material_contract,
@@ -121,7 +122,7 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
             contract, self.roots, destination, threading.Event(),
             filtered_source_bytes=self.filtered,
         )
-        self.assertEqual(len(private), 2)
+        self.assertEqual(len(private.roots), 2)
         self.assertEqual(
             tuple(sorted(path.relative_to(destination).as_posix()
                          for path in destination.rglob("*") if path.is_file())),
@@ -129,7 +130,7 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
         )
         require_current_source_union_material_contract(
             contract, filtered_source_bytes=self.filtered,
-            roots=private, cancel_event=threading.Event(),
+            roots=private.roots, cancel_event=threading.Event(),
         )
 
     def test_requests_must_cover_exact_smd_material_order(self) -> None:
@@ -193,7 +194,7 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
         )
         require_current_source_union_material_contract(
             contract, filtered_source_bytes=filtered,
-            roots=private, cancel_event=threading.Event(),
+            roots=private.roots, cancel_event=threading.Event(),
         )
         evidence = source_union_material_render_evidence(authorization)
         self.assertEqual(set(evidence[0]), MATERIAL_EVIDENCE_FIELDS)
@@ -530,7 +531,7 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
             return original_rename(source, target)
         with mock.patch(
             "maximum_optimizer.source_materials.os.rename", side_effect=raced_publish,
-        ), self.assertRaises((FileExistsError, OSError)):
+        ), self.assertRaises(SourceUnionMaterialOwnershipConflict):
             materialize_private_source_union_material_roots(
                 contract, self.roots, destination, threading.Event(),
                 filtered_source_bytes=self.filtered,

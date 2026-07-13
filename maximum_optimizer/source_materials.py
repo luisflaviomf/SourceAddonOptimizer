@@ -381,6 +381,35 @@ class CurrentSourceUnionMaterialAuthorization:
         return self._authorization_sha256
 
 
+class SourceUnionMaterialOwnershipConflict(ValueError):
+    """A foreign filesystem object won ownership of a private material path."""
+
+
+@dataclass(frozen=True)
+class PrivateSourceUnionMaterialLease:
+    roots: tuple[Path, ...]
+    destination_identity: tuple[int, int, int]
+    root_identities: tuple[tuple[int, int, int], ...]
+
+    def __post_init__(self) -> None:
+        roots = tuple(self.roots)
+        identities = tuple(self.root_identities)
+        if (
+            not roots
+            or any(not isinstance(path, Path) or not path.is_absolute() for path in roots)
+            or len(identities) != len(roots)
+            or any(
+                type(identity) is not tuple
+                or len(identity) != 3
+                or any(type(value) is not int for value in identity)
+                for identity in (self.destination_identity, *identities)
+            )
+        ):
+            raise ValueError("source-union private material lease is invalid")
+        object.__setattr__(self, "roots", roots)
+        object.__setattr__(self, "root_identities", identities)
+
+
 def _validated_render_evidence_json(value: str) -> tuple[dict[str, object], ...]:
     if type(value) is not str or len(value) > _MAX_AUTHORIZATION_JSON_CHARS:
         raise ValueError("source-union current material evidence is invalid")
@@ -814,7 +843,7 @@ def require_current_source_union_material_contract(
 def materialize_private_source_union_material_roots(
     contract: SourceUnionMaterialContract, roots, destination: Path, cancel_event,
     *, filtered_source_bytes: bytes,
-) -> tuple[Path, ...]:
+) -> PrivateSourceUnionMaterialLease:
     raw_roots = tuple(Path(os.path.abspath(item)) for item in roots)
     if any(_has_reparse_ancestor(root) or not root.is_dir() for root in raw_roots):
         raise ValueError("source-union material roots are unsafe")
@@ -857,11 +886,40 @@ def materialize_private_source_union_material_roots(
             staging, cancel_event, expected,
             max_files=_MAX_FILES, max_bytes=_MAX_BYTES,
         )
-        os.rename(staging, destination)
-        if _workspace_root_identity(destination) != staging_identity:
-            raise ValueError("source-union private material destination identity changed")
-        return tuple(
+        private_root_identities = tuple(
+            _workspace_root_identity(path) for path in private
+        )
+        try:
+            os.rename(staging, destination)
+        except OSError as exc:
+            if os.path.lexists(destination):
+                raise SourceUnionMaterialOwnershipConflict(
+                    "source-union private material destination ownership conflict"
+                ) from exc
+            raise
+        published_roots = tuple(
             destination / f"root-{index:03d}" for index in range(len(contract.roots))
+        )
+        try:
+            if (
+                _workspace_root_identity(destination) != staging_identity
+                or tuple(
+                    _workspace_root_identity(path) for path in published_roots
+                ) != private_root_identities
+            ):
+                raise SourceUnionMaterialOwnershipConflict(
+                    "source-union private material destination identity changed"
+                )
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            if isinstance(exc, SourceUnionMaterialOwnershipConflict):
+                raise
+            raise SourceUnionMaterialOwnershipConflict(
+                "source-union private material destination identity changed"
+            ) from exc
+        return PrivateSourceUnionMaterialLease(
+            roots=published_roots,
+            destination_identity=staging_identity,
+            root_identities=private_root_identities,
         )
     except BaseException:
         _quarantine_cleanup_if_owned(staging, staging_identity)

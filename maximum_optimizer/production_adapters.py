@@ -40,7 +40,9 @@ from .source_components import (
     source_component_manifest_payload, source_component_transfer_payload,
 )
 from .source_materials import (
+    PrivateSourceUnionMaterialLease,
     SourceUnionMaterialContract,
+    SourceUnionMaterialOwnershipConflict,
     materialize_private_source_union_material_roots,
     require_current_source_union_material_contract,
     source_union_material_contract_payload,
@@ -840,15 +842,20 @@ class AdaptiveDirectProductionBoundary:
                 material_contract, filtered_source_bytes=current_filtered,
                 roots=tools.materials_roots, cancel_event=event,
             )
-            private_material_roots = materialize_private_source_union_material_roots(
-                material_contract, tools.materials_roots, material_tree, event,
-                filtered_source_bytes=current_filtered,
-            )
-            holder["material_tree_identity"] = _workspace_root_identity(material_tree)
-            holder["private_material_roots"] = tuple(private_material_roots)
-            holder["private_material_root_identities"] = tuple(
-                _workspace_root_identity(path) for path in private_material_roots
-            )
+            try:
+                material_lease = materialize_private_source_union_material_roots(
+                    material_contract, tools.materials_roots, material_tree, event,
+                    filtered_source_bytes=current_filtered,
+                )
+            except SourceUnionMaterialOwnershipConflict:
+                ownership_lease.preserve_unowned_descendant()
+                raise
+            if type(material_lease) is not PrivateSourceUnionMaterialLease:
+                raise TypeError("source-union private material lease is invalid")
+            private_material_roots = material_lease.roots
+            holder["material_tree_identity"] = material_lease.destination_identity
+            holder["private_material_roots"] = private_material_roots
+            holder["private_material_root_identities"] = material_lease.root_identities
             material_evidence = validate_current_materials(event)
             holder["material_evidence"] = material_evidence
             _write_private_bytes_fsync(reference_input, current_filtered)
@@ -915,10 +922,15 @@ class AdaptiveDirectProductionBoundary:
             if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
                 raise ValueError("source-union dependency changed before Blender")
             validate_current_materials(event)
-            process = self._process_runner(
-                tuple(command), tools.renderer_script.parent,
-                output_root / "source-union-render.log", event,
-            )
+            try:
+                process = self._process_runner(
+                    tuple(command), tools.renderer_script.parent,
+                    output_root / "source-union-render.log", event,
+                )
+            except BaseException:
+                validate_current_materials(event)
+                raise
+            validate_current_materials(event)
             if process.returncode != 0:
                 raise ValueError("source-union Blender process failed")
             cache_error = None
@@ -1011,10 +1023,26 @@ class AdaptiveDirectProductionBoundary:
                 raw, current_material_evidence, cancel_event
             )
             _prove_source_union_bijection(raw, authorized, target, comparison, cancel_event)
+            manifest_proofs = tuple(
+                _file_proof(
+                    raw / side / "render_manifest.json", cancel_event,
+                    contained_root=raw / side,
+                )
+                for side in ("original", "optimized")
+            )
+            holder["raw_manifest_proofs"] = manifest_proofs
             result = compare_source_union_render_sets(
                 raw / "original", raw / "optimized", expected_profile,
                 expected_contract=comparison,
             )
+            if tuple(
+                _file_proof(
+                    raw / side / "render_manifest.json", cancel_event,
+                    contained_root=raw / side,
+                )
+                for side in ("original", "optimized")
+            ) != manifest_proofs:
+                raise ValueError("source-union raw manifests changed during comparison")
             _prove_source_union_bijection(raw, authorized, target, comparison, cancel_event)
             if validate_current_materials(cancel_event) != current_material_evidence:
                 raise ValueError("source-union materials changed during comparison")
@@ -1062,6 +1090,18 @@ class AdaptiveDirectProductionBoundary:
             _prove_source_union_bijection(
                 raw, authorized, target, comparison, event
             )
+            manifest_proofs = holder.get("raw_manifest_proofs")
+            if (
+                type(manifest_proofs) is not tuple
+                or tuple(
+                    _file_proof(
+                        raw / side / "render_manifest.json", event,
+                        contained_root=raw / side,
+                    )
+                    for side in ("original", "optimized")
+                ) != manifest_proofs
+            ):
+                raise ValueError("source-union final raw manifests changed")
             current_material_evidence = validate_current_materials(event)
             if current_material_evidence != holder.get("material_evidence"):
                 raise ValueError("source-union final material evidence differs")

@@ -1079,6 +1079,37 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 (),
             )
 
+    def test_source_union_rejects_private_material_swap_before_materialize_returns(self) -> None:
+        from maximum_optimizer import production_adapters as module
+
+        real_materialize = module.materialize_private_source_union_material_roots
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            marker = workspace / "material-roots" / "external.marker"
+
+            def replace_before_return(*args, **kwargs):
+                private = real_materialize(*args, **kwargs)
+                destination = Path(args[2])
+                winner = root / "external-before-return"
+                shutil.copytree(destination, winner)
+                (winner / "external.marker").write_bytes(b"preserve")
+                shutil.rmtree(destination)
+                os.rename(winner, destination)
+                return private
+
+            runner = SourceUnionRunner(fixture)
+            with mock.patch(
+                "maximum_optimizer.production_adapters."
+                "materialize_private_source_union_material_roots",
+                side_effect=replace_before_return,
+            ), self.assertRaises(ValueError):
+                self._render_case(root, runner, workspace, components)
+            self.assertEqual(runner.commands, [])
+            self.assertTrue(workspace.exists())
+            self.assertEqual(marker.read_bytes(), b"preserve")
+
     def test_source_union_rejects_replaced_private_material_child_and_preserves_winner(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -1109,6 +1140,62 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 tuple(workspace.parent.glob(".material-roots.source-materials-acquire-*")),
                 (),
             )
+
+    def test_source_union_preserves_replaced_private_child_when_blender_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            successful_runner = SourceUnionRunner(fixture)
+
+            def replace_child_and_fail(command, cwd, log_path, cancel_event):
+                process = successful_runner(command, cwd, log_path, cancel_event)
+                output_root = Path(command[command.index("--out") + 1]).parent
+                child = output_root / "material-roots/root-000"
+                winner = root / "external-failed-root"
+                shutil.copytree(child, winner)
+                (winner / "external.marker").write_bytes(b"preserve")
+                shutil.rmtree(child)
+                os.rename(winner, child)
+                return ProcessResult(process.command, 1, process.elapsed, process.log_path)
+            replace_child_and_fail.fixture = fixture
+
+            workspace = root / "union"
+            with self.assertRaises(ValueError):
+                self._render_case(
+                    root, replace_child_and_fail, workspace, components,
+                )
+            self.assertTrue(workspace.exists())
+            self.assertEqual(
+                (workspace / "material-roots/root-000/external.marker").read_bytes(),
+                b"preserve",
+            )
+
+    def test_source_union_preserves_foreign_material_publish_race_winner(self) -> None:
+        from maximum_optimizer import source_materials as material_module
+
+        real_rename = material_module.os.rename
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            destination = workspace / "material-roots"
+            marker = destination / "external.marker"
+
+            def race_publish(source, target):
+                if Path(target) == destination:
+                    destination.mkdir()
+                    marker.write_bytes(b"preserve")
+                return real_rename(source, target)
+
+            runner = SourceUnionRunner(fixture)
+            with mock.patch(
+                "maximum_optimizer.source_materials.os.rename",
+                side_effect=race_publish,
+            ), self.assertRaises((ValueError, OSError)):
+                self._render_case(root, runner, workspace, components)
+            self.assertEqual(runner.commands, [])
+            self.assertTrue(workspace.exists())
+            self.assertEqual(marker.read_bytes(), b"preserve")
 
     @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
     def test_source_union_rejects_compiled_root_junction_and_preserves_external_tree(self) -> None:
@@ -1229,6 +1316,8 @@ class ProductionAdapterContractTests(unittest.TestCase):
         for label in (
             "source", "candidate", "renderer", "compiled", "dependency",
             "raw", "authorized", "contract", "private", "raw-manifest",
+            "raw-manifest-material-hash", "raw-manifest-geometry",
+            "raw-manifest-expected", "raw-manifest-entry-pass",
             "visibility", "material-original", "material-private",
             "material-shadow", "material-extra",
         ):
@@ -1268,6 +1357,20 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     elif label == "raw-manifest":
                         path = Path(args[1]) / "render_manifest.json"
                         path.write_text("[]", encoding="utf-8")
+                    elif label.startswith("raw-manifest-"):
+                        path = Path(args[0]) / "render_manifest.json"
+                        payload = json.loads(path.read_text(encoding="utf-8"))
+                        if label == "raw-manifest-material-hash":
+                            payload["material_contract_sha256"] = "0" * 64
+                        elif label == "raw-manifest-geometry":
+                            payload["entries"][0]["geometry"] = {"forged": True}
+                        elif label == "raw-manifest-expected":
+                            payload["entries"][0]["expected"] = False
+                        else:
+                            payload["entries"][0]["pass"] = "clay"
+                        path.write_text(
+                            json.dumps(payload, sort_keys=True), encoding="utf-8",
+                        )
                     elif label == "visibility":
                         path = Path(args[1]).parents[1] / "control" / "source-union-visibility.json"
                         data = bytearray(path.read_bytes()); data[len(data) // 2] ^= 1; path.write_bytes(data)
