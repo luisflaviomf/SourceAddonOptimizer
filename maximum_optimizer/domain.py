@@ -59,6 +59,11 @@ def _require_relative(value: object, label: str) -> str:
     return value
 
 
+def require_canonical_relative(value: object, label: str) -> str:
+    """Shared strict POSIX/Windows-safe relative identity validator."""
+    return _require_relative(value, label)
+
+
 def _require_size(value: object, label: str) -> int:
     if type(value) is not int or value < 0:
         raise ValueError(f"{label} is invalid")
@@ -381,6 +386,13 @@ class CompositeRecipe:
     selector_version: str
     prefilter_version: str | None
     recipe_sha256: str
+    base_source_snapshot_sha256: str | None = None
+    coverage_manifest_sha256: str | None = None
+    direct_request_set_sha256: str | None = None
+    direct_snapshot_set_sha256: str | None = None
+    base_strategy: str | None = None
+    direct_strategy: str | None = None
+    direct_transfer: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema) is not int or self.schema != 1 or self.kind not in {"focused-recovery-v1", "adaptive-direct-fallback-v1"}:
@@ -403,11 +415,13 @@ class CompositeRecipe:
         if not overlays or len(overlays) > overlay_limit or any(not isinstance(item, SourceOverlay) for item in overlays) or keys != sorted(keys) or len({key[0] for key in keys}) != len(keys):
             raise ValueError("recipe overlays are not canonical or exceed bound")
         if self.kind == "focused-recovery-v1":
-            if self.direct_ratio is not None or self.prefilter_version is not None or any(item.mode == "direct-position" for item in overlays):
+            if self.direct_ratio is not None or self.prefilter_version is not None or any(item.mode == "direct-position" for item in overlays) or any(value is not None for value in (self.base_source_snapshot_sha256, self.coverage_manifest_sha256, self.direct_request_set_sha256, self.direct_snapshot_set_sha256, self.base_strategy, self.direct_strategy, self.direct_transfer)):
                 raise ValueError("focused recovery recipe mode matrix is invalid")
         else:
             ratio = _require_ratio(self.direct_ratio, "recipe direct ratio")
-            if not self.prefilter_version or any(item.mode != "direct-position" or item.effective_ratio != ratio for item in overlays):
+            for label, value in (("base source snapshot", self.base_source_snapshot_sha256), ("coverage manifest", self.coverage_manifest_sha256), ("direct request set", self.direct_request_set_sha256), ("direct snapshot set", self.direct_snapshot_set_sha256)):
+                _require_sha256(value, label)
+            if self.round_index != 0 or self.prefilter_version != "direct-degenerate-prefilter-v1" or self.base_strategy != "blender-adaptive-v1" or self.direct_strategy != "meshopt-direct-position-v1" or self.direct_transfer != "direct-position-v1" or any(item.mode != "direct-position" or item.effective_ratio != ratio for item in overlays):
                 raise ValueError("adaptive direct recipe mode matrix is invalid")
         if _require_sha256(self.recipe_sha256, "recipe hash") != _seal(composite_recipe_payload(self, include_seal=False)):
             raise ValueError("recipe hash mismatch")
@@ -429,20 +443,34 @@ def composite_recipe_payload(value: CompositeRecipe, *, include_seal: bool = Tru
         "overlays": [source_overlay_payload(item) for item in value.overlays],
         "selector_version": value.selector_version, "prefilter_version": value.prefilter_version,
     }
+    if value.kind == "adaptive-direct-fallback-v1":
+        payload.update({
+            "base_source_snapshot_sha256": value.base_source_snapshot_sha256,
+            "coverage_manifest_sha256": value.coverage_manifest_sha256,
+            "direct_request_set_sha256": value.direct_request_set_sha256,
+            "direct_snapshot_set_sha256": value.direct_snapshot_set_sha256,
+            "base_strategy": value.base_strategy,
+            "direct_strategy": value.direct_strategy,
+            "direct_transfer": value.direct_transfer,
+        })
     if include_seal:
         payload["recipe_sha256"] = value.recipe_sha256
     return payload
 
 
 def composite_recipe_from_payload(value: object) -> CompositeRecipe:
-    fields = {
+    common_fields = {
         "schema", "kind", "family_id", "family_input_sha256", "base_candidate_id",
         "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256",
         "optimizer_contract_sha256", "whole_profile_sha256", "focused_profile_sha256",
         "dependency_proof_sha256", "round_index", "direct_ratio", "overlays",
         "selector_version", "prefilter_version", "recipe_sha256",
     }
-    if type(value) is not dict or set(value) != fields or type(value["overlays"]) is not list:
+    adaptive_fields = {"base_source_snapshot_sha256", "coverage_manifest_sha256", "direct_request_set_sha256", "direct_snapshot_set_sha256", "base_strategy", "direct_strategy", "direct_transfer"}
+    if type(value) is not dict or value.get("kind") not in {"focused-recovery-v1", "adaptive-direct-fallback-v1"}:
+        raise ValueError("composite recipe payload fields are invalid")
+    fields = common_fields | (adaptive_fields if value["kind"] == "adaptive-direct-fallback-v1" else set())
+    if set(value) != fields or type(value["overlays"]) is not list:
         raise ValueError("composite recipe payload fields are invalid")
     overlays = []
     for raw in value["overlays"]:
@@ -628,7 +656,7 @@ class AdaptiveCandidateMetricsProof:
     evidence_sha256: str
 
     def __post_init__(self) -> None:
-        if self.schema != 1 or self.strategy != "blender-adaptive-v1":
+        if type(self.schema) is not int or self.schema != 1 or self.strategy != "blender-adaptive-v1":
             raise ValueError("adaptive candidate metrics identity is invalid")
         for label, value in (("family id", self.family_id), ("family input", self.family_input_sha256), ("candidate cache", self.candidate_cache_digest), ("base spec", self.base_spec_sha256), ("source manifest", self.source_manifest_sha256), ("source snapshot", self.source_snapshot_sha256), ("original graph", self.original_graph_sha256), ("candidate graph", self.candidate_graph_sha256), ("raw metrics", self.raw_metrics_sha256)):
             _require_sha256(value, label)
@@ -682,6 +710,101 @@ def adaptive_candidate_metrics_from_payload(value: object) -> AdaptiveCandidateM
         raise ValueError("adaptive candidate metrics payload fields are invalid")
     copied = dict(value); copied["sources"] = tuple(_adaptive_source_from_payload(item) for item in value["sources"])
     return AdaptiveCandidateMetricsProof(**copied)
+
+
+@dataclass(frozen=True)
+class AdaptiveDirectStateInventoryRow:
+    occurrence_key: str
+    source_identity: str
+    graph_relative_path: str
+    directive: str
+    line: int
+    state_key: str
+    bodygroup_key: str
+    lod_key: str
+    skin_key: str
+    source_size: int
+    source_sha256: str
+    component_keys: tuple[str, ...]
+    material_region_keys: tuple[str, ...]
+    skeleton_contract_sha256: str
+    pose_keys: tuple[str, ...]
+    component_manifest_sha256: str
+    material_contract_sha256: str
+    pose_contract_sha256: str
+    equivalence_class_sha256: str
+    row_sha256: str
+
+    def __post_init__(self) -> None:
+        for label, value in (("inventory occurrence key", self.occurrence_key), ("inventory directive", self.directive), ("inventory state", self.state_key), ("inventory bodygroup", self.bodygroup_key), ("inventory lod", self.lod_key), ("inventory skin", self.skin_key)):
+            _require_text(value, label)
+        _require_relative(self.source_identity, "inventory source identity")
+        _require_relative(self.graph_relative_path, "inventory graph path")
+        if type(self.line) is not int or self.line < 1: raise ValueError("inventory graph line is invalid")
+        _require_size(self.source_size, "inventory source size"); _require_sha256(self.source_sha256, "inventory source hash")
+        components = _canonical_text_tuple(self.component_keys, "inventory components", limit=_ADAPTIVE_COMPONENT_LIMIT)
+        materials = _canonical_text_tuple(self.material_region_keys, "inventory materials", limit=_ADAPTIVE_MATERIAL_LIMIT)
+        poses = tuple(self.pose_keys)
+        if not 1 <= len(poses) <= 2 or poses[0] != "bind" or len(set(poses)) != len(poses): raise ValueError("inventory poses are invalid")
+        for label, value in (("inventory skeleton", self.skeleton_contract_sha256), ("inventory component manifest", self.component_manifest_sha256), ("inventory material contract", self.material_contract_sha256), ("inventory pose contract", self.pose_contract_sha256), ("inventory equivalence class", self.equivalence_class_sha256)):
+            _require_sha256(value, label)
+        if _require_sha256(self.row_sha256, "inventory row hash") != _seal(adaptive_direct_state_inventory_row_payload(self, include_seal=False)): raise ValueError("inventory row seal mismatch")
+        object.__setattr__(self, "component_keys", components); object.__setattr__(self, "material_region_keys", materials); object.__setattr__(self, "pose_keys", poses)
+
+
+def adaptive_direct_state_inventory_row_payload(value: AdaptiveDirectStateInventoryRow, *, include_seal: bool = True) -> dict[str, object]:
+    payload = {name: getattr(value, name) for name in ("occurrence_key", "source_identity", "graph_relative_path", "directive", "line", "state_key", "bodygroup_key", "lod_key", "skin_key", "source_size", "source_sha256", "skeleton_contract_sha256", "component_manifest_sha256", "material_contract_sha256", "pose_contract_sha256", "equivalence_class_sha256")}
+    payload["component_keys"] = list(value.component_keys); payload["material_region_keys"] = list(value.material_region_keys); payload["pose_keys"] = list(value.pose_keys)
+    if include_seal: payload["row_sha256"] = value.row_sha256
+    return payload
+
+
+@dataclass(frozen=True)
+class AdaptiveDirectStateInventory:
+    schema: Literal[1]
+    family_id: str
+    family_input_sha256: str
+    base_candidate_id: str
+    base_spec_sha256: str
+    base_cache_digest: str
+    base_source_manifest_sha256: str
+    base_source_snapshot_sha256: str
+    complete_source_identities: tuple[str, ...]
+    rows: tuple[AdaptiveDirectStateInventoryRow, ...]
+    state_inventory_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.schema) is not int or self.schema != 1: raise ValueError("state inventory schema is invalid")
+        for label, value in (("inventory family", self.family_id), ("inventory family input", self.family_input_sha256), ("inventory base spec", self.base_spec_sha256), ("inventory base cache", self.base_cache_digest), ("inventory source manifest", self.base_source_manifest_sha256), ("inventory source snapshot", self.base_source_snapshot_sha256)): _require_sha256(value, label)
+        _require_text(self.base_candidate_id, "inventory base candidate")
+        identities = _canonical_text_tuple(self.complete_source_identities, "inventory source identities")
+        rows = tuple(self.rows)
+        keys = [(item.occurrence_key.casefold(), item.occurrence_key) for item in rows if isinstance(item, AdaptiveDirectStateInventoryRow)]
+        if not rows or len(rows) > _ADAPTIVE_OCCURRENCE_LIMIT or len(keys) != len(rows) or keys != sorted(keys) or len({key[0] for key in keys}) != len(keys): raise ValueError("state inventory rows are not canonical or exceed bound")
+        if {item.source_identity for item in rows} != set(identities): raise ValueError("state inventory source coverage mismatch")
+        if _require_sha256(self.state_inventory_sha256, "state inventory hash") != _seal(adaptive_direct_state_inventory_payload(self, include_seal=False)): raise ValueError("state inventory seal mismatch")
+        object.__setattr__(self, "complete_source_identities", identities); object.__setattr__(self, "rows", rows)
+
+
+def adaptive_direct_state_inventory_payload(value: AdaptiveDirectStateInventory, *, include_seal: bool = True) -> dict[str, object]:
+    payload = {"schema": value.schema, "family_id": value.family_id, "family_input_sha256": value.family_input_sha256, "base_candidate_id": value.base_candidate_id, "base_spec_sha256": value.base_spec_sha256, "base_cache_digest": value.base_cache_digest, "base_source_manifest_sha256": value.base_source_manifest_sha256, "base_source_snapshot_sha256": value.base_source_snapshot_sha256, "complete_source_identities": list(value.complete_source_identities), "rows": [adaptive_direct_state_inventory_row_payload(item) for item in value.rows]}
+    if include_seal: payload["state_inventory_sha256"] = value.state_inventory_sha256
+    return payload
+
+
+def adaptive_direct_state_inventory_row_from_payload(value: object) -> AdaptiveDirectStateInventoryRow:
+    fields = {"occurrence_key", "source_identity", "graph_relative_path", "directive", "line", "state_key", "bodygroup_key", "lod_key", "skin_key", "source_size", "source_sha256", "component_keys", "material_region_keys", "skeleton_contract_sha256", "pose_keys", "component_manifest_sha256", "material_contract_sha256", "pose_contract_sha256", "equivalence_class_sha256", "row_sha256"}
+    if type(value) is not dict or set(value) != fields or any(type(value[name]) is not list for name in ("component_keys", "material_region_keys", "pose_keys")): raise ValueError("state inventory row payload fields are invalid")
+    copied = dict(value)
+    for name in ("component_keys", "material_region_keys", "pose_keys"): copied[name] = tuple(copied[name])
+    return AdaptiveDirectStateInventoryRow(**copied)
+
+
+def adaptive_direct_state_inventory_from_payload(value: object) -> AdaptiveDirectStateInventory:
+    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "complete_source_identities", "rows", "state_inventory_sha256"}
+    if type(value) is not dict or set(value) != fields or type(value["complete_source_identities"]) is not list or type(value["rows"]) is not list: raise ValueError("state inventory payload fields are invalid")
+    copied = dict(value); copied["complete_source_identities"] = tuple(copied["complete_source_identities"]); copied["rows"] = tuple(adaptive_direct_state_inventory_row_from_payload(item) for item in copied["rows"])
+    return AdaptiveDirectStateInventory(**copied)
 
 
 @dataclass(frozen=True)
@@ -755,6 +878,8 @@ class AdaptiveDirectCoverageSourceProof:
     skeleton_contract_sha256: str
     pose_keys: tuple[str, ...]
     equivalence_class_sha256: str
+    metrics_sha256: str
+    state_inventory_sha256: str
     witnesses: tuple[AdaptiveDirectCoverageOccurrenceProof, ...]
     source_coverage_sha256: str
 
@@ -773,6 +898,8 @@ class AdaptiveDirectCoverageSourceProof:
             raise ValueError("coverage poses are invalid")
         _require_sha256(self.skeleton_contract_sha256, "coverage skeleton contract")
         _require_sha256(self.equivalence_class_sha256, "coverage equivalence class")
+        _require_sha256(self.metrics_sha256, "coverage source metrics")
+        _require_sha256(self.state_inventory_sha256, "coverage state inventory")
         witnesses = tuple(self.witnesses)
         if not witnesses or len(witnesses) > _ADAPTIVE_OCCURRENCE_LIMIT or any(not isinstance(item, AdaptiveDirectCoverageOccurrenceProof) for item in witnesses):
             raise ValueError("coverage witnesses are invalid or exceed bound")
@@ -807,6 +934,8 @@ def adaptive_direct_coverage_source_payload(value: AdaptiveDirectCoverageSourceP
         "component_keys": list(value.component_keys), "material_region_keys": list(value.material_region_keys),
         "skeleton_contract_sha256": value.skeleton_contract_sha256, "pose_keys": list(value.pose_keys),
         "equivalence_class_sha256": value.equivalence_class_sha256,
+        "metrics_sha256": value.metrics_sha256,
+        "state_inventory_sha256": value.state_inventory_sha256,
         "witnesses": [adaptive_direct_coverage_occurrence_payload(item) for item in value.witnesses],
     }
     if include_seal: payload["source_coverage_sha256"] = value.source_coverage_sha256
@@ -823,6 +952,10 @@ class AdaptiveDirectCoverageManifest:
     base_cache_digest: str
     base_source_manifest_sha256: str
     base_source_snapshot_sha256: str
+    metrics_evidence_sha256: str
+    state_inventory_sha256: str
+    metrics_proof: AdaptiveCandidateMetricsProof
+    state_inventory: AdaptiveDirectStateInventory
     complete_source_identities: tuple[str, ...]
     sources: tuple[AdaptiveDirectCoverageSourceProof, ...]
     occurrence_count: int
@@ -832,14 +965,38 @@ class AdaptiveDirectCoverageManifest:
     coverage_manifest_sha256: str
 
     def __post_init__(self) -> None:
-        if self.schema != 1: raise ValueError("coverage manifest schema is invalid")
+        if type(self.schema) is not int or self.schema != 1: raise ValueError("coverage manifest schema is invalid")
         for label, value in (("family id", self.family_id), ("family input", self.family_input_sha256), ("base spec", self.base_spec_sha256), ("base cache", self.base_cache_digest), ("base source manifest", self.base_source_manifest_sha256), ("base source snapshot", self.base_source_snapshot_sha256)):
             _require_sha256(value, label)
+        _require_sha256(self.metrics_evidence_sha256, "coverage metrics evidence")
+        _require_sha256(self.state_inventory_sha256, "coverage state inventory")
+        if not isinstance(self.metrics_proof, AdaptiveCandidateMetricsProof) or self.metrics_proof.evidence_sha256 != self.metrics_evidence_sha256:
+            raise ValueError("coverage typed metrics binding mismatch")
+        if not isinstance(self.state_inventory, AdaptiveDirectStateInventory) or self.state_inventory.state_inventory_sha256 != self.state_inventory_sha256:
+            raise ValueError("coverage typed state inventory binding mismatch")
+        if any((self.metrics_proof.family_id != self.family_id, self.metrics_proof.family_input_sha256 != self.family_input_sha256, self.metrics_proof.candidate_id != self.base_candidate_id, self.metrics_proof.base_spec_sha256 != self.base_spec_sha256, self.metrics_proof.candidate_cache_digest != self.base_cache_digest, self.metrics_proof.source_manifest_sha256 != self.base_source_manifest_sha256, self.metrics_proof.source_snapshot_sha256 != self.base_source_snapshot_sha256)):
+            raise ValueError("coverage typed metrics base mismatch")
+        if any((self.state_inventory.family_id != self.family_id, self.state_inventory.family_input_sha256 != self.family_input_sha256, self.state_inventory.base_candidate_id != self.base_candidate_id, self.state_inventory.base_spec_sha256 != self.base_spec_sha256, self.state_inventory.base_cache_digest != self.base_cache_digest, self.state_inventory.base_source_manifest_sha256 != self.base_source_manifest_sha256, self.state_inventory.base_source_snapshot_sha256 != self.base_source_snapshot_sha256)):
+            raise ValueError("coverage typed inventory base mismatch")
         _require_text(self.base_candidate_id, "coverage base candidate")
         identities = _canonical_text_tuple(self.complete_source_identities, "complete source identities")
         sources = tuple(self.sources)
         if any(not isinstance(item, AdaptiveDirectCoverageSourceProof) for item in sources) or tuple(item.source_identity for item in sources) != identities:
             raise ValueError("coverage source inventory mismatch")
+        if any(item.state_inventory_sha256 != self.state_inventory_sha256 for item in sources):
+            raise ValueError("coverage source state inventory binding mismatch")
+        metrics_by_source = {item.source_identity: item for item in self.metrics_proof.sources}
+        rows_by_source = {identity: [] for identity in identities}
+        for row in self.state_inventory.rows: rows_by_source[row.source_identity].append(row)
+        for source in sources:
+            metric = metrics_by_source.get(source.source_identity)
+            rows = tuple(rows_by_source.get(source.source_identity, ()))
+            if metric is None or source.metrics_sha256 != metric.metrics_sha256 or source.eligibility_kind != metric.kind or source.source_size != metric.source_size or source.source_sha256 != metric.source_sha256:
+                raise ValueError("coverage source differs from typed metrics")
+            witness_rows = tuple((item.occurrence_key, item.source_identity, item.graph_relative_path, item.directive, item.line, item.state_key, item.bodygroup_key, item.lod_key, item.skin_key, item.source_size, item.source_sha256, item.component_manifest_sha256, item.material_contract_sha256, item.skeleton_contract_sha256, item.pose_contract_sha256, item.equivalence_class_sha256) for item in source.witnesses)
+            inventory_rows = tuple((item.occurrence_key, item.source_identity, item.graph_relative_path, item.directive, item.line, item.state_key, item.bodygroup_key, item.lod_key, item.skin_key, item.source_size, item.source_sha256, item.component_manifest_sha256, item.material_contract_sha256, item.skeleton_contract_sha256, item.pose_contract_sha256, item.equivalence_class_sha256) for item in rows)
+            if witness_rows != inventory_rows:
+                raise ValueError("coverage witnesses differ from typed state inventory")
         eligible = tuple(item for item in sources if item.eligibility_kind == "eligible-exact-v1")
         if not 1 <= len(eligible) <= _ADAPTIVE_SOURCE_LIMIT:
             raise ValueError("coverage eligible source count is outside 1..8")
@@ -847,7 +1004,7 @@ class AdaptiveDirectCoverageManifest:
         component_count = sum(len(item.component_keys) for item in sources)
         state_count = sum(len(item.state_keys) for item in sources)
         maximum_images = sum(32 * len(item.pose_keys) for item in eligible)
-        if (self.occurrence_count, self.component_count, self.state_count, self.maximum_candidate_images) != (occurrence_count, component_count, state_count, maximum_images) or maximum_images > 512:
+        if occurrence_count > _ADAPTIVE_OCCURRENCE_LIMIT or (self.occurrence_count, self.component_count, self.state_count, self.maximum_candidate_images) != (occurrence_count, component_count, state_count, maximum_images) or maximum_images > 512:
             raise ValueError("coverage manifest totals mismatch or exceed bound")
         if _require_sha256(self.coverage_manifest_sha256, "coverage manifest hash") != _seal(adaptive_direct_coverage_manifest_payload(self, include_seal=False)):
             raise ValueError("coverage manifest seal mismatch")
@@ -860,6 +1017,10 @@ def adaptive_direct_coverage_manifest_payload(value: AdaptiveDirectCoverageManif
         "base_candidate_id": value.base_candidate_id, "base_spec_sha256": value.base_spec_sha256,
         "base_cache_digest": value.base_cache_digest, "base_source_manifest_sha256": value.base_source_manifest_sha256,
         "base_source_snapshot_sha256": value.base_source_snapshot_sha256,
+        "metrics_evidence_sha256": value.metrics_evidence_sha256,
+        "state_inventory_sha256": value.state_inventory_sha256,
+        "metrics_proof": adaptive_candidate_metrics_payload(value.metrics_proof),
+        "state_inventory": adaptive_direct_state_inventory_payload(value.state_inventory),
         "complete_source_identities": list(value.complete_source_identities),
         "sources": [adaptive_direct_coverage_source_payload(item) for item in value.sources],
         "occurrence_count": value.occurrence_count, "component_count": value.component_count,
@@ -875,7 +1036,7 @@ def _coverage_occurrence_from_payload(raw: object) -> AdaptiveDirectCoverageOccu
 
 
 def _coverage_source_from_payload(raw: object) -> AdaptiveDirectCoverageSourceProof:
-    fields = {"source_identity", "eligibility_kind", "source_size", "source_sha256", "occurrence_keys", "state_keys", "component_keys", "material_region_keys", "skeleton_contract_sha256", "pose_keys", "equivalence_class_sha256", "witnesses", "source_coverage_sha256"}
+    fields = {"source_identity", "eligibility_kind", "source_size", "source_sha256", "occurrence_keys", "state_keys", "component_keys", "material_region_keys", "skeleton_contract_sha256", "pose_keys", "equivalence_class_sha256", "metrics_sha256", "state_inventory_sha256", "witnesses", "source_coverage_sha256"}
     if type(raw) is not dict or set(raw) != fields or any(type(raw[name]) is not list for name in ("occurrence_keys", "state_keys", "component_keys", "material_region_keys", "pose_keys", "witnesses")): raise ValueError("coverage source payload fields are invalid")
     copied = dict(raw)
     for name in ("occurrence_keys", "state_keys", "component_keys", "material_region_keys", "pose_keys"): copied[name] = tuple(copied[name])
@@ -884,9 +1045,9 @@ def _coverage_source_from_payload(raw: object) -> AdaptiveDirectCoverageSourcePr
 
 
 def adaptive_direct_coverage_manifest_from_payload(value: object) -> AdaptiveDirectCoverageManifest:
-    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "complete_source_identities", "sources", "occurrence_count", "component_count", "state_count", "maximum_candidate_images", "coverage_manifest_sha256"}
+    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "metrics_evidence_sha256", "state_inventory_sha256", "metrics_proof", "state_inventory", "complete_source_identities", "sources", "occurrence_count", "component_count", "state_count", "maximum_candidate_images", "coverage_manifest_sha256"}
     if type(value) is not dict or set(value) != fields or type(value["complete_source_identities"]) is not list or type(value["sources"]) is not list: raise ValueError("coverage manifest payload fields are invalid")
-    copied = dict(value); copied["complete_source_identities"] = tuple(copied["complete_source_identities"]); copied["sources"] = tuple(_coverage_source_from_payload(item) for item in copied["sources"])
+    copied = dict(value); copied["complete_source_identities"] = tuple(copied["complete_source_identities"]); copied["sources"] = tuple(_coverage_source_from_payload(item) for item in copied["sources"]); copied["metrics_proof"] = adaptive_candidate_metrics_from_payload(copied["metrics_proof"]); copied["state_inventory"] = adaptive_direct_state_inventory_from_payload(copied["state_inventory"])
     return AdaptiveDirectCoverageManifest(**copied)
 
 
@@ -924,7 +1085,7 @@ class DirectPrefilterProof:
     evidence_sha256: str
 
     def __post_init__(self) -> None:
-        if self.schema != 1 or self.strategy != "direct-degenerate-prefilter-v1" or self.cross_squared_threshold != 1e-30 or self.applied is not True: raise ValueError("direct prefilter identity is invalid")
+        if type(self.schema) is not int or self.schema != 1 or self.strategy != "direct-degenerate-prefilter-v1" or self.cross_squared_threshold != 1e-30 or self.applied is not True: raise ValueError("direct prefilter identity is invalid")
         if type(self.source_triangle_count) is not int or self.source_triangle_count < 1: raise ValueError("direct source triangle count is invalid")
         triangles = tuple(self.triangles)
         ordinals = tuple(item.ordinal for item in triangles if isinstance(item, DirectDroppedTriangleProof))
@@ -980,7 +1141,7 @@ class DirectSourceBuildRequest:
     request_sha256: str
 
     def __post_init__(self) -> None:
-        if self.schema != 1 or self.base_strategy != "blender-adaptive-v1" or self.strategy != "meshopt-direct-position-v1" or self.transfer != "direct-position-v1" or self.prefilter_version != "direct-degenerate-prefilter-v1": raise ValueError("direct request identity is invalid")
+        if type(self.schema) is not int or self.schema != 1 or self.base_strategy != "blender-adaptive-v1" or self.strategy != "meshopt-direct-position-v1" or self.transfer != "direct-position-v1" or self.prefilter_version != "direct-degenerate-prefilter-v1": raise ValueError("direct request identity is invalid")
         for label, value in (("family id", self.family_id), ("family input", self.family_input_sha256), ("base spec", self.base_spec_sha256), ("base cache", self.base_cache_digest), ("base source manifest", self.base_source_manifest_sha256), ("base source snapshot", self.base_source_snapshot_sha256), ("coverage manifest", self.coverage_manifest_sha256), ("source coverage", self.source_coverage_sha256), ("optimizer contract", self.optimizer_contract_sha256), ("whole profile", self.whole_profile_sha256), ("focused profile", self.focused_profile_sha256), ("dependency proof", self.dependency_proof_sha256), ("source hash", self.source_sha256)): _require_sha256(value, label)
         _require_text(self.base_candidate_id, "direct base candidate")
         _require_relative(self.source_identity, "direct source identity"); _require_relative(self.source_relative_path, "direct source path"); _require_size(self.source_size, "direct source size"); _require_ratio(self.direct_ratio, "direct ratio")
@@ -1022,7 +1183,7 @@ class DirectSourceSnapshot:
     snapshot_sha256: str
 
     def __post_init__(self) -> None:
-        if self.schema != 1 or not isinstance(self.request, DirectSourceBuildRequest): raise ValueError("direct snapshot identity is invalid")
+        if type(self.schema) is not int or self.schema != 1 or not isinstance(self.request, DirectSourceBuildRequest): raise ValueError("direct snapshot identity is invalid")
         if self.direct_candidate_id != direct_candidate_id(self.request) or self.direct_cache_digest != direct_cache_digest(self.request):
             raise ValueError("direct snapshot derived identity mismatch")
         root = Path(self.source_root)
