@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import stat
 import threading
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, TypeAlias
 
 from .domain import (
     AdaptiveCandidateMetricsProof,
@@ -70,6 +70,8 @@ _MAX_SOURCE_BYTES = 2 * 1024 ** 3
 _CHUNK = 1024 * 1024
 _REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _ZERO_HASH = "0" * 64
+
+CompositionSnapshot: TypeAlias = RecoverySourceSnapshot | DirectSourceSnapshot
 
 
 def _pure_seal(payload: object) -> str:
@@ -988,6 +990,185 @@ def _overlaps(first: Path, second: Path) -> bool:
     return common in {first_text, second_text}
 
 
+def _remove_owned_composition_tree_no_follow(root: Path) -> None:
+    root = Path(root)
+    if not os.path.lexists(root):
+        return
+
+    def remove(path: Path) -> None:
+        info = os.lstat(path)
+        if _focused_is_reparse(path) or stat.S_ISLNK(info.st_mode):
+            try:
+                path.unlink()
+            except (IsADirectoryError, PermissionError):
+                os.rmdir(path)
+            return
+        if stat.S_ISDIR(info.st_mode):
+            with os.scandir(path) as scan:
+                entries = tuple(scan)
+            for entry in entries:
+                remove(Path(entry.path))
+            os.rmdir(path)
+            return
+        path.unlink()
+
+    remove(root)
+
+
+def _quarantine_composition_workspace(workspace: Path) -> None:
+    quarantine = workspace.with_name(
+        f".{workspace.name}.composition-cleanup-{uuid.uuid4().hex}"
+    )
+    os.replace(workspace, quarantine)
+    _remove_owned_composition_tree_no_follow(quarantine)
+
+
+def _direct_set_digest(kind: str, coverage: str, ratio: float, values) -> str:
+    if kind == "request":
+        payloads = [direct_source_request_payload(item) for item in values]
+        set_kind = "adaptive-direct-request-set-v1"
+        key = "requests"
+    elif kind == "snapshot":
+        payloads = [direct_source_snapshot_payload(item) for item in values]
+        set_kind = "adaptive-direct-snapshot-set-v1"
+        key = "snapshots"
+    else:
+        raise ValueError("direct set kind is invalid")
+    return _pure_seal({
+        "schema": 1, "kind": set_kind,
+        "coverage_manifest_sha256": coverage, "ratio": ratio, key: payloads,
+    })
+
+
+def _direct_snapshot_for_overlay(
+    recipe: CompositeRecipe,
+    base_snapshot: RecoverySourceSnapshot,
+    overlay: SourceOverlay,
+    snapshot: CompositionSnapshot,
+    cancel_event: threading.Event | None,
+) -> DirectSourceSnapshot:
+    if overlay.mode != "direct-position" or recipe.kind != "adaptive-direct-fallback-v1":
+        raise ValueError("direct snapshot dispatch is invalid")
+    if not isinstance(snapshot, DirectSourceSnapshot):
+        raise TypeError("direct-position overlay requires a direct source snapshot")
+    revalidate_direct_source_snapshot(snapshot, cancel_event)
+    request = snapshot.request
+    base_file = _file_by_identity(base_snapshot, overlay.source_identity)
+    if base_file is None or base_file.kind != "visual-source":
+        raise ValueError("direct overlay does not target one base visual source")
+    if any((
+        request.family_id != recipe.family_id,
+        request.family_input_sha256 != recipe.family_input_sha256,
+        request.base_candidate_id != recipe.base_candidate_id,
+        request.base_spec_sha256 != recipe.base_spec_sha256,
+        request.base_cache_digest != recipe.base_cache_digest,
+        request.base_source_manifest_sha256 != recipe.base_source_manifest_sha256,
+        request.base_source_snapshot_sha256 != recipe.base_source_snapshot_sha256,
+        request.coverage_manifest_sha256 != recipe.coverage_manifest_sha256,
+        request.optimizer_contract_sha256 != recipe.optimizer_contract_sha256,
+        request.whole_profile_sha256 != recipe.whole_profile_sha256,
+        request.focused_profile_sha256 != recipe.focused_profile_sha256,
+        request.dependency_proof_sha256 != recipe.dependency_proof_sha256,
+        request.base_strategy != recipe.base_strategy,
+        request.strategy != recipe.direct_strategy,
+        request.transfer != recipe.direct_transfer,
+        request.prefilter_version != recipe.prefilter_version,
+        request.direct_ratio != recipe.direct_ratio,
+        request.source_identity != overlay.source_identity,
+        request.source_relative_path != base_file.relative_path,
+        request.source_size != base_file.size,
+        request.source_sha256 != base_file.sha256,
+        overlay.base_source_sha256 != base_file.sha256,
+        overlay.replacement_sha256 != snapshot.output_sha256,
+        overlay.replacement_size != snapshot.output_size,
+        overlay.replacement_snapshot_sha256 != snapshot.snapshot_sha256,
+        overlay.replacement_candidate_id != snapshot.direct_candidate_id,
+        overlay.replacement_cache_digest != snapshot.direct_cache_digest,
+        overlay.effective_ratio != request.direct_ratio,
+    )):
+        raise ValueError("direct-position overlay differs from sealed request/snapshot/base matrix")
+    return snapshot
+
+
+def _resolve_recipe_snapshots(
+    recipe: CompositeRecipe,
+    base_snapshot: RecoverySourceSnapshot,
+    snapshots_by_sha256: Mapping[str, CompositionSnapshot],
+    cancel_event: threading.Event | None,
+    coverage_manifest: AdaptiveDirectCoverageManifest | None = None,
+) -> dict[str, CompositionSnapshot]:
+    resolved: dict[str, CompositionSnapshot] = {}
+    direct_requests = []
+    direct_snapshots = []
+    for overlay in recipe.overlays:
+        snapshot = snapshots_by_sha256.get(overlay.replacement_snapshot_sha256)
+        if snapshot is None:
+            raise ValueError("composition replacement snapshot is unavailable")
+        if recipe.kind == "focused-recovery-v1":
+            if overlay.mode not in {"donor", "exact-original"}:
+                raise ValueError("focused recovery overlay dispatch is invalid")
+            if not isinstance(snapshot, RecoverySourceSnapshot):
+                raise TypeError("recovery overlay requires a recovery source snapshot")
+            revalidate_recovery_snapshot(snapshot, cancel_event)
+        elif recipe.kind == "adaptive-direct-fallback-v1":
+            snapshot = _direct_snapshot_for_overlay(
+                recipe, base_snapshot, overlay, snapshot, cancel_event
+            )
+            direct_requests.append(snapshot.request)
+            direct_snapshots.append(snapshot)
+        else:
+            raise ValueError("composition recipe kind is invalid")
+        resolved[overlay.replacement_snapshot_sha256] = snapshot
+    if recipe.kind == "adaptive-direct-fallback-v1":
+        if not isinstance(coverage_manifest, AdaptiveDirectCoverageManifest):
+            raise ValueError("adaptive direct composition requires typed coverage")
+        if any((
+            coverage_manifest.coverage_manifest_sha256 != recipe.coverage_manifest_sha256,
+            coverage_manifest.family_id != recipe.family_id,
+            coverage_manifest.family_input_sha256 != recipe.family_input_sha256,
+            coverage_manifest.base_candidate_id != recipe.base_candidate_id,
+            coverage_manifest.base_spec_sha256 != recipe.base_spec_sha256,
+            coverage_manifest.base_cache_digest != recipe.base_cache_digest,
+            coverage_manifest.base_source_manifest_sha256 != recipe.base_source_manifest_sha256,
+            coverage_manifest.base_source_snapshot_sha256 != recipe.base_source_snapshot_sha256,
+            base_snapshot.snapshot_sha256 != recipe.base_source_snapshot_sha256,
+        )):
+            raise ValueError("adaptive direct coverage/base binding differs from recipe")
+        eligible = tuple(
+            item for item in coverage_manifest.sources
+            if item.eligibility_kind == "eligible-exact-v1"
+        )
+        eligible_identities = tuple(item.source_identity for item in eligible)
+        request_identities = tuple(item.source_identity for item in direct_requests)
+        snapshot_identities = tuple(item.request.source_identity for item in direct_snapshots)
+        overlay_identities = tuple(item.source_identity for item in recipe.overlays)
+        if (
+            not eligible_identities
+            or overlay_identities != eligible_identities
+            or request_identities != eligible_identities
+            or snapshot_identities != eligible_identities
+        ):
+            raise ValueError("adaptive direct composition differs from complete eligible coverage")
+        for source, request in zip(eligible, direct_requests):
+            if any((
+                request.source_coverage_sha256 != source.source_coverage_sha256,
+                request.source_size != source.source_size,
+                request.source_sha256 != source.source_sha256,
+            )):
+                raise ValueError("direct request differs from typed source coverage")
+        if _direct_set_digest(
+            "request", recipe.coverage_manifest_sha256, recipe.direct_ratio,
+            direct_requests,
+        ) != recipe.direct_request_set_sha256:
+            raise ValueError("direct composition request set differs from recipe")
+        if _direct_set_digest(
+            "snapshot", recipe.coverage_manifest_sha256, recipe.direct_ratio,
+            direct_snapshots,
+        ) != recipe.direct_snapshot_set_sha256:
+            raise ValueError("direct composition snapshot set differs from recipe")
+    return resolved
+
+
 def _inventory_with_kinds(
     root: Path,
     root_identity: str,
@@ -1043,7 +1224,7 @@ def _composition_proof(
     recipe: CompositeRecipe,
     base_manifest: SourceTreeManifest,
     composed_manifest: SourceTreeManifest,
-    snapshots_by_sha256: Mapping[str, RecoverySourceSnapshot],
+    snapshots_by_sha256: Mapping[str, CompositionSnapshot],
 ) -> CompositionProof:
     base_by_id = {item.file_identity: item for item in base_manifest.files}
     composed_by_id = {item.file_identity: item for item in composed_manifest.files}
@@ -1065,18 +1246,20 @@ def _composition_proof(
         snapshot = snapshots_by_sha256.get(overlay.replacement_snapshot_sha256)
         if snapshot is None or snapshot.snapshot_sha256 != overlay.replacement_snapshot_sha256:
             raise ValueError("overlay replacement snapshot is unavailable")
-        if any((
-            snapshot.family_id != recipe.family_id,
-            snapshot.family_input_sha256 != recipe.family_input_sha256,
-            snapshot.optimizer_contract_sha256 != recipe.optimizer_contract_sha256,
-            snapshot.whole_profile_sha256 != recipe.whole_profile_sha256,
-            snapshot.focused_profile_sha256 != recipe.focused_profile_sha256,
-            snapshot.dependency_proof_sha256 != recipe.dependency_proof_sha256,
-        )):
-            raise ValueError("overlay replacement snapshot crosses recipe contract")
-        snapshot_refs = {
-            item.region_key: item.evidence_sha256 for item in snapshot.focused_evidence
-        }
+        snapshot_refs = {}
+        if isinstance(snapshot, RecoverySourceSnapshot):
+            if any((
+                snapshot.family_id != recipe.family_id,
+                snapshot.family_input_sha256 != recipe.family_input_sha256,
+                snapshot.optimizer_contract_sha256 != recipe.optimizer_contract_sha256,
+                snapshot.whole_profile_sha256 != recipe.whole_profile_sha256,
+                snapshot.focused_profile_sha256 != recipe.focused_profile_sha256,
+                snapshot.dependency_proof_sha256 != recipe.dependency_proof_sha256,
+            )):
+                raise ValueError("overlay replacement snapshot crosses recipe contract")
+            snapshot_refs = {
+                item.region_key: item.evidence_sha256 for item in snapshot.focused_evidence
+            }
         overlay_refs = {
             item.region_key: item.evidence_sha256 for item in overlay.focused_evidence
         }
@@ -1094,13 +1277,21 @@ def _composition_proof(
                 raise ValueError("exact-original overlay does not use original snapshot")
         elif overlay.mode == "direct-position":
             if (
-                snapshot.kind != "candidate"
-                or snapshot.candidate_id != overlay.replacement_candidate_id
-                or snapshot.candidate_cache_digest != overlay.replacement_cache_digest
+                not isinstance(snapshot, DirectSourceSnapshot)
+                or snapshot.direct_candidate_id != overlay.replacement_candidate_id
+                or snapshot.direct_cache_digest != overlay.replacement_cache_digest
             ):
-                raise ValueError("direct-position overlay does not match candidate snapshot")
-        replacement = _file_by_identity(snapshot, identity)
-        if replacement is None or replacement.sha256 != after.sha256 or replacement.size != after.size:
+                raise ValueError("direct-position overlay does not match direct snapshot")
+        if isinstance(snapshot, DirectSourceSnapshot):
+            replacement_size = snapshot.output_size
+            replacement_hash = snapshot.output_sha256
+        else:
+            replacement = _file_by_identity(snapshot, identity)
+            if replacement is None:
+                raise ValueError("sealed replacement source is unavailable")
+            replacement_size = replacement.size
+            replacement_hash = replacement.sha256
+        if replacement_hash != after.sha256 or replacement_size != after.size:
             raise ValueError("composed bytes do not match sealed replacement snapshot")
         changed.append(ChangedSourceProof(
             identity, after.relative_path, before.size, before.sha256,
@@ -1124,10 +1315,13 @@ def _composition_proof(
 
 def validate_composition_proof(
     recipe: CompositeRecipe,
-    snapshots_by_sha256: Mapping[str, RecoverySourceSnapshot],
+    snapshots_by_sha256: Mapping[str, CompositionSnapshot],
     base_root: Path,
     composed_root: Path,
     cancel_event: threading.Event | None,
+    *,
+    coverage_manifest: AdaptiveDirectCoverageManifest | None = None,
+    base_snapshot: RecoverySourceSnapshot | None = None,
 ) -> CompositionProof:
     if not isinstance(recipe, CompositeRecipe):
         raise TypeError("composition recipe is invalid")
@@ -1135,32 +1329,49 @@ def validate_composition_proof(
     composed_root = Path(os.path.abspath(composed_root))
     if _overlaps(base_root, composed_root):
         raise ValueError("composition roots overlap")
-    for overlay in recipe.overlays:
-        snapshot = snapshots_by_sha256.get(overlay.replacement_snapshot_sha256)
-        if snapshot is None:
-            raise ValueError("replacement snapshot is unavailable")
-        revalidate_recovery_snapshot(snapshot, cancel_event)
-        item = _file_by_identity(snapshot, overlay.source_identity)
-        if item is None:
-            raise ValueError("replacement source is absent from snapshot")
     base_qc, _base_graph, base_manifest = _matching_graph_manifest(
         base_root, recipe.base_source_manifest_sha256,
         "candidate-source-v1", cancel_event,
+    )
+    if recipe.kind == "adaptive-direct-fallback-v1":
+        if not isinstance(base_snapshot, RecoverySourceSnapshot):
+            raise ValueError("adaptive direct proof requires authoritative base snapshot")
+        if Path(os.path.abspath(base_snapshot.source_root)) != base_root:
+            raise ValueError("adaptive direct base snapshot root differs")
+        revalidate_recovery_snapshot(base_snapshot, cancel_event)
+        if base_snapshot.source_manifest != base_manifest:
+            raise ValueError("adaptive direct base snapshot manifest differs")
+    else:
+        base_snapshot = build_recovery_source_snapshot(
+            kind="candidate", family_id=recipe.family_id,
+            family_input_sha256=recipe.family_input_sha256,
+            optimizer_contract_sha256=recipe.optimizer_contract_sha256,
+            whole_profile_sha256=recipe.whole_profile_sha256,
+            focused_profile_sha256=recipe.focused_profile_sha256,
+            dependency_proof_sha256=recipe.dependency_proof_sha256,
+            candidate_id=recipe.base_candidate_id,
+            candidate_cache_digest=recipe.base_cache_digest,
+            source_root=base_root, source_manifest=base_manifest, focused_evidence=(),
+        )
+    resolved = _resolve_recipe_snapshots(
+        recipe, base_snapshot, snapshots_by_sha256, cancel_event, coverage_manifest
     )
     qc_relative = base_qc.relative_to(base_root)
     composed_graph = parse_qc_graph(composed_root / qc_relative, composed_root)
     composed_manifest = build_source_tree_manifest(
         composed_root, composed_graph, "composite-source-v1", cancel_event
     )
-    return _composition_proof(recipe, base_manifest, composed_manifest, snapshots_by_sha256)
+    return _composition_proof(recipe, base_manifest, composed_manifest, resolved)
 
 
 def compose_candidate_sources(
     base_build: object,
     recipe: CompositeRecipe,
-    snapshots_by_sha256: Mapping[str, RecoverySourceSnapshot],
+    snapshots_by_sha256: Mapping[str, CompositionSnapshot],
     workspace: Path,
     cancel_event: threading.Event | None,
+    *,
+    coverage_manifest: AdaptiveDirectCoverageManifest | None = None,
 ) -> ComposedSourceTree:
     from .candidates import CandidateBuild
 
@@ -1177,6 +1388,10 @@ def compose_candidate_sources(
         raise ValueError("composition recipe base cache mismatch")
     if recipe.base_source_manifest_sha256 != base_snapshot.source_manifest.digest:
         raise ValueError("composition recipe base source mismatch")
+    if recipe.kind == "adaptive-direct-fallback-v1" and (
+        recipe.base_source_snapshot_sha256 != base_snapshot.snapshot_sha256
+    ):
+        raise ValueError("composition recipe base snapshot mismatch")
     if recipe.optimizer_contract_sha256 != optimizer_contract_sha256(base_build.spec):
         raise ValueError("composition recipe optimizer mismatch")
     if any((
@@ -1199,11 +1414,15 @@ def compose_candidate_sources(
     # This function is called only after the orchestrator atomically reserves both
     # the recovery-round and candidate slots. Reopening current bytes starts here.
     revalidate_recovery_snapshot(base_snapshot, cancel_event)
-    for overlay in recipe.overlays:
-        snapshot = snapshots_by_sha256.get(overlay.replacement_snapshot_sha256)
-        if snapshot is None:
-            raise ValueError("composition replacement snapshot is unavailable")
-        revalidate_recovery_snapshot(snapshot, cancel_event)
+    resolved = _resolve_recipe_snapshots(
+        recipe, base_snapshot, snapshots_by_sha256, cancel_event, coverage_manifest
+    )
+    for snapshot in resolved.values():
+        if isinstance(snapshot, DirectSourceSnapshot) and (
+            _overlaps(workspace, snapshot.source_root)
+            or _overlaps(workspace, snapshot.input_source_root)
+        ):
+            raise ValueError("composition workspace overlaps a direct snapshot input")
     source_root = workspace / "src"
     try:
         workspace.mkdir(parents=False, exist_ok=False)
@@ -1215,18 +1434,30 @@ def compose_candidate_sources(
             destination.parent.mkdir(parents=True, exist_ok=True)
             _copy_file_no_follow(source, destination, cancel_event, contained_root=base_root)
         for overlay in recipe.overlays:
-            snapshot = snapshots_by_sha256[overlay.replacement_snapshot_sha256]
-            replacement = _file_by_identity(snapshot, overlay.source_identity)
+            snapshot = resolved[overlay.replacement_snapshot_sha256]
             base_file = _file_by_identity(base_snapshot, overlay.source_identity)
-            if replacement is None or base_file is None:
+            if base_file is None:
                 raise ValueError("composition source identity is unavailable")
-            if base_file.sha256 != overlay.base_source_sha256 or replacement.sha256 != overlay.replacement_sha256 or replacement.size != overlay.replacement_size:
+            if isinstance(snapshot, DirectSourceSnapshot):
+                replacement_size = snapshot.output_size
+                replacement_hash = snapshot.output_sha256
+                replacement_path = snapshot.output_relative_path
+                replacement_root = Path(snapshot.source_root)
+            else:
+                replacement = _file_by_identity(snapshot, overlay.source_identity)
+                if replacement is None:
+                    raise ValueError("composition replacement identity is unavailable")
+                replacement_size = replacement.size
+                replacement_hash = replacement.sha256
+                replacement_path = replacement.relative_path
+                replacement_root = Path(snapshot.source_root)
+            if base_file.sha256 != overlay.base_source_sha256 or replacement_hash != overlay.replacement_sha256 or replacement_size != overlay.replacement_size:
                 raise ValueError("composition overlay proof does not match snapshots")
-            source = Path(snapshot.source_root) / Path(*replacement.relative_path.split("/"))
+            source = replacement_root / Path(*replacement_path.split("/"))
             destination = source_root / Path(*base_file.relative_path.split("/"))
             temporary = destination.with_name(destination.name + ".replacement.tmp")
             _copy_file_no_follow(
-                source, temporary, cancel_event, contained_root=Path(snapshot.source_root)
+                source, temporary, cancel_event, contained_root=replacement_root
             )
             os.replace(temporary, destination)
         optimized_relative = Path(base_build.optimized_qc).relative_to(base_root)
@@ -1236,12 +1467,12 @@ def compose_candidate_sources(
             source_root, composed_graph, "composite-source-v1", cancel_event
         )
         composition = _composition_proof(
-            recipe, base_snapshot.source_manifest, composed_manifest, snapshots_by_sha256
+            recipe, base_snapshot.source_manifest, composed_manifest, resolved
         )
         if not optimized_qc.is_file() or _focused_is_reparse(optimized_qc):
             raise ValueError("composed optimized QC is unavailable")
         return ComposedSourceTree(workspace, optimized_qc, composed_manifest, composition)
     except BaseException:
         if os.path.lexists(workspace):
-            shutil.rmtree(workspace, ignore_errors=True)
+            _quarantine_composition_workspace(workspace)
         raise
