@@ -989,6 +989,30 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     )
                 self.assertFalse(workspace.exists())
 
+    def test_boundary_never_reacquires_replaced_workspace_after_e1_returns(self) -> None:
+        from maximum_optimizer import production_adapters as module
+        real_e1 = module.validate_adaptive_direct_source_union
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
+            workspace = root / "union"; marker = workspace / "external.marker"
+            state = {"digest": fixture.requests[0].dependency_proof_sha256}
+            def replace_after_success(*args, **kwargs):
+                record = real_e1(*args, **kwargs)
+                shutil.rmtree(workspace)
+                workspace.mkdir()
+                marker.write_bytes(b"preserve")
+                state["digest"] = "0" * 64
+                return record
+            with mock.patch(
+                "maximum_optimizer.production_adapters.validate_adaptive_direct_source_union",
+                side_effect=replace_after_success,
+            ), self.assertRaises(ValueError):
+                self._render_case(
+                    root, SourceUnionRunner(fixture), workspace, components,
+                    dependency_provider=lambda _event: state["digest"],
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve")
+
     def test_source_union_cancellation_pre_process_and_compare_cleans_owned_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)

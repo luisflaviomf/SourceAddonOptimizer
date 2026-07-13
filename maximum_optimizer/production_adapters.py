@@ -29,8 +29,8 @@ from .qc_graph import parse_qc_graph
 from .reporting import canonical_json
 from .source_union import (
     SourceUnionMaterialBinding, SourceUnionMaskObservation,
+    SourceUnionWorkspaceLease,
     SourceUnionRenderOutput, _quarantine_cleanup_if_owned,
-    _workspace_root_identity,
     validate_adaptive_direct_source_union,
 )
 from .source_components import (
@@ -896,7 +896,7 @@ class AdaptiveDirectProductionBoundary:
             )
             _assert_source_union_workspace_root(workspace, authorized=True)
 
-        owned_identity = None
+        ownership_lease = SourceUnionWorkspaceLease()
         try:
             record = validate_adaptive_direct_source_union(
                 coverage=coverage, source_proof=source_proof, snapshot=snapshot,
@@ -905,8 +905,8 @@ class AdaptiveDirectProductionBoundary:
                 material_bindings=material_bindings, profile=profile,
                 renderer=render_fresh, comparator=compare_authorized,
                 cancel_event=cancel_event,
+                ownership_lease=ownership_lease,
             )
-            owned_identity = _workspace_root_identity(workspace)
             _final_source, final_filtered, final_candidate, final_transfer = (
                 validate_current_inputs(cancel_event)
             )
@@ -919,5 +919,5 @@ class AdaptiveDirectProductionBoundary:
             validate_render_workspace_current(cancel_event)
             return record
         except BaseException:
-            _quarantine_cleanup_if_owned(workspace, owned_identity)
+            _quarantine_cleanup_if_owned(workspace, ownership_lease.identity)
             raise

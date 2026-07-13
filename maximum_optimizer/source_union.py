@@ -131,6 +131,16 @@ SourceUnionRenderer = Callable[
 SourceUnionComparator = Callable[[Path, Path, FidelityProfile], ValidationResult]
 
 
+@dataclass
+class SourceUnionWorkspaceLease:
+    identity: tuple[int, int, int] | None = None
+
+    def acquire(self, identity: tuple[int, int, int]) -> None:
+        if self.identity is not None or not isinstance(identity, tuple) or len(identity) != 3:
+            raise ValueError("source-union workspace lease acquisition is invalid")
+        self.identity = identity
+
+
 def _cancel(cancel_event: threading.Event | None, message: str) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise ProcessCancelledError(message)
@@ -318,6 +328,7 @@ def validate_adaptive_direct_source_union(
     renderer: SourceUnionRenderer,
     comparator: SourceUnionComparator,
     cancel_event: threading.Event | None = None,
+    ownership_lease: SourceUnionWorkspaceLease | None = None,
 ) -> AdaptiveDirectSourceUnionRecord:
     if not isinstance(coverage, AdaptiveDirectCoverageManifest):
         raise TypeError("source-union coverage is invalid")
@@ -327,6 +338,10 @@ def validate_adaptive_direct_source_union(
         raise TypeError("source-union snapshot/profile is invalid")
     if not callable(renderer) or not callable(comparator):
         raise TypeError("source-union renderer/comparator is invalid")
+    if ownership_lease is not None and not isinstance(
+        ownership_lease, SourceUnionWorkspaceLease
+    ):
+        raise TypeError("source-union workspace lease is invalid")
     current = tuple(item for item in coverage.sources if item.source_identity == source_proof.source_identity)
     eligible = tuple(item for item in coverage.sources if item.eligibility_kind == "eligible-exact-v1")
     if len(current) != 1 or current[0] != source_proof or source_proof.eligibility_kind != "eligible-exact-v1":
@@ -382,6 +397,8 @@ def validate_adaptive_direct_source_union(
     try:
         workspace.mkdir(parents=False, exist_ok=False)
         owned_identity = _workspace_root_identity(workspace)
+        if ownership_lease is not None:
+            ownership_lease.acquire(owned_identity)
         _cancel(cancel_event, "cancelled before source-union render")
         rendered = renderer(render_request, workspace, cancel_event)
         if not isinstance(rendered, SourceUnionRenderOutput):
@@ -405,9 +422,12 @@ def validate_adaptive_direct_source_union(
         if _render_manifest(rendered.root, target, cancel_event) != files:
             raise ValueError("source-union render bytes changed after comparison")
         revalidate_direct_source_snapshot(snapshot, cancel_event)
-        return build_adaptive_direct_source_union_record(
+        record = build_adaptive_direct_source_union_record(
             target=target, validation=validation, files=files, visibility=visibility,
         )
+        if _workspace_root_identity(workspace) != owned_identity:
+            raise ValueError("source-union workspace identity changed before return")
+        return record
     except BaseException:
         _quarantine_cleanup_if_owned(workspace, owned_identity)
         raise
