@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
+from unittest import mock
 
 from maximum_optimizer.composite import (
     build_adaptive_direct_coverage_manifest,
@@ -24,7 +26,9 @@ from maximum_optimizer.domain import (
 from maximum_optimizer.focused_cache import build_final_whole_authorization_evidence
 from maximum_optimizer.monaco_schedule import (
     MONACO_DIRECT_RATIOS,
+    MonacoCancelledReservation,
     MonacoFailedReservation,
+    MonacoScheduleResult,
     build_monaco_schedule,
 )
 from maximum_optimizer.processes import ProcessCancelledError
@@ -130,7 +134,7 @@ class MonacoScheduleTests(unittest.TestCase):
             reserve=lambda *_: touched.append("reserve"),
             access_ratio=lambda *_: touched.append("access"),
         )
-        self.assertEqual(result, ())
+        self.assertEqual(tuple(result), ())
         self.assertEqual(touched, [])
         with self.assertRaises(ValueError):
             build_monaco_schedule(
@@ -190,20 +194,65 @@ class MonacoScheduleTests(unittest.TestCase):
             )
         self.assertIsInstance(result[0], MonacoFailedReservation)
 
-    def test_cancellation_propagates_instead_of_continuing_reserved_ratios(self) -> None:
+    def test_cancellation_terminalizes_every_reserved_ratio(self) -> None:
         accesses = []
 
         def access(ratio):
             accesses.append(ratio)
             raise ProcessCancelledError("cancelled")
 
-        with self.assertRaises(ProcessCancelledError):
-            build_monaco_schedule(
-                base_spec=self.base_spec, coverage=self.coverage,
-                remaining_candidates=2, reserve=lambda *_: "token",
-                access_ratio=access,
-            )
+        result = build_monaco_schedule(
+            base_spec=self.base_spec, coverage=self.coverage,
+            remaining_candidates=2, reserve=lambda *_: "token",
+            access_ratio=access,
+        )
         self.assertEqual(accesses, [0.50])
+        self.assertIsInstance(result, MonacoScheduleResult)
+        self.assertTrue(result.cancelled)
+        self.assertEqual(len(result), 2)
+        self.assertTrue(all(isinstance(item, MonacoCancelledReservation) for item in result))
+
+    def test_pre_cancelled_schedule_never_accesses_reserved_ratio(self) -> None:
+        cancelled = threading.Event(); cancelled.set()
+        access = mock.Mock(side_effect=AssertionError("ratio accessed after cancellation"))
+        result = build_monaco_schedule(
+            base_spec=self.base_spec, coverage=self.coverage,
+            remaining_candidates=2, reserve=lambda *_: "token",
+            access_ratio=access, cancel_event=cancelled,
+        )
+        access.assert_not_called()
+        self.assertTrue(result.cancelled)
+        self.assertEqual(len(result), 2)
+        self.assertTrue(all(isinstance(item, MonacoCancelledReservation) for item in result))
+
+    def test_rejects_per_ratio_aggregate_over_two_gibibytes(self) -> None:
+        def unsafe_copy(value, **changes):
+            copied = object.__new__(type(value))
+            for name in value.__dataclass_fields__:
+                object.__setattr__(copied, name, changes.get(name, getattr(value, name)))
+            return copied
+
+        with tempfile.TemporaryDirectory() as temporary:
+            requests, snapshots = self._ratio_payload(Path(temporary), 0.50)
+            oversized_requests = tuple(
+                unsafe_copy(item, source_size=1024 ** 3 + 1) for item in requests
+            )
+            oversized_snapshots = tuple(
+                unsafe_copy(item, request=request)
+                for item, request in zip(snapshots, oversized_requests)
+            )
+            validator = mock.Mock(side_effect=AssertionError("hashed oversized set"))
+            with mock.patch(
+                "maximum_optimizer.monaco_schedule.revalidate_direct_source_snapshot",
+                validator,
+            ):
+                result = build_monaco_schedule(
+                    base_spec=self.base_spec, coverage=self.coverage,
+                    remaining_candidates=1, reserve=lambda *_: "token",
+                    access_ratio=lambda _: (oversized_requests, oversized_snapshots),
+                )
+        self.assertIsInstance(result[0], MonacoFailedReservation)
+        validator.assert_not_called()
 
     def test_request_snapshot_sets_and_candidate_cache_are_canonical_and_fully_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

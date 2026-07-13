@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import re
+import threading
 from typing import Callable
 
 from .composite import (
@@ -24,6 +25,7 @@ from .processes import ProcessCancelledError
 
 MONACO_DIRECT_RATIOS = (0.50, 0.45, 0.40, 0.35)
 _HASH = re.compile(r"[0-9a-f]{64}")
+_RATIO_BYTE_LIMIT = 2 * 1024 ** 3
 
 
 def _digest(value: object) -> str:
@@ -91,7 +93,42 @@ class MonacoFailedReservation:
             raise ValueError("Monaco failed reservation matrix is invalid")
 
 
-MonacoScheduleOutcome = MonacoScheduledCandidate | MonacoFailedReservation
+@dataclass(frozen=True)
+class MonacoCancelledReservation:
+    reservation: MonacoRatioReservation
+    ratio: float
+    terminal_status: str = "cancelled"
+    failure_reason: str = "schedule-cancelled-v1"
+
+    def __post_init__(self) -> None:
+        if self.ratio != self.reservation.ratio or self.terminal_status != "cancelled" or self.failure_reason != "schedule-cancelled-v1":
+            raise ValueError("Monaco cancelled reservation matrix is invalid")
+
+
+MonacoScheduleOutcome = MonacoScheduledCandidate | MonacoFailedReservation | MonacoCancelledReservation
+
+
+@dataclass(frozen=True)
+class MonacoScheduleResult:
+    outcomes: tuple[MonacoScheduleOutcome, ...]
+    cancelled: bool
+
+    def __post_init__(self) -> None:
+        outcomes = tuple(self.outcomes)
+        if type(self.cancelled) is not bool or any(
+            item.reservation.ordinal != index for index, item in enumerate(outcomes)
+        ):
+            raise ValueError("Monaco schedule result is not a terminal reserved prefix")
+        cancelled_items = tuple(isinstance(item, MonacoCancelledReservation) for item in outcomes)
+        if self.cancelled != any(cancelled_items) or (self.cancelled and not all(
+            cancelled_items[index] for index in range(cancelled_items.index(True), len(cancelled_items))
+        )):
+            raise ValueError("Monaco schedule cancellation matrix is invalid")
+        object.__setattr__(self, "outcomes", outcomes)
+
+    def __iter__(self): return iter(self.outcomes)
+    def __len__(self): return len(self.outcomes)
+    def __getitem__(self, index): return self.outcomes[index]
 
 
 def _request_set_digest(coverage_sha256: str, ratio: float, requests) -> str:
@@ -112,7 +149,7 @@ def _snapshot_set_digest(coverage_sha256: str, ratio: float, snapshots) -> str:
 
 def _canonical_ratio_inputs(
     *, base_spec: CandidateSpec, coverage: AdaptiveDirectCoverageManifest,
-    ratio: float, raw: object,
+    ratio: float, raw: object, cancel_event: threading.Event | None,
 ) -> tuple[tuple[DirectSourceBuildRequest, ...], tuple[DirectSourceSnapshot, ...]]:
     if type(raw) not in (tuple, list) or len(raw) != 2:
         raise ValueError("Monaco ratio accessor must return requests and snapshots")
@@ -124,7 +161,9 @@ def _canonical_ratio_inputs(
         raise ValueError("Monaco direct snapshots are invalid")
     requests = tuple(sorted(requests, key=lambda item: (item.source_identity.casefold(), item.source_identity)))
     snapshots = tuple(sorted(snapshots, key=lambda item: (item.request.source_identity.casefold(), item.request.source_identity)))
-    snapshots = tuple(revalidate_direct_source_snapshot(item) for item in snapshots)
+    if sum(item.source_size for item in requests) + sum(item.output_size for item in snapshots) > _RATIO_BYTE_LIMIT:
+        raise ValueError("Monaco ratio source/output aggregate exceeds two GiB")
+    snapshots = tuple(revalidate_direct_source_snapshot(item, cancel_event) for item in snapshots)
     eligible = tuple(item for item in coverage.sources if item.eligibility_kind == "eligible-exact-v1")
     expected_identities = tuple(item.source_identity for item in eligible)
     request_identities = tuple(item.source_identity for item in requests)
@@ -165,10 +204,12 @@ def _canonical_ratio_inputs(
 def _scheduled_candidate(
     *, base_spec: CandidateSpec, coverage: AdaptiveDirectCoverageManifest,
     reservation: MonacoRatioReservation, raw: object,
+    cancel_event: threading.Event | None,
 ) -> MonacoScheduledCandidate:
     ratio = reservation.ratio
     requests, snapshots = _canonical_ratio_inputs(
         base_spec=base_spec, coverage=coverage, ratio=ratio, raw=raw,
+        cancel_event=cancel_event,
     )
     request_set_sha256 = _request_set_digest(coverage.coverage_manifest_sha256, ratio, requests)
     snapshot_set_sha256 = _snapshot_set_digest(coverage.coverage_manifest_sha256, ratio, snapshots)
@@ -222,7 +263,8 @@ def build_monaco_schedule(
     remaining_candidates: int,
     reserve: Callable[[int, float], str],
     access_ratio: Callable[[float], object],
-) -> tuple[MonacoScheduleOutcome, ...]:
+    cancel_event: threading.Event | None = None,
+) -> MonacoScheduleResult:
     if not isinstance(base_spec, CandidateSpec) or base_spec.composite_recipe is not None or base_spec.strategy != "blender-adaptive-v1":
         raise ValueError("Monaco schedule base spec is not ordinary blender-adaptive")
     if not isinstance(coverage, AdaptiveDirectCoverageManifest):
@@ -239,16 +281,25 @@ def build_monaco_schedule(
         for index, ratio in enumerate(prefix)
     )
     outcomes = []
-    for item in reservations:
+    cancelled = False
+    for position, item in enumerate(reservations):
         try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProcessCancelledError("Monaco schedule cancelled before ratio access")
             outcomes.append(_scheduled_candidate(
                 base_spec=base_spec, coverage=coverage, reservation=item,
                 raw=access_ratio(item.ratio),
+                cancel_event=cancel_event,
             ))
         except ProcessCancelledError:
-            raise
+            outcomes.extend(
+                MonacoCancelledReservation(pending, pending.ratio)
+                for pending in reservations[position:]
+            )
+            cancelled = True
+            break
         except Exception:
             outcomes.append(MonacoFailedReservation(
                 item, item.ratio, "failed", "ratio-input-failed-v1",
             ))
-    return tuple(outcomes)
+    return MonacoScheduleResult(tuple(outcomes), cancelled)

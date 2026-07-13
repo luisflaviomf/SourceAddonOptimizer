@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -30,6 +31,7 @@ from maximum_optimizer.domain import (
     ValidationResult,
 )
 from maximum_optimizer.monaco_selection import (
+    CompiledArtifactProof,
     RetainedMonacoBaseProof,
     build_retained_monaco_base_proof,
     select_exact_fallback_sources,
@@ -37,6 +39,7 @@ from maximum_optimizer.monaco_selection import (
 )
 from maximum_optimizer import monaco_selection
 from maximum_optimizer.reporting import canonical_json
+from maximum_optimizer.processes import ProcessCancelledError
 from tests.maximum_optimizer.test_orchestrator import _focus_target
 from tests.maximum_optimizer.test_task6_contracts import H
 
@@ -73,6 +76,7 @@ def _manifest(root_identity: str, files: tuple[SourceFileProof, ...]) -> SourceT
 def _source_snapshot(
     root: Path, spec: CandidateSpec | None, *, output: bool,
     candidate_relative: str = "output/body.smd",
+    extra_visual: bool = False,
 ):
     qc = b'$body "body" "body.smd"\n'
     mesh = b"same visual source bytes"
@@ -81,10 +85,20 @@ def _source_snapshot(
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(mesh)
-    manifest = _manifest("candidate" if output else "original", (
+    files = [
         SourceFileProof("body.smd", "visual-source", relative, len(mesh), _sha(mesh)),
         SourceFileProof("main.qc", "qc", "main.qc", len(qc), _sha(qc)),
-    ))
+    ]
+    if extra_visual:
+        wheel_relative = "output/wheel.smd" if output else "wheel.smd"
+        wheel = b"wheel visual source bytes"
+        wheel_path = root / wheel_relative
+        wheel_path.parent.mkdir(parents=True, exist_ok=True)
+        wheel_path.write_bytes(wheel)
+        files.append(SourceFileProof(
+            "wheel.smd", "visual-source", wheel_relative, len(wheel), _sha(wheel),
+        ))
+    manifest = _manifest("candidate" if output else "original", tuple(files))
     focused = (FocusedEvidenceRef(_focus_target().region_key, H["a"]),) if spec else ()
     return build_recovery_source_snapshot(
         kind="candidate" if spec else "original",
@@ -140,19 +154,23 @@ def _typed_inputs(spec: CandidateSpec, snapshot):
 def _retained(
     root: Path, candidate_id: str = "base", compiled_bytes: bytes = b"compiled-model",
     *, candidate_relative: str = "output/body.smd",
+    extra_visual: bool = False,
+    compiled_name: str = "model.mdl",
 ):
     spec = _spec(candidate_id)
     source_root = root / f"{candidate_id}-source"
     source_root.mkdir()
     snapshot = _source_snapshot(
         source_root, spec, output=True, candidate_relative=candidate_relative,
+        extra_visual=extra_visual,
     )
     compiled = root / f"{candidate_id}-compiled"
     compiled.mkdir()
-    (compiled / "model.mdl").write_bytes(compiled_bytes)
+    (compiled / compiled_name).write_bytes(compiled_bytes)
+    kind = ".dx90.vtx" if compiled_name.endswith(".dx90.vtx") else "mdl"
     size = CompiledSizeSnapshot(
         compiled, len(compiled_bytes), {"mdl": len(compiled_bytes)}, {},
-        (ArtifactStat("model.mdl", "mdl", len(compiled_bytes)),),
+        (ArtifactStat(compiled_name, kind, len(compiled_bytes)),),
     )
     target = _focus_target()
     region = FocusRegionResult(target, ValidationResult(True), H["a"], False)
@@ -162,7 +180,7 @@ def _retained(
     )
     build = CandidateBuild(
         spec, root / f"{candidate_id}-workspace", source_root / "main.qc", compiled,
-        {}, {"model.mdl": "candidate-compile"}, (), snapshot,
+        {}, {compiled_name: "candidate-compile"}, (), snapshot,
     )
     metrics, inventory = _typed_inputs(spec, snapshot)
     proof = build_retained_monaco_base_proof(
@@ -173,6 +191,25 @@ def _retained(
 
 
 class MonacoBaseSelectionTests(unittest.TestCase):
+    def test_compiled_proof_rejects_noncanonical_hash_and_bool_sizes(self) -> None:
+        valid = CompiledArtifactProof("model.mdl", ".mdl", 1, "a" * 64)
+        for changes in (
+            {"relative_path": "../model.mdl"}, {"size": True},
+            {"size": -1}, {"sha256": "A" * 64},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                replace(valid, **changes)
+
+    def test_compiled_manifest_preserves_multi_suffix_vtx_kind(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            evaluation, _, proof = _retained(
+                Path(temporary), compiled_name="model.dx90.vtx",
+            )
+            self.assertEqual(proof.compiled_artifacts[0].kind, ".dx90.vtx")
+            self.assertEqual(
+                select_monaco_base((evaluation,), {"base": proof}), evaluation,
+            )
+
     def test_compiled_inventory_rejects_file_count_byte_bound_and_reparse_ancestor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -228,6 +265,29 @@ class MonacoBaseSelectionTests(unittest.TestCase):
                 )
             self.assertIsNotNone(other_evaluation)
 
+    def test_cancel_event_reaches_compiled_and_source_revalidation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evaluation, build, proof = _retained(root)
+            cancelled = threading.Event(); cancelled.set()
+            with self.assertRaises(ProcessCancelledError):
+                build_retained_monaco_base_proof(
+                    evaluation, build, proof.metrics, proof.state_inventory,
+                    proof.focused_evidence, cancel_event=cancelled,
+                )
+            with self.assertRaises(ProcessCancelledError):
+                select_monaco_base(
+                    (evaluation,), {"base": proof}, cancel_event=cancelled,
+                )
+            with self.assertRaises(ValueError):
+                replace(proof, compiled_total_bytes=True)
+
+    def test_rejects_candidate_visual_source_omitted_from_metrics_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaises(ValueError):
+                _retained(root, extra_visual=True)
+
     def test_rejects_failed_visual_gates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             evaluation, _, proof = _retained(Path(temporary))
@@ -249,6 +309,20 @@ class ExactFallbackSelectionTests(unittest.TestCase):
             )
             self.assertEqual(result.source_identities, ("body.smd",))
 
+    def test_cancel_event_reaches_original_and_candidate_snapshot_hashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, _, proof = _retained(root)
+            original_root = root / "original-cancelled"
+            original_root.mkdir()
+            original = _source_snapshot(original_root, None, output=False)
+            cancelled = threading.Event(); cancelled.set()
+            with self.assertRaises(ProcessCancelledError):
+                select_exact_fallback_sources(
+                    proof, proof.metrics, proof.state_inventory, original,
+                    cancel_event=cancelled,
+                )
+
     def test_rejects_stale_original_or_forged_current_relative_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -257,6 +331,20 @@ class ExactFallbackSelectionTests(unittest.TestCase):
             original_root.mkdir()
             original = _source_snapshot(original_root, None, output=False)
             (original_root / "body.smd").write_bytes(b"changed")
+            with self.assertRaises(ValueError):
+                select_exact_fallback_sources(
+                    proof, proof.metrics, proof.state_inventory, original,
+                )
+
+    def test_rejects_original_visual_source_omitted_from_metrics_and_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, _, proof = _retained(root)
+            original_root = root / "original-extra"
+            original_root.mkdir()
+            original = _source_snapshot(
+                original_root, None, output=False, extra_visual=True,
+            )
             with self.assertRaises(ValueError):
                 select_exact_fallback_sources(
                     proof, proof.metrics, proof.state_inventory, original,

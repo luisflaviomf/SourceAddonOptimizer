@@ -4,9 +4,11 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import re
+import threading
 from typing import Callable, Mapping, Sequence
 
 from .candidates import CandidateBuild
+from .compiled_size import _kind as compiled_artifact_kind
 from .composite import (
     build_adaptive_direct_coverage_manifest,
     candidate_spec_sha256,
@@ -22,6 +24,7 @@ from .domain import (
     CandidateEvaluation,
     FocusedEvidenceRef,
     RecoverySourceSnapshot,
+    require_canonical_relative,
 )
 from .reporting import canonical_json
 
@@ -38,16 +41,28 @@ def _seal(payload: object) -> str:
 @dataclass(frozen=True)
 class CompiledArtifactProof:
     relative_path: str
+    kind: str
     size: int
     sha256: str
 
+    def __post_init__(self) -> None:
+        require_canonical_relative(self.relative_path, "Monaco compiled artifact path")
+        if type(self.kind) is not str or not self.kind or self.kind != self.kind.casefold():
+            raise ValueError("Monaco compiled artifact kind is invalid")
+        if type(self.size) is not int or self.size < 0:
+            raise ValueError("Monaco compiled artifact size is invalid")
+        if type(self.sha256) is not str or _SHA256.fullmatch(self.sha256) is None:
+            raise ValueError("Monaco compiled artifact hash is invalid")
 
-def _compiled_files(root: Path) -> tuple[CompiledArtifactProof, ...]:
+
+def _compiled_files(
+    root: Path, cancel_event: threading.Event | None = None,
+) -> tuple[CompiledArtifactProof, ...]:
     root = Path(root)
     if not root.is_absolute() or _has_reparse_ancestor(root):
         raise ValueError("Monaco compiled models root is unavailable or unsafe")
     try:
-        paths = _safe_tree_files(root, None)
+        paths = _safe_tree_files(root, cancel_event)
     except OSError as exc:
         raise ValueError("Monaco compiled models root is unavailable or unsafe") from exc
     if not paths or len(paths) > _COMPILED_FILE_LIMIT:
@@ -57,11 +72,11 @@ def _compiled_files(root: Path) -> tuple[CompiledArtifactProof, ...]:
     for path in paths:
         relative = path.relative_to(root).as_posix()
         size, digest = _hash_current_file(
-            path, root, None, max_bytes=_COMPILED_BYTE_LIMIT - total,
+            path, root, cancel_event, max_bytes=_COMPILED_BYTE_LIMIT - total,
         )
         total += size
-        found.append(CompiledArtifactProof(relative, size, digest))
-    if _safe_tree_files(root, None) != paths:
+        found.append(CompiledArtifactProof(relative, compiled_artifact_kind(path), size, digest))
+    if _safe_tree_files(root, cancel_event) != paths:
         raise ValueError("Monaco compiled artifact inventory changed during hashing")
     result = tuple(sorted(found, key=lambda item: (item.relative_path.casefold(), item.relative_path)))
     if len({item.relative_path.casefold() for item in result}) != len(result):
@@ -71,7 +86,8 @@ def _compiled_files(root: Path) -> tuple[CompiledArtifactProof, ...]:
 
 def _compiled_digest(files: tuple[CompiledArtifactProof, ...]) -> str:
     return _seal([{
-        "relative_path": item.relative_path, "size": item.size, "sha256": item.sha256,
+        "relative_path": item.relative_path, "kind": item.kind,
+        "size": item.size, "sha256": item.sha256,
     } for item in files])
 
 
@@ -126,7 +142,7 @@ class RetainedMonacoBaseProof:
         artifacts = tuple(self.compiled_artifacts)
         if any(not isinstance(item, CompiledArtifactProof) for item in artifacts):
             raise TypeError("Monaco retained compiled manifest is invalid")
-        if self.compiled_total_bytes != sum(item.size for item in artifacts) or self.compiled_manifest_sha256 != _compiled_digest(artifacts):
+        if type(self.compiled_total_bytes) is not int or self.compiled_total_bytes < 0 or self.compiled_total_bytes != sum(item.size for item in artifacts) or self.compiled_manifest_sha256 != _compiled_digest(artifacts):
             raise ValueError("Monaco retained compiled manifest seal mismatch")
         for value in (
             self.candidate_cache_digest, self.base_spec_sha256,
@@ -139,11 +155,11 @@ class RetainedMonacoBaseProof:
             raise ValueError("Monaco retained proof seal mismatch")
         object.__setattr__(self, "focused_evidence", focused)
         object.__setattr__(self, "compiled_artifacts", artifacts)
-        _validate_retained(self, self.evaluation)
 
 
 def _validate_retained(
     proof: RetainedMonacoBaseProof, evaluation: CandidateEvaluation,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[CompiledArtifactProof, ...]:
     spec = evaluation.spec
     snapshot = proof.build.source_snapshot
@@ -177,24 +193,30 @@ def _validate_retained(
         or snapshot.focused_evidence != proof.focused_evidence
     ):
         raise ValueError("Monaco retained build bindings are stale")
+    visual_identities = tuple(
+        item.file_identity for item in snapshot.source_manifest.files
+        if item.kind == "visual-source"
+    )
+    if visual_identities != tuple(item.source_identity for item in proof.metrics.sources):
+        raise ValueError("Monaco candidate visual source inventory is incomplete")
     build_root = Path(proof.build.compiled_models_dir).resolve()
     evaluation_root = Path(evaluation.compiled_models_dir).resolve()
     size_root = Path(evaluation.size.root).resolve()
     if build_root != evaluation_root or evaluation_root != size_root:
         raise ValueError("Monaco compiled roots differ")
-    current = _compiled_files(Path(proof.build.compiled_models_dir))
+    current = _compiled_files(Path(proof.build.compiled_models_dir), cancel_event)
     expected_sizes = tuple(sorted(
-        ((item.relative_path, item.size_bytes) for item in evaluation.size.artifacts),
+        ((item.relative_path, "." + item.kind.casefold().lstrip("."), item.size_bytes) for item in evaluation.size.artifacts),
         key=lambda item: (item[0].casefold(), item[0]),
     ))
     if (
         current != proof.compiled_artifacts
-        or tuple((item.relative_path, item.size) for item in current) != expected_sizes
+        or tuple((item.relative_path, item.kind, item.size) for item in current) != expected_sizes
         or sum(item.size for item in current) != evaluation.size.total_bytes
         or sum(item.size for item in current) != proof.compiled_total_bytes
     ):
         raise ValueError("Monaco current compiled bytes differ from retained evaluation")
-    revalidate_recovery_snapshot(snapshot, None)
+    revalidate_recovery_snapshot(snapshot, cancel_event)
     return current
 
 
@@ -204,13 +226,14 @@ def build_retained_monaco_base_proof(
     metrics: AdaptiveCandidateMetricsProof,
     state_inventory: AdaptiveDirectStateInventory,
     focused_evidence: Sequence[FocusedEvidenceRef],
+    *, cancel_event: threading.Event | None = None,
 ) -> RetainedMonacoBaseProof:
     if not isinstance(evaluation, CandidateEvaluation) or not isinstance(build, CandidateBuild):
         raise TypeError("Monaco evaluation or build is invalid")
     snapshot = build.source_snapshot
     if not isinstance(snapshot, RecoverySourceSnapshot):
         raise ValueError("Monaco retained build has no recovery source snapshot")
-    artifacts = _compiled_files(Path(build.compiled_models_dir))
+    artifacts = _compiled_files(Path(build.compiled_models_dir), cancel_event)
     values = dict(
         schema=3, candidate_id=evaluation.spec.candidate_id,
         candidate_cache_digest=metrics.candidate_cache_digest,
@@ -228,12 +251,15 @@ def build_retained_monaco_base_proof(
     for name, value in values.items():
         object.__setattr__(provisional, name, value)
     values["activation_sha256"] = _seal(_activation_payload(provisional))
-    return RetainedMonacoBaseProof(**values)
+    proof = RetainedMonacoBaseProof(**values)
+    _validate_retained(proof, evaluation, cancel_event)
+    return proof
 
 
 def select_monaco_base(
     evaluations: Sequence[CandidateEvaluation],
     retained_proofs: Mapping[str, RetainedMonacoBaseProof],
+    *, cancel_event: threading.Event | None = None,
 ) -> CandidateEvaluation | None:
     eligible: list[tuple[CandidateEvaluation, RetainedMonacoBaseProof]] = []
     for evaluation in evaluations:
@@ -243,7 +269,7 @@ def select_monaco_base(
         if not isinstance(proof, RetainedMonacoBaseProof):
             continue
         try:
-            _validate_retained(proof, evaluation)
+            _validate_retained(proof, evaluation, cancel_event)
         except (OSError, ValueError):
             continue
         spec = evaluation.spec
@@ -287,6 +313,7 @@ def select_exact_fallback_sources(
     coverage_factory: Callable[..., AdaptiveDirectCoverageManifest] = build_adaptive_direct_coverage_manifest,
     reservation_callback: Callable[..., object] | None = None,
     direct_io_callback: Callable[..., object] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ExactFallbackSelection | None:
     _ = reservation_callback, direct_io_callback
     eligible = tuple(item for item in metrics.sources if item.kind == "eligible-exact-v1")
@@ -300,8 +327,8 @@ def select_exact_fallback_sources(
         raise ValueError("Monaco fallback inputs differ from retained proof")
     if not isinstance(original_snapshot, RecoverySourceSnapshot) or original_snapshot.kind != "original":
         raise TypeError("Monaco original recovery snapshot is invalid")
-    _validate_retained(base_proof, base_proof.evaluation)
-    revalidate_recovery_snapshot(original_snapshot, None)
+    _validate_retained(base_proof, base_proof.evaluation, cancel_event)
+    revalidate_recovery_snapshot(original_snapshot, cancel_event)
     candidate_snapshot = base_proof.build.source_snapshot
     if (
         original_snapshot.family_id != candidate_snapshot.family_id
@@ -314,6 +341,11 @@ def select_exact_fallback_sources(
         raise ValueError("Monaco original and base snapshot contracts differ")
     original = {item.file_identity: item for item in original_snapshot.source_manifest.files}
     current = {item.file_identity: item for item in candidate_snapshot.source_manifest.files}
+    metric_identities = tuple(item.source_identity for item in metrics.sources)
+    original_visual = tuple(item.file_identity for item in original_snapshot.source_manifest.files if item.kind == "visual-source")
+    current_visual = tuple(item.file_identity for item in candidate_snapshot.source_manifest.files if item.kind == "visual-source")
+    if original_visual != metric_identities or current_visual != metric_identities:
+        raise ValueError("Monaco original/candidate visual inventory differs from metrics")
     for item in eligible:
         source = original.get(item.source_identity)
         output = current.get(item.source_identity)
@@ -338,4 +370,6 @@ def select_exact_fallback_sources(
     )
     if not isinstance(coverage, AdaptiveDirectCoverageManifest):
         raise TypeError("Monaco coverage factory returned invalid proof")
+    if coverage.complete_source_identities != metric_identities:
+        raise ValueError("Monaco coverage inventory differs from complete metrics")
     return ExactFallbackSelection(tuple(item.source_identity for item in eligible), coverage)
