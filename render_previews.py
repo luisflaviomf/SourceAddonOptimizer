@@ -293,6 +293,14 @@ def _parse_args(argv: list[str]):
         "--aggregate-regions", action="store_true",
         help="Research-only whole-state geometry scope for calibration anchors with changed mesh partitioning",
     )
+    ap.add_argument(
+        "--source-union-contract", default=None,
+        help="State-independent adaptive-direct source-union contract JSON",
+    )
+    ap.add_argument(
+        "--source-union-visibility-out", default=None,
+        help="Strict source-union component visibility JSON output",
+    )
     return ap.parse_args(argv)
 
 

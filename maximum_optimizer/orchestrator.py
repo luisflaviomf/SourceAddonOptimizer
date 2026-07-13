@@ -996,6 +996,8 @@ def _compile_composed_candidate(
     optimized_qc: Path,
     tools: CandidateTools,
     cancel_event: threading.Event,
+    *,
+    process_runner=run_process,
 ) -> CandidateBuild:
     logs = workspace / "logs"
     logs.mkdir(exist_ok=True)
@@ -1006,7 +1008,7 @@ def _compile_composed_candidate(
         str(tools.studiomdl_exe), "--compile-jobs", str(tools.compile_jobs),
         "--no-restore-phy",
     )
-    result = run_process(
+    result = process_runner(
         command, cwd=tools.repo_root, log_path=logs / "compile.log",
         cancel_event=cancel_event,
     )
