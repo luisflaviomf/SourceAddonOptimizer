@@ -507,15 +507,16 @@ explicit direct strategy/transfer
 the request input bytes, the canonical post-prefilter material order/count records
 with a per-material digest over the exact ordered SMD records, the exact
 coverage-manifest digest, and its own digest.
-The snapshot carries the request, derived direct candidate/cache identity, a
-runtime-only absolute `input_source_root`, one contained regular `.smd` output proof,
+The snapshot carries the request, derived direct candidate/cache identity, two
+runtime-only absolute roots (`source_root` for the direct output and
+`input_source_root` for the base input), one contained regular `.smd` output proof,
 input and
 output triangle counts, the exact sealed per-material triangle matrix, the exact
 recomputed prefilter proof, fixed reason
 `approved-direct-position-v1`, and a seal over every canonical field except its two
-runtime absolute roots. Parsing or restoring a snapshot must explicitly reroot both
-its output root and `input_source_root`; neither path is inferred from serialized
-content. Per-ratio request/snapshot set digests bind every sorted source;
+runtime absolute roots, `source_root` and `input_source_root`. Parsing or restoring a
+snapshot must explicitly require and reroot both; neither path is inferred from
+serialized content. Per-ratio request/snapshot set digests bind every sorted source;
 composite identity binds both strategies, immutable base, coverage manifest, ratio,
 recipe, and both set digests. The coverage digest is repeated exactly in each request,
 the request-set digest, recipe, candidate spec/cache payload, cache record, and
@@ -583,10 +584,13 @@ partition for adaptive-direct; focused recovery retains 1..4. `CompositeRecipe` 
 `CompositionProof` discriminate kind so neither limit can be borrowed.
 
 For every selected SMD, original and ordinary-base current bytes must have equal size,
-SHA-256, and byte-for-byte content. The direct transform may change only triangle
-membership/order and position-remapped topology. Nodes, skeleton frames, material
-spelling/order, bone identities, weights, UVs, normals, retained-corner attributes,
-and cyclic winding provenance remain exact under the typed SMD parser. Composition
+SHA-256, and byte-for-byte content. The direct transform may only select exact source
+triangles, reorder the selected triangles, and cyclically rotate each selected source
+triangle. Index and vertex buffers may be compacted or remapped without changing any
+selected triangle's connectivity, positions, or corner attributes. Nodes, skeleton
+frames, material spelling/order, bone identities, weights, UVs, normals, and cyclic
+winding provenance remain exact under the typed SMD parser; new connectivity and
+position/corner changes are forbidden. Composition
 copies the immutable base, replaces exactly the declared SMDs, proves every QC and
 undeclared source byte unchanged, and rejects same-size mutation.
 
@@ -652,7 +656,8 @@ reserved and built. The direct workspace uses the future-compatible
 alone introduces the exact whitelist, outer/record schemas, report schema, pre-build
 lookup, and private resume restore described below. Task-7 restore copies whitelisted
 bytes into a new private root, explicitly reroots every direct snapshot's
-`input_source_root` to the private restored base copy, and reruns current structural,
+`source_root` to the private restored direct-output copy and `input_source_root` to
+the private restored base copy, and reruns current structural,
 base top-K, every
 source-union proof, and final whole exactly once.
 

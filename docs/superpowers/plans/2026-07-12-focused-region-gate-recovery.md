@@ -1403,8 +1403,9 @@ enable schema 3 receive the current defaults and behavior.
   field except itself and must bind the same candidate/cache/source manifest/snapshot,
   graph pair, and explicit base strategy as the selected base. Its `sources` exactly
   inventories the complete original/base visual union, not only eligible sources.
-  `snapshot_sha256` seals every snapshot field except itself and runtime-only
-  `source_root`. `SourceOverlay.replacement_snapshot_sha256` may resolve to a
+  `snapshot_sha256` seals every snapshot field except itself and the runtime-only
+  absolute `source_root` and `input_source_root`.
+  `SourceOverlay.replacement_snapshot_sha256` may resolve to a
   `DirectSourceSnapshot` only when `mode == "direct-position"`; donor and
   exact-original modes continue to require `RecoverySourceSnapshot`.
   `AdaptiveDirectEvidence.evidence_sha256` seals exact base-focus and source-union
@@ -1452,8 +1453,10 @@ enable schema 3 receive the current defaults and behavior.
   prefilter-only savings,
   canonical source identity/path, fixed strategy/prefilter/
   reason enums, direct candidate/cache identity, one `.smd` output, changed bytes,
-  decreasing triangle counts, and a seal over every canonical field except the
-  runtime absolute root. Reject a snapshot presented as a complete recovery source
+  decreasing triangle counts, and a seal over every canonical field except the two
+  runtime absolute roots, `source_root` and `input_source_root`. Require every parser
+  and restore path to accept and reroot both explicitly. Reject a snapshot presented
+  as a complete recovery source
   tree, a second output, case aliases, reparse/special/escaping paths, stale current
   bytes, and per-ratio aggregate discovery/copy/hash beyond 4,096 files or 2 GiB.
   Require the adaptive metrics proof to inventory the complete original/base visual
@@ -1577,17 +1580,22 @@ enable schema 3 receive the current defaults and behavior.
   corners); the `before` sum equals the exact post-prefilter count. Bind every
   snapshot material and `before` value to the request's sealed
   `DirectInputMaterialProof` rather than
-  accepting caller-authored counts. `DirectSourceSnapshot.input_source_root` is an
-  absolute runtime-only path excluded from the seal; every parser/restore call must
-  explicitly reroot both runtime roots. During runtime revalidation, read the current
+  accepting caller-authored counts. `DirectSourceSnapshot.source_root` and
+  `DirectSourceSnapshot.input_source_root` are absolute runtime-only paths excluded
+  from the seal; every parser/restore call must explicitly require and reroot both.
+  During runtime revalidation, read the current
   request source under that root through no-follow handles, recompute the full
   prefilter and expected-material records, then parse the current output SMD and
   validate retained cycles, material order, ratio caps, and exact `after` counts
   against the recomputed input before schedule/recipe/cache use. Verify original/base
   input bytes are
-  byte-identical and preserve nodes, skeleton frames, materials, bones/weights, UVs,
-  normals, retained-corner attributes, and cyclic winding; only triangle membership/
-  order and position-remapped topology may change. On any source failure, publish no partial recipe
+  byte-identical. The output may only select exact source triangles, reorder the
+  selected triangles, and cyclically rotate each selected source triangle. Index and
+  vertex buffers may be compacted or remapped without changing any selected
+  triangle's connectivity, positions, or corner attributes. Nodes, skeleton frames,
+  materials, bones/weights, UVs, normals, and cyclic winding provenance remain exact;
+  new connectivity and position/corner changes are forbidden. On any source failure,
+  publish no partial recipe
   for that ratio, record its reserved terminal failure, atomically detach owned
   staging to an unpredictable same-parent quarantine name, clean only that detached
   tree without following symlinks/junctions/reparse points,
@@ -1644,8 +1652,9 @@ enable schema 3 receive the current defaults and behavior.
   checkpoint, reopen and reauthorize only the just-published or concurrently adopted
   `final/payload`; there is no cross-run resume hit. Task 7 later adds the exact
   whitelist, record/report schema, pre-build lookup, private restore, explicit
-  rerooting of each direct snapshot's runtime-only `input_source_root` to the private
-  restored base copy, and fresh rerun
+  rerooting of each direct snapshot's runtime-only `source_root` to the private
+  restored direct-output copy and `input_source_root` to the private restored base
+  copy, and fresh rerun
   of structural, every base focus, every changed-source union focus, and final whole
   exactly once. Stored diagnostics never authorize in either task.
 
