@@ -104,6 +104,15 @@ _PRESERVE_EXACT_BLENDER_STRATEGIES = frozenset({
     "blender-adaptive-v1",
     "blender-importance-map-v1",
 })
+_DIRECT_SERIALIZER_STRATEGIES = frozenset({
+    "meshopt-direct-v1",
+    "meshopt-direct-position-v1",
+    "meshopt-remapped-topology-v1",
+})
+_POSITION_TOPOLOGY_STRATEGIES = frozenset({
+    "meshopt-direct-position-v1",
+    "meshopt-remapped-topology-v1",
+})
 _ADAPTIVE_EXACT_PRESERVATION_MATRIX = frozenset({
     ("eligible-exact-v1", True, "ratio-preserved-exact-v1"),
     ("eligible-exact-v1", True, "approved-exact-source-fallback-v1"),
@@ -212,13 +221,14 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
     direct_prefilter = payload.get("direct_degenerate_prefilter")
     if direct_prefilter is not None and (
         direct_prefilter != "direct-degenerate-prefilter-v1"
-        or strategy not in {"meshopt-direct-v1", "meshopt-direct-position-v1"}
+        or strategy not in _DIRECT_SERIALIZER_STRATEGIES
     ):
         raise ValueError("direct prefilter requires a typed direct R&D strategy")
     contract = (payload["engine"], strategy, update_vertices, transfer)
     if contract not in {
         ("meshoptimizer", "meshopt-direct-v1", False, "direct-v1"),
         ("meshoptimizer", "meshopt-direct-position-v1", False, "direct-v1"),
+        ("meshoptimizer", "meshopt-remapped-topology-v1", False, "remapped-topology-v1"),
         ("meshoptimizer", "meshopt-project-v1", True, "projection-v1"),
         ("blender", "blender-adaptive-v1", True, "blender-native-v1"),
         ("blender", "blender-importance-map-v1", True, "blender-native-v1"),
@@ -228,7 +238,7 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
         raise ValueError("unknown or inconsistent optimizer strategy")
     if strategy in _BLENDER_STRATEGIES and target_error != 0.0:
         raise ValueError("Blender research target_error must be zero")
-    if from_search and strategy.startswith("meshopt-direct-") and payload["repair_profile"] != strategy:
+    if from_search and strategy in _DIRECT_SERIALIZER_STRATEGIES and payload["repair_profile"] != strategy:
         raise ValueError("repair_profile must identify the direct strategy")
     overrides = payload["region_overrides"]
     if type(overrides) is not list:
@@ -285,7 +295,7 @@ def make_simplify_options(
         target_error=candidate.target_error,
         update_vertices=candidate.update_vertices,
         meshopt_options=policy.meshopt_options,
-        position_remap=candidate.strategy == "meshopt-direct-position-v1",
+        position_remap=candidate.strategy in _POSITION_TOPOLOGY_STRATEGIES,
     )
 
 
@@ -295,7 +305,7 @@ def should_preserve_exact(
     return (
         candidate.strategy in (
             _PRESERVE_EXACT_BLENDER_STRATEGIES
-            | {"meshopt-direct-v1", "meshopt-direct-position-v1"}
+            | _DIRECT_SERIALIZER_STRATEGIES
         )
         and preserve_whole_source(region_ratios)
     )
@@ -1510,7 +1520,7 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
     skinned = len(obj.vertex_groups) > 0
     wedges = build_wedge_mesh(
         positions, triangles, loop_normals, loop_uvs, material_ids, vertex_influences,
-        exact_float32=candidate.strategy == "meshopt-direct-position-v1",
+        exact_float32=candidate.strategy in _POSITION_TOPOLOGY_STRATEGIES,
         source_corner_indices=_DIRECT_SOURCE_CORNER_MAP.get(id(obj)),
     )
     wedge_triangles = tuple(
@@ -1523,7 +1533,7 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         skin_weights=wedges.weights if skinned else None,
     )
     position_topology = None
-    if candidate.strategy == "meshopt-direct-position-v1":
+    if candidate.strategy in _POSITION_TOPOLOGY_STRATEGIES:
         position_topology = classify_position_topology(
             wedges.positions, wedges.normals, wedges.uvs, wedges.indices, material_ids,
             wedges.weights, wedges.bone_indices,
@@ -1560,7 +1570,7 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
     if len(result.indices) >= len(source.indices) and ratio < 0.999999:
         raise RuntimeError("meshoptimizer did not reduce this mesh")
 
-    if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"}:
+    if candidate.strategy in _DIRECT_SERIALIZER_STRATEGIES:
         direct = compact_direct_result(source, result)
         compact_positions = list(direct.positions)
         compact_normals = list(direct.normals)
@@ -1716,7 +1726,7 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
 
 
 def require_direct_single_object(candidate: CandidateConfig, mesh_objects: Sequence[object]) -> None:
-    if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"} and not mesh_objects:
+    if candidate.strategy in _DIRECT_SERIALIZER_STRATEGIES and not mesh_objects:
         raise RuntimeError(f"{candidate.strategy} requires at least one mapped source object")
 
 
@@ -1728,9 +1738,7 @@ def direct_degenerate_prefilter(
     if (
         candidate.direct_degenerate_prefilter
         != "direct-degenerate-prefilter-v1"
-        or candidate.strategy not in {
-            "meshopt-direct-v1", "meshopt-direct-position-v1",
-        }
+        or candidate.strategy not in _DIRECT_SERIALIZER_STRATEGIES
     ):
         raise ValueError("direct prefilter requires a typed direct R&D strategy")
     return prefilter_direct_degenerate_smd(original_text)
@@ -1949,7 +1957,7 @@ def _process_source_file(
     ratio_preserved_exact = preserve_exact
     approved_exact_fallback = False
     fallback_reason: str | None = None
-    if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"}:
+    if candidate.strategy in _DIRECT_SERIALIZER_STRATEGIES:
         dropped_source_triangles = frozenset(
             direct_prefilter.dropped_source_triangles
             if direct_prefilter is not None else ()
