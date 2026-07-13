@@ -12,6 +12,7 @@ from unittest import mock
 
 from maximum_optimizer.reporting import canonical_json
 from maximum_optimizer.processes import ProcessCancelledError
+from maximum_optimizer.visual_validation import MATERIAL_EVIDENCE_FIELDS
 from maximum_optimizer.source_materials import (
     build_source_union_material_contract,
     materialize_private_source_union_material_roots,
@@ -21,6 +22,22 @@ from maximum_optimizer.source_materials import (
     source_union_material_render_evidence,
 )
 from tests.maximum_optimizer.test_task6_direct_compositor import _smd
+
+
+def _multi_material_smd(materials: tuple[str, ...]) -> bytes:
+    rows = []
+    for triangle, material in enumerate(materials):
+        x = triangle * 2
+        rows.append(
+            f"{material}\n"
+            f"0 {x} 0 0 0 0 1 0 0\n"
+            f"0 {x + 1} 0 0 0 0 1 1 0\n"
+            f"0 {x} 1 0 0 0 1 0 1\n"
+        )
+    return (
+        'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+        '0 0 0 0 0 0 0\nend\ntriangles\n' + "".join(rows) + "end\n"
+    ).encode("utf-8")
 
 
 class SourceUnionMaterialContractTests(unittest.TestCase):
@@ -140,6 +157,174 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
             evidence[0]["duplicate_root_directives"],
             [{"directive": "$translucent", "ignored_values": ["0"]}],
         )
+
+    def test_exact_backslash_smd_spelling_round_trips_and_materializes(self) -> None:
+        filtered = _smd(1, "vehicles\\paint")
+        requests = ({
+            "material_region_key": "paint-region",
+            "smd_material": "vehicles\\paint",
+            "search_paths": (),
+        },)
+        contract = build_source_union_material_contract(
+            source_identity="meshes/body.smd", filtered_source_bytes=filtered,
+            requests=requests, roots=self.roots, cancel_event=threading.Event(),
+        )
+        self.assertEqual(contract.bindings[0].smd_material, "vehicles\\paint")
+        self.assertEqual(
+            source_union_material_contract_from_payload(
+                source_union_material_contract_payload(contract)
+            ), contract,
+        )
+        require_current_source_union_material_contract(
+            contract, filtered_source_bytes=filtered,
+            roots=self.roots, cancel_event=threading.Event(),
+        )
+        private = materialize_private_source_union_material_roots(
+            contract, self.roots, self.root / "backslash-private",
+            threading.Event(), filtered_source_bytes=filtered,
+        )
+        require_current_source_union_material_contract(
+            contract, filtered_source_bytes=filtered,
+            roots=private, cancel_event=threading.Event(),
+        )
+        evidence = source_union_material_render_evidence(contract)
+        self.assertEqual(set(evidence[0]), MATERIAL_EVIDENCE_FIELDS)
+        self.assertEqual(evidence[0]["material_identity"], "paint-region")
+        self.assertEqual(
+            evidence[0]["vmt_sha256"],
+            next(item.sha256 for item in contract.files if item.kind == "vmt"),
+        )
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction regression")
+    def test_nested_junction_is_never_followed_even_when_target_stays_in_root(self) -> None:
+        junction_root = self.root / "junction-root"
+        actual = junction_root / "actual"
+        actual.mkdir(parents=True)
+        (actual / "paint.vmt").write_text(
+            'VertexLitGeneric { "$basetexture" "textures/paint" }',
+            encoding="utf-8",
+        )
+        junction = junction_root / "vehicles"
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(junction), str(actual)],
+            capture_output=True, text=True,
+        )
+        if created.returncode != 0:
+            self.skipTest(f"cannot create junction: {created.stderr}")
+        try:
+            with self.assertRaises(ValueError):
+                build_source_union_material_contract(
+                    source_identity="meshes/body.smd",
+                    filtered_source_bytes=self.filtered,
+                    requests=self.requests,
+                    roots=(junction_root, self.second),
+                    cancel_event=threading.Event(),
+                )
+        finally:
+            if os.path.lexists(junction):
+                os.rmdir(junction)
+
+    def test_actual_aggregate_budget_stops_growth_before_second_file_is_read(self) -> None:
+        from maximum_optimizer import source_materials as module
+        materials = ("first", "second")
+        for material in materials:
+            (self.first / f"vehicles/{material}.vmt").write_text(
+                f'VertexLitGeneric {{ "$basetexture" "textures/{material}" }}',
+                encoding="utf-8",
+            )
+            (self.second / f"textures/{material}.vtf").write_bytes(b"x")
+        filtered = _multi_material_smd(materials)
+        requests = tuple({
+            "material_region_key": f"{material}-region",
+            "smd_material": material,
+            "search_paths": ("vehicles",),
+        } for material in materials)
+        completed: list[str] = []
+        real_read = module._read_regular_no_follow
+
+        def grow_vtf_before_open(path, *args, **kwargs):
+            path = Path(path)
+            if path.suffix.casefold() == ".vtf":
+                path.write_bytes(path.stem.encode("ascii")[:1] * 600)
+            result = real_read(path, *args, **kwargs)
+            completed.append(path.relative_to(self.root).as_posix())
+            return result
+
+        with mock.patch.object(module, "_MAX_BYTES", 1000), mock.patch.object(
+            module, "_read_regular_no_follow", side_effect=grow_vtf_before_open,
+        ), self.assertRaises(ValueError):
+            build_source_union_material_contract(
+                source_identity="meshes/body.smd",
+                filtered_source_bytes=filtered, requests=requests,
+                roots=self.roots, cancel_event=threading.Event(),
+            )
+        self.assertIn("second/textures/first.vtf", completed)
+        self.assertNotIn("second/textures/second.vtf", completed)
+
+    def test_resealed_binding_cannot_swap_targeted_file_indices(self) -> None:
+        materials = ("first", "second")
+        for material in materials:
+            (self.first / f"vehicles/{material}.vmt").write_text(
+                f'VertexLitGeneric {{ "$basetexture" "textures/{material}" }}',
+                encoding="utf-8",
+            )
+            (self.second / f"textures/{material}.vtf").write_bytes(material.encode())
+        contract = build_source_union_material_contract(
+            source_identity="meshes/body.smd",
+            filtered_source_bytes=_multi_material_smd(materials),
+            requests=tuple({
+                "material_region_key": f"{material}-region",
+                "smd_material": material,
+                "search_paths": ("vehicles",),
+            } for material in materials),
+            roots=self.roots, cancel_event=threading.Event(),
+        )
+        payload = source_union_material_contract_payload(contract)
+        first, second = payload["bindings"]
+        first["vmt_file_index"], second["vmt_file_index"] = (
+            second["vmt_file_index"], first["vmt_file_index"],
+        )
+        first["vtf_file_index"], second["vtf_file_index"] = (
+            second["vtf_file_index"], first["vtf_file_index"],
+        )
+        unsigned = dict(payload); unsigned.pop("material_contract_sha256")
+        payload["material_contract_sha256"] = hashlib.sha256(
+            canonical_json(unsigned).encode()
+        ).hexdigest()
+        with self.assertRaisesRegex(ValueError, "relation"):
+            source_union_material_contract_from_payload(payload)
+
+    def test_material_region_bound_allows_65_and_rejects_257(self) -> None:
+        materials = tuple(f"material-{index:03d}" for index in range(65))
+        for material in materials:
+            (self.first / f"vehicles/{material}.vmt").write_text(
+                'VertexLitGeneric { "$basetexture" "textures/shared" }',
+                encoding="utf-8",
+            )
+        (self.second / "textures/shared.vtf").write_bytes(b"shared")
+        requests = tuple({
+            "material_region_key": f"region-{index:03d}",
+            "smd_material": material,
+            "search_paths": ("vehicles",),
+        } for index, material in enumerate(materials))
+        contract = build_source_union_material_contract(
+            source_identity="meshes/body.smd",
+            filtered_source_bytes=_multi_material_smd(materials),
+            requests=requests, roots=self.roots, cancel_event=threading.Event(),
+        )
+        self.assertEqual(len(contract.bindings), 65)
+        too_many = tuple(f"too-many-{index:03d}" for index in range(257))
+        with self.assertRaisesRegex(ValueError, "cardinality"):
+            build_source_union_material_contract(
+                source_identity="meshes/body.smd",
+                filtered_source_bytes=_multi_material_smd(too_many),
+                requests=tuple({
+                    "material_region_key": f"region-{index:03d}",
+                    "smd_material": material,
+                    "search_paths": ("vehicles",),
+                } for index, material in enumerate(too_many)),
+                roots=self.roots, cancel_event=threading.Event(),
+            )
 
     def test_payload_rejects_boolean_schema_and_nested_hidden_fields_even_resealed(self) -> None:
         contract = self.build(); payload = source_union_material_contract_payload(contract)
@@ -282,6 +467,9 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
             )),
             ("unsafe-region", lambda item: item.update(material_region_key="../escape")),
             ("unsafe-smd", lambda item: item.update(smd_material="C:/escape")),
+            ("empty-smd-segment", lambda item: item.update(smd_material="vehicles//paint")),
+            ("dot-smd-segment", lambda item: item.update(smd_material="vehicles/./paint")),
+            ("parent-smd-segment", lambda item: item.update(smd_material="vehicles/../paint")),
             ("newline-region", lambda item: item.update(material_region_key="paint\nregion")),
         ):
             with self.subTest(label=label):

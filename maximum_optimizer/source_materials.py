@@ -15,6 +15,7 @@ from .focused_cache import (
     _assert_safe_tree,
     _copy_file_no_follow,
     _has_reparse_ancestor,
+    _is_reparse,
     _read_regular_no_follow,
 )
 from .processes import ProcessCancelledError
@@ -26,8 +27,9 @@ from .source_union import (
 
 
 _HASH = re.compile(r"[0-9a-f]{64}")
-_MAX_MATERIALS = 64
-_MAX_FILES = 128
+_MAX_ROOTS = 64
+_MAX_BINDINGS = 256
+_MAX_FILES = 512
 _MAX_BYTES = 512 * 1024 * 1024
 _MAX_VMT_BYTES = 8 * 1024 * 1024
 
@@ -48,6 +50,55 @@ def _relative(value: str, label: str) -> str:
     if canonical != value or canonical in ("", "."):
         raise ValueError(f"{label} is not canonical")
     return canonical
+
+
+def _smd_material_spelling(value: str) -> str:
+    if type(value) is not str or not value or any(char in value for char in "\r\n\0"):
+        raise ValueError("source-union SMD material is invalid")
+    normalized = value.replace("\\", "/")
+    raw_parts = normalized.split("/")
+    posix = PurePosixPath(normalized)
+    windows = PureWindowsPath(value)
+    if (
+        posix.is_absolute() or windows.is_absolute() or windows.drive
+        or any(part in ("", ".", "..") for part in raw_parts)
+    ):
+        raise ValueError("source-union SMD material is unsafe")
+    return value
+
+
+def _lookup_path(value: str, suffix: str, label: str) -> str:
+    if type(value) is not str or not value or any(char in value for char in "\r\n\0"):
+        raise ValueError(f"{label} is invalid")
+    normalized = value.replace("\\", "/")
+    parts = normalized.split("/")
+    windows = PureWindowsPath(value)
+    if (
+        PurePosixPath(normalized).is_absolute()
+        or windows.is_absolute() or windows.drive
+        or any(part in ("", ".", "..") for part in parts)
+    ):
+        raise ValueError(f"{label} is unsafe")
+    result = PurePosixPath(*parts).as_posix()
+    if suffix and not result.casefold().endswith(suffix.casefold()):
+        result += suffix
+    return result
+
+
+def _expected_vmt_path(binding: "SourceUnionMaterialBindingProof") -> str:
+    identity = _lookup_path(
+        binding.smd_material[:-4]
+        if binding.smd_material.casefold().endswith(".vmt")
+        else binding.smd_material,
+        "", "source-union SMD material identity",
+    )
+    if binding.search_paths and len(PurePosixPath(identity).parts) == 1:
+        if binding.search_path_index >= len(binding.search_paths):
+            raise ValueError("source-union material search path relation is invalid")
+        identity = (PurePosixPath(binding.search_paths[binding.search_path_index]) / identity).as_posix()
+    elif binding.search_path_index != 0:
+        raise ValueError("source-union material search path relation is invalid")
+    return _lookup_path(identity, ".vmt", "source-union material VMT candidate")
 
 
 @dataclass(frozen=True)
@@ -92,8 +143,11 @@ class SourceUnionMaterialBindingProof:
     root_index: int
     search_path_index: int
     vmt_file_index: int
+    vmt_path: str
+    texture_identity: str
     vtf_root_index: int
     vtf_file_index: int
+    vtf_path: str
     shader: str
     texture_directive: str
     uses_texture_alpha: bool
@@ -124,7 +178,10 @@ class SourceUnionMaterialBindingProof:
         ):
             raise ValueError("source-union material binding is invalid")
         _relative(self.material_region_key, "source-union material region key")
-        _relative(self.smd_material, "source-union SMD material")
+        _smd_material_spelling(self.smd_material)
+        _relative(self.vmt_path, "source-union material VMT path")
+        _relative(self.texture_identity, "source-union material texture identity")
+        _relative(self.vtf_path, "source-union material VTF path")
         if (
             self.shader not in render_previews._SUPPORTED_VMT_SHADERS
             or self.texture_directive != (
@@ -166,8 +223,11 @@ def _unsigned_payload(value: "SourceUnionMaterialContract") -> dict[str, object]
             "root_index": item.root_index,
             "search_path_index": item.search_path_index,
             "vmt_file_index": item.vmt_file_index,
+            "vmt_path": item.vmt_path,
+            "texture_identity": item.texture_identity,
             "vtf_root_index": item.vtf_root_index,
             "vtf_file_index": item.vtf_file_index,
+            "vtf_path": item.vtf_path,
             "shader": item.shader,
             "texture_directive": item.texture_directive,
             "uses_texture_alpha": item.uses_texture_alpha,
@@ -203,7 +263,7 @@ class SourceUnionMaterialContract:
             or _relative(self.source_identity, "source-union material source") != self.source_identity
             or _HASH.fullmatch(self.filtered_source_sha256 or "") is None
             or _HASH.fullmatch(self.material_contract_sha256 or "") is None
-            or not roots or len(roots) > _MAX_MATERIALS
+            or not roots or len(roots) > _MAX_ROOTS
             or tuple(item.root_index for item in roots) != tuple(range(len(roots)))
             or any(not isinstance(item, SourceUnionMaterialRoot) for item in roots)
             or not files or len(files) > _MAX_FILES
@@ -212,7 +272,7 @@ class SourceUnionMaterialContract:
             or len({(a, b) for a, b, _ in file_keys}) != len(file_keys)
             or any(item.root_index >= len(roots) for item in files)
             or sum(item.size for item in files) > _MAX_BYTES
-            or not bindings or len(bindings) > _MAX_MATERIALS
+            or not bindings or len(bindings) > _MAX_BINDINGS
             or any(not isinstance(item, SourceUnionMaterialBindingProof) for item in bindings)
             or len({item.material_region_key.casefold() for item in bindings}) != len(bindings)
             or len({item.smd_material.casefold() for item in bindings}) != len(bindings)
@@ -227,8 +287,15 @@ class SourceUnionMaterialContract:
                 or binding.vtf_file_index >= len(files)
                 or files[binding.vmt_file_index].root_index != binding.root_index
                 or files[binding.vmt_file_index].kind != "vmt"
+                or files[binding.vmt_file_index].path != binding.vmt_path
+                or binding.vmt_path.casefold() != _expected_vmt_path(binding).casefold()
                 or files[binding.vtf_file_index].root_index != binding.vtf_root_index
                 or files[binding.vtf_file_index].kind != "vtf"
+                or files[binding.vtf_file_index].path != binding.vtf_path
+                or binding.vtf_path.casefold() != _lookup_path(
+                    binding.texture_identity, ".vtf",
+                    "source-union material VTF candidate",
+                ).casefold()
                 or binding.search_path_index >= max(1, len(binding.search_paths))
             ):
                 raise ValueError("source-union material binding/file relation is invalid")
@@ -269,7 +336,8 @@ def source_union_material_contract_from_payload(value: object) -> SourceUnionMat
     bindings = []
     binding_fields = {
         "material_region_key", "smd_material", "search_paths", "root_index",
-        "search_path_index", "vmt_file_index", "vtf_root_index", "vtf_file_index",
+        "search_path_index", "vmt_file_index", "vmt_path", "texture_identity",
+        "vtf_root_index", "vtf_file_index", "vtf_path",
         "shader", "texture_directive", "uses_texture_alpha",
         "duplicate_root_directives",
     }
@@ -300,6 +368,34 @@ def _read_material(
     return payload, hashlib.sha256(payload).hexdigest()
 
 
+def _contained_material_path_no_follow(
+    root: Path, raw: str, suffix: str,
+) -> Path | None:
+    try:
+        relative = _lookup_path(raw, suffix, "source-union material candidate")
+    except ValueError:
+        return None
+    current = Path(root)
+    for index, part in enumerate(PurePosixPath(relative).parts):
+        try:
+            if _is_reparse(current):
+                return None
+            matches = tuple(
+                child for child in current.iterdir()
+                if child.name.casefold() == part.casefold()
+            )
+            if len(matches) != 1 or _is_reparse(matches[0]):
+                return None
+            candidate = matches[0]
+            info = candidate.lstat()
+            if index < len(PurePosixPath(relative).parts) - 1 and not stat.S_ISDIR(info.st_mode):
+                return None
+            current = candidate
+        except OSError:
+            return None
+    return current
+
+
 def build_source_union_material_contract(
     *, source_identity: str, filtered_source_bytes: bytes, requests,
     roots, cancel_event,
@@ -310,10 +406,13 @@ def build_source_union_material_contract(
     materials = tuple(item[0] for item in direct_smd_material_counts(text))
     request_values = tuple(requests)
     raw_roots = tuple(Path(os.path.abspath(root)) for root in roots)
-    if not raw_roots or any(_has_reparse_ancestor(root) or not root.is_dir() for root in raw_roots):
+    if (
+        not raw_roots or len(raw_roots) > _MAX_ROOTS
+        or any(_has_reparse_ancestor(root) or not root.is_dir() for root in raw_roots)
+    ):
         raise ValueError("source-union material roots are unsafe")
     root_values = tuple(root.resolve(strict=True) for root in raw_roots)
-    if len(request_values) != len(materials) or len(materials) > _MAX_MATERIALS:
+    if len(request_values) != len(materials) or len(materials) > _MAX_BINDINGS:
         raise ValueError("source-union SMD material request cardinality differs")
     parsed_requests = []
     for index, (raw, smd_material) in enumerate(zip(request_values, materials)):
@@ -328,6 +427,8 @@ def build_source_union_material_contract(
     file_values: dict[tuple[int, str], SourceUnionMaterialFile] = {}
     planned_sizes: dict[tuple[int, str], int] = {}
     planned_total = 0
+    selected_reads: dict[tuple[int, str], tuple[bytes, str]] = {}
+    actual_total = 0
 
     def register_selected(root_index: int, path: Path, kind: str) -> tuple[int, str]:
         nonlocal planned_total
@@ -351,6 +452,22 @@ def build_source_union_material_contract(
             raise ValueError("source-union material file size changed")
         return key
 
+    def read_selected(
+        key: tuple[int, str], root_index: int, path: Path, kind: str,
+    ) -> tuple[bytes, str]:
+        nonlocal actual_total
+        existing = selected_reads.get(key)
+        if existing is not None:
+            return existing
+        remaining = _MAX_BYTES - actual_total
+        per_file_limit = min(remaining, _MAX_VMT_BYTES) if kind == "vmt" else remaining
+        payload, digest = _read_material(
+            path, root_values[root_index], cancel_event, max_bytes=per_file_limit,
+        )
+        actual_total += len(payload)
+        selected_reads[key] = (payload, digest)
+        return payload, digest
+
     pending = []
     for region_key, smd_material, searches in parsed_requests:
         _cancel(cancel_event, "cancelled during source-union material resolution")
@@ -365,7 +482,7 @@ def build_source_union_material_contract(
         selected_vmt = None
         for root_index, root in enumerate(root_values):
             for search_index, candidate in enumerate(candidates):
-                path = render_previews._contained_material_path(root, candidate, ".vmt")
+                path = _contained_material_path_no_follow(root, candidate, ".vmt")
                 if path is not None and path.is_file():
                     selected_vmt = (root_index, search_index, path)
                     break
@@ -375,9 +492,7 @@ def build_source_union_material_contract(
             raise ValueError(f"source-union material VMT is missing: {smd_material}")
         vmt_root, search_index, vmt_path = selected_vmt
         vmt_key = register_selected(vmt_root, vmt_path, "vmt")
-        vmt_bytes, vmt_hash = _read_material(
-            vmt_path, root_values[vmt_root], cancel_event, max_bytes=_MAX_VMT_BYTES,
-        )
+        vmt_bytes, vmt_hash = read_selected(vmt_key, vmt_root, vmt_path, "vmt")
         vmt_text = vmt_bytes.decode("utf-8", errors="replace")
         parsed = render_previews._parse_vmt_root(vmt_text)
         texture = render_previews._source_texture_reference(vmt_text)
@@ -386,7 +501,7 @@ def build_source_union_material_contract(
         shader, directive, texture_identity, uses_alpha = texture
         selected_vtf = None
         for root_index, root in enumerate(root_values):
-            path = render_previews._contained_material_path(root, texture_identity, ".vtf")
+            path = _contained_material_path_no_follow(root, texture_identity, ".vtf")
             if path is not None and path.is_file():
                 selected_vtf = (root_index, path)
                 break
@@ -394,9 +509,7 @@ def build_source_union_material_contract(
             raise ValueError(f"source-union material VTF is missing: {smd_material}")
         vtf_root, vtf_path = selected_vtf
         vtf_key = register_selected(vtf_root, vtf_path, "vtf")
-        vtf_bytes, vtf_hash = _read_material(
-            vtf_path, root_values[vtf_root], cancel_event, max_bytes=_MAX_BYTES,
-        )
+        vtf_bytes, vtf_hash = read_selected(vtf_key, vtf_root, vtf_path, "vtf")
         vmt_relative = vmt_path.relative_to(root_values[vmt_root]).as_posix()
         vtf_relative = vtf_path.relative_to(root_values[vtf_root]).as_posix()
         vmt_file = SourceUnionMaterialFile(
@@ -419,7 +532,8 @@ def build_source_union_material_contract(
         )
         pending.append((
             region_key, smd_material, searches, vmt_root, search_index,
-            vmt_key, vtf_root, vtf_key, shader, directive,
+            vmt_key, vmt_relative, texture_identity, vtf_root, vtf_key, vtf_relative,
+            shader, directive,
             uses_alpha, duplicates,
         ))
     files = tuple(sorted(file_values.values(), key=lambda item: (
@@ -428,11 +542,13 @@ def build_source_union_material_contract(
     index_by_key = {(item.root_index, item.path.casefold()): index for index, item in enumerate(files)}
     bindings = tuple(SourceUnionMaterialBindingProof(
         region, material, tuple(searches), vmt_root, search_index,
-        index_by_key[vmt_key], vtf_root, index_by_key[vtf_key], shader,
-        directive, uses_alpha, duplicates,
+        index_by_key[vmt_key], vmt_relative, texture_identity,
+        vtf_root, index_by_key[vtf_key], vtf_relative,
+        shader, directive, uses_alpha, duplicates,
     ) for (
         region, material, searches, vmt_root, search_index, vmt_key,
-        vtf_root, vtf_key, shader, directive, uses_alpha, duplicates,
+        vmt_relative, texture_identity, vtf_root, vtf_key, vtf_relative,
+        shader, directive, uses_alpha, duplicates,
     ) in pending)
     root_proofs = tuple(SourceUnionMaterialRoot(index, f"material-root-{index:03d}") for index in range(len(root_values)))
     values = dict(
