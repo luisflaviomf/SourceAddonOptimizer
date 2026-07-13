@@ -141,7 +141,9 @@ class LvsSourcePrepFixture(unittest.TestCase):
             "verify_prepared_lvs_source_root",
             side_effect=fail_only_published,
         ):
-            with self.assertRaisesRegex(CorpusError, "forced final verification failure"):
+            with self.assertRaisesRegex(
+                CorpusError, "forced final verification failure.*preserved"
+            ) as raised:
                 prepare_lvs_source_root(
                     manifest=manifest,
                     control_root=self.control,
@@ -149,7 +151,13 @@ class LvsSourcePrepFixture(unittest.TestCase):
                 )
 
         self.assertFalse(os.path.lexists(self.output))
-        self.assertEqual((), tuple(self.root.glob(f".{self.output.name}.cleanup-*")))
+        quarantines = tuple(self.root.glob(f".{self.output.name}.cleanup-*"))
+        self.assertEqual(1, len(quarantines))
+        self.assertIn(str(quarantines[0]), str(raised.exception))
+        self.assertEqual(
+            10,
+            verify_prepared_lvs_source_root(manifest, quarantines[0]).file_count,
+        )
         self.assertEqual((), tuple(self.root.glob(f".{self.output.name}.lvs-source-prep-*")))
         retry = prepare_lvs_source_root(
             manifest=manifest,
@@ -174,8 +182,8 @@ class LvsSourcePrepFixture(unittest.TestCase):
 
         with mock.patch.object(
             module,
-            "_remove_private_staging",
-            wraps=module._remove_private_staging,
+            "_quarantine_private_staging",
+            wraps=module._quarantine_private_staging,
         ) as cleanup, mock.patch.object(
             module,
             "verify_prepared_lvs_source_root",
@@ -196,6 +204,79 @@ class LvsSourcePrepFixture(unittest.TestCase):
             Path(call.args[0]).absolute() == self.output.absolute()
             for call in cleanup.call_args_list
         ))
+
+    def test_final_verifier_hostile_root_replacement_is_left_at_output(self):
+        from maximum_optimizer import lvs_source_prep as module
+
+        manifest = load_lvs_source_manifest(self.corpus)
+        original_verify = module.verify_prepared_lvs_source_root
+        displaced_owned = self.root / "displaced-owned-output"
+        sentinel = self.output / "foreign-root.txt"
+
+        def replace_published_root(candidate_manifest, root):
+            root = Path(root).absolute()
+            if root == self.output.absolute():
+                os.rename(self.output, displaced_owned)
+                self.output.mkdir()
+                sentinel.write_bytes(b"foreign-root")
+                raise CorpusError("forced hostile root replacement")
+            return original_verify(candidate_manifest, root)
+
+        with mock.patch.object(
+            module,
+            "verify_prepared_lvs_source_root",
+            side_effect=replace_published_root,
+        ):
+            with self.assertRaisesRegex(CorpusError, "hostile root replacement"):
+                prepare_lvs_source_root(
+                    manifest=manifest,
+                    control_root=self.control,
+                    output_root=self.output,
+                )
+
+        self.assertEqual(b"foreign-root", sentinel.read_bytes())
+        self.assertTrue(displaced_owned.is_dir())
+        self.assertEqual((), tuple(self.root.glob(f".{self.output.name}.cleanup-*")))
+
+    def test_cleanup_has_no_identity_check_then_unlink_window(self):
+        from maximum_optimizer import lvs_source_prep as module
+
+        staging = self.root / "owned-staging"
+        staging.mkdir()
+        owned_file = staging / "owned.bin"
+        owned_file.write_bytes(b"owned")
+        ownership = module._StagingOwnership(
+            module._owned_identity(staging, directory=True),
+            {"owned.bin": module._owned_identity(owned_file, directory=False)},
+        )
+        original_identity = module._owned_identity
+        descendant_checks = 0
+        replacement: Path | None = None
+
+        def swap_after_last_identity_check(path, *, directory=None):
+            nonlocal descendant_checks, replacement
+            identity = original_identity(path, directory=directory)
+            if Path(path).name == "owned.bin":
+                descendant_checks += 1
+                if descendant_checks == 3:
+                    Path(path).unlink()
+                    Path(path).write_bytes(b"foreign")
+                    replacement = Path(path)
+            return identity
+
+        with mock.patch.object(
+            module, "_owned_identity", side_effect=swap_after_last_identity_check
+        ):
+            preserved = module._quarantine_private_staging(staging, ownership)
+
+        self.assertFalse(
+            replacement is not None and not os.path.lexists(replacement),
+            "a foreign replacement was deleted after its identity check",
+        )
+        quarantines = tuple(self.root.glob(".owned-staging.cleanup-*"))
+        self.assertEqual(1, len(quarantines))
+        self.assertEqual(quarantines[0], preserved)
+        self.assertEqual(b"owned", (quarantines[0] / "owned.bin").read_bytes())
 
     def test_ignores_undeclared_regular_input_artifacts_but_publishes_exact_manifest(self):
         first = self.families[0]

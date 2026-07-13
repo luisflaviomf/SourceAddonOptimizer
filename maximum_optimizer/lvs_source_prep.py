@@ -460,51 +460,28 @@ def _validate_owned_staging(staging: Path, ownership: _StagingOwnership) -> bool
         return False
 
 
-def _remove_owned_staging_no_follow(
-    root: Path, ownership: _StagingOwnership
-) -> bool:
-    if not _validate_owned_staging(root, ownership):
-        return False
-    try:
-        for relative, expected in sorted(
-            ownership.descendants.items(),
-            key=lambda item: (len(PurePosixPath(item[0]).parts), item[0].casefold()),
-            reverse=True,
-        ):
-            path = root.joinpath(*PurePosixPath(relative).parts)
-            if _owned_identity(path) != expected:
-                return False
-            if stat.S_ISDIR(expected[3]):
-                os.rmdir(path)
-            else:
-                path.unlink()
-        if _owned_identity(root, directory=True) != ownership.root_identity:
-            return False
-        os.rmdir(root)
-        return True
-    except (CorpusError, OSError, ValueError):
-        return False
-
-
-def _remove_private_staging(
+def _quarantine_private_staging(
     staging: Path, ownership: _StagingOwnership | None
-) -> bool:
+) -> Path | None:
     if not os.path.lexists(staging):
-        return True
+        return None
     if ownership is None or not _validate_owned_staging(staging, ownership):
-        return False
+        return None
     quarantine = staging.with_name(
         f".{staging.name}.cleanup-{secrets.token_hex(8)}"
     )
     if os.path.lexists(quarantine):
-        return False
+        return None
     try:
         os.rename(staging, quarantine)
     except OSError:
-        return False
-    if _owned_identity(quarantine, directory=True) != ownership.root_identity:
-        return False
-    return _remove_owned_staging_no_follow(quarantine, ownership)
+        return None
+    # Never traverse-and-delete a quarantined tree by pathname. Even an exact
+    # identity check cannot bind a later unlink to the checked object. Recheck
+    # the exact ledger after the move, then preserve the tree regardless of the
+    # result for inspection and manual disposal.
+    _validate_owned_staging(quarantine, ownership)
+    return quarantine
 
 
 def prepare_lvs_source_root(
@@ -565,7 +542,13 @@ def prepare_lvs_source_root(
         os.rename(staging, output)
         published = True
         prepared = verify_prepared_lvs_source_root(manifest, output)
-    except BaseException:
-        _remove_private_staging(output if published else staging, ownership)
+    except BaseException as exc:
+        preserved = _quarantine_private_staging(
+            output if published else staging, ownership
+        )
+        if published and preserved is not None and isinstance(exc, CorpusError):
+            raise CorpusError(
+                f"{exc}; failed publication preserved at {preserved}"
+            ) from exc
         raise
     return prepared
