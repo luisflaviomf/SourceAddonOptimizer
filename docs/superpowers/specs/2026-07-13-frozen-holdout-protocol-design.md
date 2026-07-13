@@ -20,6 +20,12 @@ record. Those values are not inputs to this protocol. The binding blind rule is:
 
 Only synthetic fixtures are used by the committed contract tests.
 
+Calibration-only review invalidated the former fixed `top_k=3`: it covered only
+9.09%--20% of changed car sources, while whole-family gates had already hidden severe
+regional silhouette, RGB, and edge regressions. No holdout observation informed this
+correction. The all-region rule below replaces that unsafe sampling boundary before
+any holdout input commitment exists.
+
 ## Freeze prerequisite
 
 `HoldoutFreezeBindings` requires an exact, self-sealed
@@ -93,24 +99,36 @@ Choice order reserves deterministic work only: every choice is expanded and reac
 terminal record at its beam stage, so an aggressive choice can never stop evaluation
 before a later conservative fallback is tested.
 
-## Deterministic focus selection
+## Deterministic all-region focus selection
 
-Focus selection is performed once per family from the exact control/roundtrip whole
-evidence, before optimized candidates can influence the ranking. It uses the existing
-`surface-risk-top-k-v1` selector and the already frozen focused profile:
+The selector is `exact-source-union-all-regions-v1`. Before any optimized candidate
+exists, the exact source union defines the complete canonical region universe. The
+universe seals every region key, exact source hash, source identity, complete
+occurrence/configuration commitment, renderability classification, occurrence count,
+and a static risk rank. It is bounded to 64 regions and 256 occurrences. Exceeding a
+bound fails the family closed; it never truncates the universe.
 
-1. normalize `surface_bidirectional_p95` and `surface_max` by their profile limits;
-2. take the maximum normalized value as risk;
-3. choose the worst state/pose anchor per canonical region;
-4. order by risk, normalized p95, normalized max, then region key;
-5. select exactly the first three regions, or every region when fewer than three
-   exist.
+Every exact-union region is selected. Static risk changes execution order only and can
+enable early rejection; it cannot remove a region, change a gate, or authorize a
+sample. The authoritative order is the complete permutation of risk ranks with region
+key as the deterministic tie identity. Candidate image or geometry metrics never
+influence the universe or order.
 
-The selector-input hash, complete eligible ranking, selected prefix, states, poses,
-bodygroups, LODs, source pairs, and manifests are sealed. All candidates use the same
-selected prefix. Candidate-dependent focus selection is forbidden.
+For each candidate, source lineage compares the candidate source SHA-256 to the exact
+source SHA-256 after the sealed prefilter:
 
-Each focused comparison renders the region alone with exactly eight cameras, exactly
+- an identical hash receives an `exact-source-equality-v1` proof and needs no render;
+- every changed hash receives exactly one terminal isolated focused proof;
+- an unknown source or a changed region classified unknown/unrenderable receives a
+  terminal rejection;
+- authorization requires complete terminal coverage of 100% of changed regions and
+  exact equality proofs for every unchanged region.
+
+Thus the selected set is absolutely candidate-independent while work is proportional
+to changed regions through equality-proof reuse. There is no `top_k`, risk threshold,
+or unchecked tail.
+
+Each changed focused comparison renders the region alone with exactly eight cameras, exactly
 the `textured` and `clay` passes, bind pose plus at most one sealed animation pose, and
 the same material roots/configuration on reference and candidate. Missing images,
 states, poses, manifests, or material proofs reject the candidate.
@@ -120,21 +138,33 @@ states, poses, manifests, or material proofs reject the candidate.
 For each of the at most two base finalists:
 
 1. Start a beam containing the exact finalist composition.
-2. Process focused regions in rank order `0..2`.
+2. Process every region in the sealed static-risk order. A base that changes no source
+   uses only equality proofs.
 3. Expand every retained composition with all nine ordered choices for the current
    region. Previously selected regions remain fixed and later regions remain exact.
-4. Snapshot/validate every changed source, compile the complete family, and run the
-   gates required at that stage. Every reserved expansion receives an authorized or
-   rejected terminal record.
-5. Retain at most four passing compositions by `(actual compiled total bytes,
+4. Snapshot/validate every changed source and reuse its isolated region-option proof
+   by the exact cache identity `(protocol, universe, region, occurrence, renderability,
+   exact source, candidate source, option)`. Conflicting results under one identity
+   fail closed.
+5. Intermediate region compositions run lineage, structural, compile,
+   `focused_all_changed`, and source-union gates. They are `eligible` or `rejected`,
+   never authorized, and never run a whole visual gate.
+6. Retain at most four passing compositions by `(actual compiled total bytes,
    candidate_id)`. Cache state cannot affect this ordering.
-6. After the last region, run the complete focused prefix and one final whole gate on
-   every retained composition.
+7. After the last region, run one fresh final whole gate on every retained composition.
 
 The beam width is exactly four. It is a fixed bound, not a score threshold. A smaller
 beam caused by failures remains smaller; rejected candidates are never backfilled by
 relaxing a gate. Exact source choice at every region ensures a base can survive a
-region that has no acceptable remap.
+region that has no acceptable remap. Recipes may contain up to the complete 64-region
+universe; the old three-region recipe limit is removed.
+
+Focused evidence is linear in unique region-option identities. A previous prefix is
+never rerendered when adding the next region. The protocol caps the cache namespace at
+1,152 identities (64 regions times nine exact/remap choices times two base finalists;
+576 per finalist). Naive prefix evidence with
+quadratic render semantics is outside the protocol. Whole visual gates run only for
+base-terminal attempts and final-retained compositions.
 
 ## Required gates
 
@@ -147,15 +177,18 @@ An authorized attempt has exactly these ordered seals:
 3. `compile`: StudioMDL succeeds without unapproved autofix and produces one bounded,
    canonical artifact inventory;
 4. `whole_visual`: all frozen whole states/configurations pass the whole profile;
-5. `focused_top_k`: every selected focus passes the focused profile;
+5. `focused_all_changed`: every changed exact-union region has one passing terminal
+   isolated proof and every unchanged region has an exact equality proof;
 6. `source_union`: every changed source has complete occurrence/component/material/
    state/pose visibility and isolated comparison evidence;
 7. `final_whole_visual`: the exact compiled composition receives one fresh final whole
    pass after all changes.
 
-A rejected attempt contains the canonical passing prefix and names the first failed
-gate. Unknown, missing, reordered, duplicated, or post-hoc gates fail the evidence
-closed.
+A base-terminal attempt uses gates 1 through 6. An intermediate region composition
+omits both whole gates and cannot authorize. A final-retained attempt uses all seven
+gates. A rejected attempt contains the canonical passing prefix and names the first
+failed gate. Unknown, unrenderable, missing, reordered, duplicated, or post-hoc gates
+fail the evidence closed.
 
 ## Actual compiled-byte selection and fallback
 
@@ -186,7 +219,9 @@ The complete run is executed fresh and replayed under the identical protocol/inp
 toolchain commitments. The replay must reproduce:
 
 - base terminal matrix;
-- focus selector hash and selected prefix;
+- exact source-union universe hash, complete risk order, equality proofs, and terminal
+  changed-region coverage;
+- unique local region-option cache identities and linear evaluation trace;
 - tournament reservation/terminal trace;
 - candidate recipe IDs;
 - compiled artifact manifests;
@@ -201,7 +236,7 @@ must reproduce the fresh authorization result and cannot substitute for fresh/re
 The executor first publishes the protocol seal and freeze bindings, then computes the
 holdout input commitment. Once that commitment exists:
 
-- no ratio, error, strategy, beam width, top-k, state, pose, pass, camera, profile,
+- no ratio, error, strategy, beam width, universe, region, state, pose, pass, camera, profile,
   threshold, gate, retry, fallback, or tie rule may change;
 - failures, timeouts, unsupported sources, and no-saving outcomes remain in evidence;
 - rerunning with modified code or tools requires a different protocol seal and cannot
@@ -214,9 +249,10 @@ holdout input commitment. Once that commitment exists:
 
 `maximum_optimizer.holdout_protocol` provides only immutable contracts and pure
 selection helpers. Each attempt seals protocol/input/family commitments, exact recipe,
-compiled inventory, ordered gate seals, failure gate, replay manifest, and evidence
-hash. The family run additionally seals the complete sorted attempts, tournament trace,
-fresh/replay seal, selected candidate, no-retune declaration, and scope.
+compiled inventory, attempt stage, complete focused coverage/equality proofs, ordered
+gate seals, failure gate, replay manifest, and evidence hash. The family run
+additionally seals the complete sorted attempts, tournament trace, fresh/replay seal,
+selected candidate, no-retune declaration, and scope.
 
 The fixed scope is `holdout-evaluation-only`; `authorizing_production` is always false.
 No executor, filesystem discovery, renderer, compiler invocation, scheduler adapter,

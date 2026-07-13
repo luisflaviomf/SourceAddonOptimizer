@@ -12,6 +12,9 @@ _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REGION = re.compile(r"^r-[0-9a-f]{64}$")
 _MAX_COMPILED_FILES = 64
 _MAX_COMPILED_BYTES = 2 * 1024**3
+MAX_FOCUS_REGIONS = 64
+MAX_FOCUS_OCCURRENCES = 256
+MAX_REGION_OPTION_PROOFS = MAX_FOCUS_REGIONS * 9 * 2
 
 REGION_LADDER = (
     (0.15, 0.020),
@@ -28,10 +31,35 @@ REQUIRED_GATES = (
     "structural",
     "compile",
     "whole_visual",
-    "focused_top_k",
+    "focused_all_changed",
     "source_union",
     "final_whole_visual",
 )
+BASE_REQUIRED_GATES = (
+    "source_lineage",
+    "structural",
+    "compile",
+    "whole_visual",
+    "focused_all_changed",
+    "source_union",
+)
+INTERMEDIATE_REQUIRED_GATES = (
+    "source_lineage",
+    "structural",
+    "compile",
+    "focused_all_changed",
+    "source_union",
+)
+
+
+def required_gates_for_stage(stage: str) -> tuple[str, ...]:
+    if stage == "base-terminal":
+        return BASE_REQUIRED_GATES
+    if stage == "region-intermediate":
+        return INTERMEDIATE_REQUIRED_GATES
+    if stage == "final-retained":
+        return REQUIRED_GATES
+    raise ValueError("holdout attempt stage is invalid")
 
 
 def _canonical_digest(value: object) -> str:
@@ -227,8 +255,15 @@ class FrozenHoldoutProtocol:
     bindings: HoldoutFreezeBindings
     base_ladder: tuple[BaseOption, ...]
     region_ladder: tuple[tuple[float, float], ...]
-    focused_selector: Literal["surface-risk-top-k-v1"]
-    focused_top_k: Literal[3]
+    focused_selector: Literal["exact-source-union-all-regions-v1"]
+    max_focus_regions: Literal[64]
+    max_focus_occurrences: Literal[256]
+    max_region_option_proofs: Literal[1152]
+    focused_evaluation_mode: Literal["isolated-once-per-region-option-v1"]
+    focused_prefix_rerender: Literal[False]
+    whole_visual_stages: tuple[
+        Literal["base-terminal"], Literal["final-retained"]
+    ]
     finalist_base_count: Literal[2]
     beam_width: Literal[4]
     camera_count: Literal[8]
@@ -247,8 +282,17 @@ class FrozenHoldoutProtocol:
             or not isinstance(self.bindings, HoldoutFreezeBindings)
             or tuple(self.base_ladder) != BASE_LADDER
             or tuple(self.region_ladder) != REGION_LADDER
-            or self.focused_selector != "surface-risk-top-k-v1"
-            or type(self.focused_top_k) is not int or self.focused_top_k != 3
+            or self.focused_selector != "exact-source-union-all-regions-v1"
+            or type(self.max_focus_regions) is not int
+            or self.max_focus_regions != MAX_FOCUS_REGIONS
+            or type(self.max_focus_occurrences) is not int
+            or self.max_focus_occurrences != MAX_FOCUS_OCCURRENCES
+            or type(self.max_region_option_proofs) is not int
+            or self.max_region_option_proofs != MAX_REGION_OPTION_PROOFS
+            or self.focused_evaluation_mode != "isolated-once-per-region-option-v1"
+            or self.focused_prefix_rerender is not False
+            or tuple(self.whole_visual_stages)
+            != ("base-terminal", "final-retained")
             or type(self.finalist_base_count) is not int or self.finalist_base_count != 2
             or type(self.beam_width) is not int or self.beam_width != 4
             or type(self.camera_count) is not int or self.camera_count != 8
@@ -263,6 +307,7 @@ class FrozenHoldoutProtocol:
             raise ValueError("holdout protocol differs from the frozen algorithm")
         object.__setattr__(self, "base_ladder", tuple(self.base_ladder))
         object.__setattr__(self, "region_ladder", tuple(tuple(item) for item in self.region_ladder))
+        object.__setattr__(self, "whole_visual_stages", tuple(self.whole_visual_stages))
         object.__setattr__(self, "passes", tuple(self.passes))
         object.__setattr__(self, "required_gates", tuple(self.required_gates))
 
@@ -280,7 +325,12 @@ def holdout_protocol_payload(
         "base_ladder": [_base_payload(item) for item in value.base_ladder],
         "region_ladder": [list(item) for item in value.region_ladder],
         "focused_selector": value.focused_selector,
-        "focused_top_k": value.focused_top_k,
+        "max_focus_regions": value.max_focus_regions,
+        "max_focus_occurrences": value.max_focus_occurrences,
+        "max_region_option_proofs": value.max_region_option_proofs,
+        "focused_evaluation_mode": value.focused_evaluation_mode,
+        "focused_prefix_rerender": value.focused_prefix_rerender,
+        "whole_visual_stages": list(value.whole_visual_stages),
         "finalist_base_count": value.finalist_base_count,
         "beam_width": value.beam_width,
         "camera_count": value.camera_count,
@@ -322,8 +372,13 @@ def frozen_holdout_protocol(
         bindings=bindings,
         base_ladder=BASE_LADDER,
         region_ladder=REGION_LADDER,
-        focused_selector="surface-risk-top-k-v1",
-        focused_top_k=3,
+        focused_selector="exact-source-union-all-regions-v1",
+        max_focus_regions=MAX_FOCUS_REGIONS,
+        max_focus_occurrences=MAX_FOCUS_OCCURRENCES,
+        max_region_option_proofs=MAX_REGION_OPTION_PROOFS,
+        focused_evaluation_mode="isolated-once-per-region-option-v1",
+        focused_prefix_rerender=False,
+        whole_visual_stages=("base-terminal", "final-retained"),
         finalist_base_count=2,
         beam_width=4,
         camera_count=8,
@@ -365,6 +420,7 @@ def holdout_protocol_from_payload(
     if (
         type(value["region_ladder"]) is not list
         or any(type(item) is not list or len(item) != 2 for item in value["region_ladder"])
+        or type(value["whole_visual_stages"]) is not list
         or type(value["passes"]) is not list
         or type(value["required_gates"]) is not list
     ):
@@ -375,6 +431,7 @@ def holdout_protocol_from_payload(
     copied["bindings"] = HoldoutFreezeBindings(**copied_bindings)
     copied["base_ladder"] = tuple(bases)
     copied["region_ladder"] = tuple(tuple(item) for item in value["region_ladder"])
+    copied["whole_visual_stages"] = tuple(value["whole_visual_stages"])
     copied["passes"] = tuple(value["passes"])
     copied["required_gates"] = tuple(value["required_gates"])
     protocol = FrozenHoldoutProtocol(**copied)
@@ -382,6 +439,465 @@ def holdout_protocol_from_payload(
         protocol.bindings, expected_calibration_approval_sha256,
     )
     return protocol
+
+
+@dataclass(frozen=True)
+class ExactFocusRegion:
+    region_key: str
+    source_identity: str
+    exact_source_sha256: str
+    occurrence_commitment_sha256: str
+    static_risk_rank: int
+    occurrence_count: int
+    renderability: Literal["renderable", "unrenderable", "unknown"]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.region_key) is not str or _REGION.fullmatch(self.region_key) is None
+            or type(self.static_risk_rank) is not int or self.static_risk_rank < 0
+            or type(self.occurrence_count) is not int or self.occurrence_count < 1
+            or self.renderability not in {"renderable", "unrenderable", "unknown"}
+        ):
+            raise ValueError("exact focus region is invalid")
+        _relative(self.source_identity, "exact focus source identity")
+        _sha(self.exact_source_sha256, "exact focus source hash")
+        _sha(self.occurrence_commitment_sha256, "exact focus occurrence commitment")
+
+
+def _focus_region_payload(value: ExactFocusRegion) -> dict[str, object]:
+    return {name: getattr(value, name) for name in value.__dataclass_fields__}
+
+
+@dataclass(frozen=True)
+class ExactFocusUniverse:
+    schema: Literal[1]
+    selector: Literal["exact-source-union-all-regions-v1"]
+    family_commitment_sha256: str
+    regions: tuple[ExactFocusRegion, ...]
+    risk_order: tuple[str, ...]
+    universe_sha256: str
+
+    def __post_init__(self) -> None:
+        regions = tuple(self.regions)
+        expected_ranks = tuple(range(len(regions)))
+        expected_risk = tuple(
+            item.region_key for item in sorted(
+                regions, key=lambda item: (item.static_risk_rank, item.region_key),
+            )
+        )
+        if (
+            type(self.schema) is not int or self.schema != 1
+            or self.selector != "exact-source-union-all-regions-v1"
+            or not regions or len(regions) > MAX_FOCUS_REGIONS
+            or any(not isinstance(item, ExactFocusRegion) for item in regions)
+            or regions != tuple(sorted(regions, key=lambda item: item.region_key))
+            or len({item.region_key for item in regions}) != len(regions)
+            or tuple(sorted(item.static_risk_rank for item in regions)) != expected_ranks
+            or sum(item.occurrence_count for item in regions) > MAX_FOCUS_OCCURRENCES
+            or tuple(self.risk_order) != expected_risk
+            or _sha(self.universe_sha256, "exact focus universe seal")
+            != _canonical_digest(_focus_universe_payload(self, include_seal=False))
+        ):
+            raise ValueError("exact focus universe is invalid")
+        _sha(self.family_commitment_sha256, "exact focus family commitment")
+        object.__setattr__(self, "regions", regions)
+        object.__setattr__(self, "risk_order", tuple(self.risk_order))
+
+
+def _focus_universe_payload(
+    value: ExactFocusUniverse, *, include_seal: bool = True,
+) -> dict[str, object]:
+    payload = {
+        "schema": value.schema,
+        "selector": value.selector,
+        "family_commitment_sha256": value.family_commitment_sha256,
+        "regions": [_focus_region_payload(item) for item in value.regions],
+        "risk_order": list(value.risk_order),
+    }
+    if include_seal:
+        payload["universe_sha256"] = value.universe_sha256
+    return payload
+
+
+def focus_universe_payload(
+    value: ExactFocusUniverse, *, include_seal: bool = True,
+) -> dict[str, object]:
+    if not isinstance(value, ExactFocusUniverse):
+        raise TypeError("exact focus universe is invalid")
+    return _focus_universe_payload(value, include_seal=include_seal)
+
+
+def build_focus_universe(
+    *, family_commitment_sha256: str, regions: tuple[ExactFocusRegion, ...],
+) -> ExactFocusUniverse:
+    if type(regions) is not tuple or any(
+        not isinstance(item, ExactFocusRegion) for item in regions
+    ):
+        raise TypeError("exact focus regions must be a tuple of exact regions")
+    ordered = tuple(sorted(regions, key=lambda item: item.region_key))
+    risk_order = tuple(
+        item.region_key for item in sorted(
+            ordered, key=lambda item: (item.static_risk_rank, item.region_key),
+        )
+    )
+    values = dict(
+        schema=1,
+        selector="exact-source-union-all-regions-v1",
+        family_commitment_sha256=_sha(
+            family_commitment_sha256, "exact focus family commitment",
+        ),
+        regions=ordered,
+        risk_order=risk_order,
+        universe_sha256="0" * 64,
+    )
+    provisional = ExactFocusUniverse.__new__(ExactFocusUniverse)
+    for name, item in values.items():
+        object.__setattr__(provisional, name, item)
+    values["universe_sha256"] = _canonical_digest(
+        _focus_universe_payload(provisional, include_seal=False)
+    )
+    return ExactFocusUniverse(**values)
+
+
+@dataclass(frozen=True)
+class LocalRegionOptionProof:
+    schema: Literal[1]
+    protocol_sha256: str
+    universe_sha256: str
+    region_key: str
+    occurrence_commitment_sha256: str
+    renderability: Literal["renderable", "unrenderable", "unknown"]
+    exact_source_sha256: str
+    candidate_source_sha256: str | None
+    option_identity_sha256: str
+    terminal_status: Literal[
+        "exact-unchanged", "focused-pass", "focused-reject",
+        "unknown-reject", "unrenderable-reject",
+    ]
+    focused_evidence_sha256: str
+    cache_identity_sha256: str
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.schema) is not int or self.schema != 1
+            or type(self.region_key) is not str or _REGION.fullmatch(self.region_key) is None
+            or self.renderability not in {"renderable", "unrenderable", "unknown"}
+            or self.terminal_status not in {
+                "exact-unchanged", "focused-pass", "focused-reject",
+                "unknown-reject", "unrenderable-reject",
+            }
+        ):
+            raise ValueError("local region option proof is invalid")
+        for name in (
+            "protocol_sha256", "universe_sha256", "occurrence_commitment_sha256",
+            "exact_source_sha256", "option_identity_sha256",
+            "focused_evidence_sha256", "cache_identity_sha256", "evidence_sha256",
+        ):
+            _sha(getattr(self, name), f"local region option {name}")
+        if self.candidate_source_sha256 is not None:
+            _sha(self.candidate_source_sha256, "local region option candidate source")
+        unchanged = self.candidate_source_sha256 == self.exact_source_sha256
+        if self.terminal_status == "exact-unchanged":
+            valid_status = (
+                unchanged
+                and self.focused_evidence_sha256 == _exact_equality_digest(
+                    region_key=self.region_key,
+                    exact_source_sha256=self.exact_source_sha256,
+                    candidate_source_sha256=self.candidate_source_sha256,
+                    occurrence_commitment_sha256=(
+                        self.occurrence_commitment_sha256
+                    ),
+                )
+            )
+        elif self.terminal_status in {"focused-pass", "focused-reject"}:
+            valid_status = (
+                self.renderability == "renderable"
+                and self.candidate_source_sha256 is not None and not unchanged
+            )
+        elif self.terminal_status == "unknown-reject":
+            valid_status = (
+                self.candidate_source_sha256 is None
+                or (
+                    self.renderability == "unknown"
+                    and self.candidate_source_sha256 != self.exact_source_sha256
+                )
+            )
+        else:
+            valid_status = (
+                self.renderability == "unrenderable"
+                and self.candidate_source_sha256 is not None and not unchanged
+            )
+        if (
+            not valid_status
+            or self.cache_identity_sha256 != _canonical_digest(
+                _local_cache_payload(self)
+            )
+            or self.evidence_sha256 != _canonical_digest(
+                _local_proof_payload(self, include_seal=False)
+            )
+        ):
+            raise ValueError(
+                f"local region option {self.terminal_status} proof is invalid"
+            )
+
+
+def _local_cache_payload(value: LocalRegionOptionProof) -> dict[str, object]:
+    return {
+        "protocol_sha256": value.protocol_sha256,
+        "universe_sha256": value.universe_sha256,
+        "region_key": value.region_key,
+        "occurrence_commitment_sha256": value.occurrence_commitment_sha256,
+        "renderability": value.renderability,
+        "exact_source_sha256": value.exact_source_sha256,
+        "candidate_source_sha256": value.candidate_source_sha256,
+        "option_identity_sha256": value.option_identity_sha256,
+    }
+
+
+def _exact_equality_digest(
+    *, region_key: str, exact_source_sha256: str,
+    candidate_source_sha256: str | None, occurrence_commitment_sha256: str,
+) -> str:
+    return _canonical_digest({
+        "kind": "exact-source-equality-v1",
+        "region_key": region_key,
+        "exact_source_sha256": exact_source_sha256,
+        "candidate_source_sha256": candidate_source_sha256,
+        "occurrence_commitment_sha256": occurrence_commitment_sha256,
+    })
+
+
+def _local_proof_payload(
+    value: LocalRegionOptionProof, *, include_seal: bool = True,
+) -> dict[str, object]:
+    payload = {
+        "schema": value.schema,
+        **_local_cache_payload(value),
+        "terminal_status": value.terminal_status,
+        "focused_evidence_sha256": value.focused_evidence_sha256,
+        "cache_identity_sha256": value.cache_identity_sha256,
+    }
+    if include_seal:
+        payload["evidence_sha256"] = value.evidence_sha256
+    return payload
+
+
+def build_local_region_option_proof(
+    *,
+    protocol: FrozenHoldoutProtocol,
+    universe: ExactFocusUniverse,
+    region_key: str,
+    candidate_source_sha256: str | None,
+    option_identity_sha256: str,
+    terminal_status: str,
+    focused_evidence_sha256: str | None = None,
+) -> LocalRegionOptionProof:
+    if not isinstance(protocol, FrozenHoldoutProtocol):
+        raise TypeError("holdout protocol is invalid")
+    if not isinstance(universe, ExactFocusUniverse):
+        raise TypeError("exact focus universe is invalid")
+    matches = tuple(item for item in universe.regions if item.region_key == region_key)
+    if len(matches) != 1:
+        raise ValueError("local region option is outside the exact universe")
+    region = matches[0]
+    if terminal_status in {"focused-pass", "focused-reject"} and region.renderability != "renderable":
+        raise ValueError(f"local region option is {region.renderability}")
+    expected_equality = _exact_equality_digest(
+        region_key=region.region_key,
+        exact_source_sha256=region.exact_source_sha256,
+        candidate_source_sha256=candidate_source_sha256,
+        occurrence_commitment_sha256=region.occurrence_commitment_sha256,
+    )
+    if focused_evidence_sha256 is None:
+        if terminal_status != "exact-unchanged":
+            raise ValueError("local region option focused evidence is missing")
+        focused_evidence_sha256 = expected_equality
+    elif (
+        terminal_status == "exact-unchanged"
+        and focused_evidence_sha256 != expected_equality
+    ):
+        raise ValueError("local region exact equality proof differs")
+    values = dict(
+        schema=1,
+        protocol_sha256=protocol.protocol_sha256,
+        universe_sha256=universe.universe_sha256,
+        region_key=region.region_key,
+        occurrence_commitment_sha256=region.occurrence_commitment_sha256,
+        renderability=region.renderability,
+        exact_source_sha256=region.exact_source_sha256,
+        candidate_source_sha256=candidate_source_sha256,
+        option_identity_sha256=_sha(
+            option_identity_sha256, "local region option identity",
+        ),
+        terminal_status=terminal_status,
+        focused_evidence_sha256=_sha(
+            focused_evidence_sha256, "local region focused evidence",
+        ),
+        cache_identity_sha256="0" * 64,
+        evidence_sha256="0" * 64,
+    )
+    provisional = LocalRegionOptionProof.__new__(LocalRegionOptionProof)
+    for name, item in values.items():
+        object.__setattr__(provisional, name, item)
+    values["cache_identity_sha256"] = _canonical_digest(
+        _local_cache_payload(provisional)
+    )
+    object.__setattr__(provisional, "cache_identity_sha256", values["cache_identity_sha256"])
+    values["evidence_sha256"] = _canonical_digest(
+        _local_proof_payload(provisional, include_seal=False)
+    )
+    return LocalRegionOptionProof(**values)
+
+
+def build_local_region_option_proof_cache(
+    proofs: tuple[LocalRegionOptionProof, ...],
+) -> tuple[LocalRegionOptionProof, ...]:
+    if type(proofs) is not tuple or any(
+        not isinstance(item, LocalRegionOptionProof) for item in proofs
+    ):
+        raise TypeError("local region option proof cache inputs are invalid")
+    if len(proofs) > MAX_REGION_OPTION_PROOFS:
+        raise ValueError("local region option proof cache exceeds frozen bound")
+    by_identity: dict[str, LocalRegionOptionProof] = {}
+    for proof in proofs:
+        previous = by_identity.get(proof.cache_identity_sha256)
+        if previous is not None and previous.evidence_sha256 != proof.evidence_sha256:
+            raise ValueError("local region option proof cache has conflicting evidence")
+        by_identity[proof.cache_identity_sha256] = proof
+    return tuple(by_identity[key] for key in sorted(by_identity))
+
+
+@dataclass(frozen=True)
+class FocusedCoverageEvidence:
+    schema: Literal[1]
+    protocol_sha256: str
+    universe: ExactFocusUniverse
+    recipe_sha256: str
+    evaluation_mode: Literal["isolated-once-per-region-option-v1"]
+    evaluation_order: tuple[str, ...]
+    proofs: tuple[LocalRegionOptionProof, ...]
+    changed_region_count: int
+    terminal_changed_count: int
+    authorized: bool
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        proofs = tuple(self.proofs)
+        changed = tuple(
+            item for item in proofs
+            if item.candidate_source_sha256 != item.exact_source_sha256
+        )
+        expected_authorized = all(
+            item.terminal_status in {"exact-unchanged", "focused-pass"}
+            for item in proofs
+        )
+        if (
+            type(self.schema) is not int or self.schema != 1
+            or not isinstance(self.universe, ExactFocusUniverse)
+            or not proofs
+            or self.protocol_sha256 != proofs[0].protocol_sha256
+        ):
+            raise ValueError("focused coverage identity is invalid")
+        if (
+            self.evaluation_mode != "isolated-once-per-region-option-v1"
+            or tuple(self.evaluation_order) != self.universe.risk_order
+            or len(proofs) != len(self.universe.regions)
+            or tuple(item.region_key for item in proofs) != self.universe.risk_order
+            or any(item.universe_sha256 != self.universe.universe_sha256 for item in proofs)
+            or len({item.region_key for item in proofs}) != len(proofs)
+            or len({item.cache_identity_sha256 for item in proofs}) != len(proofs)
+            or type(self.changed_region_count) is not int
+            or self.changed_region_count != len(changed)
+            or type(self.terminal_changed_count) is not int
+            or self.terminal_changed_count != len(changed)
+            or type(self.authorized) is not bool or self.authorized != expected_authorized
+            or _sha(self.recipe_sha256, "focused coverage recipe seal") is None
+            or _sha(self.evidence_sha256, "focused coverage seal")
+            != _canonical_digest(_focused_coverage_payload(self, include_seal=False))
+        ):
+            raise ValueError("focused coverage is incomplete or invalid")
+        object.__setattr__(self, "evaluation_order", tuple(self.evaluation_order))
+        object.__setattr__(self, "proofs", proofs)
+
+
+def _focused_coverage_payload(
+    value: FocusedCoverageEvidence, *, include_seal: bool = True,
+) -> dict[str, object]:
+    payload = {
+        "schema": value.schema,
+        "protocol_sha256": value.protocol_sha256,
+        "universe": _focus_universe_payload(value.universe),
+        "recipe_sha256": value.recipe_sha256,
+        "evaluation_mode": value.evaluation_mode,
+        "evaluation_order": list(value.evaluation_order),
+        "proofs": [_local_proof_payload(item) for item in value.proofs],
+        "changed_region_count": value.changed_region_count,
+        "terminal_changed_count": value.terminal_changed_count,
+        "authorized": value.authorized,
+    }
+    if include_seal:
+        payload["evidence_sha256"] = value.evidence_sha256
+    return payload
+
+
+def focused_coverage_payload(
+    value: FocusedCoverageEvidence, *, include_seal: bool = True,
+) -> dict[str, object]:
+    if not isinstance(value, FocusedCoverageEvidence):
+        raise TypeError("focused coverage is invalid")
+    return _focused_coverage_payload(value, include_seal=include_seal)
+
+
+def build_focused_coverage(
+    *, protocol: FrozenHoldoutProtocol, universe: ExactFocusUniverse,
+    recipe: "CandidateRecipe", proofs: tuple[LocalRegionOptionProof, ...],
+) -> FocusedCoverageEvidence:
+    if not isinstance(protocol, FrozenHoldoutProtocol):
+        raise TypeError("holdout protocol is invalid")
+    if not isinstance(universe, ExactFocusUniverse):
+        raise TypeError("exact focus universe is invalid")
+    if (
+        not isinstance(recipe, CandidateRecipe)
+        or type(proofs) is not tuple
+        or any(not isinstance(item, LocalRegionOptionProof) for item in proofs)
+    ):
+        raise TypeError("focused coverage inputs are invalid")
+    by_key = {item.region_key: item for item in proofs}
+    if (
+        len(by_key) != len(proofs)
+        or set(by_key) != {item.region_key for item in universe.regions}
+    ):
+        raise ValueError("focused coverage is not complete for exact universe")
+    ordered = tuple(by_key[key] for key in universe.risk_order)
+    changed = tuple(
+        item for item in ordered
+        if item.candidate_source_sha256 != item.exact_source_sha256
+    )
+    authorized = all(
+        item.terminal_status in {"exact-unchanged", "focused-pass"}
+        for item in ordered
+    )
+    values = dict(
+        schema=1,
+        protocol_sha256=protocol.protocol_sha256,
+        universe=universe,
+        recipe_sha256=recipe.recipe_sha256,
+        evaluation_mode="isolated-once-per-region-option-v1",
+        evaluation_order=universe.risk_order,
+        proofs=ordered,
+        changed_region_count=len(changed),
+        terminal_changed_count=len(changed),
+        authorized=authorized,
+        evidence_sha256="0" * 64,
+    )
+    provisional = FocusedCoverageEvidence.__new__(FocusedCoverageEvidence)
+    for name, item in values.items():
+        object.__setattr__(provisional, name, item)
+    values["evidence_sha256"] = _canonical_digest(
+        _focused_coverage_payload(provisional, include_seal=False)
+    )
+    return FocusedCoverageEvidence(**values)
 
 
 @dataclass(frozen=True, order=True)
@@ -433,7 +949,7 @@ def region_tournament_options(
         raise ValueError("holdout focus identities are invalid")
     ordered = tuple(sorted(focuses))
     if (
-        len(ordered) > protocol.focused_top_k
+        len(ordered) > protocol.max_focus_regions
         or tuple(item[0] for item in ordered) != tuple(range(len(ordered)))
         or len({item[1] for item in ordered}) != len(ordered)
     ):
@@ -479,7 +995,7 @@ class CandidateRecipe:
             if self.base not in BASE_LADDER or regions:
                 raise ValueError("holdout base recipe is outside the frozen ladder")
         elif (
-            self.base not in BASE_LADDER or not 1 <= len(regions) <= 3
+            self.base not in BASE_LADDER or not 1 <= len(regions) <= MAX_FOCUS_REGIONS
             or tuple(item.region_rank for item in regions) != tuple(range(len(regions)))
         ):
             raise ValueError("holdout composition recipe is incomplete")
@@ -542,7 +1058,7 @@ def composition_recipe(
         raise ValueError("holdout composition base is outside the frozen ladder")
     ordered = tuple(sorted(regions))
     if (
-        not ordered or len(ordered) > protocol.focused_top_k
+        not ordered or len(ordered) > protocol.max_focus_regions
         or tuple(item.region_rank for item in ordered) != tuple(range(len(ordered)))
     ):
         raise ValueError("holdout composition regions are outside the focused prefix")
@@ -643,7 +1159,9 @@ class HoldoutAttemptEvidence:
     candidate_id: str
     recipe: CandidateRecipe
     compiled: CompiledFamilyProof
-    terminal_status: Literal["authorized", "rejected"]
+    attempt_stage: Literal["base-terminal", "region-intermediate", "final-retained"]
+    focused_coverage: FocusedCoverageEvidence | None
+    terminal_status: Literal["authorized", "eligible", "rejected"]
     gate_seals: tuple[tuple[str, str], ...]
     failed_gate: str | None
     replay_compiled_manifest_sha256: str
@@ -656,28 +1174,74 @@ class HoldoutAttemptEvidence:
         ):
             _sha(getattr(self, name), f"holdout attempt {name}")
         gates = tuple(tuple(item) for item in self.gate_seals)
+        try:
+            required = required_gates_for_stage(self.attempt_stage)
+        except ValueError as exc:
+            raise ValueError("holdout attempt stage is invalid") from exc
         if (
             type(self.schema) is not int or self.schema != 1
             or not isinstance(self.recipe, CandidateRecipe)
             or self.candidate_id != candidate_recipe_id(self.recipe)
             or not isinstance(self.compiled, CompiledFamilyProof)
-            or self.terminal_status not in {"authorized", "rejected"}
+            or self.terminal_status not in {"authorized", "eligible", "rejected"}
             or any(
                 type(item) is not tuple or len(item) != 2
-                or item[0] not in REQUIRED_GATES or _HASH.fullmatch(item[1]) is None
+                or item[0] not in required or _HASH.fullmatch(item[1]) is None
                 for item in gates
             )
-            or tuple(item[0] for item in gates) != REQUIRED_GATES[:len(gates)]
+            or tuple(item[0] for item in gates) != required[:len(gates)]
         ):
             raise ValueError("holdout attempt identity or gate evidence is invalid")
-        if self.terminal_status == "authorized":
-            if tuple(item[0] for item in gates) != REQUIRED_GATES or self.failed_gate is not None:
+        if self.attempt_stage == "region-intermediate":
+            if self.recipe.kind != "region-composition" or self.terminal_status == "authorized":
+                raise ValueError("holdout intermediate attempt cannot authorize")
+        elif self.attempt_stage == "base-terminal":
+            if self.recipe.kind != "base":
+                raise ValueError("holdout base-terminal attempt recipe is invalid")
+        elif self.recipe.kind == "base":
+            raise ValueError("holdout base attempt cannot be final-retained")
+        if (
+            self.attempt_stage != "region-intermediate"
+            and self.terminal_status == "eligible"
+        ):
+            raise ValueError("holdout non-intermediate attempt cannot be eligible")
+        if self.recipe.kind == "base" and self.attempt_stage != "base-terminal":
+            raise ValueError("holdout base attempt stage is invalid")
+        if self.recipe.kind == "exact-original" and self.attempt_stage != "final-retained":
+            raise ValueError("holdout exact fallback stage is invalid")
+        if self.terminal_status in {"authorized", "eligible"}:
+            if tuple(item[0] for item in gates) != required or self.failed_gate is not None:
                 raise ValueError("holdout authorized attempt is missing a gate")
         elif (
-            self.failed_gate not in REQUIRED_GATES
-            or len(gates) != REQUIRED_GATES.index(self.failed_gate)
+            self.failed_gate not in required
+            or len(gates) != required.index(self.failed_gate)
         ):
             raise ValueError("holdout rejected attempt failure gate is invalid")
+        focus_index = required.index("focused_all_changed")
+        focus_reached = len(gates) >= focus_index
+        coverage = self.focused_coverage
+        if coverage is not None:
+            if (
+                not isinstance(coverage, FocusedCoverageEvidence)
+                or coverage.protocol_sha256 != self.protocol_sha256
+                or coverage.universe.family_commitment_sha256
+                != self.family_commitment_sha256
+                or coverage.recipe_sha256 != self.recipe.recipe_sha256
+            ):
+                raise ValueError(
+                    "holdout attempt protocol/focused coverage identity is invalid"
+                )
+        if self.terminal_status in {"authorized", "eligible"}:
+            if coverage is None or not coverage.authorized:
+                raise ValueError("holdout attempt focused coverage is missing or rejected")
+        elif self.failed_gate == "focused_all_changed":
+            if coverage is None or coverage.authorized:
+                raise ValueError("holdout focused rejection lacks rejected coverage")
+        elif focus_reached and self.failed_gate != "focused_all_changed":
+            if coverage is None or not coverage.authorized:
+                raise ValueError("holdout post-focus rejection lacks authorized coverage")
+        elif coverage is not None:
+            raise ValueError("holdout pre-focus rejection has unexpected focused coverage")
         if self.replay_compiled_manifest_sha256 != self.compiled.manifest_sha256:
             raise ValueError("holdout attempt replay compiled manifest differs")
         if self.evidence_sha256 != _canonical_digest(
@@ -703,6 +1267,11 @@ def _attempt_payload(
             "total_bytes": value.compiled.total_bytes,
             "manifest_sha256": value.compiled.manifest_sha256,
         },
+        "attempt_stage": value.attempt_stage,
+        "focused_coverage": (
+            None if value.focused_coverage is None
+            else _focused_coverage_payload(value.focused_coverage)
+        ),
         "terminal_status": value.terminal_status,
         "gate_seals": [list(item) for item in value.gate_seals],
         "failed_gate": value.failed_gate,
@@ -762,9 +1331,11 @@ def build_attempt(
     family_commitment_sha256: str,
     recipe: CandidateRecipe,
     compiled: CompiledFamilyProof,
+    attempt_stage: str,
     terminal_status: str,
     gate_seals: tuple[tuple[str, str], ...],
     failed_gate: str | None,
+    focused_coverage: FocusedCoverageEvidence | None,
 ) -> HoldoutAttemptEvidence:
     if not isinstance(protocol, FrozenHoldoutProtocol):
         raise TypeError("holdout protocol is invalid")
@@ -777,6 +1348,8 @@ def build_attempt(
         candidate_id=candidate_recipe_id(recipe),
         recipe=recipe,
         compiled=compiled,
+        attempt_stage=attempt_stage,
+        focused_coverage=focused_coverage,
         terminal_status=terminal_status,
         gate_seals=tuple(gate_seals),
         failed_gate=failed_gate,
@@ -821,6 +1394,7 @@ def select_holdout_winner(
     passing_savings = tuple(
         item for item in attempts
         if item.terminal_status == "authorized"
+        and item.attempt_stage == "final-retained"
         and item.candidate_id != exact_id
         and item.compiled.total_bytes < original.compiled.total_bytes
     )
@@ -868,6 +1442,7 @@ class HoldoutRunEvidence:
             savings = tuple(
                 item for item in attempts
                 if item.terminal_status == "authorized"
+                and item.attempt_stage == "final-retained"
                 and item.recipe.kind != "exact-original"
                 and item.compiled.total_bytes < original.compiled.total_bytes
             )
@@ -961,6 +1536,56 @@ def _compiled_from_payload(value: object) -> CompiledFamilyProof:
     return CompiledFamilyProof(**copied)
 
 
+def _focus_universe_from_payload(value: object) -> ExactFocusUniverse:
+    fields = set(ExactFocusUniverse.__dataclass_fields__)
+    if (
+        type(value) is not dict or set(value) != fields
+        or type(value["regions"]) is not list
+        or type(value["risk_order"]) is not list
+    ):
+        raise ValueError("exact focus universe payload fields are invalid")
+    region_fields = set(ExactFocusRegion.__dataclass_fields__)
+    regions = []
+    for item in value["regions"]:
+        if type(item) is not dict or set(item) != region_fields:
+            raise ValueError("exact focus region payload fields are invalid")
+        regions.append(ExactFocusRegion(**item))
+    copied = dict(value)
+    copied["regions"] = tuple(regions)
+    copied["risk_order"] = tuple(value["risk_order"])
+    return ExactFocusUniverse(**copied)
+
+
+def _local_proof_from_payload(value: object) -> LocalRegionOptionProof:
+    fields = set(LocalRegionOptionProof.__dataclass_fields__)
+    if type(value) is not dict or set(value) != fields:
+        raise ValueError("local region option payload fields are invalid")
+    return LocalRegionOptionProof(**value)
+
+
+def _focused_coverage_from_payload(value: object) -> FocusedCoverageEvidence:
+    fields = set(FocusedCoverageEvidence.__dataclass_fields__)
+    if (
+        type(value) is not dict or set(value) != fields
+        or type(value["proofs"]) is not list
+        or type(value["evaluation_order"]) is not list
+    ):
+        raise ValueError("focused coverage payload fields are invalid")
+    copied = dict(value)
+    copied["universe"] = _focus_universe_from_payload(value["universe"])
+    copied["proofs"] = tuple(_local_proof_from_payload(item) for item in value["proofs"])
+    copied["evaluation_order"] = tuple(value["evaluation_order"])
+    return FocusedCoverageEvidence(**copied)
+
+
+def focus_universe_from_payload(value: object) -> ExactFocusUniverse:
+    return _focus_universe_from_payload(value)
+
+
+def focused_coverage_from_payload(value: object) -> FocusedCoverageEvidence:
+    return _focused_coverage_from_payload(value)
+
+
 def _attempt_from_payload(value: object) -> HoldoutAttemptEvidence:
     fields = set(HoldoutAttemptEvidence.__dataclass_fields__)
     if (
@@ -972,6 +1597,10 @@ def _attempt_from_payload(value: object) -> HoldoutAttemptEvidence:
     copied = dict(value)
     copied["recipe"] = _recipe_from_payload(value["recipe"])
     copied["compiled"] = _compiled_from_payload(value["compiled"])
+    copied["focused_coverage"] = (
+        None if value["focused_coverage"] is None
+        else _focused_coverage_from_payload(value["focused_coverage"])
+    )
     copied["gate_seals"] = tuple(tuple(item) for item in value["gate_seals"])
     return HoldoutAttemptEvidence(**copied)
 
