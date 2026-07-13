@@ -2241,6 +2241,13 @@ def main():
         argv = argv[1:]
 
     args = _parse_args(argv)
+    if args.source_union_contract is not None or args.source_union_visibility_out is not None:
+        from maximum_optimizer.production_adapters import validate_source_union_cli_contract
+        try:
+            validate_source_union_cli_contract(args)
+        except ValueError as exc:
+            raise SystemExit(f"[ERROR] {exc}") from exc
+        raise SystemExit("[ERROR] source-union renderer unavailable before E2B")
     if bpy is None:
         raise SystemExit("[ERROR] render_previews.py must be executed by Blender.")
     _ensure_source_tools()

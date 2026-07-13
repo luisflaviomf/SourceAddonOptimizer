@@ -30,10 +30,13 @@ class SourceUnionPoseBinding:
     animation_after: Path | None
     animation_before_sha256: str | None
     animation_after_sha256: str | None
+    pose_contract_sha256: str
 
     def __post_init__(self) -> None:
         if type(self.pose_key) is not str or not self.pose_key or type(self.frame) is not int or self.frame < 0:
             raise ValueError("source-union pose binding identity is invalid")
+        if _HASH.fullmatch(self.pose_contract_sha256 or "") is None:
+            raise ValueError("source-union pose contract is invalid")
         values = (
             self.animation_before, self.animation_after,
             self.animation_before_sha256, self.animation_after_sha256,
@@ -56,14 +59,20 @@ class SourceUnionPoseBinding:
         object.__setattr__(self, "animation_after", after)
 
     @classmethod
-    def bind(cls) -> "SourceUnionPoseBinding": return cls("bind", 0, None, None, None, None)
+    def bind(cls, pose_contract_sha256: str) -> "SourceUnionPoseBinding":
+        return cls("bind", 0, None, None, None, None, pose_contract_sha256)
 
     @classmethod
     def anchor(
         cls, pose_key: str, frame: int, before: Path, after: Path,
-        before_sha256: str, after_sha256: str,
+        before_sha256: str, after_sha256: str, pose_contract_sha256: str,
     ) -> "SourceUnionPoseBinding":
-        return cls(pose_key, frame, Path(before), Path(after), before_sha256, after_sha256)
+        if frame <= 0:
+            raise ValueError("anchor frame must be positive")
+        return cls(
+            pose_key, frame, Path(before), Path(after), before_sha256, after_sha256,
+            pose_contract_sha256,
+        )
 
     def revalidate(self, cancel_event: threading.Event | None) -> None:
         if self.pose_key == "bind":
@@ -78,6 +87,30 @@ class SourceUnionPoseBinding:
             _size, digest = _file_proof(path, cancel_event, contained_root=path.parent)
             if digest != expected:
                 raise ValueError("source-union animation proof is stale")
+        from .orchestrator import _smd_animation_frames
+        before_frames = _smd_animation_frames(self.animation_before)
+        after_frames = _smd_animation_frames(self.animation_after)
+        if not before_frames or before_frames != after_frames or self.frame not in before_frames:
+            raise ValueError("source-union anchor frame is absent or animation frames differ")
+
+
+def validate_source_union_pose_bindings(
+    bindings: tuple[SourceUnionPoseBinding, ...],
+    pose_keys: tuple[str, ...],
+    pose_contract_sha256: str,
+    cancel_event: threading.Event | None,
+) -> None:
+    values = tuple(bindings)
+    if (
+        not 1 <= len(values) <= 2
+        or any(not isinstance(item, SourceUnionPoseBinding) for item in values)
+        or tuple(item.pose_key for item in values) != tuple(pose_keys)
+        or values[0].pose_key != "bind"
+        or any(item.pose_contract_sha256 != pose_contract_sha256 for item in values)
+    ):
+        raise ValueError("source-union pose bindings differ from target/pose contract")
+    for item in values:
+        item.revalidate(cancel_event)
 
 
 def validate_source_union_cli_contract(args) -> None:
@@ -95,8 +128,20 @@ def validate_source_union_cli_contract(args) -> None:
         raise ValueError("source-union mode cannot carry state/focus selectors")
     if args.passes != "textured,clay":
         raise ValueError("source-union pass command is not canonical")
-    poses = tuple(token.strip() for token in str(args.poses or "").split(",") if token.strip())
-    if not 1 <= len(poses) <= 2 or poses[0] != "bind:0":
+    if args.angles != "front,back,left,right,top,bottom,iso1,iso2":
+        raise ValueError("source-union angle command is not canonical")
+    raw_poses = tuple(token.strip() for token in str(args.poses or "").split(",") if token.strip())
+    parsed = []
+    for token in raw_poses:
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+):(\d+)", token)
+        if match is None:
+            raise ValueError("source-union pose command is malformed")
+        parsed.append((match.group(1), int(match.group(2))))
+    if (
+        not 1 <= len(parsed) <= 2 or parsed[0] != ("bind", 0)
+        or len({name.casefold() for name, _frame in parsed}) != len(parsed)
+        or (len(parsed) == 2 and parsed[1][1] <= 0)
+    ):
         raise ValueError("source-union poses must be bind plus optional anchor")
 
 
@@ -136,6 +181,8 @@ def _cleanup_compile_owned(workspace: Path) -> None:
 def _reject_compile_extras(manifest: FamilyManifest, build: CandidateBuild) -> None:
     from .orchestrator import _is_exact_family_artifact
     root = build.compiled_models_dir
+    if _has_reparse_ancestor(root):
+        raise ValueError("adaptive-direct compiled root has reparse ancestry")
     for directory, directory_names, file_names in os.walk(root, followlinks=False):
         parent = Path(directory)
         if any(_is_reparse(parent / name) for name in directory_names):
@@ -166,6 +213,8 @@ class ProductionAdapters:
         if (
             recipe is None or recipe.kind != "adaptive-direct-fallback-v1"
             or recipe.round_index != 0
+            or manifest.family_id != recipe.family_id
+            or manifest.input_hash != recipe.family_input_sha256
             or composed.composition.kind != recipe.kind
             or composed.composition.recipe_sha256 != recipe.recipe_sha256
         ):
@@ -174,6 +223,8 @@ class ProductionAdapters:
         source_root = workspace / "src"
         if not workspace.is_absolute() or not source_root.is_dir():
             raise ValueError("adaptive-direct composition workspace is invalid")
+        if _has_reparse_ancestor(manifest.source_dir):
+            raise ValueError("adaptive-direct original source root has reparse ancestry")
         try:
             composed.optimized_qc.relative_to(source_root)
         except ValueError as exc:
@@ -188,6 +239,9 @@ class ProductionAdapters:
             if not path.is_file() or _has_reparse_ancestor(path):
                 raise ValueError("adaptive-direct compiler tool is unavailable or unsafe")
         _cancel(cancel_event, "cancelled before adaptive-direct compile")
+        if os.path.lexists(workspace / "compiled") or os.path.lexists(workspace / "logs"):
+            _cleanup_compile_owned(workspace)
+            raise ValueError("adaptive-direct compile roots must be fresh")
         _current_composed_manifest(composed, cancel_event)
         from .orchestrator import (
             _compile_composed_candidate, _current_recovery_compile_files,
@@ -206,6 +260,8 @@ class ProductionAdapters:
                 cancel_event, process_runner=self._process_runner,
             )
             _cancel(cancel_event, "cancelled after adaptive-direct compile")
+            if _has_reparse_ancestor(workspace / "compiled") or _has_reparse_ancestor(workspace / "logs"):
+                raise ValueError("adaptive-direct compile output has reparse ancestry")
             _reject_compile_extras(manifest, build)
             proofs = _current_recovery_compile_files(manifest, build, cancel_event)
             if _current_recovery_compile_files(manifest, build, cancel_event) != proofs:
