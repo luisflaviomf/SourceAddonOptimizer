@@ -339,6 +339,8 @@ class AdaptiveDirectSourceUnionRecord:
         expected = {f"source-union/{self.target.union_key}/{side}/{pose}/{render_pass}/{camera}.png" for side in ("candidate", "reference") for pose in self.target.pose_keys for render_pass in passes for camera in cameras}
         if len(files) != self.target.image_count or any(not isinstance(item, RenderFileProof) or item.kind != "image" for item in files) or {item.path for item in files} != expected or tuple(item.path for item in files) != tuple(sorted(item.path for item in files)):
             raise ValueError("source-union files are not the exact canonical matrix")
+        if any(item.side != item.path.split("/")[2] for item in files):
+            raise ValueError("source-union file side differs from canonical path")
         expected_visibility = {(component, pose) for component in self.target.component_keys for pose in self.target.pose_keys}
         actual_visibility = {(item.component_key, item.pose_key) for item in visibility if isinstance(item, AdaptiveDirectVisibilityProof)}
         if len(visibility) != len(expected_visibility) or actual_visibility != expected_visibility or tuple((item.component_key, item.pose_key) for item in visibility) != tuple(sorted(actual_visibility)):

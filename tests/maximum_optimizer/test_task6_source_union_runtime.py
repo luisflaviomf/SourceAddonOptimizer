@@ -3,12 +3,15 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+import inspect
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
 from PIL import Image
 
 from maximum_optimizer.domain import ValidationResult
+from maximum_optimizer.composite import build_adaptive_direct_source_union_record
 from maximum_optimizer.processes import ProcessCancelledError
 from maximum_optimizer.source_union import (
     SourceUnionMaterialBinding,
@@ -23,6 +26,7 @@ from tests.maximum_optimizer.test_task6_direct_compositor import DirectComposito
 H = {letter: letter * 64 for letter in "0123456789abcdef"}
 CAMERAS = tuple(f"camera-{index:02d}" for index in range(8))
 PASSES = ("clay", "textured")
+_PASSING_COMPARATOR = object()
 
 
 def _profile() -> FidelityProfile:
@@ -36,12 +40,14 @@ class HermeticRenderer:
         self, *, missing: str | None = None, extra_file: bool = False,
         occluded: str | None = None, extra_observation: bool = False,
         set_cancel: threading.Event | None = None,
+        jpeg_disguised: bool = False,
     ) -> None:
         self.missing = missing
         self.extra_file = extra_file
         self.occluded = occluded
         self.extra_observation = extra_observation
         self.set_cancel = set_cancel
+        self.jpeg_disguised = jpeg_disguised
         self.requests = []
 
     def __call__(self, request, output_root: Path, cancel_event):
@@ -59,7 +65,11 @@ class HermeticRenderer:
                             continue
                         path = root / relative
                         path.parent.mkdir(parents=True, exist_ok=True)
-                        Image.new("RGBA", (4, 4), (255, 255, 255, 255)).save(path)
+                        image = Image.new("RGB", (4, 4), (255, 255, 255))
+                        if self.jpeg_disguised and side == "candidate" and camera == "camera-00":
+                            image.save(path, format="JPEG")
+                        else:
+                            image.save(path, format="PNG")
         if self.extra_file:
             (root / "extra.bin").write_bytes(b"extra")
         observations = []
@@ -82,7 +92,7 @@ class HermeticRenderer:
 
 class SourceUnionRuntimeTests(unittest.TestCase):
     def _run(
-        self, fixture, renderer, workspace, *, comparator=None, event=None,
+        self, fixture, renderer, workspace, *, comparator=_PASSING_COMPARATOR, event=None,
         dependency=None, bindings=None,
     ):
         source = next(
@@ -100,7 +110,10 @@ class SourceUnionRuntimeTests(unittest.TestCase):
                 source.material_region_keys[0], source.witnesses[0].material_contract_sha256,
             ),),
             profile=_profile(), renderer=renderer,
-            comparator=comparator or (lambda *_: ValidationResult(True)),
+            comparator=(
+                (lambda *_: ValidationResult(True))
+                if comparator is _PASSING_COMPARATOR else comparator
+            ),
             cancel_event=event,
         )
 
@@ -122,6 +135,29 @@ class SourceUnionRuntimeTests(unittest.TestCase):
             self.assertFalse(hasattr(request, "state_key"))
             self.assertFalse(hasattr(request, "bodygroup_key"))
             self.assertFalse(hasattr(request, "lod_key"))
+            forged = tuple(replace(item, side="reference") for item in record.files)
+            with self.assertRaises(ValueError):
+                build_adaptive_direct_source_union_record(
+                    target=record.target, validation=record.validation,
+                    files=forged,
+                    visibility=tuple((
+                        item.component_key, item.pose_key, item.camera_key,
+                        item.reference_visible_mask_pixels,
+                        item.candidate_visible_mask_pixels,
+                        item.preceding_camera_mask_pixels,
+                    ) for item in record.visibility),
+                )
+
+    def test_comparator_is_explicit_and_none_fails_before_render(self) -> None:
+        parameter = inspect.signature(validate_adaptive_direct_source_union).parameters["comparator"]
+        self.assertIs(parameter.default, inspect.Parameter.empty)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture = DirectCompositorFixture(root)
+            renderer = HermeticRenderer()
+            with self.assertRaises(TypeError):
+                self._run(fixture, renderer, root / "none", comparator=None)
+            self.assertEqual(renderer.requests, [])
 
     def test_material_dependency_bindings_and_fresh_execution_are_exact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -152,6 +188,7 @@ class SourceUnionRuntimeTests(unittest.TestCase):
             HermeticRenderer(extra_file=True),
             HermeticRenderer(occluded="component-000"),
             HermeticRenderer(extra_observation=True),
+            HermeticRenderer(jpeg_disguised=True),
         )
         for ordinal, renderer in enumerate(variants):
             with self.subTest(ordinal=ordinal), tempfile.TemporaryDirectory() as temporary:
@@ -180,6 +217,26 @@ class SourceUnionRuntimeTests(unittest.TestCase):
             workspace = root / "union"
             with self.assertRaises(ValueError):
                 self._run(fixture, HermeticRenderer(), workspace, comparator=mutate)
+            self.assertFalse(workspace.exists())
+
+    def test_reparse_ancestor_between_workspace_and_render_root_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture = DirectCompositorFixture(root)
+            workspace = root / "union"
+            original = __import__(
+                "maximum_optimizer.source_union", fromlist=["_has_reparse_ancestor"]
+            )._has_reparse_ancestor
+
+            def ancestor(path):
+                return Path(path).name == "renders" or original(path)
+
+            with mock.patch(
+                "maximum_optimizer.source_union._has_reparse_ancestor",
+                side_effect=ancestor,
+            ):
+                with self.assertRaises(ValueError):
+                    self._run(fixture, HermeticRenderer(), workspace)
             self.assertFalse(workspace.exists())
 
     def test_lexical_dotdot_render_root_cannot_escape_private_workspace(self) -> None:

@@ -35,7 +35,7 @@ from .focused_cache import (
     _read_regular_no_follow,
 )
 from .processes import ProcessCancelledError
-from .visual_validation import FidelityProfile, compare_render_sets
+from .visual_validation import FidelityProfile
 
 
 _HASH = re.compile(r"[0-9a-f]{64}")
@@ -212,6 +212,8 @@ def _render_manifest(
             raise ValueError("source-union image changed during proof")
         try:
             with Image.open(io.BytesIO(payload)) as image:
+                if image.format != "PNG":
+                    raise ValueError("source-union image content is not PNG")
                 width, height = image.size
                 if width * height > _MAX_IMAGE_PIXELS:
                     raise ValueError("source-union image exceeds pixel bound")
@@ -275,7 +277,7 @@ def validate_adaptive_direct_source_union(
     material_bindings: tuple[SourceUnionMaterialBinding, ...],
     profile: FidelityProfile,
     renderer: SourceUnionRenderer,
-    comparator: SourceUnionComparator = compare_render_sets,
+    comparator: SourceUnionComparator,
     cancel_event: threading.Event | None = None,
 ) -> AdaptiveDirectSourceUnionRecord:
     if not isinstance(coverage, AdaptiveDirectCoverageManifest):
@@ -348,8 +350,8 @@ def validate_adaptive_direct_source_union(
             rendered.root.relative_to(workspace)
         except ValueError as exc:
             raise ValueError("source-union render root escapes workspace") from exc
-        if _is_reparse(rendered.root):
-            raise ValueError("source-union render root is a reparse point")
+        if _is_reparse(rendered.root) or _has_reparse_ancestor(rendered.root):
+            raise ValueError("source-union render root has a reparse point")
         files = _render_manifest(rendered.root, target, cancel_event)
         visibility = _visibility(target, rendered.observations)
         reference_dir = rendered.root / "source-union" / target.union_key / "reference"
