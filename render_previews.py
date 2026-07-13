@@ -1050,15 +1050,44 @@ def _barycentric_weights(point, first, second, third) -> tuple[float, float, flo
     v1 = tuple(third[index] - first[index] for index in range(3))
     v2 = tuple(point[index] - first[index] for index in range(3))
     d00 = sum(value * value for value in v0)
-    d01 = sum(v0[index] * v1[index] for index in range(3))
     d11 = sum(value * value for value in v1)
-    d20 = sum(v2[index] * v0[index] for index in range(3))
-    d21 = sum(v2[index] * v1[index] for index in range(3))
-    denominator = d00 * d11 - d01 * d01
-    if abs(denominator) <= 1e-20:
+    normal = (
+        v0[1] * v1[2] - v0[2] * v1[1],
+        v0[2] * v1[0] - v0[0] * v1[2],
+        v0[0] * v1[1] - v0[1] * v1[0],
+    )
+    denominator = sum(value * value for value in normal)
+    third_edge = tuple(v1[index] - v0[index] for index in range(3))
+    edge_squared = max(
+        d00,
+        d11,
+        sum(value * value for value in third_edge),
+    )
+    tolerance = (
+        edge_squared * edge_squared
+    ) * GEOMETRY_AUDIT_ALGORITHM["relative_area_squared_epsilon"]
+    if (
+        not math.isfinite(denominator)
+        or not math.isfinite(tolerance)
+        or denominator <= tolerance
+    ):
         raise ValueError("degenerate triangle")
-    second_weight = (d11 * d20 - d01 * d21) / denominator
-    third_weight = (d00 * d21 - d01 * d20) / denominator
+    point_cross_third = (
+        v2[1] * v1[2] - v2[2] * v1[1],
+        v2[2] * v1[0] - v2[0] * v1[2],
+        v2[0] * v1[1] - v2[1] * v1[0],
+    )
+    second_cross_point = (
+        v0[1] * v2[2] - v0[2] * v2[1],
+        v0[2] * v2[0] - v0[0] * v2[2],
+        v0[0] * v2[1] - v0[1] * v2[0],
+    )
+    second_weight = sum(
+        point_cross_third[index] * normal[index] for index in range(3)
+    ) / denominator
+    third_weight = sum(
+        second_cross_point[index] * normal[index] for index in range(3)
+    ) / denominator
     first_weight = 1.0 - second_weight - third_weight
     return first_weight, second_weight, third_weight
 

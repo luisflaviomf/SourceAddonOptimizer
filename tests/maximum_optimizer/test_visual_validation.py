@@ -1147,6 +1147,34 @@ class RenderPreviewArgumentTests(unittest.TestCase):
         )
         self.assertAlmostEqual(math.sqrt(sum(value * value for value in normal)), 1.0)
 
+    def test_barycentric_weights_are_scale_invariant_for_small_valid_triangles(self):
+        import render_previews
+
+        weights = render_previews._barycentric_weights(
+            (0.25e-6, 0.25e-6, 0.0),
+            (0.0, 0.0, 0.0),
+            (1.0e-6, 0.0, 0.0),
+            (0.0, 1.0e-6, 0.0),
+        )
+
+        self.assertEqual(weights, (0.5, 0.25, 0.25))
+
+    def test_barycentric_weights_resist_skinny_triangle_cancellation(self):
+        import render_previews
+
+        first = (1.816001057624817, 21.231998443603516, 8.67199993133545)
+        second = (1.815999984741211, 7.868000030517578, 8.67199993133545)
+        third = (1.815999984741211, 7.76800012588501, 8.67199993133545)
+        midpoint = tuple((left + right) / 2.0 for left, right in zip(second, third))
+
+        weights = render_previews._barycentric_weights(
+            midpoint, first, second, third
+        )
+
+        self.assertAlmostEqual(weights[0], 0.0, places=6)
+        self.assertAlmostEqual(weights[1], 0.5, places=6)
+        self.assertAlmostEqual(weights[2], 0.5, places=6)
+
     def test_bidirectional_p95_uses_worst_direction_without_dilution(self):
         import render_previews
 
