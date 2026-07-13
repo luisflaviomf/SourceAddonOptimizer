@@ -2647,12 +2647,24 @@ def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
     return armature, action
 
 
-def _set_pose_state(animation_binding, pose_name: str, frame: int, *, scene=None) -> None:
+def _set_pose_state(
+    animation_binding,
+    pose_name: str,
+    frame: int,
+    *,
+    scene=None,
+    view_layer=None,
+) -> None:
     scene = scene or bpy.context.scene
+    view_layer = view_layer or bpy.context.view_layer
     if animation_binding is not None:
         armature, action = animation_binding
-        armature.animation_data.action = None if pose_name == "bind" else action
+        is_bind = pose_name == "bind"
+        armature.animation_data.action = None if is_bind else action
+        armature.data.pose_position = "REST" if is_bind else "POSE"
+        armature.update_tag(refresh={"DATA"})
     scene.frame_set(frame)
+    view_layer.update()
 
 
 def _flatten_region(region: dict):

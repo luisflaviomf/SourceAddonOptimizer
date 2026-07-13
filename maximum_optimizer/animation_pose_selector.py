@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 import re
 from typing import Mapping
 
+from PIL import Image
+
 
 _NODE = re.compile(r'^\s*(-?\d+)\s+"([^"]+)"\s+-?\d+\s*$')
 _TIME = re.compile(r"^\s*time\s+(-?\d+)\s*$", re.IGNORECASE)
@@ -142,6 +144,103 @@ class AnimationPoseSelection:
             "selector": self.selector,
             "selector_input_sha256": self.selector_input_sha256,
         }
+
+
+@dataclass(frozen=True)
+class PosePixelGateProof:
+    image_count: int
+    total_pixels: int
+    changed_pixels: int
+    changed_fraction: float
+    mean_absolute_error: float
+    minimum_changed_fraction: float
+    bind_pixel_bundle_sha256: str
+    posed_pixel_bundle_sha256: str
+    evidence_sha256: str
+
+
+def verify_pose_pixel_gate(
+    bind_images: Mapping[str, str | Path],
+    posed_images: Mapping[str, str | Path],
+    *,
+    minimum_changed_fraction: float = 0.0001,
+) -> PosePixelGateProof:
+    """Require a real decoded-RGBA change between bind and selected pose."""
+
+    if (
+        not isinstance(minimum_changed_fraction, (int, float))
+        or isinstance(minimum_changed_fraction, bool)
+        or not math.isfinite(float(minimum_changed_fraction))
+        or not 0.0 < float(minimum_changed_fraction) <= 1.0
+    ):
+        raise ValueError("pose pixel gate minimum is invalid")
+    bind_keys = tuple(sorted(bind_images))
+    if not bind_keys or bind_keys != tuple(sorted(posed_images)):
+        raise ValueError("pose pixel gate image keys differ")
+    bind_inventory: list[dict[str, object]] = []
+    posed_inventory: list[dict[str, object]] = []
+    total_pixels = 0
+    changed_pixels = 0
+    absolute_error = 0
+    for key in bind_keys:
+        if not isinstance(key, str) or not key:
+            raise ValueError("pose pixel gate image key is invalid")
+        bind_path = Path(bind_images[key]).resolve(strict=True)
+        posed_path = Path(posed_images[key]).resolve(strict=True)
+        try:
+            with Image.open(bind_path) as source:
+                bind_size = source.size
+                bind_rgba = source.convert("RGBA").tobytes()
+            with Image.open(posed_path) as source:
+                posed_size = source.size
+                posed_rgba = source.convert("RGBA").tobytes()
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"pose pixel gate cannot decode {key}") from exc
+        if bind_size != posed_size or len(bind_rgba) != len(posed_rgba):
+            raise ValueError(f"pose pixel gate dimensions differ for {key}")
+        pixels = bind_size[0] * bind_size[1]
+        total_pixels += pixels
+        for offset in range(0, len(bind_rgba), 4):
+            left = bind_rgba[offset:offset + 4]
+            right = posed_rgba[offset:offset + 4]
+            if left != right:
+                changed_pixels += 1
+            absolute_error += sum(abs(a - b) for a, b in zip(left, right))
+        bind_inventory.append({
+            "height": bind_size[1], "key": key,
+            "rgba_sha256": hashlib.sha256(bind_rgba).hexdigest(), "width": bind_size[0],
+        })
+        posed_inventory.append({
+            "height": posed_size[1], "key": key,
+            "rgba_sha256": hashlib.sha256(posed_rgba).hexdigest(), "width": posed_size[0],
+        })
+    changed_fraction = changed_pixels / total_pixels
+    mean_absolute_error = absolute_error / (total_pixels * 4)
+    if changed_fraction < float(minimum_changed_fraction) or mean_absolute_error <= 0.0:
+        raise ValueError(
+            "selected animation has no meaningful decoded pixel displacement"
+        )
+    bind_bundle = _canonical_hash(bind_inventory)
+    posed_bundle = _canonical_hash(posed_inventory)
+    unsigned = {
+        "bind_pixel_bundle_sha256": bind_bundle,
+        "changed_fraction": changed_fraction,
+        "changed_pixels": changed_pixels,
+        "image_count": len(bind_keys),
+        "mean_absolute_error": mean_absolute_error,
+        "minimum_changed_fraction": float(minimum_changed_fraction),
+        "posed_pixel_bundle_sha256": posed_bundle,
+        "total_pixels": total_pixels,
+    }
+    return PosePixelGateProof(
+        image_count=len(bind_keys), total_pixels=total_pixels,
+        changed_pixels=changed_pixels, changed_fraction=changed_fraction,
+        mean_absolute_error=mean_absolute_error,
+        minimum_changed_fraction=float(minimum_changed_fraction),
+        bind_pixel_bundle_sha256=bind_bundle,
+        posed_pixel_bundle_sha256=posed_bundle,
+        evidence_sha256=_canonical_hash(unsigned),
+    )
 
 
 def _geometry_extents(source_root: Path) -> tuple[dict[int, float], str]:

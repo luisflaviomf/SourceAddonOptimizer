@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image, PngImagePlugin
+
 
 def _smd(*, bones: tuple[tuple[int, str, int], ...], frames: dict[int, dict[int, tuple[float, ...]]]) -> str:
     rows = ["version 1", "nodes"]
@@ -128,6 +130,41 @@ class AnimationPoseSelectorTests(unittest.TestCase):
             (root / "idle_corrective_animation.smd").write_text(zero, encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "meaningful displacement"):
                 select_animation_pose(root, source_root=root)
+
+    def test_decoded_pixel_gate_rejects_metadata_only_png_difference(self) -> None:
+        from maximum_optimizer.animation_pose_selector import verify_pose_pixel_gate
+
+        bind = self.root / "bind.png"
+        posed = self.root / "posed.png"
+        pixels = Image.new("RGBA", (8, 8), (20, 30, 40, 255))
+        first_meta = PngImagePlugin.PngInfo()
+        first_meta.add_text("run", "first")
+        second_meta = PngImagePlugin.PngInfo()
+        second_meta.add_text("run", "repeat")
+        pixels.save(bind, pnginfo=first_meta)
+        pixels.save(posed, pnginfo=second_meta)
+        self.assertNotEqual(bind.read_bytes(), posed.read_bytes())
+        with self.assertRaisesRegex(ValueError, "decoded pixel"):
+            verify_pose_pixel_gate({"front": bind}, {"front": posed})
+
+    def test_decoded_pixel_gate_accepts_nonzero_geometric_change_and_seals_pixels(self) -> None:
+        from maximum_optimizer.animation_pose_selector import verify_pose_pixel_gate
+
+        bind = self.root / "bind-real.png"
+        posed = self.root / "posed-real.png"
+        Image.new("RGBA", (10, 10), (0, 0, 0, 255)).save(bind)
+        image = Image.new("RGBA", (10, 10), (0, 0, 0, 255))
+        image.putpixel((4, 5), (255, 0, 0, 255))
+        image.save(posed)
+        proof = verify_pose_pixel_gate(
+            {"front": bind}, {"front": posed}, minimum_changed_fraction=0.005,
+        )
+        self.assertEqual(proof.changed_pixels, 1)
+        self.assertEqual(proof.total_pixels, 100)
+        self.assertAlmostEqual(proof.changed_fraction, 0.01)
+        self.assertGreater(proof.mean_absolute_error, 0.0)
+        self.assertNotEqual(proof.bind_pixel_bundle_sha256, proof.posed_pixel_bundle_sha256)
+        self.assertEqual(len(proof.evidence_sha256), 64)
 
 
 if __name__ == "__main__":

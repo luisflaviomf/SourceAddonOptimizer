@@ -59,12 +59,27 @@ def test_apply_animation_fails_closed_without_unambiguous_armature():
 
 def test_bind_pose_disables_action_while_representative_restores_it():
     action = object()
-    armature = SimpleNamespace(animation_data=SimpleNamespace(action=action))
+    updates = []
+    armature = SimpleNamespace(
+        animation_data=SimpleNamespace(action=action),
+        data=SimpleNamespace(pose_position="POSE"),
+        update_tag=lambda **kwargs: updates.append(kwargs),
+    )
     frames = []
     scene = SimpleNamespace(frame_set=frames.append)
+    view_updates = []
+    view_layer = SimpleNamespace(update=lambda: view_updates.append(True))
     binding = (armature, action)
-    render_previews._set_pose_state(binding, "bind", 0, scene=scene)
+    render_previews._set_pose_state(
+        binding, "bind", 0, scene=scene, view_layer=view_layer,
+    )
     assert armature.animation_data.action is None
-    render_previews._set_pose_state(binding, "representative", 10, scene=scene)
+    assert armature.data.pose_position == "REST"
+    render_previews._set_pose_state(
+        binding, "representative", 10, scene=scene, view_layer=view_layer,
+    )
     assert armature.animation_data.action is action
+    assert armature.data.pose_position == "POSE"
     assert frames == [0, 10]
+    assert updates == [{"refresh": {"DATA"}}, {"refresh": {"DATA"}}]
+    assert view_updates == [True, True]
