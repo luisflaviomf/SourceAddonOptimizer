@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import uuid
 import zlib
 from dataclasses import dataclass
@@ -21,6 +22,214 @@ from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 
 sys.dont_write_bytecode = True
+
+_SOURCE_UNION_BOOTSTRAP_RUNTIME_FILES = None
+_SOURCE_UNION_BOOTSTRAP_CONTROL_BYTES = None
+
+
+def _bootstrap_reparse(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except OSError:
+        return True
+    attributes = getattr(info, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return path.is_symlink() or bool(attributes & reparse_flag)
+
+
+def _bootstrap_safe_ancestry(path: Path) -> bool:
+    absolute = Path(os.path.abspath(path))
+    return not any(
+        component.exists() and _bootstrap_reparse(component)
+        for component in (*reversed(absolute.parents), absolute)
+    )
+
+
+def _bootstrap_read_regular(path: Path, *, max_bytes: int) -> bytes:
+    if not _bootstrap_safe_ancestry(path):
+        raise ValueError("source-union bootstrap path has reparse ancestry")
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+        raise ValueError("source-union bootstrap file is invalid")
+    payload = path.read_bytes()
+    after = path.lstat()
+    if (
+        not stat.S_ISREG(after.st_mode)
+        or len(payload) != before.st_size
+        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    ):
+        raise ValueError("source-union bootstrap file changed while captured")
+    return payload
+
+
+def _bootstrap_install_runtime(root: Path, captured: dict[str, bytes]) -> None:
+    order = (
+        "__init__.py", "reporting.py", "smd_contract.py",
+        "source_components.py", "regions.py", "qc_graph.py",
+    )
+    allowed_modules = {
+        "maximum_optimizer",
+        *(f"maximum_optimizer.{name[:-3]}" for name in order[1:]),
+    }
+    for name in tuple(sys.modules):
+        if name == "maximum_optimizer" or name.startswith("maximum_optimizer."):
+            del sys.modules[name]
+    package = types.ModuleType("maximum_optimizer")
+    package.__file__ = str(root / "__init__.py")
+    package.__package__ = "maximum_optimizer"
+    package.__path__ = []
+    sys.modules["maximum_optimizer"] = package
+    try:
+        exec(
+            compile(captured["__init__.py"], package.__file__, "exec"),
+            package.__dict__,
+        )
+        package.__path__ = []
+        for filename in order[1:]:
+            short_name = filename[:-3]
+            qualified = f"maximum_optimizer.{short_name}"
+            module = types.ModuleType(qualified)
+            module.__file__ = str(root / filename)
+            module.__package__ = "maximum_optimizer"
+            sys.modules[qualified] = module
+            exec(compile(captured[filename], module.__file__, "exec"), module.__dict__)
+            setattr(package, short_name, module)
+        package.__path__ = []
+    except BaseException:
+        for name in tuple(sys.modules):
+            if name in allowed_modules:
+                del sys.modules[name]
+        raise
+
+
+def _bootstrap_source_union_runtime() -> None:
+    global _SOURCE_UNION_BOOTSTRAP_CONTROL_BYTES
+    global _SOURCE_UNION_BOOTSTRAP_RUNTIME_FILES
+    contract_flag = "--source-union-contract"
+    visibility_flag = "--source-union-visibility-out"
+    control_hash_flag = "--source-union-control-sha256"
+    flags = (contract_flag, visibility_flag, control_hash_flag)
+    source_tokens = tuple(
+        value for value in sys.argv if value.startswith("--source-union-")
+    )
+    if not source_tokens:
+        return
+    if any(
+        not any(value == flag or value.startswith(flag + "=") for flag in flags)
+        for value in source_tokens
+    ):
+        raise ValueError("source-union bootstrap flag is unknown")
+
+    def flag_value(flag: str) -> str:
+        values = []
+        for index, value in enumerate(sys.argv):
+            if value == flag:
+                if index + 1 >= len(sys.argv) or sys.argv[index + 1].startswith("--"):
+                    raise ValueError(f"source-union bootstrap {flag} value is missing")
+                values.append(sys.argv[index + 1])
+            elif value.startswith(flag + "="):
+                values.append(value[len(flag) + 1:])
+        if len(values) != 1 or not values[0]:
+            raise ValueError(f"source-union bootstrap {flag} must occur exactly once")
+        return values[0]
+
+    contract_value = flag_value(contract_flag)
+    flag_value(visibility_flag)
+    expected_control_hash = flag_value(control_hash_flag)
+    if re.fullmatch(r"[0-9a-f]{64}", expected_control_hash) is None:
+        raise ValueError("source-union bootstrap control hash argument is invalid")
+    script = Path(__file__).resolve(strict=True)
+    inputs = script.parent
+    workspace = inputs.parent
+    contract = Path(contract_value).resolve(strict=True)
+    if (
+        script != inputs / "render_previews.py"
+        or inputs.name != "inputs"
+        or contract != workspace / "control" / "source-union-contract.json"
+    ):
+        raise ValueError("source-union bootstrap private paths differ")
+    control_bytes = _bootstrap_read_regular(contract, max_bytes=32 * 1024 * 1024)
+    if hashlib.sha256(control_bytes).hexdigest() != expected_control_hash:
+        raise ValueError("source-union bootstrap control bytes differ from parent anchor")
+    try:
+        control = json.loads(control_bytes.decode("utf-8", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("source-union bootstrap control JSON is invalid") from exc
+    control_fields = {
+        "schema", "kind", "target_sha256", "comparison_contract",
+        "source_identity", "source_coverage_sha256", "component_keys",
+        "component_manifest", "candidate_component_transfer",
+        "material_region_keys", "material_contract_sha256",
+        "material_contract", "material_render_evidence", "pose_frames",
+        "angles", "cameras", "renderer_sha256",
+        "python_runtime_contract_sha256", "python_runtime_files",
+    }
+    if type(control) is not dict or set(control) != control_fields:
+        raise ValueError("source-union bootstrap control fields are invalid")
+    raw_files = control["python_runtime_files"]
+    names = (
+        "__init__.py", "qc_graph.py", "regions.py", "reporting.py",
+        "smd_contract.py", "source_components.py",
+    )
+    if type(raw_files) is not list or len(raw_files) != len(names):
+        raise ValueError("source-union bootstrap runtime file count differs")
+    files = []
+    total = 0
+    for index, item in enumerate(raw_files):
+        if (
+            type(item) is not dict or set(item) != {"path", "size", "sha256"}
+            or type(item["path"]) is not str or item["path"] != names[index]
+            or type(item["size"]) is not int or item["size"] < 0
+            or type(item["sha256"]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+        ):
+            raise ValueError("source-union bootstrap runtime proof is invalid")
+        total += item["size"]
+        if total > 16 * 1024 * 1024:
+            raise ValueError("source-union bootstrap runtime byte bound exceeded")
+        files.append(dict(item))
+    unsigned = {
+        "schema": 1,
+        "kind": "adaptive-direct-source-union-python-runtime-v1",
+        "files": files,
+    }
+    seal = control["python_runtime_contract_sha256"]
+    canonical = json.dumps(
+        unsigned, ensure_ascii=False, allow_nan=False, sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    if (
+        type(seal) is not str or re.fullmatch(r"[0-9a-f]{64}", seal) is None
+        or hashlib.sha256(canonical).hexdigest() != seal
+    ):
+        raise ValueError("source-union bootstrap runtime seal differs")
+    runtime = inputs / "maximum_optimizer"
+    if not runtime.is_dir() or not _bootstrap_safe_ancestry(runtime):
+        raise ValueError("source-union bootstrap runtime root is invalid")
+    entries = tuple(runtime.iterdir())
+    if tuple(sorted(path.name for path in entries)) != names:
+        raise ValueError("source-union bootstrap runtime inventory differs")
+    captured = {}
+    for proof in files:
+        payload = _bootstrap_read_regular(
+            runtime / proof["path"], max_bytes=16 * 1024 * 1024,
+        )
+        if (
+            len(payload) != proof["size"]
+            or hashlib.sha256(payload).hexdigest() != proof["sha256"]
+        ):
+            raise ValueError("source-union bootstrap runtime bytes differ")
+        captured[proof["path"]] = payload
+    _SOURCE_UNION_BOOTSTRAP_RUNTIME_FILES = tuple(files)
+    _SOURCE_UNION_BOOTSTRAP_CONTROL_BYTES = control_bytes
+    _bootstrap_install_runtime(runtime, captured)
+
+
+try:
+    _bootstrap_source_union_runtime()
+except (OSError, TypeError, ValueError) as exc:
+    raise SystemExit(f"[ERROR] {exc}") from exc
 
 _SCRIPT_ROOT = Path(__file__).resolve().parent
 if str(_SCRIPT_ROOT) not in sys.path:
@@ -480,6 +689,11 @@ def _parse_source_union_python_runtime(
     }
     if hashlib.sha256(_canonical_json(unsigned).encode()).hexdigest() != contract_hash:
         raise ValueError("source-union Python runtime contract seal mismatch")
+    if (
+        _SOURCE_UNION_BOOTSTRAP_RUNTIME_FILES is not None
+        and tuple(files) != _SOURCE_UNION_BOOTSTRAP_RUNTIME_FILES
+    ):
+        raise ValueError("source-union Python runtime differs from bootstrap capture")
     runtime_root = (
         Path(runtime_root).resolve()
         if runtime_root is not None
@@ -1047,16 +1261,23 @@ def _parse_args(argv: list[str]):
         "--source-union-visibility-out", default=None,
         help="Strict source-union component visibility JSON output",
     )
+    ap.add_argument(
+        "--source-union-control-sha256", default=None,
+        help="Parent-owned SHA-256 anchor for the private source-union control bytes",
+    )
     return ap.parse_args(argv)
 
 
 def _validate_source_union_cli_args(args) -> None:
     enabled = getattr(args, "source_union_contract", None)
     visibility = getattr(args, "source_union_visibility_out", None)
+    control_hash = getattr(args, "source_union_control_sha256", None)
     if bool(enabled) != bool(visibility):
         raise ValueError("source-union contract and visibility output must be paired")
     if not enabled:
         raise ValueError("source-union mode is not enabled")
+    if type(control_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", control_hash) is None:
+        raise ValueError("source-union control hash anchor is invalid")
     if any((
         getattr(args, "configuration_manifest", None) is not None,
         getattr(args, "focus_region", None) is not None,
@@ -3191,9 +3412,14 @@ def _run_source_union(args, before: list[Path], after: list[Path], out_dir: Path
         raise ValueError("source-union renderer outputs already exist")
     reference_bytes = reference_path.read_bytes()
     candidate_bytes = candidate_path.read_bytes()
+    control_bytes = _SOURCE_UNION_BOOTSTRAP_CONTROL_BYTES
+    if control_bytes is None:
+        raise ValueError("source-union renderer has no parent-anchored bootstrap control")
+    if hashlib.sha256(control_bytes).hexdigest() != args.source_union_control_sha256:
+        raise ValueError("source-union bootstrap control anchor differs")
     try:
-        payload = json.loads(contract_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        payload = json.loads(control_bytes.decode("utf-8", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("source-union control JSON is invalid") from exc
     control = _parse_source_union_control(
         payload, reference_bytes, candidate_bytes, material_roots,

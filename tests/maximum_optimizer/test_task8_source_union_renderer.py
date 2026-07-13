@@ -2,6 +2,8 @@ import hashlib
 import json
 import shutil
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 import zlib
@@ -348,16 +350,24 @@ class SourceUnionRendererContractTests(unittest.TestCase):
             "--out", "raw", "--passes", "textured,clay",
             "--poses", "bind:0", "--source-union-contract", "contract.json",
             "--source-union-visibility-out", "visibility.json",
+            "--source-union-control-sha256", "a" * 64,
         ]
         args = render_previews._parse_args(base)
         render_previews._validate_source_union_cli_args(args)
         for changed in (
             base + ["--aggregate-regions"],
-            [*base[:-2], "--source-union-visibility-out", ""],
+            [
+                "--before", "reference.smd", "--after", "candidate.smd",
+                "--out", "raw", "--passes", "textured,clay",
+                "--poses", "bind:0", "--source-union-contract", "contract.json",
+                "--source-union-visibility-out", "",
+                "--source-union-control-sha256", "a" * 64,
+            ],
             ["--before", "reference.smd", "--after", "candidate.smd",
              "--out", "raw", "--passes", "clay,textured", "--poses", "bind:0",
              "--source-union-contract", "contract.json",
-             "--source-union-visibility-out", "visibility.json"],
+             "--source-union-visibility-out", "visibility.json",
+             "--source-union-control-sha256", "a" * 64],
         ):
             with self.assertRaises(ValueError):
                 render_previews._validate_source_union_cli_args(
@@ -396,6 +406,99 @@ class SourceUnionRendererContractTests(unittest.TestCase):
             path.write_bytes(corrupted)
             with self.assertRaisesRegex(ValueError, "CRC"):
                 render_previews._canonicalize_source_union_png(path)
+
+    def test_invalid_private_runtime_cannot_execute_before_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload, _reference, _candidate, _roots, _manifest, _transfer, runtime = (
+                self._fixture(root)
+            )
+            renderer = root / "inputs" / "render_previews.py"
+            shutil.copy2(Path(render_previews.__file__), renderer)
+            control_dir = root / "control"
+            control_dir.mkdir()
+            contract = control_dir / "source-union-contract.json"
+            contract.write_text(json.dumps(payload), encoding="utf-8")
+            parent_anchor = hashlib.sha256(contract.read_bytes()).hexdigest()
+            marker = root / "HOSTILE-MODULE-EXECUTED"
+            hostile = (
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+            )
+            (runtime / "regions.py").write_text(hostile, encoding="utf-8")
+            hostile_bytes = hostile.encode()
+            region_proof = next(
+                item for item in payload["python_runtime_files"]
+                if item["path"] == "regions.py"
+            )
+            region_proof["size"] = len(hostile_bytes)
+            region_proof["sha256"] = hashlib.sha256(hostile_bytes).hexdigest()
+            runtime_unsigned = {
+                "schema": 1,
+                "kind": "adaptive-direct-source-union-python-runtime-v1",
+                "files": payload["python_runtime_files"],
+            }
+            payload["python_runtime_contract_sha256"] = hashlib.sha256(
+                canonical_json(runtime_unsigned).encode()
+            ).hexdigest()
+            contract.write_text(json.dumps(payload), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable, str(renderer),
+                    "--source-union-contract", str(contract),
+                    "--source-union-visibility-out",
+                    str(control_dir / "source-union-visibility.json"),
+                    "--source-union-control-sha256", parent_anchor,
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertFalse(
+                marker.exists(),
+                completed.stdout + "\nSTDERR\n" + completed.stderr,
+            )
+
+    def test_bootstrap_executes_captured_bytes_not_reopened_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / "maximum_optimizer"
+            runtime.mkdir()
+            names = (
+                "__init__.py", "qc_graph.py", "regions.py", "reporting.py",
+                "smd_contract.py", "source_components.py",
+            )
+            for name in names:
+                shutil.copy2(
+                    Path(render_previews.__file__).parent / "maximum_optimizer" / name,
+                    runtime / name,
+                )
+            marker = root / "REOPENED-HOSTILE-MODULE"
+            script = "\n".join((
+                "import pathlib, sys",
+                f"sys.path.insert(0, {str(Path(render_previews.__file__).parent)!r})",
+                "import render_previews",
+                f"runtime = pathlib.Path({str(runtime)!r})",
+                "captured = {path.name: path.read_bytes() for path in runtime.iterdir()}",
+                f"marker = pathlib.Path({str(marker)!r})",
+                "(runtime / 'regions.py').write_text("
+                "'from pathlib import Path\\n' + "
+                "f\"Path({str(marker)!r}).write_text('executed')\\n\", encoding='utf-8')",
+                "render_previews._bootstrap_install_runtime(runtime, captured)",
+                "import maximum_optimizer.regions",
+                "raise SystemExit(91 if marker.exists() else 0)",
+            ))
+            completed = subprocess.run(
+                [sys.executable, "-c", script], capture_output=True, text=True,
+                timeout=30,
+            )
+            self.assertEqual(
+                completed.returncode, 0,
+                completed.stdout + "\nSTDERR\n" + completed.stderr,
+            )
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

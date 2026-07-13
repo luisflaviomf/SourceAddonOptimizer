@@ -202,6 +202,7 @@ class SourceUnionBlenderSmokeTests(unittest.TestCase):
                 control_path = control_dir / "source-union-contract.json"
                 visibility_path = control_dir / "source-union-visibility.json"
                 control_path.write_text(json.dumps(control), encoding="utf-8")
+                control_anchor = hashlib.sha256(control_path.read_bytes()).hexdigest()
                 raw = workspace / "raw"
                 command = [
                     str(BLENDER), "--background", "--python", str(renderer), "--",
@@ -211,6 +212,7 @@ class SourceUnionBlenderSmokeTests(unittest.TestCase):
                     "--passes", "textured,clay", "--poses", "bind:0",
                     "--source-union-contract", str(control_path),
                     "--source-union-visibility-out", str(visibility_path),
+                    "--source-union-control-sha256", control_anchor,
                     "--materials-root", str(material_root),
                     "--vtfcmd", str(VTFCMD), "--texture-cache", str(texture_cache),
                 ]
