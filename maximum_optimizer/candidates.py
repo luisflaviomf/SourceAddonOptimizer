@@ -17,7 +17,8 @@ from typing import Protocol
 from vehicle_steer_turn_basis_fix import apply_under_root
 
 from .domain import (
-    CandidateSpec, DirectDroppedTriangleProof, DirectMaterialTriangleProof,
+    CandidateSpec, DirectDroppedTriangleProof, DirectInputMaterialProof,
+    DirectMaterialTriangleProof,
     DirectSourceBuildRequest, DirectSourceSnapshot, FamilyManifest, RecoverySourceSnapshot,
 )
 from .focused_cache import (
@@ -26,7 +27,10 @@ from .focused_cache import (
 )
 from .processes import ProcessResult, run_process
 from .qc_inventory import _inventory_qc
-from .smd_contract import parse_smd_triangles, prefilter_direct_degenerate_smd
+from .smd_contract import (
+    direct_smd_input_material_inventory, parse_smd_triangles,
+    prefilter_direct_degenerate_smd,
+)
 
 
 ProcessRunner = Callable[[Sequence[str | Path], Path, Path, threading.Event], ProcessResult]
@@ -159,6 +163,15 @@ def _direct_prefilter_proof(text: str):
     )
 
 
+def _direct_input_material_proofs(filtered_text: str):
+    return tuple(
+        DirectInputMaterialProof(ordinal, material, count, digest)
+        for ordinal, (material, count, digest) in enumerate(
+            direct_smd_input_material_inventory(filtered_text)
+        )
+    )
+
+
 def _direct_prefix(text: str) -> str:
     lines = text.splitlines(keepends=True)
     index = next((i for i, line in enumerate(lines) if line.strip().casefold() == "triangles"), -1)
@@ -286,6 +299,9 @@ def build_direct_source_snapshot(
         if computed_prefilter != request.expected_prefilter:
             raise ValueError("direct source prefilter differs from expected proof")
         prefilter = prefilter_direct_degenerate_smd(source_text)
+        input_materials = _direct_input_material_proofs(prefilter.filtered_text)
+        if input_materials != request.expected_materials:
+            raise ValueError("direct source material inventory differs from request")
         filtered_bytes = prefilter.filtered_text.encode("utf-8")
         filtered_path = workspace / "prefiltered.smd"
         with filtered_path.open("xb") as stream:

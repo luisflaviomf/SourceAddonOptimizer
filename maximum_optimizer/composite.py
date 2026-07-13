@@ -56,11 +56,13 @@ from .focused_cache import (
     RenderFileProof,
     _copy_file_no_follow,
     _file_proof,
+    _read_regular_no_follow,
     _has_reparse_ancestor,
     _is_reparse as _focused_is_reparse,
 )
 from .qc_graph import QcGraph, parse_qc_graph
 from .reporting import canonical_json
+from .smd_contract import direct_smd_material_counts
 
 
 _MAX_SOURCE_FILES = 4096
@@ -489,6 +491,19 @@ def revalidate_direct_source_snapshot(
         raise ValueError("direct snapshot output is unavailable") from exc
     if (size, digest) != (snapshot.output_size, snapshot.output_sha256):
         raise ValueError("direct snapshot current bytes differ from declared size or hash")
+    output_bytes = _read_regular_no_follow(
+        output, cancel_event, contained_root=root, max_bytes=_MAX_SOURCE_BYTES,
+    )
+    if (len(output_bytes), hashlib.sha256(output_bytes).hexdigest()) != (size, digest):
+        raise ValueError("direct snapshot output changed during semantic validation")
+    try:
+        material_counts = direct_smd_material_counts(output_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("direct snapshot output is not one complete valid SMD") from exc
+    if material_counts != tuple(
+        (item.material, item.triangles_after) for item in snapshot.material_triangles
+    ):
+        raise ValueError("direct snapshot current SMD differs from material ratio evidence")
     if _safe_tree_files(root, cancel_event) != files:
         raise ValueError("direct snapshot file inventory changed during validation")
     return snapshot

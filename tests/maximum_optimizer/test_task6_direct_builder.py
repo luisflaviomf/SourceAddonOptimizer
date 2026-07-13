@@ -8,7 +8,8 @@ import unittest
 from unittest import mock
 
 from maximum_optimizer.candidates import (
-    DirectSourceTools, _direct_prefilter_proof, _validate_direct_smd_output,
+    DirectSourceTools, _direct_input_material_proofs, _direct_prefilter_proof,
+    _validate_direct_smd_output,
     build_direct_source_snapshot,
 )
 from maximum_optimizer import candidates as candidates_module
@@ -34,6 +35,7 @@ def _proof(text: str):
 
 def _request(text: str, *, expected_prefilter=None):
     data = text.encode("utf-8")
+    filtered = prefilter_direct_degenerate_smd(text).filtered_text
     return build_direct_source_request(
         family_id=H["0"], family_input_sha256=H["1"],
         base_candidate_id="base", base_spec_sha256=H["2"],
@@ -45,6 +47,7 @@ def _request(text: str, *, expected_prefilter=None):
         source_relative_path="body.smd", source_size=len(data),
         source_sha256=hashlib.sha256(data).hexdigest(), direct_ratio=0.5,
         expected_prefilter=_proof(text) if expected_prefilter is None else expected_prefilter,
+        expected_materials=_direct_input_material_proofs(filtered),
     )
 
 

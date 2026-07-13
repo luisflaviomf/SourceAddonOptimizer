@@ -1118,6 +1118,32 @@ def direct_prefilter_from_payload(value: object) -> DirectPrefilterProof:
 
 
 @dataclass(frozen=True)
+class DirectInputMaterialProof:
+    ordinal: int
+    material: str
+    triangles_before: int
+    source_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.ordinal) is not int or self.ordinal < 0:
+            raise ValueError("direct input material ordinal is invalid")
+        _require_text(self.material, "direct input material")
+        if "\n" in self.material or "\r" in self.material:
+            raise ValueError("direct input material is not one canonical line")
+        if type(self.triangles_before) is not int or self.triangles_before < 1:
+            raise ValueError("direct input material triangle total is invalid")
+        _require_sha256(self.source_sha256, "direct input material source hash")
+
+
+def direct_input_material_payload(value: DirectInputMaterialProof) -> dict[str, object]:
+    return {
+        "ordinal": value.ordinal, "material": value.material,
+        "triangles_before": value.triangles_before,
+        "source_sha256": value.source_sha256,
+    }
+
+
+@dataclass(frozen=True)
 class DirectSourceBuildRequest:
     schema: Literal[1]
     family_id: str
@@ -1143,6 +1169,7 @@ class DirectSourceBuildRequest:
     transfer: Literal["direct-position-v1"]
     prefilter_version: Literal["direct-degenerate-prefilter-v1"]
     expected_prefilter: DirectPrefilterProof
+    expected_materials: tuple[DirectInputMaterialProof, ...]
     request_sha256: str
 
     def __post_init__(self) -> None:
@@ -1151,20 +1178,38 @@ class DirectSourceBuildRequest:
         _require_text(self.base_candidate_id, "direct base candidate")
         _require_relative(self.source_identity, "direct source identity"); _require_relative(self.source_relative_path, "direct source path"); _require_size(self.source_size, "direct source size"); _require_ratio(self.direct_ratio, "direct ratio")
         if not isinstance(self.expected_prefilter, DirectPrefilterProof): raise TypeError("direct expected prefilter is invalid")
+        materials = tuple(self.expected_materials)
+        post_prefilter_count = self.expected_prefilter.source_triangle_count - self.expected_prefilter.dropped_count
+        if (
+            not materials
+            or any(not isinstance(item, DirectInputMaterialProof) for item in materials)
+            or tuple(item.ordinal for item in materials) != tuple(range(len(materials)))
+            or len({item.material.casefold() for item in materials}) != len(materials)
+            or sum(item.triangles_before for item in materials) != post_prefilter_count
+        ):
+            raise ValueError("direct expected material inventory is invalid")
         if _require_sha256(self.request_sha256, "direct request hash") != _seal(direct_source_request_payload(self, include_seal=False)): raise ValueError("direct request seal mismatch")
+        object.__setattr__(self, "expected_materials", materials)
 
 
 def direct_source_request_payload(value: DirectSourceBuildRequest, *, include_seal: bool = True) -> dict[str, object]:
     payload = {name: getattr(value, name) for name in ("schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "base_strategy", "coverage_manifest_sha256", "source_coverage_sha256", "optimizer_contract_sha256", "whole_profile_sha256", "focused_profile_sha256", "dependency_proof_sha256", "source_identity", "source_relative_path", "source_size", "source_sha256", "direct_ratio", "strategy", "transfer", "prefilter_version")}
     payload["expected_prefilter"] = direct_prefilter_payload(value.expected_prefilter)
+    payload["expected_materials"] = [direct_input_material_payload(item) for item in value.expected_materials]
     if include_seal: payload["request_sha256"] = value.request_sha256
     return payload
 
 
 def direct_source_request_from_payload(value: object) -> DirectSourceBuildRequest:
-    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "base_strategy", "coverage_manifest_sha256", "source_coverage_sha256", "optimizer_contract_sha256", "whole_profile_sha256", "focused_profile_sha256", "dependency_proof_sha256", "source_identity", "source_relative_path", "source_size", "source_sha256", "direct_ratio", "strategy", "transfer", "prefilter_version", "expected_prefilter", "request_sha256"}
-    if type(value) is not dict or set(value) != fields: raise ValueError("direct request payload fields are invalid")
-    copied = dict(value); copied["expected_prefilter"] = direct_prefilter_from_payload(copied["expected_prefilter"]); return DirectSourceBuildRequest(**copied)
+    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "base_strategy", "coverage_manifest_sha256", "source_coverage_sha256", "optimizer_contract_sha256", "whole_profile_sha256", "focused_profile_sha256", "dependency_proof_sha256", "source_identity", "source_relative_path", "source_size", "source_sha256", "direct_ratio", "strategy", "transfer", "prefilter_version", "expected_prefilter", "expected_materials", "request_sha256"}
+    if type(value) is not dict or set(value) != fields or type(value["expected_materials"]) is not list: raise ValueError("direct request payload fields are invalid")
+    material_fields = {"ordinal", "material", "triangles_before", "source_sha256"}
+    materials = []
+    for item in value["expected_materials"]:
+        if type(item) is not dict or set(item) != material_fields:
+            raise ValueError("direct input material payload is invalid")
+        materials.append(DirectInputMaterialProof(**item))
+    copied = dict(value); copied["expected_prefilter"] = direct_prefilter_from_payload(copied["expected_prefilter"]); copied["expected_materials"] = tuple(materials); return DirectSourceBuildRequest(**copied)
 
 
 @dataclass(frozen=True)
@@ -1243,6 +1288,14 @@ class DirectSourceSnapshot:
             )
         ):
             raise ValueError("direct snapshot material ratio evidence is invalid")
+        if tuple(
+            (item.ordinal, item.material, item.triangles_before)
+            for item in materials
+        ) != tuple(
+            (item.ordinal, item.material, item.triangles_before)
+            for item in self.request.expected_materials
+        ):
+            raise ValueError("direct snapshot material evidence differs from request input")
         if self.prefilter != self.request.expected_prefilter or self.fallback_reason is not None or self.preserved_exact is not False or self.reason != "approved-direct-position-v1": raise ValueError("direct snapshot result matrix is invalid")
         if _require_sha256(self.snapshot_sha256, "direct snapshot hash") != _seal(direct_source_snapshot_payload(self, include_seal=False)): raise ValueError("direct snapshot seal mismatch")
         object.__setattr__(self, "source_root", root)

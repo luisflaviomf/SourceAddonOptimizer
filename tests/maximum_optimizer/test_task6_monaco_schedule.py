@@ -21,7 +21,7 @@ from maximum_optimizer.composite import (
 from maximum_optimizer.adaptive_direct_evidence import build_adaptive_direct_evidence
 from maximum_optimizer.domain import (
     CandidateSpec, ChangedSourceProof, CompositionProof, DirectDroppedTriangleProof,
-    DirectMaterialTriangleProof,
+    DirectInputMaterialProof, DirectMaterialTriangleProof,
     ValidationResult,
 )
 from maximum_optimizer.focused_cache import build_final_whole_authorization_evidence
@@ -98,18 +98,29 @@ class MonacoScheduleTests(unittest.TestCase):
                 source_relative_path=source.source_identity, source_size=source.source_size,
                 source_sha256=source.source_sha256, direct_ratio=ratio,
                 expected_prefilter=prefilter,
+                expected_materials=(DirectInputMaterialProof(0, "paint", 9, H["c"]),),
             )
             ratio_root = root / f"r{int(ratio * 100):03d}-{ordinal}"
             ratio_root.mkdir()
-            output = b"direct-output-" + str(ratio).encode() + str(ordinal).encode()
+            after = max(1, int(9 * ratio))
+            rows = []
+            for triangle in range(after):
+                x = triangle * 2
+                rows.append(
+                    f"paint\n0 {x} 0 0 0 0 1 0 0\n0 {x + 1} 0 0 0 0 1 1 0\n0 {x} 1 0 0 0 1 0 1\n"
+                )
+            output = (
+                'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+                '0 0 0 0 0 0 0\nend\ntriangles\n' + "".join(rows) + "end\n"
+            ).encode()
             (ratio_root / "output.smd").write_bytes(output)
             snapshot = build_direct_source_snapshot(
                 request=request, source_root=ratio_root, output_relative_path="output.smd",
                 output_size=len(output), output_sha256=hashlib.sha256(output).hexdigest(),
                 triangles_before=9,
-                triangles_after=max(1, int(9 * ratio)),
+                triangles_after=after,
                 material_triangles=(DirectMaterialTriangleProof(
-                    0, "paint", 9, max(1, int(9 * ratio)), max(1, int(9 * ratio)),
+                    0, "paint", 9, after, after,
                 ),),
                 prefilter=prefilter,
             )

@@ -28,6 +28,7 @@ from maximum_optimizer.domain import (
     AdaptiveGraphOccurrenceProof,
     CompositionProof,
     DirectDroppedTriangleProof,
+    DirectInputMaterialProof,
     DirectMaterialTriangleProof,
     EligibleAdaptiveSourceProof,
     IneligibleAdaptiveSourceProof,
@@ -412,6 +413,7 @@ class DirectContracts(unittest.TestCase):
             focused_profile_sha256=H["8"], dependency_proof_sha256=H["9"],
             source_identity="body.smd", source_relative_path="body.smd", source_size=100,
             source_sha256=H["1"], direct_ratio=0.5, expected_prefilter=self.prefilter(),
+            expected_materials=(DirectInputMaterialProof(0, "paint", 9, H["c"]),),
         )
 
     def test_prefilter_request_and_snapshot_round_trip_with_exact_bindings(self) -> None:
@@ -423,8 +425,20 @@ class DirectContracts(unittest.TestCase):
             payload["expected_prefilter"][field] = None
             with self.subTest(prefilter_field=field), self.assertRaises((TypeError, ValueError)):
                 direct_source_request_from_payload(payload)
+        for field in direct_source_request_payload(request)["expected_materials"][0]:
+            payload = direct_source_request_payload(request)
+            payload["expected_materials"][0][field] = None
+            with self.subTest(input_material_field=field), self.assertRaises((TypeError, ValueError)):
+                direct_source_request_from_payload(payload)
         with tempfile.TemporaryDirectory() as root:
-            output = b"direct-output"
+            rows = "".join(
+                f"paint\n0 {i * 2} 0 0 0 0 1 0 0\n0 {i * 2 + 1} 0 0 0 0 1 1 0\n0 {i * 2} 1 0 0 0 1 0 1\n"
+                for i in range(4)
+            )
+            output = (
+                'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+                '0 0 0 0 0 0 0\nend\ntriangles\n' + rows + "end\n"
+            ).encode()
             (Path(root) / "output.smd").write_bytes(output)
             snapshot = build_direct_source_snapshot(
                 request=request, source_root=Path(root).resolve(),
@@ -472,6 +486,7 @@ class DirectContracts(unittest.TestCase):
             focused_profile_sha256=H["8"], dependency_proof_sha256=H["9"],
             source_identity="body.smd", source_relative_path="body.smd", source_size=100,
             source_sha256=H["1"], direct_ratio=0.5, expected_prefilter=mismatched,
+            expected_materials=(DirectInputMaterialProof(0, "paint", 9, H["c"]),),
         )
         self.assertEqual(request.expected_prefilter.triangles[0].source_sha256, H["2"])
 

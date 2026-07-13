@@ -124,6 +124,43 @@ def parse_smd_triangles(
     return ParsedSmd(lines, tuple(triangles))
 
 
+def direct_smd_material_counts(text: str) -> tuple[tuple[str, int], ...]:
+    """Parse one complete SMD and return first-occurrence material order/counts."""
+    parsed = parse_smd_triangles(text)
+    last_corner = parsed.triangles[-1].corners[-1].line_index
+    tail = parsed.lines[last_corner + 1:]
+    if not tail or tail[0].strip().casefold() != "end" or any(line.strip() for line in tail[1:]):
+        raise ValueError("direct SMD has trailing or malformed content after triangles end")
+    order = tuple(dict.fromkeys(item.material for item in parsed.triangles))
+    return tuple(
+        (material, sum(item.material == material for item in parsed.triangles))
+        for material in order
+    )
+
+
+def direct_smd_input_material_inventory(
+    text: str,
+) -> tuple[tuple[str, int, str], ...]:
+    """Return post-prefilter material order, counts, and exact record-stream hashes."""
+    parsed = parse_smd_triangles(text)
+    direct_smd_material_counts(text)  # also enforces exact EOF
+    order = tuple(dict.fromkeys(item.material for item in parsed.triangles))
+    records: dict[str, list[bytes]] = {material: [] for material in order}
+    for triangle in parsed.triangles:
+        start = triangle.corners[0].line_index - 1
+        end = triangle.corners[-1].line_index
+        records[triangle.material].append(
+            "".join(parsed.lines[start:end + 1]).encode("utf-8")
+        )
+    return tuple(
+        (
+            material, len(records[material]),
+            hashlib.sha256(b"".join(records[material])).hexdigest(),
+        )
+        for material in order
+    )
+
+
 def prefilter_direct_degenerate_smd(
     text: str, *, cross_squared_threshold: float = 1e-30
 ) -> DirectDegeneratePrefilter:
