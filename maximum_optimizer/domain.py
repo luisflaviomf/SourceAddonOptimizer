@@ -1491,6 +1491,12 @@ class CandidateSpec:
                 and self.candidate_id != "recovery-" + self.composite_recipe.recipe_sha256
             ):
                 raise ValueError("focused recovery candidate id must derive from full recipe")
+            if self.composite_recipe.kind == "adaptive-direct-fallback-v1" and (
+                self.candidate_id != "adaptive-direct-" + self.composite_recipe.recipe_sha256
+                or self.target_ratio != self.composite_recipe.direct_ratio
+                or self.region_overrides
+            ):
+                raise ValueError("adaptive-direct candidate identity must derive from full global recipe")
             contract = {
                 "engine": self.engine, "target_error": self.target_error,
                 "repair_profile": self.repair_profile, "strategy": self.strategy,
