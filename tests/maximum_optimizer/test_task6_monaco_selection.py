@@ -24,6 +24,7 @@ from maximum_optimizer.domain import (
     CandidateSpec,
     CompiledSizeSnapshot,
     EligibleAdaptiveSourceProof,
+    IneligibleAdaptiveSourceProof,
     FocusRegionResult,
     FocusedEvidenceRef,
     SourceFileProof,
@@ -297,6 +298,39 @@ class MonacoBaseSelectionTests(unittest.TestCase):
 
 
 class ExactFallbackSelectionTests(unittest.TestCase):
+    def test_zero_eligible_fake_output_hash_rejects_against_retained_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evaluation, build, proof = _retained(root)
+            source = proof.metrics.sources[0]
+            forged_source = IneligibleAdaptiveSourceProof.create(
+                source_identity=source.source_identity,
+                source_relative_path=source.source_relative_path,
+                source_size=source.source_size, source_sha256=source.source_sha256,
+                output_relative_path=source.output_relative_path,
+                output_size=source.output_size, output_sha256="f" * 64,
+                occurrences=source.occurrences,
+                ineligibility_reason="adaptive-output-changed-v1",
+            )
+            forged_metrics = build_adaptive_candidate_metrics_proof(
+                family_id=proof.metrics.family_id,
+                family_input_sha256=proof.metrics.family_input_sha256,
+                candidate_id=proof.metrics.candidate_id,
+                candidate_cache_digest=proof.metrics.candidate_cache_digest,
+                base_spec_sha256=proof.metrics.base_spec_sha256,
+                source_manifest_sha256=proof.metrics.source_manifest_sha256,
+                source_snapshot_sha256=proof.metrics.source_snapshot_sha256,
+                original_graph_sha256=proof.metrics.original_graph_sha256,
+                candidate_graph_sha256=proof.metrics.candidate_graph_sha256,
+                raw_metrics_sha256=proof.metrics.raw_metrics_sha256,
+                sources=(forged_source,),
+            )
+            with self.assertRaises(ValueError):
+                build_retained_monaco_base_proof(
+                    evaluation, build, forged_metrics, proof.state_inventory,
+                    proof.focused_evidence,
+                )
+
     def test_uses_exact_original_and_current_base_snapshots(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -350,33 +384,22 @@ class ExactFallbackSelectionTests(unittest.TestCase):
                     proof, proof.metrics, proof.state_inventory, original,
                 )
 
-            _, _, forged = _retained(
-                root, "forged", candidate_relative="forged/body.smd",
-            )
-            forged_original_root = root / "forged-original"
-            forged_original_root.mkdir()
-            forged_original = _source_snapshot(forged_original_root, None, output=False)
             with self.assertRaises(ValueError):
-                select_exact_fallback_sources(
-                    forged, forged.metrics, forged.state_inventory, forged_original,
+                _retained(
+                    root, "forged", candidate_relative="forged/body.smd",
                 )
 
-    def test_zero_or_over_eight_reject_before_snapshot_io(self) -> None:
-        # Bounded preflight remains independent of filesystem access.
+    def test_over_eight_rejects_before_snapshot_io(self) -> None:
+        # The hard bound remains independent of filesystem access.
         sentinel = mock.Mock()
         with tempfile.TemporaryDirectory() as temporary:
             _, _, proof = _retained(Path(temporary))
-            zero_metrics = SimpleNamespace(sources=())
-            zero_proof = SimpleNamespace(metrics=zero_metrics, state_inventory=proof.state_inventory)
-            self.assertIsNone(select_exact_fallback_sources(
-                zero_proof, zero_metrics, proof.state_inventory, sentinel,
-            ))
             nine_metrics = SimpleNamespace(
                 sources=tuple(SimpleNamespace(kind="eligible-exact-v1") for _ in range(9))
             )
             with self.assertRaises(ValueError):
                 select_exact_fallback_sources(
-                    zero_proof, nine_metrics, proof.state_inventory, sentinel,
+                    proof, nine_metrics, proof.state_inventory, sentinel,
                 )
             sentinel.assert_not_called()
 

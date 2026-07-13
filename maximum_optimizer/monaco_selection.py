@@ -199,6 +199,17 @@ def _validate_retained(
     )
     if visual_identities != tuple(item.source_identity for item in proof.metrics.sources):
         raise ValueError("Monaco candidate visual source inventory is incomplete")
+    candidate_files = {
+        item.file_identity: item for item in snapshot.source_manifest.files
+        if item.kind == "visual-source"
+    }
+    for metric in proof.metrics.sources:
+        output = candidate_files[metric.source_identity]
+        if (
+            output.relative_path != metric.output_relative_path
+            or (output.size, output.sha256) != (metric.output_size, metric.output_sha256)
+        ):
+            raise ValueError("Monaco candidate metrics differ from current retained output")
     build_root = Path(proof.build.compiled_models_dir).resolve()
     evaluation_root = Path(evaluation.compiled_models_dir).resolve()
     size_root = Path(evaluation.size.root).resolve()
@@ -317,8 +328,6 @@ def select_exact_fallback_sources(
 ) -> ExactFallbackSelection | None:
     _ = reservation_callback, direct_io_callback
     eligible = tuple(item for item in metrics.sources if item.kind == "eligible-exact-v1")
-    if not eligible:
-        return None
     if len(eligible) > 8:
         raise ValueError("Monaco exact fallback exceeds eight eligible sources")
     if not isinstance(base_proof, RetainedMonacoBaseProof):
@@ -346,7 +355,7 @@ def select_exact_fallback_sources(
     current_visual = tuple(item.file_identity for item in candidate_snapshot.source_manifest.files if item.kind == "visual-source")
     if original_visual != metric_identities or current_visual != metric_identities:
         raise ValueError("Monaco original/candidate visual inventory differs from metrics")
-    for item in eligible:
+    for item in metrics.sources:
         source = original.get(item.source_identity)
         output = current.get(item.source_identity)
         if (
@@ -358,6 +367,8 @@ def select_exact_fallback_sources(
             or (output.size, output.sha256) != (item.output_size, item.output_sha256)
         ):
             raise ValueError("Monaco exact fallback source path or bytes are stale")
+    if not eligible:
+        return None
     coverage = coverage_factory(
         metrics_proof=metrics, state_inventory=state_inventory,
         family_id=state_inventory.family_id,
