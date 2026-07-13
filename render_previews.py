@@ -2820,6 +2820,7 @@ def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
         seen_curve_channels.add(channel_identity)
         points = []
         curve_frames = set()
+        previous_frame = None
         for keyframe in tuple(getattr(curve, "keyframe_points", ())):
             co = tuple(float(value) for value in keyframe.co)
             if len(co) != 2 or any(not math.isfinite(value) for value in co):
@@ -2829,7 +2830,10 @@ def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
                 raise RuntimeError("representative-animation-unavailable: action keyframe ordinal differs")
             if int(frame) in curve_frames:
                 raise RuntimeError("representative-animation-unavailable: duplicate action keyframe ordinal")
+            if previous_frame is not None and int(frame) <= previous_frame:
+                raise RuntimeError("representative-animation-unavailable: action keyframe order differs")
             curve_frames.add(int(frame))
+            previous_frame = int(frame)
             keyed_frames.add(int(frame))
             points.append([frame, co[1]])
         if not points:

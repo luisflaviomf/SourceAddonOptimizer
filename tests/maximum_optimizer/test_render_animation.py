@@ -259,6 +259,15 @@ def test_apply_animation_rejects_invalid_array_index_and_duplicate_keyframe(tmp_
     with pytest.raises(RuntimeError, match="duplicate.*keyframe"):
         run_with(duplicate_frame)
 
+    source.write_text(_animation_smd().replace(
+        "1 0 0 0 0 0 1\nend",
+        "1 0 0 0 0 0 1\ntime 3\n0 0 0 0 0 0 0\n1 0 0 0 0 0 0.5\nend",
+    ), encoding="utf-8")
+    descending = _fcurve(frame=1.0)
+    descending.keyframe_points.append(SimpleNamespace(co=(0.0, 2.0)))
+    with pytest.raises(RuntimeError, match="keyframe.*order"):
+        run_with(descending)
+
 
 def test_animation_toolchain_cache_is_deeply_copy_safe():
     previous = render_previews._ANIMATION_TOOLCHAIN_PROOF

@@ -489,6 +489,14 @@ end
         with self.assertRaisesRegex(ValueError, "weights"):
             self.select()
 
+        negative_weight = list(lines)
+        tokens = negative_weight[vertex_index].split()
+        tokens[9:] = ["2", "1", "1.0", "2", "-0.25"]
+        negative_weight[vertex_index] = " ".join(tokens)
+        body.write_text("\n".join(negative_weight) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "negative.*weight|weights"):
+            self.select()
+
     def test_geometry_triangle_inventory_requires_complete_triplets_and_end(self) -> None:
         body = self.root / "body.smd"
         original = body.read_text(encoding="utf-8")

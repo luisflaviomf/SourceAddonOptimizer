@@ -704,7 +704,11 @@ def _geometry_extents(
                     for offset in range(link_count):
                         bone = int(tokens[10 + offset * 2])
                         weight = float(tokens[11 + offset * 2])
-                        if not math.isfinite(weight) or bone not in geometry_to_expected:
+                        if (
+                            not math.isfinite(weight)
+                            or weight < 0.0
+                            or bone not in geometry_to_expected
+                        ):
                             raise ValueError
                         if weight > 0.0:
                             weighted.append((geometry_to_expected[bone], weight))
