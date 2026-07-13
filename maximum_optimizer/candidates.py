@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 import shutil
+import stat
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -19,7 +21,7 @@ from .domain import (
 )
 from .focused_cache import (
     _copy_file_no_follow, _file_proof, _has_reparse_ancestor,
-    _read_regular_no_follow,
+    _is_reparse, _read_regular_no_follow,
 )
 from .processes import ProcessResult, run_process
 from .qc_inventory import _inventory_qc
@@ -109,6 +111,32 @@ def _direct_cancel(cancel_event: threading.Event | None, message: str) -> None:
         raise ProcessCancelledError(message)
 
 
+def _remove_owned_direct_tree_no_follow(root: Path) -> None:
+    """Remove only entries reached through lstat/scandir; never traverse a reparse point."""
+    root = Path(root)
+    if not root.exists() and not root.is_symlink():
+        return
+
+    def remove(path: Path) -> None:
+        info = os.lstat(path)
+        if _is_reparse(path) or stat.S_ISLNK(info.st_mode):
+            try:
+                path.unlink()
+            except (IsADirectoryError, PermissionError):
+                os.rmdir(path)
+            return
+        if stat.S_ISDIR(info.st_mode):
+            with os.scandir(path) as scan:
+                entries = tuple(scan)
+            for entry in entries:
+                remove(Path(entry.path))
+            os.rmdir(path)
+            return
+        path.unlink()
+
+    remove(root)
+
+
 def _direct_prefilter_proof(text: str):
     evidence = prefilter_direct_degenerate_smd(text).evidence
     triangles = tuple(DirectDroppedTriangleProof(
@@ -129,27 +157,60 @@ def _direct_prefix(text: str) -> str:
     return "".join(lines[: index + 1])
 
 
-def _validate_direct_smd_output(filtered_text: str, output_text: str) -> tuple[int, int]:
+def _require_exact_triangles_eof(text: str, parsed) -> None:
+    last_corner = parsed.triangles[-1].corners[-1].line_index
+    tail = parsed.lines[last_corner + 1:]
+    if not tail or tail[0].strip().casefold() != "end" or any(line.strip() for line in tail[1:]):
+        raise ValueError("direct SMD has trailing or malformed content after triangles end")
+
+
+def _validate_direct_smd_output(
+    filtered_text: str, output_text: str, direct_ratio: float,
+) -> tuple[int, int]:
     if _direct_prefix(filtered_text) != _direct_prefix(output_text):
         raise RuntimeError("direct output changed nodes or skeleton frames")
     source = parse_smd_triangles(filtered_text)
     output = parse_smd_triangles(output_text)
+    _require_exact_triangles_eof(filtered_text, source)
+    _require_exact_triangles_eof(output_text, output)
     if not 0 < len(output.triangles) < len(source.triangles):
         raise ValueError("direct output did not strictly reduce post-prefilter triangles")
     source_material_order = tuple(dict.fromkeys(item.material for item in source.triangles))
     output_material_order = tuple(dict.fromkeys(item.material for item in output.triangles))
-    positions = [source_material_order.index(item) for item in output_material_order if item in source_material_order]
-    if len(positions) != len(output_material_order) or positions != sorted(positions):
+    if output_material_order != source_material_order:
         raise RuntimeError("direct output changed material spelling or order")
-    corners_by_material: dict[str, set[tuple[str, ...]]] = {}
-    for triangle in source.triangles:
-        corners_by_material.setdefault(triangle.material, set()).update(
-            corner.tokens for corner in triangle.corners
-        )
+    source_counts = {
+        material: sum(item.material == material for item in source.triangles)
+        for material in source_material_order
+    }
+    output_counts = {
+        material: sum(item.material == material for item in output.triangles)
+        for material in output_material_order
+    }
+    targets = {
+        material: max(1, math.floor(count * direct_ratio))
+        for material, count in source_counts.items()
+    }
+    if any(output_counts[material] > targets[material] for material in source_material_order):
+        raise ValueError("direct output exceeds deterministic post-prefilter ratio target")
+    source_cycles: dict[str, dict[tuple[tuple[str, ...], ...], int]] = {}
+    for ordinal, triangle in enumerate(source.triangles):
+        tokens = tuple(corner.tokens for corner in triangle.corners)
+        values = source_cycles.setdefault(triangle.material, {})
+        for offset in range(3):
+            cycle = tokens[offset:] + tokens[:offset]
+            if cycle in values:
+                raise RuntimeError("direct source triangle cycle provenance is ambiguous")
+            values[cycle] = ordinal
+    used_cycles: set[int] = set()
     for triangle in output.triangles:
-        allowed = corners_by_material.get(triangle.material, set())
-        if any(corner.tokens not in allowed for corner in triangle.corners):
-            raise RuntimeError("direct output changed retained corner attributes")
+        tokens = tuple(corner.tokens for corner in triangle.corners)
+        source_ordinal = source_cycles.get(triangle.material, {}).get(tokens)
+        if source_ordinal is None:
+            raise RuntimeError("direct output changed retained corner cycle or winding")
+        if source_ordinal in used_cycles:
+            raise RuntimeError("direct output duplicated a retained source triangle")
+        used_cycles.add(source_ordinal)
         a, b, c = (corner.position for corner in triangle.corners)
         ab = tuple(b[i] - a[i] for i in range(3)); ac = tuple(c[i] - a[i] for i in range(3))
         cross = (
@@ -157,9 +218,8 @@ def _validate_direct_smd_output(filtered_text: str, output_text: str) -> tuple[i
             ab[2] * ac[0] - ab[0] * ac[2],
             ab[0] * ac[1] - ab[1] * ac[0],
         )
-        average_normal = tuple(sum(corner.normal[i] for corner in triangle.corners) for i in range(3))
-        if sum(cross[i] * average_normal[i] for i in range(3)) <= 0.0:
-            raise RuntimeError("direct output reversed cyclic winding provenance")
+        if sum(value * value for value in cross) <= 1e-30:
+            raise RuntimeError("direct output contains degenerate retained topology")
     return len(source.triangles), len(output.triangles)
 
 
@@ -242,7 +302,7 @@ def build_direct_source_snapshot(
         except UnicodeDecodeError as exc:
             raise ValueError("direct output SMD is not UTF-8") from exc
         triangles_before, triangles_after = _validate_direct_smd_output(
-            prefilter.filtered_text, output_text
+            prefilter.filtered_text, output_text, request.direct_ratio,
         )
         exact_input.unlink(); filtered_path.unlink()
         return seal_snapshot(
@@ -252,8 +312,8 @@ def build_direct_source_snapshot(
             prefilter=computed_prefilter, cancel_event=cancel_event,
         )
     except BaseException:
-        if created and workspace.exists() and not workspace.is_symlink():
-            shutil.rmtree(workspace)
+        if created:
+            _remove_owned_direct_tree_no_follow(workspace)
         raise
 
 

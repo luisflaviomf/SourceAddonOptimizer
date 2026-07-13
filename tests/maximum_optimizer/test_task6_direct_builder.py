@@ -8,7 +8,8 @@ import unittest
 from unittest import mock
 
 from maximum_optimizer.candidates import (
-    DirectSourceTools, _direct_prefilter_proof, build_direct_source_snapshot,
+    DirectSourceTools, _direct_prefilter_proof, _validate_direct_smd_output,
+    build_direct_source_snapshot,
 )
 from maximum_optimizer.composite import build_direct_source_request
 from maximum_optimizer.processes import ProcessCancelledError
@@ -22,7 +23,7 @@ def _source() -> str:
         '0 0 0 0 0 0 0\nend\ntriangles\nmetal\n'
         '0 2 0 0 0 0 1 0 0\n0 2 0 0 0 0 1 0 0\n0 2 0 0 0 0 1 0 0\n'
         'metal\n0 0 0 0 0 0 1 0 0\n0 1 0 0 0 0 1 1 0\n0 0 1 0 0 0 1 0 1\n'
-        'glass\n0 0 0 1 0 0 1 0 0\n0 1 0 1 0 0 1 1 0\n0 0 1 1 0 0 1 0 1\nend\n'
+        'metal\n0 0 0 1 0 0 1 0 0\n0 1 0 1 0 0 1 1 0\n0 0 1 1 0 0 1 0 1\nend\n'
     )
 
 
@@ -61,6 +62,58 @@ def _reverse_first(text: str) -> str:
 
 
 class DirectSourceBuilderTests(unittest.TestCase):
+    def test_fixed_ratios_reject_output_above_deterministic_target(self) -> None:
+        prefix = (
+            'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+            '0 0 0 0 0 0 0\nend\ntriangles\n'
+        )
+        records = []
+        for index in range(10):
+            x = index * 2
+            records.append(
+                f'metal\n0 {x} 0 0 0 0 1 0 0\n0 {x + 1} 0 0 0 0 1 1 0\n'
+                f'0 {x} 1 0 0 0 1 0 1\n'
+            )
+        source = prefix + "".join(records) + "end\n"
+        for ratio, target in ((0.50, 5), (0.45, 4), (0.40, 4), (0.35, 3)):
+            output = prefix + "".join(records[:target + 1]) + "end\n"
+            with self.subTest(ratio=ratio), self.assertRaisesRegex(ValueError, "ratio target"):
+                _validate_direct_smd_output(source, output, ratio)
+
+    def test_multi_material_floors_are_applied_independently(self) -> None:
+        prefix = (
+            'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+            '0 0 0 0 0 0 0\nend\ntriangles\n'
+        )
+        def record(material: str, index: int) -> str:
+            x = index * 2
+            return (
+                f'{material}\n0 {x} 0 0 0 0 1 0 0\n0 {x + 1} 0 0 0 0 1 1 0\n'
+                f'0 {x} 1 0 0 0 1 0 1\n'
+            )
+        metal = [record("metal", i) for i in range(4)]
+        glass = [record("glass", i + 10) for i in range(2)]
+        source = prefix + "".join(metal + glass) + "end\n"
+        output = prefix + "".join(metal[:2] + glass[:1]) + "end\n"
+        self.assertEqual(_validate_direct_smd_output(source, output, 0.5), (6, 3))
+
+    def test_winding_provenance_is_independent_of_corner_normals(self) -> None:
+        lines = prefilter_direct_degenerate_smd(self.text).filtered_text.splitlines(keepends=True)
+        in_triangles = False
+        for index, raw in enumerate(lines):
+            folded = raw.strip().casefold()
+            if folded == "triangles":
+                in_triangles = True
+                continue
+            tokens = raw.split()
+            if in_triangles and len(tokens) >= 9 and tokens[0].lstrip("-").isdigit():
+                tokens[6] = "-1"
+                lines[index] = " ".join(tokens) + "\n"
+        negative = "".join(lines)
+        self.assertEqual(_validate_direct_smd_output(negative, _first_triangle(negative), 0.5), (2, 1))
+        with self.assertRaisesRegex(RuntimeError, "cycle or winding"):
+            _validate_direct_smd_output(negative, _reverse_first(negative), 0.5)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -152,6 +205,7 @@ class DirectSourceBuilderTests(unittest.TestCase):
             "winding": lambda text, root: _reverse_first(text),
             "nan": lambda text, root: _first_triangle(text).replace("0 0 0 0 0 0 1", "0 nan 0 0 0 0 1", 1),
             "directory": lambda text, root: (_first_triangle(text), (root / "unexpected").mkdir())[0],
+            "trailing": lambda text, root: _first_triangle(text) + "garbage\n",
         }
         for name, transform in variants.items():
             workspace = self.root / name
