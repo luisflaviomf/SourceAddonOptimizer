@@ -46,7 +46,16 @@ from .monaco_selection import (
     select_exact_fallback_sources,
     select_monaco_base,
 )
-from .qc_graph import QcGraph, _lex, _line_values, parse_qc_graph
+from .qc_graph import (
+    QcGraph, _block_bounds, _lex, _line_values, _source_tokens, parse_qc_graph,
+)
+from .production_adapters import SourceUnionPoseBinding
+from .smd_state_contracts import (
+    SmdAnimationPairInput,
+    _parse_nodes_and_frames,
+    build_smd_pose_contract,
+    build_smd_skeleton_contract,
+)
 from .smd_contract import direct_smd_material_counts, prefilter_direct_degenerate_smd
 from .source_components import SourceComponentManifest, build_source_component_manifest
 from .source_materials import (
@@ -58,6 +67,24 @@ from .source_materials import (
 
 _SOURCE_BYTE_LIMIT = 2 * 1024 ** 3
 _CANDIDATE_METRICS_BYTE_LIMIT = 64 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ProductionAnimationAnchor:
+    occurrence_index: int
+    directive: str
+    pair: SmdAnimationPairInput
+    representative_frame: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.occurrence_index) is not int or self.occurrence_index < 0
+            or self.directive not in {"$sequence", "$animation"}
+            or not isinstance(self.pair, SmdAnimationPairInput)
+            or type(self.representative_frame) is not int
+            or self.representative_frame <= 0
+        ):
+            raise ValueError("production animation anchor is invalid")
 
 
 def _absolute(value: Path) -> Path:
@@ -178,6 +205,147 @@ def _visual_proofs(snapshot: RecoverySourceSnapshot) -> dict[str, SourceFileProo
     return result
 
 
+def _proof_for_reference(
+    snapshot: RecoverySourceSnapshot, source_path: Path, *, kind: str,
+) -> SourceFileProof:
+    root = _absolute(snapshot.source_root)
+    path = _absolute(source_path)
+    try:
+        relative = path.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise ValueError("animation reference escapes sealed source root") from exc
+    matches = tuple(
+        item for item in snapshot.source_manifest.files
+        if item.relative_path == relative and item.kind == kind
+    )
+    if len(matches) != 1:
+        raise ValueError("animation reference has no exact sealed source member")
+    return matches[0]
+
+
+def _read_animation_pair(
+    pair: SmdAnimationPairInput, cancel_event: threading.Event | None,
+) -> tuple[tuple[object, ...], tuple[int, ...]]:
+    before = _read_regular_no_follow(
+        pair.original_path, cancel_event, contained_root=pair.original_root,
+        max_bytes=64 * 1024 * 1024,
+    )
+    after = _read_regular_no_follow(
+        pair.candidate_path, cancel_event, contained_root=pair.candidate_root,
+        max_bytes=64 * 1024 * 1024,
+    )
+    if (
+        (len(before), hashlib.sha256(before).hexdigest())
+        != (pair.original_proof.size, pair.original_proof.sha256)
+        or (len(after), hashlib.sha256(after).hexdigest())
+        != (pair.candidate_proof.size, pair.candidate_proof.sha256)
+        or before != after
+    ):
+        raise ValueError("paired animation current bytes differ")
+    before_nodes, before_frames = _parse_nodes_and_frames(before)
+    after_nodes, after_frames = _parse_nodes_and_frames(after)
+    before_ids = tuple(frame for frame, _transforms in before_frames)
+    after_ids = tuple(frame for frame, _transforms in after_frames)
+    if before_nodes != after_nodes or before_ids != after_ids:
+        raise ValueError("paired animation nodes or frame indices differ")
+    return tuple(before_nodes), before_ids
+
+
+def _animation_occurrence_shapes(graph: QcGraph) -> tuple[tuple[object, ...], ...]:
+    shapes: list[tuple[object, ...]] = []
+    for graph_file in graph.files:
+        tokens = _lex(graph_file.text)
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token.value.casefold() not in {"$sequence", "$animation"}:
+                index += 1
+                continue
+            args, after_args = _line_values(tokens, index + 1, len(tokens))
+            block = _block_bounds(tokens, after_args, len(tokens))
+            block_tokens = () if block is None else tokens[block[0]:block[1]]
+            sources = tuple(_source_tokens(args[1:])) + tuple(
+                _source_tokens(list(block_tokens))
+            )
+
+            def normalized(values) -> tuple[tuple[str, str], ...]:
+                return tuple(
+                    (item.kind, "<animation-source>" if _source_tokens([item]) else item.value)
+                    for item in values
+                )
+
+            for source_ordinal, _source in enumerate(sources):
+                shapes.append((
+                    token.value.casefold(), token.line, source_ordinal,
+                    normalized(args), normalized(block_tokens),
+                ))
+            index = (
+                block[2] if block is not None
+                else max(after_args + 1, index + 1)
+            )
+    return tuple(shapes)
+
+
+def _build_animation_anchor(
+    original_graph: QcGraph, candidate_graph: QcGraph,
+    original_snapshot: RecoverySourceSnapshot,
+    candidate_snapshot: RecoverySourceSnapshot,
+    cancel_event: threading.Event | None,
+) -> ProductionAnimationAnchor | None:
+    original_refs = tuple(item for item in original_graph.references if item.role == "animation")
+    candidate_refs = tuple(item for item in candidate_graph.references if item.role == "animation")
+    original_shapes = _animation_occurrence_shapes(original_graph)
+    candidate_shapes = _animation_occurrence_shapes(candidate_graph)
+    original_files = tuple(
+        item for item in original_snapshot.source_manifest.files
+        if item.kind == "animation-source"
+    )
+    candidate_files = tuple(
+        item for item in candidate_snapshot.source_manifest.files
+        if item.kind == "animation-source"
+    )
+    if not original_refs and not candidate_refs and not original_files and not candidate_files:
+        return None
+    if (
+        not original_refs or len(original_refs) != len(candidate_refs)
+        or len(original_shapes) != len(original_refs)
+        or original_shapes != candidate_shapes
+        or tuple(item.directive for item in original_refs)
+        != tuple(item.directive for item in candidate_refs)
+    ):
+        raise ValueError("original/candidate animation occurrence inventory differs")
+
+    pairs: list[tuple[int, str, SmdAnimationPairInput, tuple[object, ...], tuple[int, ...]]] = []
+    original_seen: set[str] = set()
+    candidate_seen: set[str] = set()
+    for index, (before_ref, after_ref) in enumerate(zip(original_refs, candidate_refs)):
+        before_proof = _proof_for_reference(
+            original_snapshot, before_ref.source_path, kind="animation-source",
+        )
+        after_proof = _proof_for_reference(
+            candidate_snapshot, after_ref.source_path, kind="animation-source",
+        )
+        original_seen.add(before_proof.relative_path)
+        candidate_seen.add(after_proof.relative_path)
+        pair = SmdAnimationPairInput(
+            _absolute(before_ref.source_path), _absolute(original_snapshot.source_root),
+            before_proof, _absolute(after_ref.source_path),
+            _absolute(candidate_snapshot.source_root), after_proof,
+        )
+        nodes, frames = _read_animation_pair(pair, cancel_event)
+        pairs.append((index, before_ref.directive, pair, nodes, frames))
+    if (
+        original_seen != {item.relative_path for item in original_files}
+        or candidate_seen != {item.relative_path for item in candidate_files}
+    ):
+        raise ValueError("animation source union differs from exact QC occurrences")
+    anchors = tuple(item for item in pairs if any(frame > 0 for frame in item[4]))
+    if not anchors:
+        raise ValueError("animation QC has no positive representative frame")
+    index, directive, pair, _nodes, frames = anchors[0]
+    return ProductionAnimationAnchor(index, directive, pair, max(frame for frame in frames if frame > 0))
+
+
 def _current_source_bytes(
     snapshot: RecoverySourceSnapshot,
     proof: SourceFileProof,
@@ -260,6 +428,9 @@ class ProductionAdaptiveAuthorityBundle:
     dependencies: Mapping[str, AdaptiveStateSourceDependencies]
     component_manifests: Mapping[str, SourceComponentManifest]
     material_contracts: Mapping[str, SourceUnionMaterialContract]
+    animation_anchor: ProductionAnimationAnchor | None
+    animation_pairs: Mapping[str, SmdAnimationPairInput]
+    pose_bindings: Mapping[str, tuple[SourceUnionPoseBinding, ...]]
 
     def __post_init__(self) -> None:
         if not all((
@@ -274,19 +445,58 @@ class ProductionAdaptiveAuthorityBundle:
         dependencies = dict(self.dependencies)
         components = dict(self.component_manifests)
         materials = dict(self.material_contracts)
+        animation_pairs = dict(self.animation_pairs)
+        pose_bindings = dict(self.pose_bindings)
         identities = tuple(item.source_identity for item in self.metrics.sources)
+        anchor_valid = self.animation_anchor is None or type(
+            self.animation_anchor
+        ) is ProductionAnimationAnchor
         if (
             tuple(dependencies) != identities
             or tuple(components) != identities
             or tuple(materials) != identities
             or any(components[key] != dependencies[key].component_manifest for key in identities)
             or any(materials[key] != dependencies[key].material_contract for key in identities)
+            or tuple(animation_pairs) not in {(), identities}
+            or tuple(pose_bindings) not in {(), identities}
+            or bool(self.animation_anchor) != bool(animation_pairs)
+            or bool(animation_pairs) != bool(pose_bindings)
+            or not anchor_valid
         ):
             raise ValueError("production adaptive source-union mappings differ")
+        if self.animation_anchor is None:
+            if any(row.pose_keys != ("bind",) for row in self.state_inventory.rows):
+                raise ValueError("bind-only authority differs from QC animation inventory")
+        else:
+            anchor = self.animation_anchor
+            assert isinstance(anchor, ProductionAnimationAnchor)
+            for identity in identities:
+                pair = animation_pairs.get(identity)
+                bindings = pose_bindings.get(identity)
+                rows = tuple(
+                    row for row in self.state_inventory.rows
+                    if row.source_identity == identity
+                )
+                contracts = {row.pose_contract_sha256 for row in rows}
+                if (
+                    not isinstance(pair, SmdAnimationPairInput)
+                    or pair != anchor.pair
+                    or type(bindings) is not tuple or len(bindings) != 2
+                    or any(not isinstance(item, SourceUnionPoseBinding) for item in bindings)
+                    or tuple(item.pose_key for item in bindings) != ("bind", "animation")
+                    or not rows or len(contracts) != 1
+                    or any(row.pose_keys != ("bind", "animation") for row in rows)
+                    or any(item.pose_contract_sha256 not in contracts for item in bindings)
+                    or bindings[1].animation_pair != pair
+                    or bindings[1].frame != anchor.representative_frame
+                ):
+                    raise ValueError("production paired animation mappings differ")
         object.__setattr__(self, "material_roots", roots)
         object.__setattr__(self, "dependencies", MappingProxyType(dependencies))
         object.__setattr__(self, "component_manifests", MappingProxyType(components))
         object.__setattr__(self, "material_contracts", MappingProxyType(materials))
+        object.__setattr__(self, "animation_pairs", MappingProxyType(animation_pairs))
+        object.__setattr__(self, "pose_bindings", MappingProxyType(pose_bindings))
 
     @property
     def coverage(self) -> AdaptiveDirectCoverageManifest | None:
@@ -385,13 +595,9 @@ def build_production_adaptive_authority_bundle(
     )
     revalidate_recovery_snapshot(original_snapshot, cancel_event)
 
-    if (
-        any(item.kind == "animation-source" for item in snapshot.source_manifest.files)
-        or any(item.kind == "animation-source" for item in original_manifest.files)
-        or any(item.role == "animation" for item in candidate_graph.references)
-        or any(item.role == "animation" for item in original_graph.references)
-    ):
-        raise ValueError("unsupported-until-paired-animation-authority")
+    animation_anchor = _build_animation_anchor(
+        original_graph, candidate_graph, original_snapshot, snapshot, cancel_event,
+    )
 
     metrics = build_production_adaptive_candidate_metrics_proof(
         manifest=manifest, spec=spec, candidate_cache_digest=cache_digest,
@@ -406,12 +612,51 @@ def build_production_adaptive_authority_bundle(
     dependencies = _build_dependencies(
         original_snapshot, original_graph, roots, cancel_event,
     )
+    animation_pairs: dict[str, SmdAnimationPairInput] = {}
+    animation_pose_contracts = {}
+    if animation_anchor is not None:
+        anchor_nodes, _frames = _read_animation_pair(animation_anchor.pair, cancel_event)
+        for identity, proof in _visual_proofs(original_snapshot).items():
+            source_path = Path(original_snapshot.source_root).joinpath(
+                *PurePosixPath(proof.relative_path).parts
+            )
+            skeleton = build_smd_skeleton_contract(
+                source_path, Path(original_snapshot.source_root), proof, cancel_event,
+            )
+            if tuple(skeleton.nodes) == anchor_nodes:
+                animation_pairs[identity] = animation_anchor.pair
+                animation_pose_contracts[identity] = build_smd_pose_contract(
+                    skeleton, animation_pair=animation_anchor.pair,
+                    cancel_event=cancel_event,
+                )
+        if set(animation_pairs) != set(_visual_proofs(original_snapshot)):
+            raise ValueError("animation anchor is incompatible with a visual source skeleton")
     state_inventory = build_production_adaptive_direct_state_inventory(
         manifest=manifest, spec=spec, candidate_cache_digest=cache_digest,
         original_snapshot=original_snapshot, candidate_snapshot=snapshot,
         metrics_proof=metrics, dependencies=dependencies,
-        animation_pairs={}, cancel_event=cancel_event,
+        animation_pairs=animation_pairs, cancel_event=cancel_event,
     )
+    pose_bindings: dict[str, tuple[SourceUnionPoseBinding, ...]] = {}
+    if animation_anchor is not None:
+        rows_by_identity = {
+            identity: tuple(row for row in state_inventory.rows if row.source_identity == identity)
+            for identity in animation_pairs
+        }
+        for identity, rows in rows_by_identity.items():
+            contracts = {row.pose_contract_sha256 for row in rows}
+            if not rows or len(contracts) != 1 or any(
+                row.pose_keys != ("bind", "animation") for row in rows
+            ):
+                raise ValueError("animation pose contract differs across visual occurrences")
+            contract = next(iter(contracts))
+            pose_bindings[identity] = (
+                SourceUnionPoseBinding.bind(contract),
+                SourceUnionPoseBinding.paired_anchor(
+                    animation_anchor.pair, animation_pose_contracts[identity],
+                    cancel_event,
+                ),
+            )
     retained = build_retained_monaco_base_proof(
         evaluation, build, metrics, state_inventory, snapshot.focused_evidence,
         cancel_event=cancel_event,
@@ -428,6 +673,8 @@ def build_production_adaptive_authority_bundle(
     revalidate_recovery_snapshot(original_snapshot, cancel_event)
     revalidate_recovery_snapshot(snapshot, cancel_event)
     _revalidate_dependencies(original_snapshot, dependencies, roots, cancel_event)
+    revalidate_recovery_snapshot(original_snapshot, cancel_event)
+    revalidate_recovery_snapshot(snapshot, cancel_event)
     ordered_dependencies = {
         identity: dependencies[identity]
         for identity in (item.source_identity for item in metrics.sources)
@@ -445,4 +692,7 @@ def build_production_adaptive_authority_bundle(
             identity: item.material_contract
             for identity, item in ordered_dependencies.items()
         },
+        animation_anchor=animation_anchor,
+        animation_pairs={identity: animation_pairs[identity] for identity in ordered_dependencies if identity in animation_pairs},
+        pose_bindings={identity: pose_bindings[identity] for identity in ordered_dependencies if identity in pose_bindings},
     )

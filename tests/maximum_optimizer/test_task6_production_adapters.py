@@ -18,7 +18,7 @@ import render_previews
 from maximum_optimizer.candidates import CandidateTools
 from maximum_optimizer.candidates import CandidateBuild
 from maximum_optimizer.composite import compose_candidate_sources
-from maximum_optimizer.domain import CandidateSpec, CompileFileProof, FamilyManifest, StructuralFingerprint
+from maximum_optimizer.domain import CandidateSpec, CompileFileProof, FamilyManifest, SourceFileProof, StructuralFingerprint
 from maximum_optimizer.processes import ProcessCancelledError, ProcessResult
 from maximum_optimizer.orchestrator import ProductionAdapters as OrchestratorProductionAdapters
 from maximum_optimizer.production_adapters import (
@@ -49,6 +49,9 @@ from tests.maximum_optimizer.test_task6_source_union_comparator import (
     _write_union_side,
 )
 from maximum_optimizer.visual_validation import FidelityProfile, REQUIRED_METRICS, SourceUnionComparisonContract
+from maximum_optimizer.smd_state_contracts import (
+    SmdAnimationPairInput, build_smd_pose_contract, build_smd_skeleton_contract,
+)
 
 
 def _fingerprint() -> StructuralFingerprint:
@@ -86,6 +89,36 @@ def _prefiltered_component_smds(*, missing_component: bool = False) -> tuple[byt
     ).encode()
     retained = first + (first_connected if missing_component else second)
     return source, (prefix + retained + "end\n").encode()
+
+
+def _animation_pair(root: Path, *, frames: tuple[int, ...] = (0, 12)) -> SmdAnimationPairInput:
+    before_root = root / "animation-before"; after_root = root / "animation-after"
+    before_root.mkdir(); after_root.mkdir()
+    rows = ['version 1', 'nodes', '0 "root" -1', 'end', 'skeleton']
+    for frame in frames:
+        rows.extend((f"time {frame}", "0 0 0 0 0 0 0"))
+    payload = ("\n".join((*rows, "end", ""))).encode()
+    before = before_root / "first-name.smd"; after = after_root / "unrelated-name.smd"
+    before.write_bytes(payload); after.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    return SmdAnimationPairInput(
+        before, before_root, SourceFileProof("first-name.smd", "animation-source", "first-name.smd", len(payload), digest),
+        after, after_root, SourceFileProof("unrelated-name.smd", "animation-source", "unrelated-name.smd", len(payload), digest),
+    )
+
+
+def _animation_pose_contract(root: Path, pair: SmdAnimationPairInput):
+    visual_root = root / "pose-visual"; visual_root.mkdir()
+    visual = visual_root / "body.smd"
+    visual.write_bytes(_prefiltered_component_smds()[0])
+    payload = visual.read_bytes(); digest = hashlib.sha256(payload).hexdigest()
+    proof = SourceFileProof("body.smd", "visual-source", "body.smd", len(payload), digest)
+    skeleton = build_smd_skeleton_contract(
+        visual, visual_root, proof, threading.Event(),
+    )
+    return build_smd_pose_contract(
+        skeleton, animation_pair=pair, cancel_event=threading.Event(),
+    )
 
 
 class CompileRunner:
@@ -170,20 +203,22 @@ class SourceUnionRunner:
         if self.raw_mutator is not None:
             self.raw_mutator(raw, payload)
         observations = []
+        pose_keys = tuple(item[0] for item in contract.pose_frames)
         for side in ("candidate", "reference"):
             for component in payload["component_keys"]:
-                for camera in payload["cameras"]:
-                    observations.append({
-                        "side": side, "component_key": component, "pose_key": "bind",
-                        "camera_key": camera,
-                        "visible_mask_pixels": 3 if camera == "camera-00" else 0,
-                    })
+                for pose_key in pose_keys:
+                    for camera in payload["cameras"]:
+                        observations.append({
+                            "side": side, "component_key": component, "pose_key": pose_key,
+                            "camera_key": camera,
+                            "visible_mask_pixels": 3 if camera == "camera-00" else 0,
+                        })
         visibility = {
             "schema": 1, "kind": "adaptive-direct-source-union-visibility-v1",
             "target_sha256": payload["target_sha256"],
             "source_identity": payload["source_identity"],
             "source_coverage_sha256": payload["source_coverage_sha256"],
-            "cameras": payload["cameras"], "pose_keys": ["bind"],
+            "cameras": payload["cameras"], "pose_keys": list(pose_keys),
             "observations": observations,
         }
         if self.visibility_mutator is not None:
@@ -238,7 +273,11 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     contract, threading.Event(),
                 )
 
-    def _render_fixture(self, root: Path, *, missing_component: bool = False):
+    def _render_fixture(
+        self, root: Path, *, missing_component: bool = False,
+        poses: tuple[str, ...] = ("bind",),
+        pose_contract_sha256: str = "6" * 64,
+    ):
         source_bytes, candidate_bytes = _prefiltered_component_smds(
             missing_component=missing_component
         )
@@ -272,6 +311,8 @@ class ProductionAdapterContractTests(unittest.TestCase):
             material_contract_sha256=material_contract.material_contract_sha256,
             visual_source_bytes=source_bytes,
             direct_output_bytes=candidate_bytes,
+            poses=poses,
+            pose_contract_sha256=pose_contract_sha256,
         )
         fixture.material_contract = material_contract
         fixture.material_roots = (material_first, material_second)
@@ -300,6 +341,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
         dependency_provider=None, base_build=None, candidate_transform=None,
         event=None, source_proof=None, snapshot=None, tools_texture_cache=None,
         material_contract=None, material_roots=None, python_runtime_contract=None,
+        pose_bindings=None,
     ):
         fixture = runner.fixture
         spec = CandidateSpec(
@@ -348,6 +390,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
             dependency_digest_provider=dependency_provider or (
                 lambda _event: fixture.requests[0].dependency_proof_sha256
             ),
+            pose_bindings=pose_bindings,
         )
         source = source_proof or next(
             item for item in fixture.coverage.sources
@@ -415,6 +458,17 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 args.source_union_control_sha256 = invalid
                 validate_source_union_cli_contract(args)
         args.source_union_control_sha256 = "0" * 64
+        animated = render_previews._parse_args([
+            "--before", "reference.smd", "--after", "candidate.smd", "--out", "raw",
+            "--passes", "textured,clay", "--poses", "bind:0,animation:12",
+            "--animation-before", "first-name.smd",
+            "--animation-after", "unrelated-name.smd",
+            "--source-union-contract", "contract.json",
+            "--source-union-control-sha256", "0" * 64,
+            "--source-union-visibility-out", "visibility.json",
+        ])
+        validate_source_union_cli_contract(animated)
+        render_previews._validate_source_union_cli_args(animated)
 
     def test_real_orchestrator_wrapper_replaces_untrusted_dependency_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -567,6 +621,80 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 "turn", 0, Path("C:/before.smd"), Path("C:/after.smd"),
                 "a" * 64, "b" * 64, "6" * 64,
             )
+
+    def test_paired_pose_binding_is_current_exact_and_rejects_more_than_two_poses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); pair = _animation_pair(root)
+            pose = _animation_pose_contract(root, pair)
+            with self.assertRaises((TypeError, ValueError)):
+                SourceUnionPoseBinding.paired_anchor(
+                    pair, 12, "6" * 64, threading.Event(),
+                )
+            bindings = (
+                SourceUnionPoseBinding.bind(pose.pose_contract_sha256),
+                SourceUnionPoseBinding.paired_anchor(
+                    pair, pose, threading.Event(),
+                ),
+            )
+            validate_source_union_pose_bindings(
+                bindings, ("bind", "animation"), pose.pose_contract_sha256, threading.Event(),
+            )
+            with self.assertRaises(ValueError):
+                validate_source_union_pose_bindings(
+                    bindings + (bindings[1],),
+                    ("bind", "animation", "extra"), pose.pose_contract_sha256,
+                    threading.Event(),
+                )
+            pair.original_path.write_bytes(pair.original_path.read_bytes() + b"// stale\n")
+            with self.assertRaisesRegex(ValueError, "stale|divergent"):
+                bindings[1].revalidate(threading.Event())
+
+    def test_source_union_renders_exact_bind_and_paired_anchor_and_revalidates_callbacks(self) -> None:
+        for stale in (False, True):
+            with self.subTest(stale=stale), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                pair = _animation_pair(root)
+                pose = _animation_pose_contract(root, pair)
+                fixture, components = self._render_fixture(
+                    root, poses=("bind", "animation"),
+                    pose_contract_sha256=pose.pose_contract_sha256,
+                )
+                bindings = (
+                    SourceUnionPoseBinding.bind(pose.pose_contract_sha256),
+                    SourceUnionPoseBinding.paired_anchor(
+                        pair, pose, threading.Event(),
+                    ),
+                )
+
+                def after_output(_command, _payload, _event):
+                    if stale:
+                        pair.original_path.write_bytes(
+                            pair.original_path.read_bytes() + b"// callback mutation\n"
+                        )
+
+                runner = SourceUnionRunner(fixture, after_output=after_output)
+                workspace = root / "union"
+                if stale:
+                    with self.assertRaisesRegex(ValueError, "animation"):
+                        self._render_case(
+                            root, runner, workspace, components,
+                            pose_bindings={fixture.requests[0].source_identity: bindings},
+                        )
+                    self.assertFalse(workspace.exists())
+                else:
+                    record = self._render_case(
+                        root, runner, workspace, components,
+                        pose_bindings={fixture.requests[0].source_identity: bindings},
+                    )
+                    command = runner.commands[0]
+                    self.assertEqual(
+                        command[command.index("--poses") + 1],
+                        "bind:0,animation:12",
+                    )
+                    self.assertIn("--animation-before", command)
+                    self.assertIn("--animation-after", command)
+                    self.assertEqual(record.target.pose_keys, ("bind", "animation"))
+                    self.assertEqual(len(record.files), 64)
 
     def test_compile_adapter_runs_only_compiler_and_proves_current_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

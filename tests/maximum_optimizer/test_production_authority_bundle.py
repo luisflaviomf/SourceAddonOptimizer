@@ -45,11 +45,25 @@ def _smd(material: str = "paint") -> bytes:
     ).encode("utf-8")
 
 
+def _animation_smd(*, frames: tuple[int, ...] = (0, 12), bone: str = "root") -> bytes:
+    rows = [
+        "version 1", "nodes", f'0 "{bone}" -1', "end", "skeleton",
+    ]
+    for frame in frames:
+        rows.extend((f"time {frame}", "0 0 0 0 0 0 0"))
+    rows.extend(("end", ""))
+    return "\n".join(rows).encode("utf-8")
+
+
 class BundleFixture:
     def __init__(
         self, root: Path, *, visual_count: int = 2,
         cdmaterials: tuple[str, ...] = ("vehicles",),
         include_animation: bool = False,
+        original_animations: tuple[tuple[str, bytes], ...] | None = None,
+        candidate_animations: tuple[tuple[str, bytes], ...] | None = None,
+        original_sequence_prefix: str = "drive",
+        candidate_sequence_prefix: str = "drive",
     ) -> None:
         self.root = root
         self.original_root = root / "original"
@@ -74,14 +88,17 @@ class BundleFixture:
         ]
         candidate_lines = list(original_lines)
         if include_animation:
-            original_lines.append('$sequence "drive" "anim.smd"')
-            candidate_lines.append('$sequence "drive" "anim.smd"')
-            (self.original_root / "anim.smd").write_bytes(
-                _smd() + b"// original animation\n"
+            originals = (
+                (("anim.smd", _animation_smd()),)
+                if original_animations is None else original_animations
             )
-            (self.candidate_root / "anim.smd").write_bytes(
-                _smd() + b"// divergent candidate animation\n"
-            )
+            candidates = originals if candidate_animations is None else candidate_animations
+            for index, (name, payload) in enumerate(originals):
+                original_lines.append(f'$sequence "{original_sequence_prefix}{index}" "{name}"')
+                (self.original_root / name).write_bytes(payload)
+            for index, (name, payload) in enumerate(candidates):
+                candidate_lines.append(f'$sequence "{candidate_sequence_prefix}{index}" "{name}"')
+                (self.candidate_root / name).write_bytes(payload)
         for index in range(visual_count):
             name = f"part{index:02d}.smd"
             output = f"output/part{index:02d}_opt.smd"
@@ -355,12 +372,109 @@ class ProductionAuthorityBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "cdmaterials.*duplicated"):
                 fixture.build_bundle()
 
-    def test_rejects_animation_sources_until_paired_authority_is_supported(self) -> None:
+    def test_builds_exact_paired_animation_authority_for_all_compatible_visual_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             fixture = BundleFixture(Path(temporary), include_animation=True)
-            with self.assertRaisesRegex(
-                ValueError, "unsupported-until-paired-animation-authority"
-            ):
+            bundle = fixture.build_bundle()
+            self.assertEqual(tuple(bundle.animation_pairs), ("part00.smd", "part01.smd"))
+            self.assertEqual(tuple(bundle.pose_bindings), ("part00.smd", "part01.smd"))
+            self.assertTrue(all(row.pose_keys == ("bind", "animation") for row in bundle.state_inventory.rows))
+            for bindings in bundle.pose_bindings.values():
+                self.assertEqual(tuple(item.pose_key for item in bindings), ("bind", "animation"))
+                self.assertEqual(bindings[1].frame, 12)
+            with self.assertRaises((TypeError, ValueError)):
+                replace(bundle, animation_anchor=object())
+            with self.assertRaises((TypeError, ValueError)):
+                replace(bundle, animation_pairs={key: object() for key in bundle.animation_pairs})
+            with self.assertRaises((TypeError, ValueError)):
+                replace(bundle, pose_bindings={key: (value[0],) for key, value in bundle.pose_bindings.items()})
+
+    def test_animation_authority_rejects_divergence_missing_duplicate_and_incompatible_sources(self) -> None:
+        cases = {
+            "divergent": dict(
+                original_animations=(("before.smd", _animation_smd()),),
+                candidate_animations=(("after.smd", _animation_smd(frames=(0, 9))),),
+            ),
+            "missing": dict(
+                original_animations=(("before.smd", _animation_smd()),),
+                candidate_animations=(),
+            ),
+            "duplicate": dict(
+                original_animations=(("before.smd", _animation_smd()),),
+                candidate_animations=(
+                    ("after-a.smd", _animation_smd()),
+                    ("after-b.smd", _animation_smd()),
+                ),
+            ),
+            "incompatible": dict(
+                original_animations=(("before.smd", _animation_smd(bone="other")),),
+                candidate_animations=(("after.smd", _animation_smd(bone="other")),),
+            ),
+            "occurrence-semantics": dict(
+                original_sequence_prefix="drive",
+                candidate_sequence_prefix="renamed",
+            ),
+        }
+        for label, arguments in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                fixture = BundleFixture(Path(temporary), include_animation=True, **arguments)
+                with self.assertRaisesRegex(ValueError, "animation"):
+                    fixture.build_bundle()
+
+    def test_animation_anchor_is_deterministic_from_qc_occurrence_not_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BundleFixture(
+                Path(temporary), include_animation=True,
+                original_animations=(
+                    ("z-last-name.smd", _animation_smd(frames=(0, 7))),
+                    ("a-first-name.smd", _animation_smd(frames=(0, 19))),
+                ),
+                candidate_animations=(
+                    ("candidate-unrelated-name.smd", _animation_smd(frames=(0, 7))),
+                    ("another-name.smd", _animation_smd(frames=(0, 19))),
+                ),
+            )
+            bundle = fixture.build_bundle()
+            self.assertEqual(bundle.animation_anchor.occurrence_index, 0)
+            self.assertEqual(bundle.animation_anchor.representative_frame, 7)
+            self.assertTrue(all(
+                bindings[1].frame == 7 for bindings in bundle.pose_bindings.values()
+            ))
+
+    def test_animation_authority_revalidates_after_inventory_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BundleFixture(Path(temporary), include_animation=True)
+            real_build = bundle_module.build_production_adaptive_direct_state_inventory
+
+            def mutate_after_inventory(*args, **kwargs):
+                value = real_build(*args, **kwargs)
+                (fixture.original_root / "anim.smd").write_bytes(
+                    _animation_smd(frames=(0, 99))
+                )
+                return value
+
+            with patch.object(
+                bundle_module, "build_production_adaptive_direct_state_inventory",
+                side_effect=mutate_after_inventory,
+            ), self.assertRaisesRegex(ValueError, "snapshot|animation"):
+                fixture.build_bundle()
+
+    def test_animation_authority_revalidates_after_dependency_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BundleFixture(Path(temporary), include_animation=True)
+            real_revalidate = bundle_module._revalidate_dependencies
+
+            def mutate_after_dependencies(*args, **kwargs):
+                value = real_revalidate(*args, **kwargs)
+                (fixture.candidate_root / "anim.smd").write_bytes(
+                    _animation_smd(frames=(0, 99))
+                )
+                return value
+
+            with patch.object(
+                bundle_module, "_revalidate_dependencies",
+                side_effect=mutate_after_dependencies,
+            ), self.assertRaisesRegex(ValueError, "snapshot|animation"):
                 fixture.build_bundle()
 
 

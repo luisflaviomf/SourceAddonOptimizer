@@ -415,7 +415,11 @@ def _parse_source_union_comparison(raw: object) -> _SourceUnionComparisonControl
     poses = tuple(
         tuple(item) if type(item) is list else () for item in raw["pose_frames"]
     )
-    if poses != (("bind", 0),) or type(poses[0][1]) is not int:
+    if poses != (("bind", 0),) and not (
+        len(poses) == 2 and poses[0] == ("bind", 0)
+        and poses[1][0] == "animation"
+        and type(poses[1][1]) is int and poses[1][1] > 0
+    ):
         raise ValueError("source-union comparison pose contract is invalid")
     hashes = tuple(_strict_hash(raw[name], f"source-union comparison {name}") for name in (
         "target_sha256", "source_coverage_sha256", "reference_source_sha256",
@@ -825,7 +829,9 @@ def _parse_source_union_control(
         comparison.candidate_source_sha256 != candidate_hash,
         component_keys != expected_components,
         material_region_keys != expected_materials,
-        payload["pose_frames"] != {"bind": 0},
+        payload["pose_frames"] != {
+            name: frame for name, frame in comparison.pose_frames
+        },
         payload["angles"] != list(ANGLE_DIRS),
         payload["cameras"] != [f"camera-{index:02d}" for index in range(8)],
         payload["renderer_sha256"] != renderer_hash,
@@ -1298,8 +1304,14 @@ def _validate_source_union_cli_args(args) -> None:
         if match is None:
             raise ValueError("source-union pose command is malformed")
         parsed.append((match.group(1), int(match.group(2))))
-    if parsed != [("bind", 0)]:
-        raise ValueError("source-union E2A accepts bind:0 only")
+    if parsed != [("bind", 0)] and not (
+        len(parsed) == 2 and parsed[0] == ("bind", 0)
+        and parsed[1][0] == "animation" and parsed[1][1] > 0
+        and bool(args.animation_before) and bool(args.animation_after)
+    ):
+        raise ValueError("source-union pose command lacks exact paired animation")
+    if parsed == [("bind", 0)] and (args.animation_before or args.animation_after):
+        raise ValueError("source-union bind-only command cannot carry animation")
 
 
 def _load_region_manifest(path: Path) -> RegionManifest:
@@ -3222,8 +3234,8 @@ def _source_union_manifest_payload(
         "expected": {
             "passes": ["textured", "clay"],
             "angles": list(ANGLE_DIRS),
-            "poses": ["bind"],
-            "pose_frames": {"bind": 0},
+            "poses": [name for name, _frame in comparison.pose_frames],
+            "pose_frames": {name: frame for name, frame in comparison.pose_frames},
             "regions": [comparison.union_key],
         },
         "entries": entries,

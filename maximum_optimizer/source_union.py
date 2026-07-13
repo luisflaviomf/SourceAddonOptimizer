@@ -341,20 +341,22 @@ def _visibility(
     if set(indexed) != set(expected) or len(indexed) != len(expected):
         raise ValueError("source-union visibility observations are not exact")
     result = []
-    for component in target.component_keys:
-        for pose in target.pose_keys:
-            preceding = []
-            for camera in _CAMERAS:
-                reference = indexed[("reference", component, pose, camera)]
-                candidate = indexed[("candidate", component, pose, camera)]
-                if reference > 0 and candidate > 0:
-                    result.append((
-                        component, pose, camera, reference, candidate, tuple(preceding),
-                    ))
-                    break
-                preceding.append((camera, reference, candidate))
-            else:
-                raise ValueError("source-union component is never bilaterally visible")
+    for component, pose in sorted(
+        (component, pose)
+        for component in target.component_keys for pose in target.pose_keys
+    ):
+        preceding = []
+        for camera in _CAMERAS:
+            reference = indexed[("reference", component, pose, camera)]
+            candidate = indexed[("candidate", component, pose, camera)]
+            if reference > 0 and candidate > 0:
+                result.append((
+                    component, pose, camera, reference, candidate, tuple(preceding),
+                ))
+                break
+            preceding.append((camera, reference, candidate))
+        else:
+            raise ValueError("source-union component is never bilaterally visible")
     return tuple(result)
 
 

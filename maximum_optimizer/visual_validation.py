@@ -642,8 +642,12 @@ class SourceUnionComparisonContract:
             raise ValueError("source-union comparison source is invalid")
         require_canonical_relative(self.source_identity, "source-union comparison source")
         poses = tuple(tuple(item) for item in self.pose_frames)
-        if poses != (("bind", 0),):
-            raise ValueError("source-union comparison currently authorizes bind only")
+        if poses != (("bind", 0),) and not (
+            len(poses) == 2 and poses[0] == ("bind", 0)
+            and poses[1][0] == "animation"
+            and type(poses[1][1]) is int and poses[1][1] > 0
+        ):
+            raise ValueError("source-union comparison pose contract is invalid")
         if not re.fullmatch(r"source-union-[0-9a-f]{32}", self.union_key or ""):
             raise ValueError("source-union comparison union key is invalid")
         if self.union_key != "source-union-" + self.source_coverage_sha256[:32]:

@@ -5,6 +5,8 @@ import hashlib
 import json
 import re
 import threading
+from types import MappingProxyType
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,6 +52,9 @@ from .source_materials import (
     require_current_source_union_material_contract,
     source_union_material_contract_payload,
     source_union_material_render_evidence,
+)
+from .smd_state_contracts import (
+    SmdAnimationPairInput, SmdPoseContract, _parse_nodes_and_frames,
 )
 from .visual_validation import (
     FidelityProfile, SourceUnionComparisonContract,
@@ -114,6 +119,8 @@ class SourceUnionPoseBinding:
     animation_before_sha256: str | None
     animation_after_sha256: str | None
     pose_contract_sha256: str
+    animation_pair: SmdAnimationPairInput | None = None
+    sealed_pose_contract: SmdPoseContract | None = None
 
     def __post_init__(self) -> None:
         if type(self.pose_key) is not str or not self.pose_key or type(self.frame) is not int or self.frame < 0:
@@ -125,10 +132,29 @@ class SourceUnionPoseBinding:
             self.animation_before_sha256, self.animation_after_sha256,
         )
         if self.pose_key == "bind":
-            if self.frame != 0 or any(value is not None for value in values):
+            if (
+                self.frame != 0 or any(value is not None for value in values)
+                or self.animation_pair is not None or self.sealed_pose_contract is not None
+            ):
                 raise ValueError("bind pose cannot carry animation state")
             return
-        raise ValueError("source-union anchor unavailable without sealed preflight proof")
+        if (
+            self.pose_key != "animation" or self.frame <= 0
+            or not isinstance(self.animation_pair, SmdAnimationPairInput)
+            or self.animation_before != self.animation_pair.original_path
+            or self.animation_after != self.animation_pair.candidate_path
+            or self.animation_before_sha256 != self.animation_pair.original_proof.sha256
+            or self.animation_after_sha256 != self.animation_pair.candidate_proof.sha256
+            or not isinstance(self.sealed_pose_contract, SmdPoseContract)
+            or self.sealed_pose_contract.pose_contract_sha256 != self.pose_contract_sha256
+            or self.sealed_pose_contract.pose_keys != ("bind", "animation")
+            or self.sealed_pose_contract.representative_frame != self.frame
+            or self.sealed_pose_contract.animation_original_sha256
+            != self.animation_before_sha256
+            or self.sealed_pose_contract.animation_candidate_sha256
+            != self.animation_after_sha256
+        ):
+            raise ValueError("source-union anchor lacks exact paired animation authority")
 
     @classmethod
     def bind(cls, pose_contract_sha256: str) -> "SourceUnionPoseBinding":
@@ -141,10 +167,61 @@ class SourceUnionPoseBinding:
     ) -> "SourceUnionPoseBinding":
         raise ValueError("source-union anchor unavailable without sealed preflight proof")
 
+    @classmethod
+    def paired_anchor(
+        cls, pair: SmdAnimationPairInput, pose_contract: SmdPoseContract,
+        cancel_event: threading.Event | None,
+    ) -> "SourceUnionPoseBinding":
+        if not isinstance(pose_contract, SmdPoseContract):
+            raise TypeError("source-union anchor requires a typed sealed pose contract")
+        value = cls(
+            "animation", pose_contract.representative_frame, pair.original_path, pair.candidate_path,
+            pair.original_proof.sha256, pair.candidate_proof.sha256,
+            pose_contract.pose_contract_sha256, pair, pose_contract,
+        )
+        value.revalidate(cancel_event)
+        return value
+
     def revalidate(self, cancel_event: threading.Event | None) -> None:
         if self.pose_key == "bind":
             return
-        raise ValueError("source-union anchor unavailable without sealed preflight proof")
+        pair = self.animation_pair
+        if not isinstance(pair, SmdAnimationPairInput):
+            raise ValueError("source-union animation pair is unavailable")
+        before = _read_regular_no_follow(
+            pair.original_path, cancel_event, contained_root=pair.original_root,
+            max_bytes=64 * 1024 * 1024,
+        )
+        after = _read_regular_no_follow(
+            pair.candidate_path, cancel_event, contained_root=pair.candidate_root,
+            max_bytes=64 * 1024 * 1024,
+        )
+        if (
+            (len(before), hashlib.sha256(before).hexdigest())
+            != (pair.original_proof.size, self.animation_before_sha256)
+            or (len(after), hashlib.sha256(after).hexdigest())
+            != (pair.candidate_proof.size, self.animation_after_sha256)
+            or before != after
+        ):
+            raise ValueError("source-union paired animation bytes are stale or divergent")
+        before_nodes, before_frames = _parse_nodes_and_frames(before)
+        after_nodes, after_frames = _parse_nodes_and_frames(after)
+        before_ids = tuple(item[0] for item in before_frames)
+        after_ids = tuple(item[0] for item in after_frames)
+        positives = tuple(item for item in before_ids if item > 0)
+        pose_contract = self.sealed_pose_contract
+        if (
+            before_nodes != after_nodes or before_ids != after_ids or not positives
+            or self.frame != max(positives)
+            or not isinstance(pose_contract, SmdPoseContract)
+            or pose_contract.animation_frames != before_ids
+            or pose_contract.representative_frame != self.frame
+            or pose_contract.animation_original_sha256
+            != pair.original_proof.sha256
+            or pose_contract.animation_candidate_sha256
+            != pair.candidate_proof.sha256
+        ):
+            raise ValueError("source-union paired animation frame authority differs")
 
 
 def validate_source_union_pose_bindings(
@@ -155,10 +232,10 @@ def validate_source_union_pose_bindings(
 ) -> None:
     values = tuple(bindings)
     if (
-        len(values) != 1
+        len(values) not in {1, 2}
         or any(not isinstance(item, SourceUnionPoseBinding) for item in values)
         or tuple(item.pose_key for item in values) != tuple(pose_keys)
-        or tuple(pose_keys) != ("bind",)
+        or tuple(pose_keys) not in {("bind",), ("bind", "animation")}
         or values[0].pose_key != "bind"
         or any(item.pose_contract_sha256 != pose_contract_sha256 for item in values)
     ):
@@ -199,10 +276,18 @@ def validate_source_union_cli_contract(args) -> None:
         if match is None:
             raise ValueError("source-union pose command is malformed")
         parsed.append((match.group(1), int(match.group(2))))
-    if (
-        parsed != [("bind", 0)]
+    if parsed != [("bind", 0)] and not (
+        len(parsed) == 2 and parsed[0] == ("bind", 0)
+        and parsed[1][0] == "animation" and parsed[1][1] > 0
+        and bool(getattr(args, "animation_before", None))
+        and bool(getattr(args, "animation_after", None))
     ):
-        raise ValueError("source-union E2A accepts bind:0 only")
+        raise ValueError("source-union pose command lacks exact paired animation")
+    if parsed == [("bind", 0)] and any((
+        getattr(args, "animation_before", None),
+        getattr(args, "animation_after", None),
+    )):
+        raise ValueError("source-union bind-only command cannot carry animation")
 
 
 def require_current_composed_source_tree(
@@ -622,11 +707,13 @@ class SourceUnionRenderTools:
     vtfcmd: Path | None = None
     texture_cache: Path | None = None
     dependency_digest_provider: object = None
+    pose_bindings: Mapping[str, tuple[SourceUnionPoseBinding, ...]] | None = None
 
     def __post_init__(self) -> None:
         blender = Path(self.blender_exe).resolve()
         renderer = Path(self.renderer_script).resolve()
         roots = tuple(Path(item).resolve() for item in self.materials_roots)
+        pose_bindings = {} if self.pose_bindings is None else dict(self.pose_bindings)
         if any(not path.is_file() or _has_reparse_ancestor(path) for path in (blender, renderer)):
             raise ValueError("source-union Blender/renderer is unavailable or unsafe")
         if _HASH.fullmatch(self.renderer_sha256 or "") is None:
@@ -637,9 +724,18 @@ class SourceUnionRenderTools:
             raise ValueError("source-union materials root is unavailable or unsafe")
         if not callable(self.dependency_digest_provider):
             raise TypeError("source-union dependency digest provider is required")
+        for identity, bindings in pose_bindings.items():
+            if (
+                type(identity) is not str or not identity
+                or type(bindings) is not tuple
+                or not bindings
+                or any(not isinstance(item, SourceUnionPoseBinding) for item in bindings)
+            ):
+                raise ValueError("source-union tool pose bindings are invalid")
         object.__setattr__(self, "blender_exe", blender)
         object.__setattr__(self, "renderer_script", renderer)
         object.__setattr__(self, "materials_roots", roots)
+        object.__setattr__(self, "pose_bindings", MappingProxyType(pose_bindings))
         if self.vtfcmd is not None:
             vtfcmd = Path(self.vtfcmd).resolve()
             if not vtfcmd.is_file() or _has_reparse_ancestor(vtfcmd):
@@ -788,13 +884,13 @@ def _assert_exact_source_union_raw(raw: Path, target, event) -> None:
 
 
 def _assert_source_union_raw_material_evidence(
-    raw: Path, expected_evidence: tuple[dict[str, object], ...], event,
+    raw: Path, expected_evidence: tuple[dict[str, object], ...], target, event,
 ) -> None:
     expected = list(expected_evidence)
     for raw_side, label in (("original", "reference"), ("optimized", "candidate")):
         manifest = _raw_manifest(raw / raw_side, label, event)
         entries = manifest.get("entries")
-        if type(entries) is not list or len(entries) != 16:
+        if type(entries) is not list or len(entries) != 16 * len(target.pose_keys):
             raise ValueError("source-union raw material entry cardinality differs")
         for entry in entries:
             if type(entry) is not dict or entry.get("resolved_materials") != (
@@ -1112,10 +1208,13 @@ class AdaptiveDirectProductionBoundary:
             coverage_manifest_sha256=coverage.coverage_manifest_sha256,
         )
         pose_contract = source_proof.witnesses[0].pose_contract_sha256
-        pose_bindings = (SourceUnionPoseBinding.bind(pose_contract),)
+        pose_bindings = tools.pose_bindings.get(source_proof.source_identity)
+        if pose_bindings is None:
+            pose_bindings = (SourceUnionPoseBinding.bind(pose_contract),)
         validate_source_union_pose_bindings(
             pose_bindings, target.pose_keys, pose_contract, cancel_event
         )
+        pose_frames = tuple((item.pose_key, item.frame) for item in pose_bindings)
         material_contract_sha256 = material_contract.material_contract_sha256
         material_bindings = tuple(
             SourceUnionMaterialBinding(key, material_contract_sha256)
@@ -1128,7 +1227,7 @@ class AdaptiveDirectProductionBoundary:
             reference_source_sha256=component_manifest.filtered_source_sha256,
             candidate_source_sha256=snapshot.output_sha256,
             material_contract_sha256=material_contract_sha256,
-            pose_frames=(("bind", 0),), union_key=target.union_key,
+            pose_frames=pose_frames, union_key=target.union_key,
         )
         holder: dict[str, object] = {}
         material_tree = workspace / "material-roots"
@@ -1214,6 +1313,9 @@ class AdaptiveDirectProductionBoundary:
             current_source, current_filtered, current_candidate, current_transfer = (
                 validate_current_inputs(event)
             )
+            validate_source_union_pose_bindings(
+                pose_bindings, target.pose_keys, pose_contract, event,
+            )
             if (
                 current_filtered != filtered_reference_bytes
                 or current_candidate != candidate_bytes
@@ -1265,12 +1367,39 @@ class AdaptiveDirectProductionBoundary:
             holder["material_evidence"] = material_evidence
             _write_private_bytes_fsync(reference_input, current_filtered)
             _write_private_bytes_fsync(candidate_input, current_candidate)
+            private_animation_before = private_animation_after = None
+            if len(pose_bindings) == 2:
+                anchor = pose_bindings[1]
+                private_animation_before = inputs / "animation-reference.smd"
+                private_animation_after = inputs / "animation-candidate.smd"
+                _write_private_bytes_fsync(
+                    private_animation_before,
+                    _read_regular_no_follow(
+                        anchor.animation_before, event,
+                        contained_root=anchor.animation_pair.original_root,
+                        max_bytes=64 * 1024 * 1024,
+                    ),
+                )
+                _write_private_bytes_fsync(
+                    private_animation_after,
+                    _read_regular_no_follow(
+                        anchor.animation_after, event,
+                        contained_root=anchor.animation_pair.candidate_root,
+                        max_bytes=64 * 1024 * 1024,
+                    ),
+                )
             _copy_file_no_follow(tools.renderer_script, renderer_input, event, contained_root=tools.renderer_script.parent)
-            for path, expected in (
+            private_proofs = [
                 (reference_input, comparison.reference_source_sha256),
                 (candidate_input, comparison.candidate_source_sha256),
                 (renderer_input, tools.renderer_sha256),
-            ):
+            ]
+            if len(pose_bindings) == 2:
+                private_proofs.extend((
+                    (private_animation_before, pose_bindings[1].animation_before_sha256),
+                    (private_animation_after, pose_bindings[1].animation_after_sha256),
+                ))
+            for path, expected in private_proofs:
                 _size, digest = _file_proof(path, event, contained_root=inputs)
                 if digest != expected: raise ValueError("source-union private input differs")
             contract_path = control / "source-union-contract.json"
@@ -1302,7 +1431,7 @@ class AdaptiveDirectProductionBoundary:
                     material_contract
                 ),
                 "material_render_evidence": list(material_evidence),
-                "pose_frames": {"bind": 0}, "angles": list(_ANGLES),
+                "pose_frames": {key: frame for key, frame in pose_frames}, "angles": list(_ANGLES),
                 "cameras": list(_CAMERAS), "renderer_sha256": tools.renderer_sha256,
                 "python_runtime_contract_sha256": (
                     tools.python_runtime.contract_sha256
@@ -1323,11 +1452,18 @@ class AdaptiveDirectProductionBoundary:
                 str(tools.blender_exe), "--background", "--python", str(renderer_input), "--",
                 "--before", str(reference_input), "--after", str(candidate_input),
                 "--out", str(raw), "--size", "512", "--angles", ",".join(_ANGLES),
-                "--passes", "textured,clay", "--poses", "bind:0",
+                "--passes", "textured,clay", "--poses", ",".join(
+                    f"{key}:{frame}" for key, frame in pose_frames
+                ),
                 "--source-union-contract", str(contract_path),
                 "--source-union-control-sha256", contract_digest,
                 "--source-union-visibility-out", str(visibility_path),
             ]
+            if len(pose_bindings) == 2:
+                command.extend((
+                    "--animation-before", str(private_animation_before),
+                    "--animation-after", str(private_animation_after),
+                ))
             for root in private_material_roots:
                 command.extend(("--materials-root", str(root)))
             if tools.vtfcmd is not None: command.extend(("--vtfcmd", str(tools.vtfcmd)))
@@ -1336,6 +1472,9 @@ class AdaptiveDirectProductionBoundary:
                 raise ValueError("source-union dependency changed before Blender")
             validate_current_materials(event)
             validate_current_python_runtime(event)
+            validate_source_union_pose_bindings(
+                pose_bindings, target.pose_keys, pose_contract, event,
+            )
             try:
                 process = self._process_runner(
                     tuple(command), inputs,
@@ -1347,6 +1486,9 @@ class AdaptiveDirectProductionBoundary:
                 raise
             validate_current_materials(event)
             validate_current_python_runtime(event)
+            validate_source_union_pose_bindings(
+                pose_bindings, target.pose_keys, pose_contract, event,
+            )
             if process.returncode != 0:
                 raise ValueError("source-union Blender process failed")
             cache_error = None
@@ -1376,11 +1518,14 @@ class AdaptiveDirectProductionBoundary:
             _assert_source_union_workspace_root(output_root, authorized=False)
             _assert_safe_tree(
                 inputs, event,
-                {"reference.smd", "candidate.smd", "render_previews.py"} | {
+                {"reference.smd", "candidate.smd", "render_previews.py"} | (
+                    {"animation-reference.smd", "animation-candidate.smd"}
+                    if len(pose_bindings) == 2 else set()
+                ) | {
                     f"maximum_optimizer/{item.path}"
                     for item in tools.python_runtime.files
                 },
-                max_files=3 + len(tools.python_runtime.files),
+                max_files=3 + (2 if len(pose_bindings) == 2 else 0) + len(tools.python_runtime.files),
             )
             _assert_safe_tree(
                 control, event,
@@ -1389,13 +1534,9 @@ class AdaptiveDirectProductionBoundary:
             )
             _assert_exact_source_union_raw(raw, target, event)
             _assert_source_union_raw_material_evidence(
-                raw, material_evidence, event
+                raw, material_evidence, target, event
             )
-            for path, expected in (
-                (reference_input, comparison.reference_source_sha256),
-                (candidate_input, comparison.candidate_source_sha256),
-                (renderer_input, tools.renderer_sha256),
-            ):
+            for path, expected in private_proofs:
                 _size, digest = _file_proof(path, event, contained_root=inputs)
                 if digest != expected: raise ValueError("source-union private input changed during Blender")
             if (
@@ -1441,7 +1582,7 @@ class AdaptiveDirectProductionBoundary:
             current_material_evidence = validate_current_materials(cancel_event)
             validate_current_python_runtime(cancel_event)
             _assert_source_union_raw_material_evidence(
-                raw, current_material_evidence, cancel_event
+                raw, current_material_evidence, target, cancel_event
             )
             _prove_source_union_bijection(raw, authorized, target, comparison, cancel_event)
             manifest_proofs = tuple(
@@ -1477,7 +1618,7 @@ class AdaptiveDirectProductionBoundary:
                 raise ValueError("source-union materials changed during comparison")
             validate_current_python_runtime(cancel_event)
             _assert_source_union_raw_material_evidence(
-                raw, current_material_evidence, cancel_event
+                raw, current_material_evidence, target, cancel_event
             )
             return result
 
@@ -1495,11 +1636,14 @@ class AdaptiveDirectProductionBoundary:
             assert isinstance(contract_path, Path) and isinstance(visibility_path, Path)
             _assert_safe_tree(
                 inputs, event,
-                {"reference.smd", "candidate.smd", "render_previews.py"} | {
+                {"reference.smd", "candidate.smd", "render_previews.py"} | (
+                    {"animation-reference.smd", "animation-candidate.smd"}
+                    if len(pose_bindings) == 2 else set()
+                ) | {
                     f"maximum_optimizer/{item.path}"
                     for item in tools.python_runtime.files
                 },
-                max_files=3 + len(tools.python_runtime.files),
+                max_files=3 + (2 if len(pose_bindings) == 2 else 0) + len(tools.python_runtime.files),
             )
             _assert_safe_tree(
                 control, event,
@@ -1520,6 +1664,20 @@ class AdaptiveDirectProductionBoundary:
                 != holder.get("observations")
             ):
                 raise ValueError("source-union private/control proof changed")
+            validate_source_union_pose_bindings(
+                pose_bindings, target.pose_keys, pose_contract, event,
+            )
+            if len(pose_bindings) == 2 and (
+                _file_proof(
+                    inputs / "animation-reference.smd", event,
+                    contained_root=inputs,
+                )[1] != pose_bindings[1].animation_before_sha256
+                or _file_proof(
+                    inputs / "animation-candidate.smd", event,
+                    contained_root=inputs,
+                )[1] != pose_bindings[1].animation_after_sha256
+            ):
+                raise ValueError("source-union private animation proof changed")
             _prove_source_union_bijection(
                 raw, authorized, target, comparison, event
             )
@@ -1540,7 +1698,7 @@ class AdaptiveDirectProductionBoundary:
             if current_material_evidence != holder.get("material_evidence"):
                 raise ValueError("source-union final material evidence differs")
             _assert_source_union_raw_material_evidence(
-                raw, current_material_evidence, event
+                raw, current_material_evidence, target, event
             )
             _assert_source_union_workspace_root(workspace, authorized=True)
 

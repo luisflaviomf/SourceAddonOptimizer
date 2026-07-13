@@ -74,6 +74,7 @@ class DirectCompositorFixture:
         component_manifest_sha256: str = H["3"],
         material_contract_sha256: str = H["4"],
         material_region_keys: tuple[str, ...] = ("material-000",),
+        pose_contract_sha256: str = H["6"],
         visual_source_bytes: bytes | None = None,
         direct_output_bytes: bytes | None = None,
     ) -> None:
@@ -137,6 +138,7 @@ class DirectCompositorFixture:
             component_manifest_sha256=component_manifest_sha256,
             material_contract_sha256=material_contract_sha256,
             material_region_keys=material_region_keys,
+            pose_contract_sha256=pose_contract_sha256,
         ) for identity, proof in sorted(by_identity.items()))
         old_metrics = metrics_for_coverage(coverage_sources)
         old_inventory = inventory_for_coverage(coverage_sources)

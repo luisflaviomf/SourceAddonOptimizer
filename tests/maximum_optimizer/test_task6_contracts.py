@@ -123,6 +123,7 @@ def witness(
     source_size: int = 100, source_sha256: str = H["1"],
     component_manifest_sha256: str = H["3"],
     material_contract_sha256: str = H["4"],
+    pose_contract_sha256: str = H["6"],
 ) -> AdaptiveDirectCoverageOccurrenceProof:
     return AdaptiveDirectCoverageOccurrenceProof.create(
         occurrence_key=f"occ-{hashlib.sha256(source.encode()).hexdigest()[:8]}-{ordinal:04d}", source_identity=source,
@@ -131,7 +132,7 @@ def witness(
         source_size=source_size, source_sha256=source_sha256, component_manifest_sha256=component_manifest_sha256,
         material_contract_sha256=material_contract_sha256,
         skeleton_contract_sha256=H["5"],
-        pose_contract_sha256=H["6"], equivalence_class_sha256=H["7"],
+        pose_contract_sha256=pose_contract_sha256, equivalence_class_sha256=H["7"],
     )
 
 
@@ -143,12 +144,14 @@ def coverage_source(
     component_manifest_sha256: str = H["3"],
     material_contract_sha256: str = H["4"],
     material_region_keys: tuple[str, ...] = ("material-000",),
+    pose_contract_sha256: str = H["6"],
 ) -> AdaptiveDirectCoverageSourceProof:
     witnesses = tuple(witness(
         source, ordinal=i, state=state,
         source_size=source_size, source_sha256=source_sha256,
         component_manifest_sha256=component_manifest_sha256,
         material_contract_sha256=material_contract_sha256,
+        pose_contract_sha256=pose_contract_sha256,
     ) for i, state in enumerate(states))
     return AdaptiveDirectCoverageSourceProof.create(
         source_identity=source, eligibility_kind="eligible-exact-v1",

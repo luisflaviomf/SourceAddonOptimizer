@@ -36,7 +36,11 @@ def _contract() -> SourceUnionComparisonContract:
 
 
 def _write_union_side(root: Path, side: str, contract: SourceUnionComparisonContract) -> None:
-    entries = [_entry(root, render_pass, "bind", angle) for render_pass in PASSES for angle in ANGLES]
+    entries = [
+        _entry(root, render_pass, pose, angle)
+        for pose, _frame in contract.pose_frames
+        for render_pass in PASSES for angle in ANGLES
+    ]
     _write_manifest(root, entries, regions=(contract.union_key,))
     path = root / "render_manifest.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
