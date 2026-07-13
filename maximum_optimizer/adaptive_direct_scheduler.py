@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, replace
 import hashlib
 import math
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import stat
 import threading
 import uuid
@@ -465,24 +465,10 @@ def _cleanup_private_snapshot(
             if not os.path.lexists(root):
                 os.rename(quarantine, root)
             return False
-        for relative, expected in sorted(
-            ownership.descendants.items(),
-            key=lambda item: (
-                len(PurePosixPath(item[0]).parts), item[0].casefold(), item[0],
-            ),
-            reverse=True,
-        ):
-            path = quarantine.joinpath(*PurePosixPath(relative).parts)
-            if _snapshot_identity(path) != expected:
-                return False
-            if stat.S_ISDIR(expected[3]):
-                os.rmdir(path)
-            else:
-                path.unlink()
-        if _snapshot_identity(quarantine, directory=True) != ownership.root_identity:
-            return False
-        os.rmdir(quarantine)
-        return True
+        # A pathname-based descendant deletion has another substitution window
+        # after this identity check.  Preserve the detached, revalidated tree;
+        # callers treat False as cleanup not completed.
+        return False
     except (OSError, ValueError):
         return False
 
@@ -497,6 +483,70 @@ def _size_from_compile_files(build: CandidateBuild, files) -> CompiledSizeSnapsh
         Path(build.compiled_models_dir), sum(item.size for item in files),
         dict(sorted(by_kind.items())), {}, tuple(artifacts),
     )
+
+
+def _require_current_authorized_attempt(
+    attempt: AdaptiveDirectExecutionAttempt,
+) -> None:
+    if (
+        attempt.status != "authorized"
+        or attempt.build is None
+        or attempt.evidence is None
+        or attempt.evaluation is None
+    ):
+        raise ValueError("adaptive-direct terminal attempt is not authorized")
+    compiled = AdaptiveDirectCompileResult.create(
+        attempt.build, attempt.evidence.compile_files,
+        attempt.evidence.composition.evidence_sha256,
+    )
+    # Attempt creation is the cancellation linearization point.  This final
+    # byte check must still finish if cancellation is observed immediately
+    # afterwards, otherwise a stale authorized result could escape.
+    _current_compile_files(compiled, threading.Event())
+
+
+def _resolve_terminal_selection(
+    *,
+    base_proof: RetainedMonacoBaseProof,
+    base_evaluation: CandidateEvaluation,
+    attempts: tuple[AdaptiveDirectExecutionAttempt, ...],
+    cancelled: bool,
+) -> AdaptiveDirectScheduleExecution:
+    resolved = list(attempts)
+    while True:
+        authorized = [
+            item.evaluation for item in resolved if item.status == "authorized"
+        ]
+        selected = select_winner([base_evaluation, *authorized])
+        if selected is base_evaluation:
+            current = require_current_retained_monaco_base(base_proof, None)
+            if (
+                current.evaluation is not base_evaluation
+                or current.build is not base_proof.build
+            ):
+                raise ValueError(
+                    "adaptive-direct retained authority changed at terminal selection"
+                )
+            return AdaptiveDirectScheduleExecution(
+                base_evaluation, base_evaluation, tuple(resolved), cancelled,
+            )
+        index = next(
+            position for position, item in enumerate(resolved)
+            if item.status == "authorized" and item.evaluation is selected
+        )
+        attempt = resolved[index]
+        try:
+            _require_current_authorized_attempt(attempt)
+        except (OSError, ValueError) as exc:
+            resolved[index] = AdaptiveDirectExecutionAttempt.create(
+                attempt.ratio, "final_whole_failed",
+                candidate_id=attempt.candidate_id, recipe=attempt.recipe,
+                error=str(exc) or "adaptive-direct terminal compile changed",
+            )
+            continue
+        return AdaptiveDirectScheduleExecution(
+            base_evaluation, selected, tuple(resolved), cancelled,
+        )
 
 
 def _require_compile_binding(
@@ -665,9 +715,9 @@ def execute_adaptive_direct_schedule(
             attempts.append(AdaptiveDirectExecutionAttempt.create(
                 outcome.ratio, "cancelled", error=outcome.failure_reason,
             ))
-        return AdaptiveDirectScheduleExecution(
-            base_evaluation, base_evaluation, tuple(attempts),
-            bool(attempts),
+        return _resolve_terminal_selection(
+            base_proof=base_proof, base_evaluation=base_evaluation,
+            attempts=tuple(attempts), cancelled=bool(attempts),
         )
     root = _validate_workspace_root(Path(workspace_root), base_build)
     reservation_root = None
@@ -806,6 +856,8 @@ def execute_adaptive_direct_schedule(
             if event.is_set():
                 raise ProcessCancelledError("adaptive-direct cancelled after structural")
             if not structural.validation.passed:
+                composed = require_current_composition()
+                _current_compile_files(compiled, event)
                 evidence = build_adaptive_direct_evidence(
                     terminal_status="structural_failed",
                     recipe=outcome.spec.composite_recipe,
@@ -881,6 +933,8 @@ def execute_adaptive_direct_schedule(
                 item.validation.passed for item in (*base_records, *direct_records)
             )
             if not focused_passed:
+                composed = require_current_composition()
+                _current_compile_files(compiled, event)
                 evidence = build_adaptive_direct_evidence(
                     terminal_status="focused_failed",
                     recipe=outcome.spec.composite_recipe,
@@ -911,6 +965,8 @@ def execute_adaptive_direct_schedule(
             if event.is_set():
                 raise ProcessCancelledError("adaptive-direct cancelled after final whole")
             terminal = "authorized" if final_whole.validation.passed else "final_whole_failed"
+            composed = require_current_composition()
+            current_files = _current_compile_files(compiled, event)
             evidence = build_adaptive_direct_evidence(
                 terminal_status=terminal,
                 recipe=outcome.spec.composite_recipe,
@@ -922,7 +978,6 @@ def execute_adaptive_direct_schedule(
                 direct_focus_records=direct_records,
                 final_whole=final_whole,
             )
-            current_files = _current_compile_files(compiled, event)
             if event.is_set():
                 raise ProcessCancelledError(
                     "adaptive-direct cancelled after final compile validation"
@@ -977,26 +1032,31 @@ def execute_adaptive_direct_schedule(
                     direct_focus_records=(), final_whole=None,
                 )
             elif stage == "compile" and composed is not None:
-                evidence = build_adaptive_direct_evidence(
-                    terminal_status="compile_failed", recipe=recipe,
-                    composition=composed.composition,
-                    changed_sources=composed.composition.changed_sources,
-                    compile_files=(), structural=None, base_focus_records=(),
-                    direct_focus_records=(), final_whole=None,
-                )
+                try:
+                    composed = require_current_composition()
+                except (OSError, TypeError, ValueError):
+                    composed = None
+                if composed is not None:
+                    evidence = build_adaptive_direct_evidence(
+                        terminal_status="compile_failed", recipe=recipe,
+                        composition=composed.composition,
+                        changed_sources=composed.composition.changed_sources,
+                        compile_files=(), structural=None, base_focus_records=(),
+                        direct_focus_records=(), final_whole=None,
+                    )
             attempts.append(AdaptiveDirectExecutionAttempt.create(
                 outcome.ratio, failure_status,
                 candidate_id=outcome.spec.candidate_id,
-                build=(compiled.build if compiled is not None else None),
+                build=(
+                    compiled.build
+                    if stage == "compile" and compiled is not None else None
+                ),
                 evidence=evidence, recipe=recipe, error=str(exc),
             ))
-    authorized = [
-        item.evaluation for item in attempts if item.status == "authorized"
-    ]
-    selected = select_winner([base_evaluation, *authorized])
     cancelled = schedule.cancelled or any(
         item.status == "cancelled" for item in attempts
     )
-    return AdaptiveDirectScheduleExecution(
-        base_evaluation, selected, tuple(attempts), cancelled,
+    return _resolve_terminal_selection(
+        base_proof=base_proof, base_evaluation=base_evaluation,
+        attempts=tuple(attempts), cancelled=cancelled,
     )

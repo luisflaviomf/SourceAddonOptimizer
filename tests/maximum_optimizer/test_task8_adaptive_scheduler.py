@@ -234,7 +234,7 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
         self.assertEqual(tuple(item.status for item in result.attempts), ("cancelled", "cancelled"))
         self.assertIs(result.selected, result.base)
         self.assertEqual(preserved, "foreign")
-        self._authority_mock.assert_not_called()
+        self._authority_mock.assert_called_once()
 
     def test_revalidates_composed_source_after_compile_structural_and_final_callbacks(self) -> None:
         for stage in ("compile", "structural", "final"):
@@ -323,6 +323,177 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
             self.assertEqual(result.attempts[0].status, "cancelled")
             self.assertIs(result.selected, base)
 
+    def test_mutation_during_size_construction_revokes_selected_direct_attempt(self) -> None:
+        from maximum_optimizer import adaptive_direct_scheduler as module
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture_root = root / "fixture"; fixture_root.mkdir()
+            fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+            callbacks, base = self._authorized_callbacks(root, fixture)
+            base = replace(base, size=CompiledSizeSnapshot(
+                base.size.root, 100, {".mdl": 100}, {},
+                (ArtifactStat("base.mdl", ".mdl", 100),),
+            ))
+            callbacks["base_proof"] = self._proof(fixture, base)
+            original = module._size_from_compile_files
+
+            def mutate_after_size(build, files):
+                result = original(build, files)
+                artifact = build.compiled_models_dir / files[0].relative_path
+                artifact.write_bytes(b"mutated-during-size")
+                return result
+
+            with mock.patch.object(
+                module, "_size_from_compile_files", side_effect=mutate_after_size,
+            ):
+                result = execute_adaptive_direct_schedule(**callbacks)
+            attempt = result.attempts[0]
+            self.assertEqual(attempt.status, "final_whole_failed")
+            self.assertIsNone(attempt.build)
+            self.assertIsNone(attempt.evidence)
+            self.assertIs(result.selected, base)
+
+    def test_mutation_after_attempt_create_revokes_selected_direct_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture_root = root / "fixture"; fixture_root.mkdir()
+            fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+            callbacks, base = self._authorized_callbacks(root, fixture)
+            base = replace(base, size=CompiledSizeSnapshot(
+                base.size.root, 100, {".mdl": 100}, {},
+                (ArtifactStat("base.mdl", ".mdl", 100),),
+            ))
+            callbacks["base_proof"] = self._proof(fixture, base)
+            original = AdaptiveDirectExecutionAttempt.create.__func__
+
+            def mutate_after_create(cls, ratio, status, **values):
+                attempt = original(cls, ratio, status, **values)
+                if status == "authorized":
+                    artifact = (
+                        attempt.build.compiled_models_dir
+                        / attempt.evidence.compile_files[0].relative_path
+                    )
+                    artifact.write_bytes(b"mutated-after-attempt-create")
+                return attempt
+
+            with mock.patch.object(
+                AdaptiveDirectExecutionAttempt, "create",
+                new=classmethod(mutate_after_create),
+            ):
+                result = execute_adaptive_direct_schedule(**callbacks)
+            attempt = result.attempts[0]
+            self.assertEqual(attempt.status, "final_whole_failed")
+            self.assertIsNone(attempt.build)
+            self.assertIsNone(attempt.evidence)
+            self.assertIs(result.selected, base)
+
+    def test_base_selected_after_callback_is_revalidated_immediately_before_return(self) -> None:
+        from maximum_optimizer import adaptive_direct_scheduler as module
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture_root = root / "fixture"; fixture_root.mkdir()
+            fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+            callbacks, base = self._authorized_callbacks(root, fixture)
+            original = module._size_from_compile_files
+            callback_completed = False
+
+            def make_direct_larger(build, files):
+                nonlocal callback_completed
+                result = original(build, files)
+                callback_completed = True
+                return result
+
+            def current_authority(proof, _event=None):
+                if callback_completed:
+                    raise ValueError("base changed during size callback")
+                return proof
+
+            self._authority_mock.side_effect = current_authority
+            with mock.patch.object(
+                module, "_size_from_compile_files", side_effect=make_direct_larger,
+            ):
+                with self.assertRaisesRegex(ValueError, "base changed during size callback"):
+                    execute_adaptive_direct_schedule(**callbacks)
+            self.assertIsNotNone(base)
+
+    def test_failed_terminal_stages_never_seal_mutated_compile_build_or_evidence(self) -> None:
+        for stage in ("structural", "focused", "final"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                fixture_root = root / "fixture"; fixture_root.mkdir()
+                fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+                callbacks, base = self._authorized_callbacks(root, fixture)
+
+                def mutate(compiled):
+                    artifact = (
+                        compiled.build.compiled_models_dir
+                        / compiled.compile_files[0].relative_path
+                    )
+                    artifact.write_bytes(f"mutated-{stage}".encode("ascii"))
+
+                if stage == "structural":
+                    def fail_structural(_scheduled, composed, compiled, _event):
+                        result = structural(
+                            composed.composition, compiled.compile_files,
+                            passed=False,
+                        )
+                        mutate(compiled)
+                        return result
+                    callbacks["authorize_structural"] = fail_structural
+                elif stage == "focused":
+                    def fail_focus(_outcome, compiled, source, *_args):
+                        mutate(compiled)
+                        return _union_record(source, fixture, passed=False)
+                    callbacks["render_source_union"] = fail_focus
+                else:
+                    def fail_final(scheduled, composed, compiled, struct, _event):
+                        result = build_final_whole_authorization_evidence(
+                            scheduled.spec.candidate_id,
+                            struct.candidate_cache_digest,
+                            scheduled.spec.composite_recipe.recipe_sha256,
+                            composed.composition.evidence_sha256,
+                            struct.compile_manifest_sha256,
+                            "logs/whole-visual-index.json", "a" * 64, "b" * 64,
+                            ValidationResult(False),
+                        )
+                        mutate(compiled)
+                        return result
+                    callbacks["authorize_final_whole"] = fail_final
+
+                result = execute_adaptive_direct_schedule(**callbacks)
+                attempt = result.attempts[0]
+                self.assertEqual(
+                    attempt.status,
+                    {"structural": "structural_failed",
+                     "focused": "focused_failed",
+                     "final": "final_whole_failed"}[stage],
+                )
+                self.assertIsNone(attempt.build)
+                self.assertIsNone(attempt.evidence)
+                self.assertIs(result.selected, base)
+
+    def test_compile_exception_never_seals_a_mutated_composition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture_root = root / "fixture"; fixture_root.mkdir()
+            fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+            callbacks, base = self._authorized_callbacks(root, fixture)
+
+            def mutate_then_raise(_scheduled, composed, _event):
+                source = next((composed.workspace / "src").rglob("*.smd"))
+                source.write_bytes(source.read_bytes() + b"\ncompile-mutation")
+                raise RuntimeError("compiler failed after mutating composition")
+
+            callbacks["compile_candidate"] = mutate_then_raise
+            result = execute_adaptive_direct_schedule(**callbacks)
+            attempt = result.attempts[0]
+            self.assertEqual(attempt.status, "compile_failed")
+            self.assertIsNone(attempt.build)
+            self.assertIsNone(attempt.evidence)
+            self.assertIs(result.selected, base)
+
     def test_private_snapshot_cleanup_preserves_injected_foreign_descendant(self) -> None:
         from maximum_optimizer import adaptive_direct_scheduler as module
 
@@ -364,6 +535,39 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
             self.assertTrue(injected["root"].is_dir())
             self.assertEqual(
                 injected["sentinel"].read_text(encoding="utf-8"), "foreign"
+            )
+
+    def test_private_snapshot_cleanup_never_unlinks_descendants_by_path(self) -> None:
+        from maximum_optimizer import adaptive_direct_scheduler as module
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            root = parent / "owned-private"
+            root.mkdir()
+            artifact = root / "artifact.mdl"
+            artifact.write_bytes(b"owned")
+            ownership = module._PrivateSnapshotOwnership(
+                module._snapshot_identity(root, directory=True),
+                {"artifact.mdl": module._snapshot_identity(
+                    artifact, directory=False,
+                )},
+                {"artifact.mdl": (
+                    len(b"owned"), hashlib.sha256(b"owned").hexdigest(),
+                )},
+            )
+            with mock.patch.object(
+                Path, "unlink",
+                side_effect=AssertionError("pathname unlink is forbidden"),
+            ):
+                cleaned = module._cleanup_private_snapshot(root, ownership)
+            self.assertFalse(cleaned)
+            self.assertFalse(root.exists())
+            quarantines = tuple(parent.glob(
+                ".owned-private.adaptive-snapshot-cleanup-*"
+            ))
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(
+                (quarantines[0] / "artifact.mdl").read_bytes(), b"owned"
             )
 
     def test_schedule_never_reserves_more_than_four_fixed_ratios(self) -> None:
