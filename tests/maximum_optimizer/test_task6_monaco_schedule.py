@@ -19,6 +19,7 @@ from maximum_optimizer.composite import (
     optimizer_contract_sha256,
 )
 from maximum_optimizer.adaptive_direct_evidence import build_adaptive_direct_evidence
+from maximum_optimizer.candidates import _direct_input_material_proofs, _direct_prefilter_proof
 from maximum_optimizer.domain import (
     CandidateSpec, ChangedSourceProof, CompositionProof, DirectDroppedTriangleProof,
     DirectInputMaterialProof, DirectMaterialTriangleProof,
@@ -33,6 +34,7 @@ from maximum_optimizer.monaco_schedule import (
     build_monaco_schedule,
 )
 from maximum_optimizer.processes import ProcessCancelledError
+from maximum_optimizer.smd_contract import prefilter_direct_degenerate_smd
 from tests.maximum_optimizer.test_task6_contracts import (
     H, coverage_source, inventory_for_coverage, metrics_for_coverage,
 )
@@ -43,11 +45,33 @@ from tests.maximum_optimizer.test_task6_adaptive_evidence import (
 
 class MonacoScheduleTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.input_temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.input_temporary.cleanup)
+        self.input_root = Path(self.input_temporary.name).resolve()
+        rows = [
+            "paint\n0 0 0 0 0 0 1 0 0\n0 0 0 0 0 0 1 0 0\n0 0 0 0 0 0 1 0 0\n"
+        ]
+        for triangle in range(9):
+            x = triangle * 2
+            rows.append(
+                f"paint\n0 {x} 0 0 0 0 1 0 0\n0 {x + 1} 0 0 0 0 1 1 0\n0 {x} 1 0 0 0 1 0 1\n"
+            )
+        self.input_text = (
+            'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+            '0 0 0 0 0 0 0\nend\ntriangles\n' + "".join(rows) + "end\n"
+        )
+        self.input_bytes = self.input_text.encode()
+        for name in ("body.smd", "wheel.smd"):
+            (self.input_root / name).write_bytes(self.input_bytes)
+        input_sha = hashlib.sha256(self.input_bytes).hexdigest()
         self.base_spec = CandidateSpec(
             "base", "blender", 0.8, 0.0, "blender-adaptive-v1",
             strategy="blender-adaptive-v1", transfer="blender-native-v1",
         )
-        sources = (coverage_source("body.smd"), coverage_source("wheel.smd"))
+        sources = (
+            coverage_source("body.smd", source_size=len(self.input_bytes), source_sha256=input_sha),
+            coverage_source("wheel.smd", source_size=len(self.input_bytes), source_sha256=input_sha),
+        )
         old_metrics = metrics_for_coverage(sources)
         old_inventory = inventory_for_coverage(sources)
         spec_sha256 = candidate_spec_sha256(self.base_spec)
@@ -76,12 +100,8 @@ class MonacoScheduleTests(unittest.TestCase):
         requests = []
         snapshots = []
         for ordinal, source in enumerate(self.coverage.sources):
-            prefilter = build_direct_prefilter_proof(
-                source_triangle_count=10,
-                triangles=(DirectDroppedTriangleProof(
-                    0, "paint", ("root",), "cross-squared-at-most-1e-30", source.source_sha256,
-                ),),
-            )
+            prefilter = _direct_prefilter_proof(self.input_text)
+            filtered = prefilter_direct_degenerate_smd(self.input_text).filtered_text
             request = build_direct_source_request(
                 family_id=self.coverage.family_id,
                 family_input_sha256=self.coverage.family_input_sha256,
@@ -98,7 +118,7 @@ class MonacoScheduleTests(unittest.TestCase):
                 source_relative_path=source.source_identity, source_size=source.source_size,
                 source_sha256=source.source_sha256, direct_ratio=ratio,
                 expected_prefilter=prefilter,
-                expected_materials=(DirectInputMaterialProof(0, "paint", 9, H["c"]),),
+                expected_materials=_direct_input_material_proofs(filtered),
             )
             ratio_root = root / f"r{int(ratio * 100):03d}-{ordinal}"
             ratio_root.mkdir()
@@ -115,7 +135,8 @@ class MonacoScheduleTests(unittest.TestCase):
             ).encode()
             (ratio_root / "output.smd").write_bytes(output)
             snapshot = build_direct_source_snapshot(
-                request=request, source_root=ratio_root, output_relative_path="output.smd",
+                request=request, input_source_root=self.input_root,
+                source_root=ratio_root, output_relative_path="output.smd",
                 output_size=len(output), output_sha256=hashlib.sha256(output).hexdigest(),
                 triangles_before=9,
                 triangles_after=after,

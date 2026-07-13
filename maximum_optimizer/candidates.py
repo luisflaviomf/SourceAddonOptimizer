@@ -339,7 +339,8 @@ def build_direct_source_snapshot(
         )
         exact_input.unlink(); filtered_path.unlink()
         return seal_snapshot(
-            request=request, source_root=workspace, output_relative_path="output.smd",
+            request=request, input_source_root=source_root,
+            source_root=workspace, output_relative_path="output.smd",
             output_size=len(output_bytes), output_sha256=hashlib.sha256(output_bytes).hexdigest(),
             triangles_before=triangles_before, triangles_after=triangles_after,
             material_triangles=material_triangles,

@@ -1251,6 +1251,7 @@ class DirectSourceSnapshot:
     request: DirectSourceBuildRequest
     direct_candidate_id: str
     direct_cache_digest: str
+    input_source_root: Path
     source_root: Path
     output_relative_path: str
     output_size: int
@@ -1268,8 +1269,9 @@ class DirectSourceSnapshot:
         if type(self.schema) is not int or self.schema != 1 or not isinstance(self.request, DirectSourceBuildRequest): raise ValueError("direct snapshot identity is invalid")
         if self.direct_candidate_id != direct_candidate_id(self.request) or self.direct_cache_digest != direct_cache_digest(self.request):
             raise ValueError("direct snapshot derived identity mismatch")
+        input_root = Path(self.input_source_root)
         root = Path(self.source_root)
-        if not root.is_absolute(): raise ValueError("direct snapshot root must be absolute")
+        if not input_root.is_absolute() or not root.is_absolute(): raise ValueError("direct snapshot roots must be absolute")
         _require_relative(self.output_relative_path, "direct output path"); _require_size(self.output_size, "direct output size"); _require_sha256(self.output_sha256, "direct output hash")
         if not self.output_relative_path.casefold().endswith(".smd"): raise ValueError("direct output must be an SMD")
         post_prefilter_count = self.request.expected_prefilter.source_triangle_count - self.request.expected_prefilter.dropped_count
@@ -1299,6 +1301,7 @@ class DirectSourceSnapshot:
         if self.prefilter != self.request.expected_prefilter or self.fallback_reason is not None or self.preserved_exact is not False or self.reason != "approved-direct-position-v1": raise ValueError("direct snapshot result matrix is invalid")
         if _require_sha256(self.snapshot_sha256, "direct snapshot hash") != _seal(direct_source_snapshot_payload(self, include_seal=False)): raise ValueError("direct snapshot seal mismatch")
         object.__setattr__(self, "source_root", root)
+        object.__setattr__(self, "input_source_root", input_root)
         object.__setattr__(self, "material_triangles", materials)
 
 
@@ -1318,7 +1321,9 @@ def direct_source_snapshot_payload(value: DirectSourceSnapshot, *, include_seal:
     return payload
 
 
-def direct_source_snapshot_from_payload(value: object, *, source_root: Path) -> DirectSourceSnapshot:
+def direct_source_snapshot_from_payload(
+    value: object, *, source_root: Path, input_source_root: Path,
+) -> DirectSourceSnapshot:
     fields = {"schema", "request", "direct_candidate_id", "direct_cache_digest", "output_relative_path", "output_size", "output_sha256", "triangles_before", "triangles_after", "material_triangles", "prefilter", "fallback_reason", "preserved_exact", "reason", "snapshot_sha256"}
     if type(value) is not dict or set(value) != fields or type(value["material_triangles"]) is not list: raise ValueError("direct snapshot payload fields are invalid")
     material_fields = {"ordinal", "material", "triangles_before", "target_triangles", "triangles_after"}
@@ -1331,7 +1336,9 @@ def direct_source_snapshot_from_payload(value: object, *, source_root: Path) -> 
     copied["request"] = direct_source_request_from_payload(copied["request"])
     copied["prefilter"] = direct_prefilter_from_payload(copied["prefilter"])
     copied["material_triangles"] = tuple(materials)
-    return DirectSourceSnapshot(source_root=source_root, **copied)
+    return DirectSourceSnapshot(
+        source_root=source_root, input_source_root=input_source_root, **copied
+    )
 
 
 @dataclass(frozen=True)

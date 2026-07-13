@@ -62,7 +62,7 @@ from .focused_cache import (
 )
 from .qc_graph import QcGraph, parse_qc_graph
 from .reporting import canonical_json
-from .smd_contract import direct_smd_material_counts
+from .smd_contract import direct_smd_material_counts, prefilter_direct_degenerate_smd
 
 
 _MAX_SOURCE_FILES = 4096
@@ -467,7 +467,8 @@ def revalidate_direct_source_snapshot(
     if not isinstance(snapshot, DirectSourceSnapshot):
         raise TypeError("direct source snapshot is invalid")
     if direct_source_snapshot_from_payload(
-        direct_source_snapshot_payload(snapshot), source_root=snapshot.source_root
+        direct_source_snapshot_payload(snapshot), source_root=snapshot.source_root,
+        input_source_root=snapshot.input_source_root,
     ) != snapshot:
         raise ValueError("direct snapshot typed payload is not self-consistent")
     root = Path(os.path.abspath(snapshot.source_root))
@@ -504,6 +505,41 @@ def revalidate_direct_source_snapshot(
         (item.material, item.triangles_after) for item in snapshot.material_triangles
     ):
         raise ValueError("direct snapshot current SMD differs from material ratio evidence")
+    input_root = Path(os.path.abspath(snapshot.input_source_root))
+    input_path = input_root.joinpath(*Path(snapshot.request.source_relative_path).parts)
+    try:
+        input_bytes = _read_regular_no_follow(
+            input_path, cancel_event, contained_root=input_root,
+            max_bytes=_MAX_SOURCE_BYTES,
+        )
+    except OSError as exc:
+        raise ValueError("direct snapshot current input is unavailable") from exc
+    if (
+        len(input_bytes), hashlib.sha256(input_bytes).hexdigest()
+    ) != (snapshot.request.source_size, snapshot.request.source_sha256):
+        raise ValueError("direct snapshot current input differs from request")
+    try:
+        input_text = input_bytes.decode("utf-8")
+        from .candidates import (
+            _direct_input_material_proofs, _direct_prefilter_proof,
+            _validate_direct_smd_output,
+        )
+        prefilter = prefilter_direct_degenerate_smd(input_text)
+        if _direct_prefilter_proof(input_text) != snapshot.request.expected_prefilter:
+            raise ValueError("direct snapshot current prefilter differs from request")
+        if _direct_input_material_proofs(prefilter.filtered_text) != snapshot.request.expected_materials:
+            raise ValueError("direct snapshot current material inventory differs from request")
+        before, after, materials = _validate_direct_smd_output(
+            prefilter.filtered_text, output_bytes.decode("utf-8"),
+            snapshot.request.direct_ratio,
+        )
+    except (UnicodeDecodeError, ValueError, RuntimeError) as exc:
+        raise ValueError("direct snapshot current input/output provenance is invalid") from exc
+    if (
+        before != snapshot.triangles_before or after != snapshot.triangles_after
+        or materials != snapshot.material_triangles
+    ):
+        raise ValueError("direct snapshot current provenance differs from sealed evidence")
     if _safe_tree_files(root, cancel_event) != files:
         raise ValueError("direct snapshot file inventory changed during validation")
     return snapshot

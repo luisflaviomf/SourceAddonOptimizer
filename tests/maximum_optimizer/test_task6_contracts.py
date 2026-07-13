@@ -52,6 +52,11 @@ from maximum_optimizer.domain import (
     composite_recipe_payload,
 )
 from maximum_optimizer.focused_cache import RenderFileProof
+from tests.maximum_optimizer.test_task6_snapshot_runtime import (
+    _input_smd as runtime_input_smd,
+    _output_smd as runtime_output_smd,
+    _request as runtime_request,
+)
 
 
 H = {c: c * 64 for c in "0123456789abcdef"}
@@ -78,15 +83,18 @@ def occurrence(source: str = "body.smd", line: int = 1) -> AdaptiveGraphOccurren
     return AdaptiveGraphOccurrenceProof("main.qc", "$body", line, source, "visual")
 
 
-def source_metrics(source: str = "body.smd", *, eligible: bool = True):
+def source_metrics(
+    source: str = "body.smd", *, eligible: bool = True,
+    source_size: int = 100, source_sha256: str = H["1"],
+):
     common = dict(
         source_identity=source,
         source_relative_path=source,
-        source_size=100,
-        source_sha256=H["1"],
+        source_size=source_size,
+        source_sha256=source_sha256,
         output_relative_path=f"output/{source}",
-        output_size=100 if eligible else 80,
-        output_sha256=H["1"] if eligible else H["2"],
+        output_size=source_size if eligible else max(0, source_size - 1),
+        output_sha256=source_sha256 if eligible else H["2"],
         occurrences=(occurrence(source),),
     )
     if eligible:
@@ -99,13 +107,14 @@ def source_metrics(source: str = "body.smd", *, eligible: bool = True):
 
 
 def witness(
-    source: str = "body.smd", *, ordinal: int = 0, state: str = "default"
+    source: str = "body.smd", *, ordinal: int = 0, state: str = "default",
+    source_size: int = 100, source_sha256: str = H["1"],
 ) -> AdaptiveDirectCoverageOccurrenceProof:
     return AdaptiveDirectCoverageOccurrenceProof.create(
         occurrence_key=f"occ-{hashlib.sha256(source.encode()).hexdigest()[:8]}-{ordinal:04d}", source_identity=source,
         graph_relative_path="main.qc", directive="$body", line=ordinal + 1,
         state_key=state, bodygroup_key="body", lod_key="lod0", skin_key="skin0",
-        source_size=100, source_sha256=H["1"], component_manifest_sha256=H["3"],
+        source_size=source_size, source_sha256=source_sha256, component_manifest_sha256=H["3"],
         material_contract_sha256=H["4"], skeleton_contract_sha256=H["5"],
         pose_contract_sha256=H["6"], equivalence_class_sha256=H["7"],
     )
@@ -115,16 +124,22 @@ def coverage_source(
     source: str = "body.smd", *, states: tuple[str, ...] = ("default",),
     components: tuple[str, ...] = ("component-000",),
     poses: tuple[str, ...] = ("bind",),
+    source_size: int = 100, source_sha256: str = H["1"],
 ) -> AdaptiveDirectCoverageSourceProof:
-    witnesses = tuple(witness(source, ordinal=i, state=state) for i, state in enumerate(states))
+    witnesses = tuple(witness(
+        source, ordinal=i, state=state,
+        source_size=source_size, source_sha256=source_sha256,
+    ) for i, state in enumerate(states))
     return AdaptiveDirectCoverageSourceProof.create(
         source_identity=source, eligibility_kind="eligible-exact-v1",
-        source_size=100, source_sha256=H["1"],
+        source_size=source_size, source_sha256=source_sha256,
         occurrence_keys=tuple(item.occurrence_key for item in witnesses),
         state_keys=states, component_keys=components,
         material_region_keys=("material-000",), skeleton_contract_sha256=H["5"],
         pose_keys=poses, equivalence_class_sha256=H["7"], witnesses=witnesses,
-        metrics_sha256=source_metrics(source).metrics_sha256,
+        metrics_sha256=source_metrics(
+            source, source_size=source_size, source_sha256=source_sha256,
+        ).metrics_sha256,
         state_inventory_sha256=H["9"],
     )
 
@@ -431,17 +446,15 @@ class DirectContracts(unittest.TestCase):
             with self.subTest(input_material_field=field), self.assertRaises((TypeError, ValueError)):
                 direct_source_request_from_payload(payload)
         with tempfile.TemporaryDirectory() as root:
-            rows = "".join(
-                f"paint\n0 {i * 2} 0 0 0 0 1 0 0\n0 {i * 2 + 1} 0 0 0 0 1 1 0\n0 {i * 2} 1 0 0 0 1 0 1\n"
-                for i in range(4)
-            )
-            output = (
-                'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
-                '0 0 0 0 0 0 0\nend\ntriangles\n' + rows + "end\n"
-            ).encode()
-            (Path(root) / "output.smd").write_bytes(output)
+            base = Path(root).resolve()
+            input_root = base / "input"; output_root = base / "output"
+            input_root.mkdir(); output_root.mkdir()
+            (input_root / "body.smd").write_bytes(runtime_input_smd())
+            output = runtime_output_smd()
+            (output_root / "output.smd").write_bytes(output)
+            request = runtime_request()
             snapshot = build_direct_source_snapshot(
-                request=request, source_root=Path(root).resolve(),
+                request=request, input_source_root=input_root, source_root=output_root,
                 output_relative_path="output.smd", output_size=len(output),
                 output_sha256=hashlib.sha256(output).hexdigest(),
                 triangles_before=9, triangles_after=4,
@@ -452,21 +465,24 @@ class DirectContracts(unittest.TestCase):
             self.assertTrue(snapshot.direct_candidate_id.startswith("direct-source-"))
             self.assertEqual(len(snapshot.direct_cache_digest), 64)
             payload = direct_source_snapshot_payload(snapshot)
-            self.assertEqual(direct_source_snapshot_from_payload(payload, source_root=Path(root).resolve()), snapshot)
+            parser = lambda item: direct_source_snapshot_from_payload(
+                item, source_root=output_root, input_source_root=input_root,
+            )
+            self.assertEqual(parser(payload), snapshot)
             for field in payload["material_triangles"][0]:
                 changed = direct_source_snapshot_payload(snapshot)
                 changed["material_triangles"][0][field] = None
                 with self.subTest(material_triangle_field=field), self.assertRaises((TypeError, ValueError)):
-                    direct_source_snapshot_from_payload(changed, source_root=Path(root).resolve())
+                    parser(changed)
             assert_every_field_rejected(
-                self, lambda item: direct_source_snapshot_from_payload(item, source_root=Path(root).resolve()), payload,
+                self, parser, payload,
             )
             for nested_name in ("request", "prefilter"):
                 for field in payload[nested_name]:
                     changed = direct_source_snapshot_payload(snapshot)
                     changed[nested_name][field] = None
                     with self.subTest(snapshot_nested=nested_name, field=field), self.assertRaises((TypeError, ValueError)):
-                        direct_source_snapshot_from_payload(changed, source_root=Path(root).resolve())
+                        parser(changed)
             with self.assertRaises(ValueError):
                 replace(snapshot, output_sha256=H["e"])
         with self.assertRaises(ValueError):
