@@ -19,6 +19,55 @@ from .remapped_topology import (
 STRATEGY = "meshopt-remapped-visual-v1"
 TRANSFER = "visual-remapped-topology-v1"
 
+BoundaryPosition = tuple[str, str, str]
+BoundaryEdge = tuple[BoundaryPosition, BoundaryPosition]
+BoundarySet = tuple[BoundaryEdge, ...]
+
+
+def _is_boundary_set(value: object) -> bool:
+    if type(value) is not tuple:
+        return False
+    decoded_edges = []
+    for edge in value:
+        if type(edge) is not tuple or len(edge) != 2:
+            return False
+        decoded_positions = []
+        for position in edge:
+            if type(position) is not tuple or len(position) != 3:
+                return False
+            decoded = []
+            for coordinate in position:
+                if type(coordinate) is not str:
+                    return False
+                try:
+                    parsed = float.fromhex(coordinate)
+                except ValueError:
+                    return False
+                if not math.isfinite(parsed) or parsed.hex() != coordinate:
+                    return False
+                decoded.append(parsed)
+            decoded_positions.append(tuple(decoded))
+        decoded_edge = (decoded_positions[0], decoded_positions[1])
+        if decoded_edge[0] > decoded_edge[1]:
+            return False
+        decoded_edges.append(decoded_edge)
+    return value == _encode_boundary_set(decoded_edges)
+
+
+def _encoded_boundary_payload(
+    component: tuple[int, int], edges: BoundarySet,
+) -> list[dict[str, object]]:
+    return [{
+        "component": list(component),
+        "edges": [[list(left), list(right)] for left, right in edges],
+    }]
+
+
+def _encoded_boundary_digest(
+    component: tuple[int, int], edges: BoundarySet,
+) -> str:
+    return _canonical_digest(_encoded_boundary_payload(component, edges))
+
 
 @dataclass(frozen=True)
 class VisualRemappedComponentProof:
@@ -40,6 +89,11 @@ class VisualRemappedComponentProof:
     retained_boundary_sha256: str
     removed_boundary_sha256: str
     added_boundary_sha256: str
+    source_boundary_set: BoundarySet
+    output_boundary_set: BoundarySet
+    retained_boundary_set: BoundarySet
+    removed_boundary_set: BoundarySet
+    added_boundary_set: BoundarySet
     source_nonmanifold_excess: int
     output_nonmanifold_excess: int
     source_max_edge_valence: int
@@ -65,6 +119,20 @@ class VisualRemappedComponentProof:
             "retained_boundary_sha256", "removed_boundary_sha256",
             "added_boundary_sha256",
         )
+        boundary_names = (
+            "source_boundary_set", "output_boundary_set",
+            "retained_boundary_set", "removed_boundary_set",
+            "added_boundary_set",
+        )
+        component = (self.material_ordinal, self.source_first_triangle)
+        boundary_sets_valid = all(
+            _is_boundary_set(getattr(self, name)) for name in boundary_names
+        )
+        source = set(self.source_boundary_set) if boundary_sets_valid else set()
+        output = set(self.output_boundary_set) if boundary_sets_valid else set()
+        retained = set(self.retained_boundary_set) if boundary_sets_valid else set()
+        removed = set(self.removed_boundary_set) if boundary_sets_valid else set()
+        added = set(self.added_boundary_set) if boundary_sets_valid else set()
         if (
             any(
                 type(getattr(self, name)) is not int or getattr(self, name) < 0
@@ -82,6 +150,25 @@ class VisualRemappedComponentProof:
             or self.boundary_changed
             != (self.removed_boundary_edges > 0 or self.added_boundary_edges > 0)
             or any(not _is_sha(getattr(self, name)) for name in digest_names)
+            or not boundary_sets_valid
+            or len(source) != self.source_boundary_edges
+            or len(output) != self.output_boundary_edges
+            or len(retained) != self.retained_boundary_edges
+            or len(removed) != self.removed_boundary_edges
+            or len(added) != self.added_boundary_edges
+            or retained != source & output
+            or removed != source - output
+            or added != output - source
+            or self.source_boundary_sha256
+            != _encoded_boundary_digest(component, self.source_boundary_set)
+            or self.output_boundary_sha256
+            != _encoded_boundary_digest(component, self.output_boundary_set)
+            or self.retained_boundary_sha256
+            != _encoded_boundary_digest(component, self.retained_boundary_set)
+            or self.removed_boundary_sha256
+            != _encoded_boundary_digest(component, self.removed_boundary_set)
+            or self.added_boundary_sha256
+            != _encoded_boundary_digest(component, self.added_boundary_set)
             or self.source_max_edge_valence < 1
             or self.output_max_edge_valence < 1
             or self.output_nonmanifold_excess > self.source_nonmanifold_excess
@@ -90,6 +177,54 @@ class VisualRemappedComponentProof:
             or self.output_orientation_conflicts > self.source_orientation_conflicts
         ):
             raise ValueError("visual remapped component proof is invalid")
+
+
+def _aggregate_boundary_digest(
+    components: tuple[VisualRemappedComponentProof, ...], field: str,
+) -> str:
+    payload = []
+    for item in components:
+        payload.extend(_encoded_boundary_payload(
+            (item.material_ordinal, item.source_first_triangle),
+            getattr(item, field),
+        ))
+    return _canonical_digest(payload)
+
+
+_BOUNDARY_SET_FIELDS = (
+    "source_boundary_set", "output_boundary_set", "retained_boundary_set",
+    "removed_boundary_set", "added_boundary_set",
+)
+
+
+def _boundary_set_payload_value(edges: BoundarySet) -> list[list[list[str]]]:
+    return [[list(left), list(right)] for left, right in edges]
+
+
+def _boundary_set_from_payload(value: object) -> BoundarySet:
+    if type(value) is not list:
+        raise ValueError("visual remapped boundary set is invalid")
+    try:
+        result = tuple(
+            (tuple(edge[0]), tuple(edge[1]))
+            for edge in value
+            if type(edge) is list and len(edge) == 2
+        )
+    except TypeError as exc:
+        raise ValueError("visual remapped boundary set is invalid") from exc
+    if len(result) != len(value) or not _is_boundary_set(result):
+        raise ValueError("visual remapped boundary set is invalid")
+    return result
+
+
+def _encode_boundary_set(edges) -> BoundarySet:
+    return tuple(
+        (
+            tuple(float(value).hex() for value in left),
+            tuple(float(value).hex() for value in right),
+        )
+        for left, right in sorted(edges)
+    )
 
 
 @dataclass(frozen=True)
@@ -212,6 +347,17 @@ class VisualRemappedTopologyProof:
             or tuple(item.ordinal for item in self.components)
             != tuple(range(len(self.components)))
             or len(self.components) != self.source_component_count
+            or len({
+                (item.material_ordinal, item.source_first_triangle)
+                for item in self.components
+            }) != len(self.components)
+            or tuple(
+                (item.material_ordinal, item.source_first_triangle)
+                for item in self.components
+            ) != tuple(sorted(
+                (item.material_ordinal, item.source_first_triangle)
+                for item in self.components
+            ))
             or len({item.material for item in self.materials}) != len(self.materials)
             or sum(item.triangles_before for item in self.materials)
             != self.triangles_before
@@ -236,6 +382,16 @@ class VisualRemappedTopologyProof:
             or sum(item.added_boundary_edges for item in self.components)
             != self.added_boundary_edges
             or self.boundary_changed != any(item.boundary_changed for item in self.components)
+            or self.source_boundary_sha256
+            != _aggregate_boundary_digest(self.components, "source_boundary_set")
+            or self.output_boundary_sha256
+            != _aggregate_boundary_digest(self.components, "output_boundary_set")
+            or self.retained_boundary_sha256
+            != _aggregate_boundary_digest(self.components, "retained_boundary_set")
+            or self.removed_boundary_sha256
+            != _aggregate_boundary_digest(self.components, "removed_boundary_set")
+            or self.added_boundary_sha256
+            != _aggregate_boundary_digest(self.components, "added_boundary_set")
             or sum(item.source_nonmanifold_excess for item in self.components)
             != self.source_nonmanifold_excess
             or sum(item.output_nonmanifold_excess for item in self.components)
@@ -283,7 +439,12 @@ def visual_remapped_topology_proof_payload(
         proof.output_source_corner_ordinals
     )
     payload["materials"] = [asdict(item) for item in proof.materials]
-    payload["components"] = [asdict(item) for item in proof.components]
+    payload["components"] = []
+    for item in proof.components:
+        component = asdict(item)
+        for field in _BOUNDARY_SET_FIELDS:
+            component[field] = _boundary_set_payload_value(getattr(item, field))
+        payload["components"].append(component)
     if not include_seal:
         payload.pop("proof_sha256")
     return payload
@@ -320,9 +481,13 @@ def visual_remapped_topology_proof_from_payload(
     copied["materials"] = tuple(
         RemappedMaterialProof(**item) for item in raw_materials
     )
-    copied["components"] = tuple(
-        VisualRemappedComponentProof(**item) for item in raw_components
-    )
+    components = []
+    for item in raw_components:
+        component = dict(item)
+        for field in _BOUNDARY_SET_FIELDS:
+            component[field] = _boundary_set_from_payload(component[field])
+        components.append(VisualRemappedComponentProof(**component))
+    copied["components"] = tuple(components)
     copied["output_source_corner_ordinals"] = tuple(raw_ordinals)
     proof = VisualRemappedTopologyProof(**copied)
     if proof.proof_sha256 != _canonical_digest(
@@ -405,6 +570,11 @@ def validate_visual_remapped_topology_smd(
             added_boundary_sha256=_canonical_digest(
                 _set_payload(component, added)
             ),
+            source_boundary_set=_encode_boundary_set(source_boundary),
+            output_boundary_set=_encode_boundary_set(output_boundary),
+            retained_boundary_set=_encode_boundary_set(retained),
+            removed_boundary_set=_encode_boundary_set(removed),
+            added_boundary_set=_encode_boundary_set(added),
             source_nonmanifold_excess=analysis.source_stats.nonmanifold_excess[component],
             output_nonmanifold_excess=analysis.output_stats.nonmanifold_excess[component],
             source_max_edge_valence=analysis.source_stats.max_valence[component],

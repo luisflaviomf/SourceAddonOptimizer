@@ -17,6 +17,7 @@ from tests.maximum_optimizer.test_remapped_topology import (
     _diagonal_output,
     _fan_source,
     _smd,
+    _two_diagonals,
     _two_fans,
 )
 
@@ -134,6 +135,37 @@ class VisualRemappedTopologyContractTests(unittest.TestCase):
         )
         payload = visual_remapped_topology_proof_payload(proof)
         payload["added_boundary_edges"] = 1
+        _reseal(payload)
+
+        with self.assertRaisesRegex(ValueError, "relationships"):
+            visual_remapped_topology_proof_from_payload(payload)
+
+    def test_proof_loader_rejects_resealed_boundary_hash_lie(self) -> None:
+        proof = validate_visual_remapped_topology_smd(
+            _fan_source(), _boundary_change(), 0.5
+        )
+        payload = visual_remapped_topology_proof_payload(proof)
+        payload["components"][0]["added_boundary_sha256"] = "a" * 64
+        _reseal(payload)
+
+        with self.assertRaisesRegex(ValueError, "component proof"):
+            visual_remapped_topology_proof_from_payload(payload)
+
+        payload = visual_remapped_topology_proof_payload(proof)
+        payload["added_boundary_sha256"] = "b" * 64
+        _reseal(payload)
+
+        with self.assertRaisesRegex(ValueError, "relationships"):
+            visual_remapped_topology_proof_from_payload(payload)
+
+    def test_proof_loader_rejects_resealed_duplicate_component_identity(self) -> None:
+        proof = validate_visual_remapped_topology_smd(
+            _two_fans(), _two_diagonals(), 0.5
+        )
+        payload = visual_remapped_topology_proof_payload(proof)
+        duplicate = dict(payload["components"][0])
+        duplicate["ordinal"] = 1
+        payload["components"][1] = duplicate
         _reseal(payload)
 
         with self.assertRaisesRegex(ValueError, "relationships"):
