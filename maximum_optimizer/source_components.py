@@ -95,7 +95,8 @@ class SourceComponentManifest:
         components = tuple(self.components)
         ordinals = tuple(value for item in components for value in item.triangle_ordinals)
         if (
-            self.schema != 1
+            type(self.schema) is not int
+            or self.schema != 1
             or self.algorithm != "post-prefilter-exact-position-components-v1"
             or any(_HASH.fullmatch(value or "") is None for value in (
                 self.source_sha256, self.prefilter_evidence_sha256,
@@ -191,7 +192,8 @@ class SourceComponentTransferProof:
     def __post_init__(self) -> None:
         triangles = tuple(self.triangles)
         if (
-            self.schema != 1
+            type(self.schema) is not int
+            or self.schema != 1
             or self.algorithm != "exact-cyclic-source-component-transfer-v1"
             or any(_HASH.fullmatch(value or "") is None for value in (
                 self.component_manifest_sha256, self.candidate_sha256,

@@ -202,6 +202,34 @@ class SourceComponentContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "transfer"):
             source_component_transfer_from_payload(payload)
 
+    def test_payload_parsers_reject_boolean_schema_even_when_resealed(self) -> None:
+        first = ("paint", ((0, 0, 0), (1, 0, 0), (0, 1, 0)))
+        second = ("paint", ((10, 0, 0), (11, 0, 0), (10, 1, 0)))
+        source = _smd((first, second))
+        manifest = build_source_component_manifest(source)
+        transfer = build_source_component_transfer(manifest, source, _smd((first,)))
+        for payload, seal, parser in (
+            (
+                source_component_manifest_payload(manifest),
+                "component_manifest_sha256",
+                source_component_manifest_from_payload,
+            ),
+            (
+                source_component_transfer_payload(transfer),
+                "transfer_sha256",
+                source_component_transfer_from_payload,
+            ),
+        ):
+            for invalid in (True, False):
+                forged = {**payload, "schema": invalid}
+                unsigned = dict(forged)
+                unsigned.pop(seal)
+                forged[seal] = hashlib.sha256(
+                    canonical_json(unsigned).encode()
+                ).hexdigest()
+                with self.assertRaisesRegex(ValueError, "manifest|transfer"):
+                    parser(forged)
+
 
 if __name__ == "__main__":
     unittest.main()
