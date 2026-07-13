@@ -376,8 +376,15 @@ def build_production_adaptive_candidate_metrics_proof(
         Path(candidate_snapshot.source_root), Path(candidate_metrics_path),
         "candidate metrics path",
     )
+    if metrics_relative != "candidate_metrics.json":
+        raise ValueError("candidate metrics path is not canonical candidate_metrics.json")
     metrics_file = candidate_relative.get(metrics_relative.casefold())
-    if metrics_file is None:
+    if (
+        metrics_file is None
+        or metrics_file.kind != "auxiliary"
+        or metrics_file.file_identity != "auxiliary/candidate_metrics.json"
+        or metrics_file.relative_path != "candidate_metrics.json"
+    ):
         raise ValueError("candidate metrics has no authoritative SourceFileProof")
     payload, metrics_size, metrics_digest = load_candidate_metrics_json(
         candidate_metrics_path, candidate_snapshot.source_root, cancel_event,
@@ -385,7 +392,8 @@ def build_production_adaptive_candidate_metrics_proof(
     if (metrics_size, metrics_digest) != (metrics_file.size, metrics_file.sha256):
         raise ValueError("candidate metrics current bytes differ from SourceFileProof")
     if (
-        payload.get("schema_version") != 1
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
         or payload.get("candidate_id") != spec.candidate_id
         or payload.get("engine") != "blender"
         or payload.get("strategy") != spec.strategy

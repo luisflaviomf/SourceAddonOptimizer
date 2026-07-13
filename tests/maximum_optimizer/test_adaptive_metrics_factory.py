@@ -68,7 +68,10 @@ def _spec() -> CandidateSpec:
 
 
 class FactoryFixture:
-    def __init__(self, root: Path, *, mutate=None, wheel_bytes: bytes = b"wheel") -> None:
+    def __init__(
+        self, root: Path, *, mutate=None, wheel_bytes: bytes = b"wheel",
+        metrics_name: str = "candidate_metrics.json",
+    ) -> None:
         self.original_root = root / "original"
         self.candidate_root = root / "candidate"
         original_qc = _write_tree(self.original_root, optimized=False)
@@ -130,7 +133,7 @@ class FactoryFixture:
         }
         if mutate is not None:
             mutate(payload)
-        self.metrics_path = self.candidate_root / "candidate_metrics.json"
+        self.metrics_path = self.candidate_root / metrics_name
         self.metrics_path.write_text(
             json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8",
         )
@@ -262,6 +265,30 @@ class ProductionAdaptiveMetricsFactoryTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as raw:
             fixture = FactoryFixture(Path(raw), mutate=wrong_strategy)
+            with self.assertRaisesRegex(ValueError, "identity"):
+                fixture.build()
+
+    def test_factory_rejects_caller_selected_metrics_authority_or_boolean_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = FactoryFixture(
+                Path(raw), metrics_name="arbitrary-untrusted-authority.json",
+            )
+            with self.assertRaisesRegex(ValueError, "candidate_metrics|canonical|path"):
+                fixture.build()
+
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = FactoryFixture(Path(raw))
+            renamed = fixture.candidate_root / "renamed_metrics.json"
+            fixture.metrics_path.rename(renamed)
+            fixture.metrics_path = renamed
+            with self.assertRaises(ValueError):
+                fixture.build()
+
+        def boolean_schema(payload):
+            payload["schema_version"] = True
+
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = FactoryFixture(Path(raw), mutate=boolean_schema)
             with self.assertRaisesRegex(ValueError, "identity"):
                 fixture.build()
 
