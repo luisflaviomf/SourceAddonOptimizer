@@ -135,6 +135,7 @@ SourceUnionComparator = Callable[[Path, Path, FidelityProfile], ValidationResult
 class SourceUnionWorkspaceLease:
     identity: tuple[int, int, int] | None = None
     cleanup_authorized: bool = True
+    cleanup_guard: Callable[[], bool] | None = None
 
     def acquire(self, identity: tuple[int, int, int]) -> None:
         if self.identity is not None or not isinstance(identity, tuple) or len(identity) != 3:
@@ -145,6 +146,24 @@ class SourceUnionWorkspaceLease:
         if self.identity is None:
             raise ValueError("source-union workspace lease is not acquired")
         self.cleanup_authorized = False
+
+    def install_cleanup_guard(self, guard: Callable[[], bool]) -> None:
+        if self.identity is None or self.cleanup_guard is not None or not callable(guard):
+            raise ValueError("source-union workspace cleanup guard is invalid")
+        self.cleanup_guard = guard
+
+    def authorize_cleanup(self) -> bool:
+        if not self.cleanup_authorized:
+            return False
+        if self.cleanup_guard is not None:
+            try:
+                authorized = self.cleanup_guard()
+            except BaseException:
+                authorized = False
+            if type(authorized) is not bool or not authorized:
+                self.cleanup_authorized = False
+                return False
+        return True
 
 
 def _cancel(cancel_event: threading.Event | None, message: str) -> None:
@@ -451,6 +470,6 @@ def validate_adaptive_direct_source_union(
             raise ValueError("source-union workspace identity changed before return")
         return record
     except BaseException:
-        if ownership_lease is None or ownership_lease.cleanup_authorized:
+        if ownership_lease is None or ownership_lease.authorize_cleanup():
             _quarantine_cleanup_if_owned(workspace, owned_identity)
         raise

@@ -17,6 +17,7 @@ from maximum_optimizer.source_materials import (
     SourceUnionMaterialOwnershipConflict,
     build_source_union_material_contract,
     materialize_private_source_union_material_roots,
+    require_current_private_source_union_material_lease,
     require_current_source_union_material_contract,
     source_union_material_contract_from_payload,
     source_union_material_contract_payload,
@@ -124,6 +125,17 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
         )
         self.assertEqual(len(private.roots), 2)
         self.assertEqual(
+            tuple((item.path, item.kind) for item in private.identity_ledger),
+            (
+                ("root-000", "directory"),
+                ("root-000/vehicles", "directory"),
+                ("root-000/vehicles/paint.vmt", "file"),
+                ("root-001", "directory"),
+                ("root-001/textures", "directory"),
+                ("root-001/textures/paint.vtf", "file"),
+            ),
+        )
+        self.assertEqual(
             tuple(sorted(path.relative_to(destination).as_posix()
                          for path in destination.rglob("*") if path.is_file())),
             ("root-000/vehicles/paint.vmt", "root-001/textures/paint.vtf"),
@@ -131,6 +143,9 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
         require_current_source_union_material_contract(
             contract, filtered_source_bytes=self.filtered,
             roots=private.roots, cancel_event=threading.Event(),
+        )
+        require_current_private_source_union_material_lease(
+            private, destination, threading.Event(),
         )
 
     def test_requests_must_cover_exact_smd_material_order(self) -> None:

@@ -1045,6 +1045,23 @@ def _opened_file_identity(info) -> tuple[int, int, int, int]:
     )
 
 
+def _opened_file_ownership_identity(info) -> tuple[int, int, int]:
+    return (
+        int(info.st_dev), int(info.st_ino),
+        int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1e9))),
+    )
+
+
+def _regular_file_ownership_identity_no_follow(
+    path: Path, *, contained_root: Path,
+) -> tuple[int, int, int]:
+    stream, _proof_identity = _open_regular_no_follow(
+        Path(path), contained_root=contained_root,
+    )
+    with stream:
+        return _opened_file_ownership_identity(os.fstat(stream.fileno()))
+
+
 def _open_regular_no_follow(path: Path, *, contained_root: Path | None = None):
     path = Path(path)
     if os.name == "nt":
@@ -1790,7 +1807,7 @@ def _copy_file_no_follow(
     cancel_event: threading.Event | None,
     *,
     contained_root: Path | None = None,
-) -> None:
+) -> tuple[int, int, int]:
     _cancel(cancel_event, "cancelled before cache file copy")
     size = 0
     reader, before_identity = _open_regular_no_follow(
@@ -1806,12 +1823,16 @@ def _copy_file_no_follow(
             size += len(block)
         writer.flush()
         os.fsync(writer.fileno())
+        destination_identity = _opened_file_ownership_identity(
+            os.fstat(writer.fileno())
+        )
         after_identity = _opened_file_identity(os.fstat(reader.fileno()))
     if (
         before_identity != after_identity
         or size != after_identity[2]
     ):
         raise ValueError("cache copy source changed while reading")
+    return destination_identity
 
 
 def _copy_render_tree(

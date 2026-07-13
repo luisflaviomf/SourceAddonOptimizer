@@ -44,6 +44,7 @@ from .source_materials import (
     SourceUnionMaterialContract,
     SourceUnionMaterialOwnershipConflict,
     materialize_private_source_union_material_roots,
+    require_current_private_source_union_material_lease,
     require_current_source_union_material_contract,
     source_union_material_contract_payload,
     source_union_material_render_evidence,
@@ -60,14 +61,17 @@ _CAMERAS = tuple(f"camera-{index:02d}" for index in range(8))
 
 
 def _material_tree_cleanup_is_authorized(
-    material_tree: Path, owned_identity: tuple[int, int, int] | None,
+    material_tree: Path, material_lease: object,
 ) -> bool:
-    if owned_identity is None or not os.path.lexists(material_tree):
-        return True
+    if type(material_lease) is not PrivateSourceUnionMaterialLease:
+        return not os.path.lexists(material_tree)
     try:
-        return _workspace_root_identity(material_tree) == owned_identity
-    except (OSError, ValueError):
+        require_current_private_source_union_material_lease(
+            material_lease, material_tree, None,
+        )
+    except (OSError, TypeError, ValueError):
         return False
+    return True
 
 
 def _cancel(event: threading.Event | None, message: str) -> None:
@@ -752,44 +756,22 @@ class AdaptiveDirectProductionBoundary:
         }
 
         def validate_current_materials(event) -> tuple[dict[str, object], ...]:
-            private_roots = holder.get("private_material_roots")
-            private_root_identities = holder.get("private_material_root_identities")
-            material_tree_identity = holder.get("material_tree_identity")
+            material_lease = holder.get("private_material_lease")
             if (
-                type(private_roots) is not tuple
-                or len(private_roots) != len(material_contract.roots)
-                or type(private_root_identities) is not tuple
-                or len(private_root_identities) != len(private_roots)
-                or not isinstance(material_tree_identity, tuple)
+                type(material_lease) is not PrivateSourceUnionMaterialLease
+                or len(material_lease.roots) != len(material_contract.roots)
             ):
                 raise ValueError("source-union private material roots are unavailable")
             try:
-                current_material_tree_identity = _workspace_root_identity(material_tree)
-            except FileNotFoundError:
-                raise ValueError("source-union private material roots are unavailable")
-            except (OSError, ValueError) as exc:
+                require_current_private_source_union_material_lease(
+                    material_lease, material_tree, event,
+                )
+            except SourceUnionMaterialOwnershipConflict as exc:
                 ownership_lease.preserve_unowned_descendant()
-                raise ValueError("source-union private material root was replaced") from exc
-            if current_material_tree_identity != material_tree_identity:
-                ownership_lease.preserve_unowned_descendant()
-                raise ValueError("source-union private material root was replaced")
-            for private_root, expected_identity in zip(
-                private_roots, private_root_identities
-            ):
-                try:
-                    current_identity = _workspace_root_identity(private_root)
-                except FileNotFoundError:
-                    raise ValueError("source-union private material child is unavailable")
-                except (OSError, ValueError) as exc:
-                    ownership_lease.preserve_unowned_descendant()
-                    raise ValueError(
-                        "source-union private material child was replaced"
-                    ) from exc
-                if current_identity != expected_identity:
-                    ownership_lease.preserve_unowned_descendant()
-                    raise ValueError(
-                        "source-union private material child was replaced"
-                    )
+                raise ValueError(
+                    "source-union private material ownership changed"
+                ) from exc
+            private_roots = material_lease.roots
             _assert_safe_tree(
                 material_tree, event, expected_material_paths,
                 max_files=512, max_bytes=512 * 1024 * 1024,
@@ -855,9 +837,15 @@ class AdaptiveDirectProductionBoundary:
             if type(material_lease) is not PrivateSourceUnionMaterialLease:
                 raise TypeError("source-union private material lease is invalid")
             private_material_roots = material_lease.roots
+            holder["private_material_lease"] = material_lease
             holder["material_tree_identity"] = material_lease.destination_identity
             holder["private_material_roots"] = private_material_roots
             holder["private_material_root_identities"] = material_lease.root_identities
+            ownership_lease.install_cleanup_guard(lambda: (
+                _material_tree_cleanup_is_authorized(
+                    material_tree, holder.get("private_material_lease"),
+                )
+            ))
             material_evidence = validate_current_materials(event)
             holder["material_evidence"] = material_evidence
             _write_private_bytes_fsync(reference_input, current_filtered)
@@ -1033,10 +1021,17 @@ class AdaptiveDirectProductionBoundary:
                 for side in ("original", "optimized")
             )
             holder["raw_manifest_proofs"] = manifest_proofs
-            result = compare_source_union_render_sets(
-                raw / "original", raw / "optimized", expected_profile,
-                expected_contract=comparison,
-            )
+            try:
+                result = compare_source_union_render_sets(
+                    raw / "original", raw / "optimized", expected_profile,
+                    expected_contract=comparison,
+                )
+            except BaseException:
+                try:
+                    validate_current_materials(None)
+                except BaseException:
+                    pass
+                raise
             if tuple(
                 _file_proof(
                     raw / side / "render_manifest.json", cancel_event,
@@ -1135,9 +1130,6 @@ class AdaptiveDirectProductionBoundary:
             validate_render_workspace_current(cancel_event)
             return record
         except BaseException:
-            if ownership_lease.cleanup_authorized and _material_tree_cleanup_is_authorized(
-                material_tree, holder.get("material_tree_identity")
-                if isinstance(holder.get("material_tree_identity"), tuple) else None,
-            ):
+            if ownership_lease.authorize_cleanup():
                 _quarantine_cleanup_if_owned(workspace, ownership_lease.identity)
             raise

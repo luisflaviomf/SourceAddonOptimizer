@@ -1170,6 +1170,58 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 b"preserve",
             )
 
+    def test_source_union_preserves_exact_private_descendant_swap_when_blender_fails(self) -> None:
+        for label, relative in (
+            ("nested", Path("root-000/vehicles")),
+            ("file", Path("root-000/vehicles/paint.vmt")),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                fixture, components = self._render_fixture(root)
+                successful_runner = SourceUnionRunner(fixture)
+                state = {"identity": None}
+
+                def replace_descendant_and_fail(command, cwd, log_path, cancel_event):
+                    process = successful_runner(command, cwd, log_path, cancel_event)
+                    output_root = Path(command[command.index("--out") + 1]).parent
+                    victim = output_root / "material-roots" / relative
+                    winner = root / f"external-failed-{label}"
+                    if victim.is_dir():
+                        shutil.copytree(victim, winner)
+                        shutil.rmtree(victim)
+                    else:
+                        shutil.copy2(victim, winner)
+                        victim.unlink()
+                    os.rename(winner, victim)
+                    info = os.lstat(victim)
+                    state["identity"] = (
+                        int(info.st_dev), int(info.st_ino),
+                        int(getattr(
+                            info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                        )),
+                    )
+                    return ProcessResult(
+                        process.command, 1, process.elapsed, process.log_path,
+                    )
+                replace_descendant_and_fail.fixture = fixture
+
+                workspace = root / "union"
+                with self.assertRaises(ValueError):
+                    self._render_case(
+                        root, replace_descendant_and_fail, workspace, components,
+                    )
+                self.assertTrue(workspace.exists())
+                info = os.lstat(workspace / "material-roots" / relative)
+                self.assertEqual(
+                    state["identity"],
+                    (
+                        int(info.st_dev), int(info.st_ino),
+                        int(getattr(
+                            info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                        )),
+                    ),
+                )
+
     def test_source_union_preserves_foreign_material_publish_race_winner(self) -> None:
         from maximum_optimizer import source_materials as material_module
 
@@ -1291,6 +1343,184 @@ class ProductionAdapterContractTests(unittest.TestCase):
             self.assertEqual(runner.commands, [])
             self.assertTrue(workspace.exists())
             self.assertEqual(marker.read_bytes(), b"preserve")
+
+    def test_source_union_rejects_exact_staging_descendant_swaps_before_publish(self) -> None:
+        from maximum_optimizer import source_materials as material_module
+
+        real_copy = material_module._copy_file_no_follow
+        for label, relative in (
+            ("root", Path("root-000")),
+            ("nested", Path("root-000/vehicles")),
+            ("file", Path("root-000/vehicles/paint.vmt")),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                fixture, components = self._render_fixture(root)
+                workspace = root / "union"
+                state = {"swapped": False, "identity": None}
+
+                def swap_after_first_copy(*args, **kwargs):
+                    result = real_copy(*args, **kwargs)
+                    if not state["swapped"]:
+                        target = Path(args[1])
+                        staging = target.parents[2]
+                        victim = staging / relative
+                        winner = root / f"foreign-{label}"
+                        if victim.is_dir():
+                            shutil.copytree(victim, winner)
+                            shutil.rmtree(victim)
+                        else:
+                            shutil.copy2(victim, winner)
+                            victim.unlink()
+                        os.rename(winner, victim)
+                        info = os.lstat(victim)
+                        state["identity"] = (
+                            int(info.st_dev), int(info.st_ino),
+                            int(getattr(
+                                info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                            )),
+                        )
+                        state["swapped"] = True
+                    return result
+
+                runner = SourceUnionRunner(fixture)
+                with mock.patch(
+                    "maximum_optimizer.source_materials._copy_file_no_follow",
+                    side_effect=swap_after_first_copy,
+                ), self.assertRaises(ValueError):
+                    self._render_case(root, runner, workspace, components)
+                self.assertEqual(runner.commands, [])
+                staging_roots = tuple(workspace.glob(
+                    ".material-roots.source-materials-acquire-*"
+                ))
+                self.assertEqual(len(staging_roots), 1)
+                info = os.lstat(staging_roots[0] / relative)
+                self.assertEqual(
+                    state["identity"],
+                    (
+                        int(info.st_dev), int(info.st_ino),
+                        int(getattr(
+                            info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                        )),
+                    ),
+                )
+
+    def test_source_union_preserves_exact_staging_descendant_swap_on_cancel(self) -> None:
+        from maximum_optimizer import source_materials as material_module
+
+        real_copy = material_module._copy_file_no_follow
+        for label, relative in (
+            ("root", Path("root-000")),
+            ("nested", Path("root-000/vehicles")),
+            ("file", Path("root-000/vehicles/paint.vmt")),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                fixture, components = self._render_fixture(root)
+                workspace = root / "union"
+                event = threading.Event()
+                state = {"swapped": False, "identity": None}
+
+                def swap_then_cancel(*args, **kwargs):
+                    result = real_copy(*args, **kwargs)
+                    if not state["swapped"]:
+                        target = Path(args[1])
+                        staging = target.parents[2]
+                        victim = staging / relative
+                        winner = root / f"foreign-cancel-{label}"
+                        if victim.is_dir():
+                            shutil.copytree(victim, winner)
+                            shutil.rmtree(victim)
+                        else:
+                            shutil.copy2(victim, winner)
+                            victim.unlink()
+                        os.rename(winner, victim)
+                        info = os.lstat(victim)
+                        state["identity"] = (
+                            int(info.st_dev), int(info.st_ino),
+                            int(getattr(
+                                info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                            )),
+                        )
+                        state["swapped"] = True
+                        event.set()
+                    return result
+
+                runner = SourceUnionRunner(fixture)
+                with mock.patch(
+                    "maximum_optimizer.source_materials._copy_file_no_follow",
+                    side_effect=swap_then_cancel,
+                ), self.assertRaises(ProcessCancelledError):
+                    self._render_case(
+                        root, runner, workspace, components, event=event,
+                    )
+                self.assertEqual(runner.commands, [])
+                staging_roots = tuple(workspace.glob(
+                    ".material-roots.source-materials-acquire-*"
+                ))
+                self.assertEqual(len(staging_roots), 1)
+                info = os.lstat(staging_roots[0] / relative)
+                self.assertEqual(
+                    state["identity"],
+                    (
+                        int(info.st_dev), int(info.st_ino),
+                        int(getattr(
+                            info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                        )),
+                    ),
+                )
+
+    def test_source_union_preserves_exact_published_file_swap_on_cancel(self) -> None:
+        from maximum_optimizer import source_materials as material_module
+
+        real_require = material_module.require_current_private_source_union_material_lease
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            event = threading.Event()
+            state = {"swapped": False, "identity": None}
+
+            def swap_then_validate(lease, destination, cancel_event):
+                destination = Path(destination)
+                if not state["swapped"]:
+                    victim = destination / "root-000/vehicles/paint.vmt"
+                    winner = root / "foreign-published-paint.vmt"
+                    shutil.copy2(victim, winner)
+                    victim.unlink()
+                    os.rename(winner, victim)
+                    info = os.lstat(victim)
+                    state["identity"] = (
+                        int(info.st_dev), int(info.st_ino),
+                        int(getattr(
+                            info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                        )),
+                    )
+                    state["swapped"] = True
+                    event.set()
+                return real_require(lease, destination, cancel_event)
+
+            runner = SourceUnionRunner(fixture)
+            with mock.patch(
+                "maximum_optimizer.source_materials."
+                "require_current_private_source_union_material_lease",
+                side_effect=swap_then_validate,
+            ), self.assertRaises(ProcessCancelledError):
+                self._render_case(
+                    root, runner, workspace, components, event=event,
+                )
+            self.assertEqual(runner.commands, [])
+            victim = workspace / "material-roots/root-000/vehicles/paint.vmt"
+            info = os.lstat(victim)
+            self.assertEqual(
+                state["identity"],
+                (
+                    int(info.st_dev), int(info.st_ino),
+                    int(getattr(
+                        info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                    )),
+                ),
+            )
 
     @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
     def test_source_union_rejects_compiled_root_junction_and_preserves_external_tree(self) -> None:
@@ -1502,6 +1732,56 @@ class ProductionAdapterContractTests(unittest.TestCase):
                         dependency_provider=lambda _event: state["digest"],
                     )
                 self.assertFalse(workspace.exists())
+
+    def test_source_union_preserves_exact_private_file_when_comparator_raises(self) -> None:
+        from maximum_optimizer import production_adapters as module
+
+        real_compare = module.compare_source_union_render_sets
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            state = {"identity": None}
+
+            def replace_file_then_raise(*args, **kwargs):
+                real_compare(*args, **kwargs)
+                victim = (
+                    Path(args[1]).parents[1]
+                    / "material-roots/root-000/vehicles/paint.vmt"
+                )
+                winner = root / "foreign-compare-paint.vmt"
+                shutil.copy2(victim, winner)
+                victim.unlink()
+                os.rename(winner, victim)
+                info = os.lstat(victim)
+                state["identity"] = (
+                    int(info.st_dev), int(info.st_ino),
+                    int(getattr(
+                        info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                    )),
+                )
+                raise RuntimeError("hostile comparator failure")
+
+            with mock.patch(
+                "maximum_optimizer.production_adapters.compare_source_union_render_sets",
+                side_effect=replace_file_then_raise,
+            ), self.assertRaisesRegex(RuntimeError, "hostile comparator"):
+                self._render_case(
+                    root, SourceUnionRunner(fixture), workspace, components,
+                )
+            self.assertTrue(workspace.exists())
+            info = os.lstat(
+                workspace / "material-roots/root-000/vehicles/paint.vmt"
+            )
+            self.assertEqual(
+                state["identity"],
+                (
+                    int(info.st_dev), int(info.st_ino),
+                    int(getattr(
+                        info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                    )),
+                ),
+            )
 
     def test_boundary_never_reacquires_replaced_workspace_after_e1_returns(self) -> None:
         from maximum_optimizer import production_adapters as module

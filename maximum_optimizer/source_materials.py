@@ -19,6 +19,7 @@ from .focused_cache import (
     _has_reparse_ancestor,
     _is_reparse,
     _read_regular_no_follow,
+    _regular_file_ownership_identity_no_follow,
 )
 from .processes import ProcessCancelledError
 from .reporting import canonical_json
@@ -392,14 +393,42 @@ class SourceUnionMaterialOwnershipConflict(ValueError):
 
 
 @dataclass(frozen=True)
+class PrivateSourceUnionMaterialIdentity:
+    path: str
+    kind: str
+    identity: tuple[int, int, int]
+
+    def __post_init__(self) -> None:
+        if (
+            _relative(self.path, "source-union private material identity path")
+            != self.path
+            or self.kind not in {"directory", "file"}
+            or type(self.identity) is not tuple
+            or len(self.identity) != 3
+            or any(type(value) is not int for value in self.identity)
+        ):
+            raise ValueError("source-union private material identity is invalid")
+
+
+@dataclass(frozen=True)
 class PrivateSourceUnionMaterialLease:
     roots: tuple[Path, ...]
     destination_identity: tuple[int, int, int]
     root_identities: tuple[tuple[int, int, int], ...]
+    identity_ledger: tuple[PrivateSourceUnionMaterialIdentity, ...]
 
     def __post_init__(self) -> None:
         roots = tuple(self.roots)
         identities = tuple(self.root_identities)
+        ledger = tuple(self.identity_ledger)
+        canonical_ledger = tuple(sorted(
+            ledger, key=lambda item: (item.path.casefold(), item.path, item.kind),
+        ))
+        root_ledger = {
+            item.path: item.identity
+            for item in ledger
+            if item.kind == "directory" and "/" not in item.path
+        }
         if (
             not roots
             or any(not isinstance(path, Path) or not path.is_absolute() for path in roots)
@@ -410,10 +439,22 @@ class PrivateSourceUnionMaterialLease:
                 or any(type(value) is not int for value in identity)
                 for identity in (self.destination_identity, *identities)
             )
+            or not ledger
+            or any(
+                not isinstance(item, PrivateSourceUnionMaterialIdentity)
+                for item in ledger
+            )
+            or ledger != canonical_ledger
+            or len({item.path.casefold() for item in ledger}) != len(ledger)
+            or tuple(
+                root_ledger.get(f"root-{index:03d}")
+                for index in range(len(roots))
+            ) != identities
         ):
             raise ValueError("source-union private material lease is invalid")
         object.__setattr__(self, "roots", roots)
         object.__setattr__(self, "root_identities", identities)
+        object.__setattr__(self, "identity_ledger", ledger)
 
 
 def _validated_render_evidence_json(value: str) -> tuple[dict[str, object], ...]:
@@ -846,6 +887,87 @@ def require_current_source_union_material_contract(
     return _issue_current_material_authorization(current)
 
 
+def _private_material_entry_identity(
+    root: Path, entry: PrivateSourceUnionMaterialIdentity,
+) -> tuple[int, int, int]:
+    path = root / Path(*entry.path.split("/"))
+    if entry.kind == "directory":
+        return _workspace_root_identity(path)
+    return _regular_file_ownership_identity_no_follow(path, contained_root=root)
+
+
+def _require_private_material_identity_ledger(
+    root: Path, ledger: tuple[PrivateSourceUnionMaterialIdentity, ...], cancel_event,
+) -> None:
+    for entry in ledger:
+        _cancel(cancel_event, "cancelled during private material identity validation")
+        path = root / Path(*entry.path.split("/"))
+        try:
+            current = _private_material_entry_identity(root, entry)
+        except FileNotFoundError as exc:
+            raise ValueError("source-union private material descendant is unavailable") from exc
+        except (OSError, ValueError) as exc:
+            if os.path.lexists(path):
+                raise SourceUnionMaterialOwnershipConflict(
+                    "source-union private material descendant ownership changed",
+                    original_cause=exc,
+                ) from exc
+            raise ValueError(
+                "source-union private material descendant is unavailable"
+            ) from exc
+        if current != entry.identity:
+            raise SourceUnionMaterialOwnershipConflict(
+                "source-union private material descendant ownership changed"
+            )
+
+
+def _private_material_identity_ledger_has_foreign(
+    root: Path, ledger: tuple[PrivateSourceUnionMaterialIdentity, ...],
+) -> bool:
+    for entry in ledger:
+        path = root / Path(*entry.path.split("/"))
+        if not os.path.lexists(path):
+            continue
+        try:
+            current = _private_material_entry_identity(root, entry)
+        except (OSError, ValueError):
+            return True
+        if current != entry.identity:
+            return True
+    return False
+
+
+def require_current_private_source_union_material_lease(
+    lease: PrivateSourceUnionMaterialLease, destination: Path, cancel_event,
+) -> None:
+    if type(lease) is not PrivateSourceUnionMaterialLease:
+        raise TypeError("source-union private material lease is invalid")
+    destination = Path(os.path.abspath(destination))
+    try:
+        current_destination_identity = _workspace_root_identity(destination)
+    except FileNotFoundError as exc:
+        raise ValueError("source-union private material destination is unavailable") from exc
+    except (OSError, ValueError) as exc:
+        if os.path.lexists(destination):
+            raise SourceUnionMaterialOwnershipConflict(
+                "source-union private material destination ownership changed",
+                original_cause=exc,
+            ) from exc
+        raise ValueError("source-union private material destination is unavailable") from exc
+    if current_destination_identity != lease.destination_identity:
+        raise SourceUnionMaterialOwnershipConflict(
+            "source-union private material destination ownership changed"
+        )
+    expected_roots = tuple(
+        destination / f"root-{index:03d}" for index in range(len(lease.roots))
+    )
+    if lease.roots != expected_roots:
+        raise ValueError("source-union private material lease roots differ")
+    _require_private_material_identity_ledger(
+        destination, lease.identity_ledger, cancel_event,
+    )
+
+
 def materialize_private_source_union_material_roots(
     contract: SourceUnionMaterialContract, roots, destination: Path, cancel_event,
     *, filtered_source_bytes: bytes,
@@ -861,6 +983,7 @@ def materialize_private_source_union_material_roots(
         f".{destination.name}.source-materials-acquire-{uuid.uuid4().hex}"
     )
     staging_identity: tuple[int, int, int] | None = None
+    identity_entries: dict[str, PrivateSourceUnionMaterialIdentity] = {}
     published_owned = False
     try:
         if os.path.lexists(destination):
@@ -886,16 +1009,64 @@ def materialize_private_source_union_material_roots(
         private = tuple(
             staging / f"root-{index:03d}" for index in range(len(contract.roots))
         )
-        for path in private:
+        for index, path in enumerate(private):
             path.mkdir()
+            relative = f"root-{index:03d}"
+            identity_entries[relative] = PrivateSourceUnionMaterialIdentity(
+                relative, "directory", _workspace_root_identity(path),
+            )
+        private_root_identities = tuple(
+            identity_entries[f"root-{index:03d}"].identity
+            for index in range(len(private))
+        )
         expected = set()
         for file in contract.files:
             source = roots[file.root_index] / Path(*file.path.split("/"))
             target = private[file.root_index] / Path(*file.path.split("/"))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            _copy_file_no_follow(source, target, cancel_event, contained_root=roots[file.root_index])
-            expected.add(f"root-{file.root_index:03d}/{file.path}")
+            root_relative = f"root-{file.root_index:03d}"
+            current = private[file.root_index]
+            parent_parts = PurePosixPath(file.path).parent.parts
+            for part in (() if parent_parts == (".",) else parent_parts):
+                current = current / part
+                relative = f"{root_relative}/{current.relative_to(private[file.root_index]).as_posix()}"
+                if relative not in identity_entries:
+                    _require_private_material_identity_ledger(
+                        staging,
+                        tuple(sorted(
+                            identity_entries.values(),
+                            key=lambda item: (item.path.casefold(), item.path, item.kind),
+                        )),
+                        cancel_event,
+                    )
+                    current.mkdir()
+                    identity_entries[relative] = PrivateSourceUnionMaterialIdentity(
+                        relative, "directory", _workspace_root_identity(current),
+                    )
+            file_relative = f"{root_relative}/{file.path}"
+            destination_identity = _copy_file_no_follow(
+                source, target, cancel_event,
+                contained_root=roots[file.root_index],
+            )
+            identity_entries[file_relative] = PrivateSourceUnionMaterialIdentity(
+                file_relative, "file", destination_identity,
+            )
+            _require_private_material_identity_ledger(
+                staging,
+                tuple(sorted(
+                    identity_entries.values(),
+                    key=lambda item: (item.path.casefold(), item.path, item.kind),
+                )),
+                cancel_event,
+            )
+            expected.add(file_relative)
+        identity_ledger = tuple(sorted(
+            identity_entries.values(),
+            key=lambda item: (item.path.casefold(), item.path, item.kind),
+        ))
         _assert_safe_tree(staging, cancel_event, expected, max_files=_MAX_FILES, max_bytes=_MAX_BYTES)
+        _require_private_material_identity_ledger(
+            staging, identity_ledger, cancel_event,
+        )
         require_current_source_union_material_contract(
             contract, filtered_source_bytes=filtered_source_bytes,
             roots=roots, cancel_event=cancel_event,
@@ -908,8 +1079,8 @@ def materialize_private_source_union_material_roots(
             staging, cancel_event, expected,
             max_files=_MAX_FILES, max_bytes=_MAX_BYTES,
         )
-        private_root_identities = tuple(
-            _workspace_root_identity(path) for path in private
+        _require_private_material_identity_ledger(
+            staging, identity_ledger, cancel_event,
         )
         try:
             if os.path.lexists(destination):
@@ -928,30 +1099,39 @@ def materialize_private_source_union_material_roots(
         published_roots = tuple(
             destination / f"root-{index:03d}" for index in range(len(contract.roots))
         )
-        try:
-            if (
-                _workspace_root_identity(destination) != staging_identity
-                or tuple(
-                    _workspace_root_identity(path) for path in published_roots
-                ) != private_root_identities
-            ):
-                raise SourceUnionMaterialOwnershipConflict(
-                    "source-union private material destination identity changed"
-                )
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            if isinstance(exc, SourceUnionMaterialOwnershipConflict):
-                raise
-            raise SourceUnionMaterialOwnershipConflict(
-                "source-union private material destination identity changed",
-                original_cause=exc,
-            ) from exc
-        return PrivateSourceUnionMaterialLease(
+        lease = PrivateSourceUnionMaterialLease(
             roots=published_roots,
             destination_identity=staging_identity,
             root_identities=private_root_identities,
+            identity_ledger=identity_ledger,
         )
+        require_current_private_source_union_material_lease(
+            lease, destination, cancel_event,
+        )
+        return lease
     except BaseException as exc:
-        if staging_identity is not None:
+        identity_ledger = tuple(sorted(
+            identity_entries.values(),
+            key=lambda item: (item.path.casefold(), item.path, item.kind),
+        ))
+        descendant_is_foreign = (
+            staging_identity is not None
+            and _private_material_identity_ledger_has_foreign(
+                staging, identity_ledger,
+            )
+        )
+        published_is_foreign = False
+        if published_owned and os.path.lexists(destination):
+            try:
+                published_is_foreign = (
+                    _workspace_root_identity(destination) != staging_identity
+                    or _private_material_identity_ledger_has_foreign(
+                        destination, identity_ledger,
+                    )
+                )
+            except (OSError, ValueError):
+                published_is_foreign = True
+        if staging_identity is not None and not descendant_is_foreign:
             _quarantine_cleanup_if_owned(staging, staging_identity)
         staging_is_foreign = False
         if os.path.lexists(staging):
@@ -969,6 +1149,8 @@ def materialize_private_source_union_material_roots(
             and (
                 (not published_owned and os.path.lexists(destination))
                 or staging_is_foreign
+                or descendant_is_foreign
+                or published_is_foreign
             )
         ):
             raise SourceUnionMaterialOwnershipConflict(
