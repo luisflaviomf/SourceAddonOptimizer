@@ -33,7 +33,7 @@ Malformed, duplicated, ambiguous, or partially understood state syntax fails clo
 
 A state is one member of the exact Cartesian product:
 
-`all bodygroup choice combinations × (LOD0 plus every LOD block) × all skin rows`.
+`all bodygroup choice combinations x (LOD0 plus every LOD block) x all skin rows`.
 
 The enumerator computes that cardinality before reading or contracting any visual SMD. Zero states or more than 16 states is rejected. There is no truncation, sampling, default-only shortcut, or one-bodygroup-at-a-time approximation.
 
