@@ -4037,6 +4037,33 @@ class ProductionAdapters:
         ] = {}
         self._recovery_artifact_roots: dict[str, Path] = {}
 
+    def compile_adaptive_direct_candidate(self, **kwargs):
+        """Typed E2 boundary; scheduling remains an E3 concern."""
+        from .production_adapters import AdaptiveDirectProductionBoundary
+        kwargs.setdefault("cancel_event", self.cancel_event)
+        return AdaptiveDirectProductionBoundary(
+            process_runner=run_process
+        ).compile_adaptive_direct_candidate(**kwargs)
+
+    def render_adaptive_direct_source_union(self, **kwargs):
+        """Fresh source-union boundary with no focused-render cache."""
+        from .production_adapters import (
+            AdaptiveDirectProductionBoundary, SourceUnionRenderTools,
+        )
+        kwargs.setdefault("cancel_event", self.cancel_event)
+        tools = kwargs.get("tools")
+        if not isinstance(tools, SourceUnionRenderTools):
+            raise TypeError("source-union production tools are invalid")
+        kwargs["tools"] = replace(
+            tools,
+            dependency_digest_provider=lambda event: str(
+                _dependency_proof(self.config, event)["digest"]
+            ),
+        )
+        return AdaptiveDirectProductionBoundary(
+            process_runner=run_process
+        ).render_adaptive_direct_source_union(**kwargs)
+
     def clear_recovery_artifacts(self) -> None:
         self._recovery_artifact_roots.clear()
 

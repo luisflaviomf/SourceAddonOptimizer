@@ -37,7 +37,7 @@ from maximum_optimizer.domain import (
 from maximum_optimizer.monaco_schedule import _request_set_digest, _snapshot_set_digest
 from maximum_optimizer.processes import ProcessCancelledError
 from maximum_optimizer.qc_graph import parse_qc_graph
-from maximum_optimizer.smd_contract import prefilter_direct_degenerate_smd
+from maximum_optimizer.smd_contract import parse_smd_triangles, prefilter_direct_degenerate_smd
 from tests.maximum_optimizer.test_task6_contracts import (
     coverage_source,
     inventory_for_coverage,
@@ -70,6 +70,9 @@ class DirectCompositorFixture:
         self, root: Path, visual_count: int = 2, ratio: float = 0.5,
         *, components: tuple[str, ...] = ("component-000",),
         poses: tuple[str, ...] = ("bind",),
+        component_manifest_sha256: str = H["3"],
+        visual_source_bytes: bytes | None = None,
+        direct_output_bytes: bytes | None = None,
     ) -> None:
         self.root = root
         self.base_root = root / "base"
@@ -81,7 +84,7 @@ class DirectCompositorFixture:
         self.visual_paths = tuple(
             f"meshes/part-{index:02d}.smd" for index in range(visual_count)
         )
-        base_bytes = _smd(9)
+        base_bytes = visual_source_bytes or _smd(9)
         for relative in self.visual_paths:
             (self.base_root / relative).write_bytes(base_bytes)
         (self.base_root / "physics/collision.smd").write_bytes(_smd(2, "collision"))
@@ -127,6 +130,7 @@ class DirectCompositorFixture:
         coverage_sources = tuple(coverage_source(
             identity, source_size=proof.size, source_sha256=proof.sha256,
             components=components, poses=poses,
+            component_manifest_sha256=component_manifest_sha256,
         ) for identity, proof in sorted(by_identity.items()))
         old_metrics = metrics_for_coverage(coverage_sources)
         old_inventory = inventory_for_coverage(coverage_sources)
@@ -178,17 +182,20 @@ class DirectCompositorFixture:
                 expected_prefilter=_direct_prefilter_proof(text),
                 expected_materials=_direct_input_material_proofs(filtered),
             )
-            output = _smd(max(1, int(9 * ratio)))
+            before = len(parse_smd_triangles(filtered).triangles)
+            output = direct_output_bytes or _smd(max(1, int(before * ratio)))
             direct_root = root / f"direct-{ordinal:02d}"
             direct_root.mkdir()
             (direct_root / "output.smd").write_bytes(output)
-            after = max(1, int(9 * ratio))
+            after = len(parse_smd_triangles(output.decode("utf-8")).triangles)
             snapshot = build_direct_source_snapshot(
                 request=request, input_source_root=self.base_root,
                 source_root=direct_root, output_relative_path="output.smd",
                 output_size=len(output), output_sha256=hashlib.sha256(output).hexdigest(),
-                triangles_before=9, triangles_after=after,
-                material_triangles=(DirectMaterialTriangleProof(0, "paint", 9, after, after),),
+                triangles_before=before, triangles_after=after,
+                material_triangles=(DirectMaterialTriangleProof(
+                    0, "paint", before, max(1, int(before * ratio)), after,
+                ),),
                 prefilter=request.expected_prefilter,
             )
             requests.append(request)

@@ -1,20 +1,51 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from .candidates import CandidateBuild, CandidateTools
-from .composite import ComposedSourceTree, build_source_tree_manifest
-from .domain import CandidateSpec, CompileFileProof, FamilyManifest
-from .focused_cache import _file_proof, _has_reparse_ancestor, _is_reparse
+from .composite import (
+    AdaptiveDirectSourceUnionRecord, ComposedSourceTree,
+    build_adaptive_direct_source_union_target,
+    build_source_tree_manifest, candidate_spec_sha256,
+    revalidate_direct_source_snapshot, revalidate_recovery_snapshot,
+)
+from .domain import (
+    AdaptiveDirectCoverageManifest, AdaptiveDirectCoverageSourceProof,
+    CandidateSpec, CompileFileProof,
+    DirectSourceSnapshot, FamilyManifest,
+)
+from .focused_cache import (
+    _assert_safe_tree, _copy_file_no_follow, _file_proof, _has_reparse_ancestor,
+    _is_reparse, _read_regular_no_follow, _write_json_fsync,
+)
 from .processes import ProcessCancelledError, run_process
 from .qc_graph import parse_qc_graph
+from .reporting import canonical_json
+from .source_union import (
+    SourceUnionMaterialBinding, SourceUnionMaskObservation,
+    SourceUnionRenderOutput, _quarantine_cleanup,
+    validate_adaptive_direct_source_union,
+)
+from .source_components import (
+    SourceComponentManifest, build_source_component_transfer,
+    current_filtered_source_component_bytes, require_current_source_component_transfer,
+    source_component_manifest_payload, source_component_transfer_payload,
+)
+from .visual_validation import (
+    FidelityProfile, SourceUnionComparisonContract,
+    compare_source_union_render_sets,
+)
 
 
 _HASH = re.compile(r"[0-9a-f]{64}")
+_ANGLES = ("front", "back", "left", "right", "top", "bottom", "iso1", "iso2")
+_CAMERAS = tuple(f"camera-{index:02d}" for index in range(8))
 
 
 def _cancel(event: threading.Event | None, message: str) -> None:
@@ -139,12 +170,201 @@ class AdaptiveDirectCompileResult:
             raise ValueError("adaptive-direct composition evidence is invalid")
 
 
+@dataclass(frozen=True)
+class SourceUnionRenderTools:
+    blender_exe: Path
+    renderer_script: Path
+    renderer_sha256: str
+    materials_roots: tuple[Path, ...] = ()
+    vtfcmd: Path | None = None
+    texture_cache: Path | None = None
+    dependency_digest_provider: object = None
+
+    def __post_init__(self) -> None:
+        blender = Path(self.blender_exe).resolve()
+        renderer = Path(self.renderer_script).resolve()
+        roots = tuple(Path(item).resolve() for item in self.materials_roots)
+        if any(not path.is_file() or _has_reparse_ancestor(path) for path in (blender, renderer)):
+            raise ValueError("source-union Blender/renderer is unavailable or unsafe")
+        if _HASH.fullmatch(self.renderer_sha256 or "") is None:
+            raise ValueError("source-union renderer hash is invalid")
+        if any(not root.is_dir() or _has_reparse_ancestor(root) for root in roots):
+            raise ValueError("source-union materials root is unavailable or unsafe")
+        if not callable(self.dependency_digest_provider):
+            raise TypeError("source-union dependency digest provider is required")
+        object.__setattr__(self, "blender_exe", blender)
+        object.__setattr__(self, "renderer_script", renderer)
+        object.__setattr__(self, "materials_roots", roots)
+        if self.vtfcmd is not None:
+            vtfcmd = Path(self.vtfcmd).resolve()
+            if not vtfcmd.is_file() or _has_reparse_ancestor(vtfcmd):
+                raise ValueError("source-union VTFCmd is unavailable or unsafe")
+            object.__setattr__(self, "vtfcmd", vtfcmd)
+        if self.texture_cache is not None:
+            cache = Path(self.texture_cache).resolve()
+            parent = cache if cache.exists() else cache.parent
+            if not parent.is_dir() or _has_reparse_ancestor(parent):
+                raise ValueError("source-union texture cache is unsafe")
+            object.__setattr__(self, "texture_cache", cache)
+
+
 def _cleanup_compile_owned(workspace: Path) -> None:
     from .candidates import _quarantine_and_remove_owned_direct_tree
     for name in ("compiled", "logs"):
         path = workspace / name
         if os.path.lexists(path):
             _quarantine_and_remove_owned_direct_tree(path)
+
+
+def _write_private_bytes_fsync(path: Path, payload: bytes) -> None:
+    if type(payload) is not bytes or os.path.lexists(path):
+        raise ValueError("source-union private output must be fresh bytes")
+    with path.open("xb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _parse_source_union_visibility(path: Path, target, event) -> tuple[SourceUnionMaskObservation, ...]:
+    try:
+        payload = json.loads(_read_regular_no_follow(
+            path, event, contained_root=path.parent, max_bytes=16 * 1024 * 1024,
+        ).decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("source-union visibility JSON is unavailable") from exc
+    fields = {
+        "schema", "kind", "target_sha256", "source_identity",
+        "source_coverage_sha256", "cameras", "pose_keys", "observations",
+        "evidence_sha256",
+    }
+    if type(payload) is not dict or set(payload) != fields:
+        raise ValueError("source-union visibility schema is invalid")
+    evidence = payload["evidence_sha256"]
+    unsigned = dict(payload); unsigned.pop("evidence_sha256")
+    expected_digest = hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
+    if any((
+        type(payload["schema"]) is not int or payload["schema"] != 1,
+        payload["kind"] != "adaptive-direct-source-union-visibility-v1",
+        payload["target_sha256"] != target.target_sha256,
+        payload["source_identity"] != target.source_identity,
+        payload["source_coverage_sha256"] != target.source_coverage_sha256,
+        payload["cameras"] != list(_CAMERAS),
+        payload["pose_keys"] != list(target.pose_keys),
+        evidence != expected_digest,
+        type(payload["observations"]) is not list,
+    )):
+        raise ValueError("source-union visibility binding/seal differs")
+    expected_keys = tuple(
+        (side, component, pose, camera)
+        for side in ("candidate", "reference")
+        for component in target.component_keys
+        for pose in target.pose_keys
+        for camera in _CAMERAS
+    )
+    result = []
+    for raw, key in zip(payload["observations"], expected_keys):
+        if type(raw) is not dict or set(raw) != {
+            "side", "component_key", "pose_key", "camera_key", "visible_mask_pixels",
+        }:
+            raise ValueError("source-union visibility observation schema is invalid")
+        item = SourceUnionMaskObservation(
+            raw["side"], raw["component_key"], raw["pose_key"],
+            raw["camera_key"], raw["visible_mask_pixels"],
+        )
+        if (item.side, item.component_key, item.pose_key, item.camera_key) != key:
+            raise ValueError("source-union visibility observation order differs")
+        result.append(item)
+    if len(result) != len(expected_keys) or len(payload["observations"]) != len(expected_keys):
+        raise ValueError("source-union visibility cardinality differs")
+    return tuple(result)
+
+
+def _raw_mapping(target):
+    for raw_side, side in (("original", "reference"), ("optimized", "candidate")):
+        for pose in target.pose_keys:
+            for render_pass in ("textured", "clay"):
+                for index, angle in enumerate(_ANGLES):
+                    yield (
+                        raw_side, side, f"{render_pass}/{pose}/{angle}.png",
+                        f"source-union/{target.union_key}/{side}/{pose}/{render_pass}/camera-{index:02d}.png",
+                    )
+
+
+def _raw_manifest(root: Path, side: str, event) -> dict:
+    path = root / "render_manifest.json"
+    try:
+        payload = json.loads(_read_regular_no_follow(
+            path, event, contained_root=root, max_bytes=16 * 1024 * 1024,
+        ).decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"source-union {side} raw manifest is invalid") from exc
+    if type(payload) is not dict:
+        raise ValueError(f"source-union {side} raw manifest is invalid")
+    return payload
+
+
+def _assert_exact_source_union_raw(raw: Path, target, event) -> None:
+    expected = {
+        f"{raw_side}/render_manifest.json"
+        for raw_side in ("original", "optimized")
+    } | {
+        f"{raw_side}/{source}"
+        for raw_side, _side, source, _destination in _raw_mapping(target)
+    }
+    _assert_safe_tree(raw, event, expected, max_files=len(expected))
+
+
+def _normalize_source_union_raw(raw: Path, authorized: Path, target, comparison, event) -> None:
+    _assert_exact_source_union_raw(raw, target, event)
+    manifests = {
+        "original": _raw_manifest(raw / "original", "reference", event),
+        "optimized": _raw_manifest(raw / "optimized", "candidate", event),
+    }
+    for raw_side in ("original", "optimized"):
+        expected = {"render_manifest.json"} | {
+            source for side, _auth, source, _dest in _raw_mapping(target) if side == raw_side
+        }
+        _assert_safe_tree(raw / raw_side, event, expected, max_files=65)
+    indexed = {}
+    for raw_side, manifest in manifests.items():
+        if type(manifest) is not dict or type(manifest.get("entries")) is not list:
+            raise ValueError("source-union raw entries are invalid")
+        indexed[raw_side] = {
+            entry.get("image"): entry for entry in manifest["entries"] if type(entry) is dict
+        }
+    for raw_side, _side, source_relative, destination_relative in _raw_mapping(target):
+        entry = indexed[raw_side].get(source_relative)
+        if entry is None or entry.get("sha256") is None:
+            raise ValueError("source-union raw/authorized mapping is incomplete")
+        source = raw / raw_side / Path(*source_relative.split("/"))
+        destination = authorized / Path(*destination_relative.split("/"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _copy_file_no_follow(source, destination, event, contained_root=raw / raw_side)
+        _size, digest = _file_proof(destination, event, contained_root=authorized)
+        if digest != entry["sha256"]:
+            raise ValueError("source-union authorized PNG differs from raw manifest")
+    _prove_source_union_bijection(raw, authorized, target, comparison, event)
+
+
+def _prove_source_union_bijection(raw: Path, authorized: Path, target, comparison, event) -> None:
+    _assert_exact_source_union_raw(raw, target, event)
+    expected_authorized = {destination for *_rest, destination in _raw_mapping(target)}
+    _assert_safe_tree(authorized, event, expected_authorized, max_files=64)
+    manifests = {
+        "original": _raw_manifest(raw / "original", "reference", event),
+        "optimized": _raw_manifest(raw / "optimized", "candidate", event),
+    }
+    for raw_side, _side, source_relative, destination_relative in _raw_mapping(target):
+        entries = manifests[raw_side].get("entries", ())
+        matches = tuple(item for item in entries if type(item) is dict and item.get("image") == source_relative)
+        if len(matches) != 1:
+            raise ValueError("source-union raw entry mapping is not bijective")
+        source = raw / raw_side / Path(*source_relative.split("/"))
+        destination = authorized / Path(*destination_relative.split("/"))
+        source_size, source_hash = _file_proof(source, event, contained_root=raw / raw_side)
+        dest_size, dest_hash = _file_proof(destination, event, contained_root=authorized)
+        if (source_size, source_hash) != (dest_size, dest_hash) or source_hash != matches[0].get("sha256"):
+            raise ValueError("source-union raw/authorized bytes differ")
 
 
 def _reject_compile_extras(manifest: FamilyManifest, build: CandidateBuild) -> None:
@@ -163,7 +383,7 @@ def _reject_compile_extras(manifest: FamilyManifest, build: CandidateBuild) -> N
                 raise ValueError("adaptive-direct compile contains undeclared artifact")
 
 
-class ProductionAdapters:
+class AdaptiveDirectProductionBoundary:
     def __init__(self, *, process_runner=run_process) -> None:
         if not callable(process_runner):
             raise TypeError("production process runner is invalid")
@@ -242,4 +462,372 @@ class ProductionAdapters:
             )
         except BaseException:
             _cleanup_compile_owned(workspace)
+            raise
+
+    def render_adaptive_direct_source_union(
+        self, *, manifest: FamilyManifest, base_build: CandidateBuild,
+        candidate_compile: AdaptiveDirectCompileResult,
+        coverage: AdaptiveDirectCoverageManifest,
+        source_proof: AdaptiveDirectCoverageSourceProof,
+        snapshot: DirectSourceSnapshot, profile: FidelityProfile,
+        component_manifest: SourceComponentManifest,
+        tools: SourceUnionRenderTools, workspace: Path,
+        cancel_event: threading.Event,
+    ) -> AdaptiveDirectSourceUnionRecord:
+        if not all((
+            isinstance(manifest, FamilyManifest), isinstance(base_build, CandidateBuild),
+            isinstance(candidate_compile, AdaptiveDirectCompileResult),
+            isinstance(coverage, AdaptiveDirectCoverageManifest),
+            isinstance(source_proof, AdaptiveDirectCoverageSourceProof),
+            isinstance(snapshot, DirectSourceSnapshot), isinstance(profile, FidelityProfile),
+            isinstance(tools, SourceUnionRenderTools),
+            isinstance(component_manifest, SourceComponentManifest),
+        )):
+            raise TypeError("adaptive-direct source-union production inputs are invalid")
+        candidate_build = candidate_compile.build
+        recipe = candidate_build.spec.composite_recipe
+        base_snapshot = base_build.source_snapshot
+        if recipe is None or recipe.kind != "adaptive-direct-fallback-v1" or base_snapshot is None:
+            raise ValueError("source-union candidate/base binding is unavailable")
+        expected_candidate_spec = CandidateSpec(
+            "recovery-" + recipe.recipe_sha256,
+            base_build.spec.engine,
+            recipe.direct_ratio,
+            base_build.spec.target_error,
+            base_build.spec.repair_profile,
+            (),
+            strategy=base_build.spec.strategy,
+            update_vertices=base_build.spec.update_vertices,
+            transfer=base_build.spec.transfer,
+            composite_recipe=recipe,
+        )
+        overlays = tuple(item for item in recipe.overlays if item.source_identity == source_proof.source_identity)
+        if len(overlays) != 1 or any((
+            base_build.spec.composite_recipe is not None,
+            base_snapshot.kind != "candidate",
+            recipe.base_candidate_id != base_build.spec.candidate_id,
+            recipe.base_spec_sha256 != candidate_spec_sha256(base_build.spec),
+            recipe.base_cache_digest != base_snapshot.candidate_cache_digest,
+            recipe.base_source_manifest_sha256 != base_snapshot.source_manifest.digest,
+            recipe.base_source_snapshot_sha256 != base_snapshot.snapshot_sha256,
+            recipe.family_id != base_snapshot.family_id,
+            recipe.family_input_sha256 != base_snapshot.family_input_sha256,
+            recipe.optimizer_contract_sha256 != base_snapshot.optimizer_contract_sha256,
+            recipe.whole_profile_sha256 != base_snapshot.whole_profile_sha256,
+            recipe.focused_profile_sha256 != base_snapshot.focused_profile_sha256,
+            recipe.dependency_proof_sha256 != base_snapshot.dependency_proof_sha256,
+            candidate_build.spec != expected_candidate_spec,
+            manifest.family_id != recipe.family_id,
+            manifest.input_hash != recipe.family_input_sha256,
+            coverage.family_id != recipe.family_id,
+            coverage.family_input_sha256 != recipe.family_input_sha256,
+            coverage.base_candidate_id != recipe.base_candidate_id,
+            coverage.base_spec_sha256 != recipe.base_spec_sha256,
+            coverage.base_cache_digest != recipe.base_cache_digest,
+            coverage.base_source_manifest_sha256 != recipe.base_source_manifest_sha256,
+            coverage.coverage_manifest_sha256 != recipe.coverage_manifest_sha256,
+            coverage.base_source_snapshot_sha256 != base_snapshot.snapshot_sha256,
+            snapshot.request.source_coverage_sha256 != source_proof.source_coverage_sha256,
+            snapshot.snapshot_sha256 != overlays[0].replacement_snapshot_sha256,
+            component_manifest.source_sha256 != snapshot.request.source_sha256,
+            component_manifest.triangle_count != snapshot.triangles_before,
+            component_manifest.component_manifest_sha256
+            != source_proof.witnesses[0].component_manifest_sha256,
+            tuple(item.component_key for item in component_manifest.components)
+            != source_proof.component_keys,
+            candidate_build.compile_record.get("composition_evidence_sha256")
+            != candidate_compile.composition_evidence_sha256,
+        )):
+            raise ValueError("source-union production binding differs")
+        reference_source = Path(snapshot.input_source_root) / Path(
+            *snapshot.request.source_relative_path.split("/")
+        )
+        candidate_source = Path(snapshot.source_root) / Path(
+            *snapshot.output_relative_path.split("/")
+        )
+
+        def validate_current_inputs(event):
+            from .orchestrator import _current_recovery_compile_files
+            revalidate_recovery_snapshot(base_snapshot, event)
+            revalidate_direct_source_snapshot(snapshot, event)
+            current_compile = _current_recovery_compile_files(manifest, candidate_build, event)
+            if current_compile != candidate_compile.compile_files or _current_recovery_compile_files(
+                manifest, candidate_build, event
+            ) != current_compile:
+                raise ValueError("source-union compiled candidate proof is stale")
+            _renderer_size, renderer_digest = _file_proof(
+                tools.renderer_script, event, contained_root=tools.renderer_script.parent,
+            )
+            if renderer_digest != tools.renderer_sha256:
+                raise ValueError("source-union renderer script is stale")
+            if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
+                raise ValueError("source-union runtime dependency proof is stale")
+            source_bytes = _read_regular_no_follow(
+                reference_source, event, contained_root=snapshot.input_source_root,
+            )
+            candidate_bytes = _read_regular_no_follow(
+                candidate_source, event, contained_root=snapshot.source_root,
+            )
+            if (
+                hashlib.sha256(source_bytes).hexdigest() != snapshot.request.source_sha256
+                or hashlib.sha256(candidate_bytes).hexdigest() != snapshot.output_sha256
+            ):
+                raise ValueError("source-union source bytes are stale")
+            filtered_bytes = current_filtered_source_component_bytes(
+                component_manifest, source_bytes
+            )
+            transfer = build_source_component_transfer(
+                component_manifest, source_bytes, candidate_bytes
+            )
+            require_current_source_component_transfer(
+                transfer, component_manifest, source_bytes, candidate_bytes
+            )
+            if {
+                item.component_key for item in transfer.triangles
+            } != {
+                item.component_key for item in component_manifest.components
+            }:
+                raise ValueError(
+                    "source-union candidate dropped an entire source component"
+                )
+            return source_bytes, filtered_bytes, candidate_bytes, transfer
+
+        _source_bytes, filtered_reference_bytes, candidate_bytes, component_transfer = (
+            validate_current_inputs(cancel_event)
+        )
+        target = build_adaptive_direct_source_union_target(
+            source_proof=source_proof,
+            coverage_manifest_sha256=coverage.coverage_manifest_sha256,
+        )
+        pose_contract = source_proof.witnesses[0].pose_contract_sha256
+        pose_bindings = (SourceUnionPoseBinding.bind(pose_contract),)
+        validate_source_union_pose_bindings(
+            pose_bindings, target.pose_keys, pose_contract, cancel_event
+        )
+        material_contract = source_proof.witnesses[0].material_contract_sha256
+        material_bindings = tuple(
+            SourceUnionMaterialBinding(key, material_contract)
+            for key in source_proof.material_region_keys
+        )
+        comparison = SourceUnionComparisonContract.create(
+            target_sha256=target.target_sha256,
+            source_identity=target.source_identity,
+            source_coverage_sha256=target.source_coverage_sha256,
+            reference_source_sha256=component_manifest.filtered_source_sha256,
+            candidate_source_sha256=snapshot.output_sha256,
+            material_contract_sha256=material_contract,
+            pose_frames=(("bind", 0),), union_key=target.union_key,
+        )
+        holder: dict[str, object] = {}
+
+        def render_fresh(request, output_root: Path, event):
+            inputs = output_root / "inputs"; control = output_root / "control"
+            raw = output_root / "raw"; authorized = output_root / "authorized"
+            for path in (inputs, control): path.mkdir()
+            reference_input = inputs / "reference.smd"
+            candidate_input = inputs / "candidate.smd"
+            renderer_input = inputs / "render_previews.py"
+            current_source, current_filtered, current_candidate, current_transfer = (
+                validate_current_inputs(event)
+            )
+            if (
+                current_filtered != filtered_reference_bytes
+                or current_candidate != candidate_bytes
+                or current_transfer != component_transfer
+            ):
+                raise ValueError("source-union current inputs changed before render")
+            _write_private_bytes_fsync(reference_input, current_filtered)
+            _write_private_bytes_fsync(candidate_input, current_candidate)
+            _copy_file_no_follow(tools.renderer_script, renderer_input, event, contained_root=tools.renderer_script.parent)
+            for path, expected in (
+                (reference_input, comparison.reference_source_sha256),
+                (candidate_input, comparison.candidate_source_sha256),
+                (renderer_input, tools.renderer_sha256),
+            ):
+                _size, digest = _file_proof(path, event, contained_root=inputs)
+                if digest != expected: raise ValueError("source-union private input differs")
+            contract_path = control / "source-union-contract.json"
+            visibility_path = control / "source-union-visibility.json"
+            _write_json_fsync(contract_path, {
+                "schema": 1, "kind": "adaptive-direct-source-union-render-v1",
+                "target_sha256": target.target_sha256,
+                "comparison_contract": {
+                    "contract_sha256": comparison.contract_sha256,
+                    "target_sha256": comparison.target_sha256,
+                    "source_identity": comparison.source_identity,
+                    "source_coverage_sha256": comparison.source_coverage_sha256,
+                    "reference_source_sha256": comparison.reference_source_sha256,
+                    "candidate_source_sha256": comparison.candidate_source_sha256,
+                    "material_contract_sha256": comparison.material_contract_sha256,
+                    "pose_frames": [list(item) for item in comparison.pose_frames],
+                    "union_key": comparison.union_key,
+                },
+                "source_identity": target.source_identity,
+                "source_coverage_sha256": target.source_coverage_sha256,
+                "component_keys": list(target.component_keys),
+                "component_manifest": source_component_manifest_payload(component_manifest),
+                "candidate_component_transfer": source_component_transfer_payload(
+                    component_transfer
+                ),
+                "material_region_keys": list(target.material_region_keys),
+                "material_contract_sha256": material_contract,
+                "pose_frames": {"bind": 0}, "angles": list(_ANGLES),
+                "cameras": list(_CAMERAS), "renderer_sha256": tools.renderer_sha256,
+            })
+            contract_size, contract_digest = _file_proof(
+                contract_path, event, contained_root=control
+            )
+            command = [
+                str(tools.blender_exe), "--background", "--python", str(renderer_input), "--",
+                "--before", str(reference_input), "--after", str(candidate_input),
+                "--out", str(raw), "--size", "512", "--angles", ",".join(_ANGLES),
+                "--passes", "textured,clay", "--poses", "bind:0",
+                "--source-union-contract", str(contract_path),
+                "--source-union-visibility-out", str(visibility_path),
+            ]
+            for root in tools.materials_roots: command.extend(("--materials-root", str(root)))
+            if tools.vtfcmd is not None: command.extend(("--vtfcmd", str(tools.vtfcmd)))
+            if tools.texture_cache is not None: command.extend(("--texture-cache", str(tools.texture_cache)))
+            if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
+                raise ValueError("source-union dependency changed before Blender")
+            process = self._process_runner(
+                tuple(command), tools.renderer_script.parent,
+                output_root / "source-union-render.log", event,
+            )
+            if process.returncode != 0:
+                raise ValueError("source-union Blender process failed")
+            if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
+                raise ValueError("source-union dependency changed during Blender")
+            if any(_has_reparse_ancestor(path) for path in (inputs, control, raw)):
+                raise ValueError("source-union process output has reparse ancestry")
+            _assert_safe_tree(
+                inputs, event,
+                {"reference.smd", "candidate.smd", "render_previews.py"},
+                max_files=3,
+            )
+            _assert_safe_tree(
+                control, event,
+                {"source-union-contract.json", "source-union-visibility.json"},
+                max_files=2,
+            )
+            _assert_exact_source_union_raw(raw, target, event)
+            for path, expected in (
+                (reference_input, comparison.reference_source_sha256),
+                (candidate_input, comparison.candidate_source_sha256),
+                (renderer_input, tools.renderer_sha256),
+            ):
+                _size, digest = _file_proof(path, event, contained_root=inputs)
+                if digest != expected: raise ValueError("source-union private input changed during Blender")
+            if (
+                _read_regular_no_follow(reference_input, event, contained_root=inputs)
+                != filtered_reference_bytes
+                or _read_regular_no_follow(candidate_input, event, contained_root=inputs)
+                != candidate_bytes
+            ):
+                raise ValueError("source-union private component inputs differ")
+            _post_source, post_filtered, post_candidate, post_transfer = validate_current_inputs(event)
+            if (
+                post_filtered != filtered_reference_bytes
+                or post_candidate != candidate_bytes
+                or post_transfer != component_transfer
+            ):
+                raise ValueError("source-union component provenance changed during Blender")
+            if _file_proof(contract_path, event, contained_root=control) != (
+                contract_size, contract_digest
+            ):
+                raise ValueError("source-union control contract changed during Blender")
+            if os.path.lexists(authorized):
+                raise ValueError("source-union authorized root was precreated by renderer")
+            authorized.mkdir()
+            observations = _parse_source_union_visibility(
+                visibility_path, target, event
+            )
+            _normalize_source_union_raw(raw, authorized, target, comparison, event)
+            holder.update({
+                "raw": raw, "authorized": authorized, "inputs": inputs,
+                "control": control, "contract_path": contract_path,
+                "contract_proof": (contract_size, contract_digest),
+                "visibility_path": visibility_path,
+                "observations": observations,
+            })
+            return SourceUnionRenderOutput(authorized, observations)
+
+        def compare_authorized(reference_dir: Path, candidate_dir: Path, expected_profile):
+            raw = holder.get("raw"); authorized = holder.get("authorized")
+            if not isinstance(raw, Path) or not isinstance(authorized, Path) or any((
+                reference_dir != authorized / "source-union" / target.union_key / "reference",
+                candidate_dir != authorized / "source-union" / target.union_key / "candidate",
+            )):
+                raise ValueError("source-union comparator directories differ")
+            _prove_source_union_bijection(raw, authorized, target, comparison, cancel_event)
+            result = compare_source_union_render_sets(
+                raw / "original", raw / "optimized", expected_profile,
+                expected_contract=comparison,
+            )
+            _prove_source_union_bijection(raw, authorized, target, comparison, cancel_event)
+            return result
+
+        def validate_render_workspace_current(event) -> None:
+            raw = holder.get("raw"); authorized = holder.get("authorized")
+            inputs = holder.get("inputs"); control = holder.get("control")
+            contract_path = holder.get("contract_path")
+            visibility_path = holder.get("visibility_path")
+            if any(not isinstance(path, Path) for path in (
+                raw, authorized, inputs, control, contract_path, visibility_path,
+            )):
+                raise ValueError("source-union workspace proof is unavailable")
+            assert isinstance(raw, Path) and isinstance(authorized, Path)
+            assert isinstance(inputs, Path) and isinstance(control, Path)
+            assert isinstance(contract_path, Path) and isinstance(visibility_path, Path)
+            _assert_safe_tree(
+                inputs, event,
+                {"reference.smd", "candidate.smd", "render_previews.py"},
+                max_files=3,
+            )
+            _assert_safe_tree(
+                control, event,
+                {"source-union-contract.json", "source-union-visibility.json"},
+                max_files=2,
+            )
+            if (
+                _read_regular_no_follow(inputs / "reference.smd", event, contained_root=inputs)
+                != filtered_reference_bytes
+                or _read_regular_no_follow(inputs / "candidate.smd", event, contained_root=inputs)
+                != candidate_bytes
+                or _file_proof(
+                    inputs / "render_previews.py", event, contained_root=inputs
+                )[1] != tools.renderer_sha256
+                or _file_proof(contract_path, event, contained_root=control)
+                != holder.get("contract_proof")
+                or _parse_source_union_visibility(visibility_path, target, event)
+                != holder.get("observations")
+            ):
+                raise ValueError("source-union private/control proof changed")
+            _prove_source_union_bijection(
+                raw, authorized, target, comparison, event
+            )
+
+        try:
+            record = validate_adaptive_direct_source_union(
+                coverage=coverage, source_proof=source_proof, snapshot=snapshot,
+                workspace=workspace,
+                dependency_proof_sha256=snapshot.request.dependency_proof_sha256,
+                material_bindings=material_bindings, profile=profile,
+                renderer=render_fresh, comparator=compare_authorized,
+                cancel_event=cancel_event,
+            )
+            _final_source, final_filtered, final_candidate, final_transfer = (
+                validate_current_inputs(cancel_event)
+            )
+            if (
+                final_filtered != filtered_reference_bytes
+                or final_candidate != candidate_bytes
+                or final_transfer != component_transfer
+            ):
+                raise ValueError("source-union inputs changed before record return")
+            validate_render_workspace_current(cancel_event)
+            return record
+        except BaseException:
+            if os.path.lexists(workspace):
+                _quarantine_cleanup(workspace)
             raise
