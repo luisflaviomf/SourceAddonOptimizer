@@ -502,6 +502,11 @@ class AdaptiveGraphOccurrenceProof:
     line: int
     logical_path: str
     role: Literal["visual"]
+    qc_state_role: Literal[
+        "active-renderable-v1", "lod-original-selector-nonrenderable-v1"
+    ]
+    expected_active_row_occurrence_keys: tuple[str, ...]
+    qc_lod_pair_ordinal: int | None = None
 
     def __post_init__(self) -> None:
         _require_relative(self.graph_relative_path, "adaptive graph path")
@@ -511,12 +516,42 @@ class AdaptiveGraphOccurrenceProof:
         _require_relative(self.logical_path, "adaptive logical path")
         if self.role != "visual":
             raise ValueError("adaptive graph role is invalid")
+        active_keys = tuple(self.expected_active_row_occurrence_keys)
+        if (
+            len(active_keys) > _ADAPTIVE_OCCURRENCE_LIMIT
+            or any(type(item) is not str or not item for item in active_keys)
+            or active_keys != tuple(sorted(active_keys, key=lambda item: (item.casefold(), item)))
+            or len({item.casefold() for item in active_keys}) != len(active_keys)
+        ):
+            raise ValueError("adaptive graph expected active rows are invalid")
+        if self.qc_state_role == "active-renderable-v1":
+            if not active_keys:
+                raise ValueError("adaptive active graph occurrence has no expected rows")
+        elif self.qc_state_role == "lod-original-selector-nonrenderable-v1":
+            if active_keys or self.directive != "$lod/replacemodel":
+                raise ValueError("adaptive LOD selector occurrence is renderable or invalid")
+        else:
+            raise ValueError("adaptive graph QC state role is invalid")
+        if self.directive == "$lod/replacemodel":
+            if (
+                type(self.qc_lod_pair_ordinal) is not int
+                or not 0 <= self.qc_lod_pair_ordinal < _ADAPTIVE_OCCURRENCE_LIMIT
+            ):
+                raise ValueError("adaptive graph LOD pair ordinal is invalid")
+        elif self.qc_lod_pair_ordinal is not None:
+            raise ValueError("non-LOD adaptive occurrence has a LOD pair ordinal")
+        object.__setattr__(self, "expected_active_row_occurrence_keys", active_keys)
 
 
 def adaptive_graph_occurrence_payload(value: AdaptiveGraphOccurrenceProof) -> dict[str, object]:
     return {
         "graph_relative_path": value.graph_relative_path, "directive": value.directive,
         "line": value.line, "logical_path": value.logical_path, "role": value.role,
+        "qc_state_role": value.qc_state_role,
+        "expected_active_row_occurrence_keys": list(
+            value.expected_active_row_occurrence_keys
+        ),
+        "qc_lod_pair_ordinal": value.qc_lod_pair_ordinal,
     }
 
 
@@ -665,6 +700,38 @@ class AdaptiveCandidateMetricsProof:
         keys = [(item.source_identity.casefold(), item.source_identity) for item in sources if isinstance(item, (EligibleAdaptiveSourceProof, IneligibleAdaptiveSourceProof))]
         if not sources or len(keys) != len(sources) or keys != sorted(keys) or len({key[0] for key in keys}) != len(keys):
             raise ValueError("adaptive metrics sources are not complete canonical union")
+        occurrences = tuple(occurrence for source in sources for occurrence in source.occurrences)
+        expected_row_keys = tuple(
+            key for item in occurrences
+            for key in item.expected_active_row_occurrence_keys
+        )
+        if (
+            len(expected_row_keys) > _ADAPTIVE_OCCURRENCE_LIMIT
+            or len(expected_row_keys) != len({item.casefold() for item in expected_row_keys})
+        ):
+            raise ValueError("adaptive metrics expected active rows are duplicated or exceed bound")
+        lod_occurrences = tuple(
+            item for item in occurrences if item.directive == "$lod/replacemodel"
+        )
+        lod_pairs: dict[tuple[str, int], list[AdaptiveGraphOccurrenceProof]] = {}
+        for item in lod_occurrences:
+            lod_pairs.setdefault(
+                (item.graph_relative_path, item.qc_lod_pair_ordinal), []
+            ).append(item)
+        if (
+            len({item.qc_lod_pair_ordinal for item in lod_occurrences})
+            != len(lod_pairs)
+            or any(
+                len(pair) != 2
+                or len({item.line for item in pair}) != 1
+                or {item.qc_state_role for item in pair} != {
+                    "active-renderable-v1",
+                    "lod-original-selector-nonrenderable-v1",
+                }
+                for pair in lod_pairs.values()
+            )
+        ):
+            raise ValueError("adaptive metrics LOD occurrence pairing is incomplete")
         if _require_sha256(self.evidence_sha256, "adaptive metrics evidence") != _seal(adaptive_candidate_metrics_payload(self, include_seal=False)):
             raise ValueError("adaptive candidate metrics seal mismatch")
         object.__setattr__(self, "sources", sources)
@@ -697,9 +764,21 @@ def _adaptive_source_from_payload(raw: object) -> AdaptiveSourceMetricsProof:
         raise ValueError("adaptive source metrics fields are invalid")
     occurrences = []
     for item in raw["occurrences"]:
-        if type(item) is not dict or set(item) != {"graph_relative_path", "directive", "line", "logical_path", "role"}:
+        if (
+            type(item) is not dict
+            or set(item) != {
+                "graph_relative_path", "directive", "line", "logical_path", "role",
+                "qc_state_role", "expected_active_row_occurrence_keys",
+                "qc_lod_pair_ordinal",
+            }
+            or type(item["expected_active_row_occurrence_keys"]) is not list
+        ):
             raise ValueError("adaptive occurrence payload is invalid")
-        occurrences.append(AdaptiveGraphOccurrenceProof(**item))
+        copied_item = dict(item)
+        copied_item["expected_active_row_occurrence_keys"] = tuple(
+            copied_item["expected_active_row_occurrence_keys"]
+        )
+        occurrences.append(AdaptiveGraphOccurrenceProof(**copied_item))
     copied = dict(raw); copied["occurrences"] = tuple(occurrences)
     return (EligibleAdaptiveSourceProof if eligible else IneligibleAdaptiveSourceProof)(**copied)
 
@@ -1123,11 +1202,13 @@ class AdaptiveDirectCoverageManifest:
             if metric is None or source.metrics_sha256 != metric.metrics_sha256 or source.eligibility_kind != metric.kind or source.source_size != metric.source_size or source.source_sha256 != metric.source_sha256:
                 raise ValueError("coverage source differs from typed metrics")
             metric_occurrences = {
-                (item.graph_relative_path, item.directive, item.line, item.logical_path)
+                (item.graph_relative_path, item.directive, item.line, item.logical_path):
+                (item.qc_state_role, item.expected_active_row_occurrence_keys)
                 for item in metric.occurrences
             }
             classified_occurrences = {
-                (item.graph_relative_path, item.directive, item.line, item.logical_path)
+                (item.graph_relative_path, item.directive, item.line, item.logical_path):
+                (item.classification, item.active_row_occurrence_keys)
                 for item in classifications_by_source[source.source_identity]
             }
             if (
@@ -1136,7 +1217,7 @@ class AdaptiveDirectCoverageManifest:
                 != len(classifications_by_source[source.source_identity])
                 or metric_occurrences != classified_occurrences
             ):
-                raise ValueError("coverage classified occurrences differ from typed metrics")
+                raise ValueError("coverage classified occurrences differ from trusted metric QC state authority")
             witness_rows = tuple((item.occurrence_key, item.source_identity, item.graph_relative_path, item.directive, item.line, item.state_key, item.bodygroup_key, item.lod_key, item.skin_key, item.source_size, item.source_sha256, item.component_manifest_sha256, item.material_contract_sha256, item.skeleton_contract_sha256, item.pose_contract_sha256, item.equivalence_class_sha256) for item in source.witnesses)
             inventory_rows = tuple((item.occurrence_key, item.source_identity, item.graph_relative_path, item.directive, item.line, item.state_key, item.bodygroup_key, item.lod_key, item.skin_key, item.source_size, item.source_sha256, item.component_manifest_sha256, item.material_contract_sha256, item.skeleton_contract_sha256, item.pose_contract_sha256, item.equivalence_class_sha256) for item in rows)
             if witness_rows != inventory_rows:

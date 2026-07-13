@@ -66,6 +66,27 @@ class QcActiveState:
     active: tuple[QcActiveOccurrence, ...]
 
 
+def qc_active_occurrence_key(
+    state_key: str, active: QcActiveOccurrence,
+) -> str:
+    """Return the canonical key shared by QC-state authority and inventory rows."""
+    if type(state_key) is not str or not state_key or not isinstance(active, QcActiveOccurrence):
+        raise ValueError("QC active occurrence key inputs are invalid")
+    payload = {
+        "state_key": state_key,
+        "graph_relative_path": active.graph_relative_path,
+        "directive": active.directive,
+        "line": active.line,
+        "source_identity": active.source_identity,
+        "occurrence_ordinal": active.occurrence_ordinal,
+        "base_occurrence_ordinal": active.base_occurrence_ordinal,
+        "replacement_original_identity": active.replacement_original_identity,
+    }
+    return "occ-" + hashlib.sha256(
+        canonical_json(payload).encode("utf-8")
+    ).hexdigest()
+
+
 @dataclass(frozen=True)
 class _SkinRow:
     graph_path: str

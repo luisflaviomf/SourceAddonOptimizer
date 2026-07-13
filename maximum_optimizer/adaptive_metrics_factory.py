@@ -28,6 +28,7 @@ from .domain import (
 )
 from .focused_cache import _read_regular_no_follow
 from .qc_graph import QcGraph, QcReference, _lex, parse_qc_graph
+from .qc_states import enumerate_qc_states, qc_active_occurrence_key
 from .reporting import canonical_json
 
 
@@ -248,6 +249,83 @@ def _graph_occurrence_union(
     if not rows or len(rows) > _QC_GRAPH_OCCURRENCE_LIMIT or len(set(rows)) != len(rows):
         raise ValueError("visual occurrence union is empty, duplicated, or exceeds bound")
     return tuple(rows)
+
+
+def _qc_state_occurrence_authority(
+    graph: QcGraph, by_relative: Mapping[str, SourceFileProof],
+) -> dict[str, tuple[AdaptiveGraphOccurrenceProof, ...]]:
+    """Seal the exact render role and state-expanded rows for every visual reference."""
+    states = enumerate_qc_states(graph)
+    row_keys_by_ordinal: dict[int, list[str]] = {}
+    for state in states:
+        for active in state.active:
+            row_keys_by_ordinal.setdefault(active.occurrence_ordinal, []).append(
+                qc_active_occurrence_key(state.state_key, active)
+            )
+    active_ordinals = set(row_keys_by_ordinal)
+    by_identity: dict[str, list[AdaptiveGraphOccurrenceProof]] = {}
+    references = graph.references
+    for ordinal, reference in enumerate(references):
+        if reference.role != "visual":
+            continue
+        proof = _source_for_reference(reference, graph.family_root, by_relative)
+        expected_keys = tuple(sorted(
+            row_keys_by_ordinal.get(ordinal, ()),
+            key=lambda item: (item.casefold(), item),
+        ))
+        if expected_keys:
+            qc_state_role = "active-renderable-v1"
+            if reference.directive == "$lod/replacemodel":
+                selector = references[ordinal - 1] if ordinal > 0 else None
+                if (
+                    selector is None
+                    or ordinal - 1 in active_ordinals
+                    or selector.role != "visual"
+                    or selector.directive != reference.directive
+                    or selector.line != reference.line
+                    or selector.graph_file != reference.graph_file
+                    or selector.group != reference.group
+                ):
+                    raise ValueError(
+                        "active LOD replacement has no exact original selector"
+                    )
+                qc_lod_pair_ordinal = ordinal - 1
+            else:
+                qc_lod_pair_ordinal = None
+        else:
+            replacement = references[ordinal + 1] if ordinal + 1 < len(references) else None
+            if (
+                reference.directive != "$lod/replacemodel"
+                or replacement is None
+                or ordinal + 1 not in active_ordinals
+                or replacement.role != "visual"
+                or replacement.directive != reference.directive
+                or replacement.line != reference.line
+                or replacement.graph_file != reference.graph_file
+                or replacement.group != reference.group
+            ):
+                raise ValueError(
+                    "nonrenderable QC occurrence is not an exact LOD original selector"
+                )
+            qc_state_role = "lod-original-selector-nonrenderable-v1"
+            qc_lod_pair_ordinal = ordinal
+        occurrence = AdaptiveGraphOccurrenceProof(
+            _relative(
+                graph.family_root, reference.graph_file,
+                "visual occurrence authority graph",
+            ),
+            reference.directive, reference.line, proof.file_identity, "visual",
+            qc_state_role, expected_keys,
+            qc_lod_pair_ordinal=qc_lod_pair_ordinal,
+        )
+        by_identity.setdefault(proof.file_identity.casefold(), []).append(occurrence)
+    result = {}
+    for identity, occurrences in by_identity.items():
+        result[identity] = tuple(sorted(occurrences, key=lambda item: (
+            item.graph_relative_path.casefold(), item.directive, item.line,
+            item.logical_path.casefold(),
+        )))
+    return result
 
 
 def _provenance_occurrence_union(
@@ -524,13 +602,11 @@ def build_production_adaptive_candidate_metrics_proof(
     if set(preservation_by_identity) != set(original_visual):
         raise ValueError("candidate metrics preservation union is incomplete or divergent")
 
-    occurrence_objects: dict[str, list[AdaptiveGraphOccurrenceProof]] = {
-        identity: [] for identity in original_visual
-    }
-    for graph_path, directive, line, identity in original_occurrences:
-        occurrence_objects[identity.casefold()].append(AdaptiveGraphOccurrenceProof(
-            graph_path, directive, line, identity, "visual",
-        ))
+    occurrence_objects = _qc_state_occurrence_authority(
+        original_graph, original_relative,
+    )
+    if set(occurrence_objects) != set(original_visual):
+        raise ValueError("QC state occurrence authority source union is incomplete")
     sources = []
     for folded_identity in sorted(original_visual):
         source = original_visual[folded_identity]
@@ -542,7 +618,7 @@ def build_production_adaptive_candidate_metrics_proof(
             source_size=source.size, source_sha256=source.sha256,
             output_relative_path=output.relative_path,
             output_size=output.size, output_sha256=output.sha256,
-            occurrences=tuple(occurrence_objects[folded_identity]),
+            occurrences=occurrence_objects[folded_identity],
         )
         if kind == "eligible-exact-v1":
             sources.append(EligibleAdaptiveSourceProof.create(

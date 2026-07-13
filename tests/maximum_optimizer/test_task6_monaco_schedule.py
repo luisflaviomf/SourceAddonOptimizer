@@ -88,6 +88,7 @@ class MonacoScheduleTests(unittest.TestCase):
             base_source_manifest_sha256=H["4"], base_source_snapshot_sha256=H["5"],
             complete_source_identities=old_inventory.complete_source_identities,
             rows=old_inventory.rows,
+            metric_occurrences=old_inventory.metric_occurrences,
         )
         self.coverage = build_adaptive_direct_coverage_manifest(
             family_id=H["0"], family_input_sha256=H["1"], base_candidate_id="base",

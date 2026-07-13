@@ -23,6 +23,7 @@ from maximum_optimizer.composite import (
 )
 from maximum_optimizer.domain import CandidateSpec, FamilyManifest, StructuralFingerprint
 from maximum_optimizer.qc_graph import parse_qc_graph
+from maximum_optimizer.qc_states import enumerate_qc_states, qc_active_occurrence_key
 
 
 H = {character: character * 64 for character in "0123456789abcdef"}
@@ -35,7 +36,9 @@ def _fingerprint() -> StructuralFingerprint:
     )
 
 
-def _write_tree(root: Path, *, optimized: bool, wheel_bytes: bytes = b"wheel") -> Path:
+def _write_tree(
+    root: Path, *, optimized: bool, wheel_bytes: bytes = b"wheel", lod: bool = False,
+) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     if optimized:
         (root / "output").mkdir()
@@ -49,6 +52,12 @@ def _write_tree(root: Path, *, optimized: bool, wheel_bytes: bytes = b"wheel") -
         )
         (root / "output" / "body_opt.smd").write_bytes(b"body")
         (root / "output" / "wheel_opt.smd").write_bytes(wheel_bytes)
+        if lod:
+            with (root / "main_OPT.qc").open("a", encoding="utf-8") as handle:
+                handle.write(
+                    '$lod 10\n{\n replacemodel "output/body_opt.smd" '
+                    '"output/wheel_opt.smd"\n}\n'
+                )
         return root / "main_OPT.qc"
     (root / "main.qc").write_text(
         '$modelname "models/test.mdl"\n$include "parts.qci"\n$body "main" "body.smd"\n',
@@ -59,6 +68,11 @@ def _write_tree(root: Path, *, optimized: bool, wheel_bytes: bytes = b"wheel") -
     )
     (root / "body.smd").write_bytes(b"body")
     (root / "wheel.smd").write_bytes(b"wheel")
+    if lod:
+        with (root / "main.qc").open("a", encoding="utf-8") as handle:
+            handle.write(
+                '$lod 10\n{\n replacemodel "body.smd" "wheel.smd"\n}\n'
+            )
     return root / "main.qc"
 
 
@@ -72,13 +86,13 @@ def _spec() -> CandidateSpec:
 class FactoryFixture:
     def __init__(
         self, root: Path, *, mutate=None, wheel_bytes: bytes = b"wheel",
-        metrics_name: str = "candidate_metrics.json",
+        metrics_name: str = "candidate_metrics.json", lod: bool = False,
     ) -> None:
         self.original_root = root / "original"
         self.candidate_root = root / "candidate"
-        original_qc = _write_tree(self.original_root, optimized=False)
+        original_qc = _write_tree(self.original_root, optimized=False, lod=lod)
         candidate_qc = _write_tree(
-            self.candidate_root, optimized=True, wheel_bytes=wheel_bytes,
+            self.candidate_root, optimized=True, wheel_bytes=wheel_bytes, lod=lod,
         )
         self.spec = _spec()
         self.cache_digest = H["c"]
@@ -133,6 +147,19 @@ class FactoryFixture:
                 },
             ],
         }
+        if lod:
+            payload["provenance"].extend((
+                {
+                    "graph_file": "main.qc", "directive": "$lod/replacemodel",
+                    "line": 6, "logical_path": "body.smd", "role": "visual",
+                    "source_sha256": H["0"], "output_sha256": H["f"],
+                },
+                {
+                    "graph_file": "main.qc", "directive": "$lod/replacemodel",
+                    "line": 6, "logical_path": "wheel.smd", "role": "visual",
+                    "source_sha256": H["0"], "output_sha256": H["f"],
+                },
+            ))
         if mutate is not None:
             mutate(payload)
         self.metrics_path = self.candidate_root / metrics_name
@@ -202,6 +229,44 @@ class QcGraphDigestTests(unittest.TestCase):
 
 
 class ProductionAdaptiveMetricsFactoryTests(unittest.TestCase):
+    def test_factory_seals_exact_qc_state_roles_and_expanded_row_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = FactoryFixture(Path(raw), lod=True)
+            proof = fixture.build()
+            occurrences = tuple(
+                item for source in proof.sources for item in source.occurrences
+            )
+            selector = next(
+                item for item in occurrences
+                if item.directive == "$lod/replacemodel"
+                and item.logical_path == "body.smd"
+            )
+            replacement = next(
+                item for item in occurrences
+                if item.directive == "$lod/replacemodel"
+                and item.logical_path == "wheel.smd"
+            )
+            self.assertEqual(
+                selector.qc_state_role,
+                "lod-original-selector-nonrenderable-v1",
+            )
+            self.assertEqual(selector.expected_active_row_occurrence_keys, ())
+            self.assertEqual(replacement.qc_state_role, "active-renderable-v1")
+            graph = parse_qc_graph(
+                fixture.original_root / "main.qc", fixture.original_root,
+            )
+            expected = {
+                qc_active_occurrence_key(state.state_key, active)
+                for state in enumerate_qc_states(graph) for active in state.active
+            }
+            self.assertEqual(
+                {
+                    key for item in occurrences
+                    for key in item.expected_active_row_occurrence_keys
+                },
+                expected,
+            )
+
     def test_root_selection_accepts_included_qc_without_modelname(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = FactoryFixture(Path(raw))

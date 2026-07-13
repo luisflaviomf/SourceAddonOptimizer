@@ -156,6 +156,7 @@ class DirectCompositorFixture:
             base_source_snapshot_sha256=self.base_snapshot.snapshot_sha256,
             complete_source_identities=old_inventory.complete_source_identities,
             rows=old_inventory.rows,
+            metric_occurrences=old_inventory.metric_occurrences,
         )
         self.coverage = build_adaptive_direct_coverage_manifest(
             family_id=H["0"], family_input_sha256=H["1"], base_candidate_id="base",
@@ -251,6 +252,7 @@ def _alternate_coverage(
         source_metrics(
             seed.source_identity, eligible=False,
             source_size=seed.source_size, source_sha256=seed.source_sha256,
+            occurrences=metric.occurrences,
         ) if seed.source_identity in ineligible else metric
         for seed, metric in zip(seeds, old_metrics.sources)
     )
@@ -276,6 +278,7 @@ def _alternate_coverage(
         base_source_snapshot_sha256=fixture.base_snapshot.snapshot_sha256,
         complete_source_identities=old_inventory.complete_source_identities,
         rows=old_inventory.rows,
+        metric_occurrences=old_inventory.metric_occurrences,
     )
     return build_adaptive_direct_coverage_manifest(
         family_id=fixture.base_snapshot.family_id,

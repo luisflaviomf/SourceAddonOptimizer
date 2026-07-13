@@ -28,7 +28,7 @@ from .domain import (
     require_canonical_relative,
 )
 from .qc_graph import QcGraph
-from .qc_states import QcActiveOccurrence, enumerate_qc_states
+from .qc_states import enumerate_qc_states, qc_active_occurrence_key
 from .reporting import canonical_json
 from .smd_state_contracts import (
     SmdAnimationPairInput,
@@ -300,22 +300,6 @@ def _validate_animation_pairs(
     return copied
 
 
-def _occurrence_key(state_key: str, active: QcActiveOccurrence) -> str:
-    payload = {
-        "state_key": state_key,
-        "graph_relative_path": active.graph_relative_path,
-        "directive": active.directive,
-        "line": active.line,
-        "source_identity": active.source_identity,
-        "occurrence_ordinal": active.occurrence_ordinal,
-        "base_occurrence_ordinal": active.base_occurrence_ordinal,
-        "replacement_original_identity": active.replacement_original_identity,
-    }
-    return "occ-" + hashlib.sha256(
-        canonical_json(payload).encode("utf-8")
-    ).hexdigest()
-
-
 def build_production_adaptive_direct_state_inventory(
     *,
     manifest: FamilyManifest,
@@ -453,7 +437,7 @@ def build_production_adaptive_direct_state_inventory(
             dependency = bound_dependencies[active.source_identity]
             skeleton_pair, pose, equivalence = contracts[active.source_identity]
             rows.append(build_adaptive_direct_state_inventory_row(
-                occurrence_key=_occurrence_key(state.state_key, active),
+                occurrence_key=qc_active_occurrence_key(state.state_key, active),
                 source_identity=active.source_identity,
                 graph_relative_path=active.graph_relative_path,
                 directive=active.directive,
@@ -482,62 +466,31 @@ def build_production_adaptive_direct_state_inventory(
             row.graph_relative_path, row.directive, row.line, row.source_identity,
         )
         row_keys_by_provenance.setdefault(provenance, []).append(row.occurrence_key)
-    active_ordinals = {
-        active.occurrence_ordinal for state in states for active in state.active
-    }
-    visual_references = tuple(
-        (ordinal, reference) for ordinal, reference in enumerate(original_graph.references)
-        if reference.role == "visual"
-    )
     metric_occurrences = []
-    for visual_index, (ordinal, reference) in enumerate(visual_references):
-        relative = _relative(
-            original_graph.family_root, reference.source_path, "classified visual source",
-        )
-        proof = next(
-            (item for item in original_proofs.values() if item.relative_path == relative),
-            None,
-        )
-        if proof is None:
-            raise ValueError("classified metric occurrence has no sealed source proof")
+    trusted_occurrences = tuple(
+        occurrence for source in metrics_proof.sources
+        for occurrence in source.occurrences
+    )
+    for occurrence in trusted_occurrences:
         provenance = (
-            _relative(
-                original_graph.family_root, reference.graph_file,
-                "classified visual graph",
-            ),
-            reference.directive, reference.line, proof.file_identity,
+            occurrence.graph_relative_path, occurrence.directive,
+            occurrence.line, occurrence.logical_path,
         )
         row_keys = tuple(sorted(
             row_keys_by_provenance.get(provenance, ()),
             key=lambda item: (item.casefold(), item),
         ))
-        if ordinal in active_ordinals:
-            classification = "active-renderable-v1"
-            if not row_keys:
-                raise ValueError("active QC occurrence has no state-expanded row mapping")
-        else:
-            classification = "lod-original-selector-nonrenderable-v1"
-            next_reference = (
-                visual_references[visual_index + 1]
-                if visual_index + 1 < len(visual_references) else None
+        if row_keys != occurrence.expected_active_row_occurrence_keys:
+            raise ValueError(
+                "state inventory rows differ from trusted metric QC state authority"
             )
-            if (
-                row_keys or reference.directive != "$lod/replacemodel"
-                or next_reference is None or next_reference[0] != ordinal + 1
-                or next_reference[0] not in active_ordinals
-                or next_reference[1].directive != reference.directive
-                or next_reference[1].line != reference.line
-                or next_reference[1].graph_file != reference.graph_file
-                or next_reference[1].group != reference.group
-            ):
-                raise ValueError("nonrenderable QC metric occurrence is not an exact LOD original selector")
         metric_occurrences.append(
             build_adaptive_direct_metric_occurrence_classification(
                 metric_occurrence_key=adaptive_metric_occurrence_key(*provenance),
-                source_identity=proof.file_identity,
+                source_identity=occurrence.logical_path,
                 graph_relative_path=provenance[0], directive=provenance[1],
                 line=provenance[2], logical_path=provenance[3],
-                classification=classification,
+                classification=occurrence.qc_state_role,
                 active_row_occurrence_keys=row_keys,
             )
         )

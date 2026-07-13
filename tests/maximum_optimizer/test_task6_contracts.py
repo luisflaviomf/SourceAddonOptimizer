@@ -13,6 +13,7 @@ from maximum_optimizer.composite import (
     adaptive_direct_source_union_record_payload,
     build_adaptive_candidate_metrics_proof,
     build_adaptive_direct_coverage_manifest,
+    build_adaptive_direct_metric_occurrence_classification,
     build_adaptive_direct_state_inventory,
     build_adaptive_direct_state_inventory_row,
     build_adaptive_direct_source_union_record,
@@ -42,6 +43,7 @@ from maximum_optimizer.domain import (
     adaptive_direct_state_inventory_from_payload,
     adaptive_direct_state_inventory_row_from_payload,
     adaptive_direct_state_inventory_payload,
+    adaptive_metric_occurrence_key,
     direct_source_request_from_payload,
     direct_source_request_payload,
     direct_source_snapshot_from_payload,
@@ -79,13 +81,23 @@ def assert_every_field_rejected(test: unittest.TestCase, parser, payload: dict) 
         parser(missing)
 
 
-def occurrence(source: str = "body.smd", line: int = 1) -> AdaptiveGraphOccurrenceProof:
-    return AdaptiveGraphOccurrenceProof("main.qc", "$body", line, source, "visual")
+def occurrence(
+    source: str = "body.smd", line: int = 1,
+    expected_keys: tuple[str, ...] | None = None,
+) -> AdaptiveGraphOccurrenceProof:
+    if expected_keys is None:
+        expected_keys = (
+            f"occ-{hashlib.sha256(source.encode()).hexdigest()[:8]}-{line - 1:04d}",
+        )
+    return AdaptiveGraphOccurrenceProof(
+        "main.qc", "$body", line, source, "visual",
+        "active-renderable-v1", expected_keys,
+    )
 
 
 def source_metrics(
     source: str = "body.smd", *, eligible: bool = True,
-    source_size: int = 100, source_sha256: str = H["1"],
+    source_size: int = 100, source_sha256: str = H["1"], occurrences=None,
 ):
     common = dict(
         source_identity=source,
@@ -95,7 +107,7 @@ def source_metrics(
         output_relative_path=f"output/{source}",
         output_size=source_size if eligible else max(0, source_size - 1),
         output_sha256=source_sha256 if eligible else H["2"],
-        occurrences=(occurrence(source),),
+        occurrences=(occurrence(source),) if occurrences is None else tuple(occurrences),
     )
     if eligible:
         return EligibleAdaptiveSourceProof.create(
@@ -148,6 +160,12 @@ def coverage_source(
         pose_keys=poses, equivalence_class_sha256=H["7"], witnesses=witnesses,
         metrics_sha256=source_metrics(
             source, source_size=source_size, source_sha256=source_sha256,
+            occurrences=tuple(
+                occurrence(
+                    source, line=item.line,
+                    expected_keys=(item.occurrence_key,),
+                ) for item in witnesses
+            ),
         ).metrics_sha256,
         state_inventory_sha256=H["9"],
     )
@@ -162,7 +180,15 @@ def coverage_source_many(source: str, count: int) -> AdaptiveDirectCoverageSourc
         state_keys=("default",), component_keys=("component-000",),
         material_region_keys=("material-000",), skeleton_contract_sha256=H["5"],
         pose_keys=("bind",), equivalence_class_sha256=H["7"], witnesses=witnesses,
-        metrics_sha256=source_metrics(source).metrics_sha256,
+        metrics_sha256=source_metrics(
+            source,
+            occurrences=tuple(
+                occurrence(
+                    source, line=item.line,
+                    expected_keys=(item.occurrence_key,),
+                ) for item in witnesses
+            ),
+        ).metrics_sha256,
         state_inventory_sha256=H["9"],
     )
 
@@ -171,7 +197,9 @@ def metrics_for_coverage(sources):
     metric_sources = []
     for source in sources:
         occurrences = tuple(AdaptiveGraphOccurrenceProof(
-            item.graph_relative_path, item.directive, item.line, source.source_identity, "visual"
+            item.graph_relative_path, item.directive, item.line,
+            source.source_identity, "visual", "active-renderable-v1",
+            (item.occurrence_key,),
         ) for item in source.witnesses)
         metric_sources.append(EligibleAdaptiveSourceProof.create(
             source_identity=source.source_identity, source_relative_path=source.source_identity,
@@ -207,11 +235,39 @@ def inventory_for_coverage(sources):
                 equivalence_class_sha256=item.equivalence_class_sha256,
             ))
     rows.sort(key=lambda item: (item.occurrence_key.casefold(), item.occurrence_key))
+    metrics = metrics_for_coverage(sources)
+    metric_occurrences = []
+    for source in metrics.sources:
+        for occurrence_proof in source.occurrences:
+            provenance = (
+                occurrence_proof.graph_relative_path,
+                occurrence_proof.directive,
+                occurrence_proof.line,
+                occurrence_proof.logical_path,
+            )
+            metric_occurrences.append(
+                build_adaptive_direct_metric_occurrence_classification(
+                    metric_occurrence_key=adaptive_metric_occurrence_key(*provenance),
+                    source_identity=occurrence_proof.logical_path,
+                    graph_relative_path=occurrence_proof.graph_relative_path,
+                    directive=occurrence_proof.directive,
+                    line=occurrence_proof.line,
+                    logical_path=occurrence_proof.logical_path,
+                    classification=occurrence_proof.qc_state_role,
+                    active_row_occurrence_keys=(
+                        occurrence_proof.expected_active_row_occurrence_keys
+                    ),
+                )
+            )
+    metric_occurrences.sort(
+        key=lambda item: (item.metric_occurrence_key.casefold(), item.metric_occurrence_key)
+    )
     return build_adaptive_direct_state_inventory(
         family_id=H["0"], family_input_sha256=H["1"], base_candidate_id="base",
         base_spec_sha256=H["2"], base_cache_digest=H["3"],
         base_source_manifest_sha256=H["4"], base_source_snapshot_sha256=H["5"],
-        complete_source_identities=tuple(item.source_identity for item in sources), rows=tuple(rows),
+        complete_source_identities=tuple(item.source_identity for item in sources),
+        rows=tuple(rows), metric_occurrences=tuple(metric_occurrences),
     )
 
 
@@ -242,7 +298,10 @@ class AdaptiveMetricsContracts(unittest.TestCase):
                 adaptive_candidate_metrics_from_payload(payload)
         for field in adaptive_candidate_metrics_payload(proof)["sources"][0]["occurrences"][0]:
             payload = adaptive_candidate_metrics_payload(proof)
-            payload["sources"][0]["occurrences"][0][field] = None
+            current = payload["sources"][0]["occurrences"][0][field]
+            payload["sources"][0]["occurrences"][0][field] = (
+                0 if current is None else None
+            )
             with self.subTest(occurrence_field=field), self.assertRaises((TypeError, ValueError)):
                 adaptive_candidate_metrics_from_payload(payload)
 
@@ -316,6 +375,18 @@ class CoverageContracts(unittest.TestCase):
         inventory = inventory_for_coverage(sources)
         payload = adaptive_direct_state_inventory_payload(inventory)
         self.assertEqual(adaptive_direct_state_inventory_from_payload(payload), inventory)
+        with self.assertRaisesRegex(ValueError, "trusted metric occurrence authority"):
+            build_adaptive_direct_state_inventory(
+                family_id=inventory.family_id,
+                family_input_sha256=inventory.family_input_sha256,
+                base_candidate_id=inventory.base_candidate_id,
+                base_spec_sha256=inventory.base_spec_sha256,
+                base_cache_digest=inventory.base_cache_digest,
+                base_source_manifest_sha256=inventory.base_source_manifest_sha256,
+                base_source_snapshot_sha256=inventory.base_source_snapshot_sha256,
+                complete_source_identities=inventory.complete_source_identities,
+                rows=inventory.rows,
+            )
         assert_every_field_rejected(self, adaptive_direct_state_inventory_from_payload, payload)
         for field in tuple(payload["metric_occurrences"][0]):
             changed = adaptive_direct_state_inventory_payload(inventory)
@@ -336,21 +407,18 @@ class CoverageContracts(unittest.TestCase):
                 base_source_manifest_sha256=H["4"], base_source_snapshot_sha256=H["5"],
                 metrics_proof=mismatched_metrics, state_inventory=inventory,
             )
-        incomplete = build_adaptive_direct_state_inventory(
-            family_id=inventory.family_id, family_input_sha256=inventory.family_input_sha256,
-            base_candidate_id=inventory.base_candidate_id, base_spec_sha256=inventory.base_spec_sha256,
-            base_cache_digest=inventory.base_cache_digest,
-            base_source_manifest_sha256=inventory.base_source_manifest_sha256,
-            base_source_snapshot_sha256=inventory.base_source_snapshot_sha256,
-            complete_source_identities=inventory.complete_source_identities,
-            rows=inventory.rows[:-1],
-        )
         with self.assertRaises(ValueError):
-            build_adaptive_direct_coverage_manifest(
-                family_id=H["0"], family_input_sha256=H["1"], base_candidate_id="base",
-                base_spec_sha256=H["2"], base_cache_digest=H["3"],
-                base_source_manifest_sha256=H["4"], base_source_snapshot_sha256=H["5"],
-                metrics_proof=metrics, state_inventory=incomplete,
+            build_adaptive_direct_state_inventory(
+                family_id=inventory.family_id,
+                family_input_sha256=inventory.family_input_sha256,
+                base_candidate_id=inventory.base_candidate_id,
+                base_spec_sha256=inventory.base_spec_sha256,
+                base_cache_digest=inventory.base_cache_digest,
+                base_source_manifest_sha256=inventory.base_source_manifest_sha256,
+                base_source_snapshot_sha256=inventory.base_source_snapshot_sha256,
+                complete_source_identities=inventory.complete_source_identities,
+                rows=inventory.rows[:-1],
+                metric_occurrences=inventory.metric_occurrences,
             )
     def test_manifest_rejects_zero_or_more_than_eight_eligible_sources(self) -> None:
         with self.assertRaises(ValueError):

@@ -42,7 +42,6 @@ from .domain import (
     adaptive_direct_state_inventory_payload,
     adaptive_direct_state_inventory_row_payload,
     adaptive_direct_metric_occurrence_payload,
-    adaptive_metric_occurrence_key,
     direct_prefilter_payload,
     direct_candidate_id,
     direct_cache_digest,
@@ -117,13 +116,21 @@ def build_adaptive_direct_coverage_manifest(**values) -> AdaptiveDirectCoverageM
     for metric in metrics.sources:
         rows = tuple(rows_by_source[metric.source_identity])
         classified = tuple(classified_by_source[metric.source_identity])
-        metric_occurrences = tuple((item.graph_relative_path, item.directive, item.line, item.logical_path) for item in metric.occurrences)
-        classified_occurrences = tuple(
-            (
-                item.graph_relative_path, item.directive, item.line, item.logical_path
-            ) for item in classified
-        )
-        if len(metric_occurrences) != len(classified_occurrences) or set(metric_occurrences) != set(classified_occurrences): raise ValueError("coverage state inventory classification differs from complete metric occurrences")
+        metric_occurrences = {
+            (item.graph_relative_path, item.directive, item.line, item.logical_path):
+            (item.qc_state_role, item.expected_active_row_occurrence_keys)
+            for item in metric.occurrences
+        }
+        classified_occurrences = {
+            (item.graph_relative_path, item.directive, item.line, item.logical_path):
+            (item.classification, item.active_row_occurrence_keys)
+            for item in classified
+        }
+        if (
+            len(metric_occurrences) != len(metric.occurrences)
+            or len(classified_occurrences) != len(classified)
+            or metric_occurrences != classified_occurrences
+        ): raise ValueError("coverage state inventory classification differs from trusted metric QC state authority")
         active_provenance = {
             (item.graph_relative_path, item.directive, item.line, item.logical_path)
             for item in classified if item.classification == "active-renderable-v1"
@@ -198,29 +205,8 @@ def build_adaptive_direct_state_inventory(
 ) -> AdaptiveDirectStateInventory:
     rows = tuple(rows)
     if metric_occurrences is None:
-        grouped = {}
-        for row in rows:
-            provenance = (
-                row.graph_relative_path, row.directive, row.line, row.source_identity,
-            )
-            grouped.setdefault(provenance, []).append(row.occurrence_key)
-        metric_occurrences = tuple(
-            build_adaptive_direct_metric_occurrence_classification(
-                metric_occurrence_key=adaptive_metric_occurrence_key(*provenance),
-                source_identity=provenance[3], graph_relative_path=provenance[0],
-                directive=provenance[1], line=provenance[2], logical_path=provenance[3],
-                classification="active-renderable-v1",
-                active_row_occurrence_keys=tuple(sorted(
-                    row_keys, key=lambda item: (item.casefold(), item)
-                )),
-            )
-            for provenance, row_keys in sorted(
-                grouped.items(),
-                key=lambda item: (
-                    adaptive_metric_occurrence_key(*item[0]).casefold(),
-                    adaptive_metric_occurrence_key(*item[0]),
-                ),
-            )
+        raise ValueError(
+            "state inventory requires explicit trusted metric occurrence authority"
         )
     raw = dict(schema=1, rows=rows, metric_occurrences=tuple(metric_occurrences), complete_source_identities=tuple(complete_source_identities), state_inventory_sha256=_ZERO_HASH, **values)
     provisional = _unsealed(AdaptiveDirectStateInventory, **raw); raw["state_inventory_sha256"] = _pure_seal(adaptive_direct_state_inventory_payload(provisional, include_seal=False)); return AdaptiveDirectStateInventory(**raw)

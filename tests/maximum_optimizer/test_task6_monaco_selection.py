@@ -12,6 +12,7 @@ from unittest import mock
 from maximum_optimizer.candidates import CandidateBuild
 from maximum_optimizer.composite import (
     build_adaptive_candidate_metrics_proof,
+    build_adaptive_direct_metric_occurrence_classification,
     build_adaptive_direct_state_inventory,
     build_adaptive_direct_state_inventory_row,
     build_recovery_source_snapshot,
@@ -30,6 +31,7 @@ from maximum_optimizer.domain import (
     SourceFileProof,
     SourceTreeManifest,
     ValidationResult,
+    adaptive_metric_occurrence_key,
 )
 from maximum_optimizer.monaco_selection import (
     CompiledArtifactProof,
@@ -114,7 +116,10 @@ def _source_snapshot(
 
 def _typed_inputs(spec: CandidateSpec, snapshot):
     source = next(item for item in snapshot.source_manifest.files if item.file_identity == "body.smd")
-    occurrence = AdaptiveGraphOccurrenceProof("main.qc", "$body", 1, "body.smd", "visual")
+    occurrence = AdaptiveGraphOccurrenceProof(
+        "main.qc", "$body", 1, "body.smd", "visual",
+        "active-renderable-v1", ("occ-body-0000",),
+    )
     metric = EligibleAdaptiveSourceProof.create(
         source_identity="body.smd", source_relative_path="body.smd",
         source_size=source.size, source_sha256=source.sha256,
@@ -148,6 +153,17 @@ def _typed_inputs(spec: CandidateSpec, snapshot):
         base_source_manifest_sha256=snapshot.source_manifest.digest,
         base_source_snapshot_sha256=snapshot.snapshot_sha256,
         complete_source_identities=("body.smd",), rows=(row,),
+        metric_occurrences=(
+            build_adaptive_direct_metric_occurrence_classification(
+                metric_occurrence_key=adaptive_metric_occurrence_key(
+                    "main.qc", "$body", 1, "body.smd",
+                ),
+                source_identity="body.smd", graph_relative_path="main.qc",
+                directive="$body", line=1, logical_path="body.smd",
+                classification="active-renderable-v1",
+                active_row_occurrence_keys=("occ-body-0000",),
+            ),
+        ),
     )
     return metrics, inventory
 

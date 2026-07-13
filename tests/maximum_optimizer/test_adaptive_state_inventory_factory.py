@@ -13,10 +13,14 @@ from maximum_optimizer.adaptive_state_inventory import (
     AdaptiveStateSourceDependencies,
     build_production_adaptive_direct_state_inventory,
 )
-from maximum_optimizer.adaptive_metrics_factory import qc_graph_sha256
+from maximum_optimizer.adaptive_metrics_factory import (
+    _qc_state_occurrence_authority,
+    qc_graph_sha256,
+)
 from maximum_optimizer.composite import (
     build_adaptive_candidate_metrics_proof,
     build_adaptive_direct_coverage_manifest,
+    build_adaptive_direct_metric_occurrence_classification,
     build_adaptive_direct_state_inventory,
     build_recovery_source_snapshot,
     build_source_tree_manifest,
@@ -24,7 +28,6 @@ from maximum_optimizer.composite import (
     optimizer_contract_sha256,
 )
 from maximum_optimizer.domain import (
-    AdaptiveGraphOccurrenceProof,
     CandidateSpec,
     EligibleAdaptiveSourceProof,
     FamilyManifest,
@@ -148,16 +151,13 @@ class InventoryFixture:
             item.file_identity: item for item in candidate_manifest.files
             if item.kind == "visual-source"
         }
-        refs_by_identity = {identity: [] for identity in original_files}
-        by_relative = {item.relative_path: item for item in original_files.values()}
-        for ref in self.original_graph.references:
-            if ref.role != "visual":
-                continue
-            proof = by_relative[ref.source_path.relative_to(self.original_root).as_posix()]
-            refs_by_identity[proof.file_identity].append(AdaptiveGraphOccurrenceProof(
-                ref.graph_file.relative_to(self.original_root).as_posix(), ref.directive,
-                ref.line, proof.file_identity, "visual",
-            ))
+        refs_by_identity = _qc_state_occurrence_authority(
+            self.original_graph,
+            {
+                item.relative_path.casefold(): item
+                for item in original_manifest.files
+            },
+        )
         metric_sources = []
         for identity in sorted(original_files):
             source = original_files[identity]; output = candidate_files[identity]
@@ -167,7 +167,7 @@ class InventoryFixture:
                 output_relative_path=output.relative_path, output_size=output.size,
                 output_sha256=output.sha256,
                 eligibility_reason="ratio-preserved-exact-v1",
-                occurrences=tuple(refs_by_identity[identity]),
+                occurrences=refs_by_identity[identity.casefold()],
             ))
         self.metrics = build_adaptive_candidate_metrics_proof(
             family_id=self.manifest.family_id,
@@ -229,6 +229,123 @@ class InventoryFixture:
 
 
 class AdaptiveStateInventoryFactoryTests(unittest.TestCase):
+    @staticmethod
+    def _rebuild_metrics(fixture: InventoryFixture, changed_occurrences):
+        sources = []
+        for metric in fixture.metrics.sources:
+            common = dict(
+                source_identity=metric.source_identity,
+                source_relative_path=metric.source_relative_path,
+                source_size=metric.source_size,
+                source_sha256=metric.source_sha256,
+                output_relative_path=metric.output_relative_path,
+                output_size=metric.output_size,
+                output_sha256=metric.output_sha256,
+                occurrences=tuple(changed_occurrences(metric)),
+            )
+            if metric.kind == "eligible-exact-v1":
+                sources.append(EligibleAdaptiveSourceProof.create(
+                    eligibility_reason=metric.eligibility_reason, **common,
+                ))
+            else:
+                sources.append(IneligibleAdaptiveSourceProof.create(
+                    ineligibility_reason=metric.ineligibility_reason, **common,
+                ))
+        metrics = fixture.metrics
+        return build_adaptive_candidate_metrics_proof(
+            family_id=metrics.family_id,
+            family_input_sha256=metrics.family_input_sha256,
+            candidate_id=metrics.candidate_id,
+            candidate_cache_digest=metrics.candidate_cache_digest,
+            base_spec_sha256=metrics.base_spec_sha256,
+            source_manifest_sha256=metrics.source_manifest_sha256,
+            source_snapshot_sha256=metrics.source_snapshot_sha256,
+            original_graph_sha256=metrics.original_graph_sha256,
+            candidate_graph_sha256=metrics.candidate_graph_sha256,
+            raw_metrics_sha256=metrics.raw_metrics_sha256,
+            sources=tuple(sources),
+        )
+
+    def test_coverage_rejects_resealed_lod_replacement_reclassified_as_selector(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = InventoryFixture(Path(raw))
+            inventory = fixture.build()
+            replacement = next(
+                item for item in inventory.metric_occurrences
+                if item.directive == "$lod/replacemodel"
+                and item.source_identity == "door.smd"
+                and item.classification == "active-renderable-v1"
+            )
+            removed_keys = set(replacement.active_row_occurrence_keys)
+            self.assertEqual(len(removed_keys), 4)
+            forged_classification = build_adaptive_direct_metric_occurrence_classification(
+                metric_occurrence_key=replacement.metric_occurrence_key,
+                source_identity=replacement.source_identity,
+                graph_relative_path=replacement.graph_relative_path,
+                directive=replacement.directive, line=replacement.line,
+                logical_path=replacement.logical_path,
+                classification="lod-original-selector-nonrenderable-v1",
+                active_row_occurrence_keys=(),
+            )
+            forged_inventory = build_adaptive_direct_state_inventory(
+                family_id=inventory.family_id,
+                family_input_sha256=inventory.family_input_sha256,
+                base_candidate_id=inventory.base_candidate_id,
+                base_spec_sha256=inventory.base_spec_sha256,
+                base_cache_digest=inventory.base_cache_digest,
+                base_source_manifest_sha256=inventory.base_source_manifest_sha256,
+                base_source_snapshot_sha256=inventory.base_source_snapshot_sha256,
+                complete_source_identities=inventory.complete_source_identities,
+                rows=tuple(
+                    row for row in inventory.rows
+                    if row.occurrence_key not in removed_keys
+                ),
+                metric_occurrences=tuple(
+                    forged_classification if item == replacement else item
+                    for item in inventory.metric_occurrences
+                ),
+            )
+            with self.assertRaisesRegex(ValueError, "metric|state|classification|row"):
+                build_adaptive_direct_coverage_manifest(
+                    family_id=forged_inventory.family_id,
+                    family_input_sha256=forged_inventory.family_input_sha256,
+                    base_candidate_id=forged_inventory.base_candidate_id,
+                    base_spec_sha256=forged_inventory.base_spec_sha256,
+                    base_cache_digest=forged_inventory.base_cache_digest,
+                    base_source_manifest_sha256=forged_inventory.base_source_manifest_sha256,
+                    base_source_snapshot_sha256=forged_inventory.base_source_snapshot_sha256,
+                    metrics_proof=fixture.metrics,
+                    state_inventory=forged_inventory,
+                )
+            with self.assertRaisesRegex(ValueError, "LOD|pair|selector|metric"):
+                self._rebuild_metrics(
+                    fixture,
+                    lambda metric: (
+                        replace(
+                            item,
+                            qc_state_role="lod-original-selector-nonrenderable-v1",
+                            expected_active_row_occurrence_keys=(),
+                        )
+                        if item.graph_relative_path == replacement.graph_relative_path
+                        and item.directive == replacement.directive
+                        and item.line == replacement.line
+                        and item.logical_path == replacement.logical_path
+                        else item
+                        for item in metric.occurrences
+                    ),
+                )
+            with self.assertRaisesRegex(ValueError, "LOD|pair|line|metric"):
+                self._rebuild_metrics(
+                    fixture,
+                    lambda metric: (
+                        replace(item, line=item.line + 1)
+                        if item.directive == "$lod/replacemodel"
+                        and item.qc_state_role == "active-renderable-v1"
+                        else item
+                        for item in metric.occurrences
+                    ),
+                )
+
     def test_real_lod_fixture_classifies_complete_metrics_and_builds_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = InventoryFixture(Path(raw))
@@ -290,6 +407,15 @@ class AdaptiveStateInventoryFactoryTests(unittest.TestCase):
                     base_source_manifest_sha256=omitted.base_source_manifest_sha256,
                     base_source_snapshot_sha256=omitted.base_source_snapshot_sha256,
                     metrics_proof=fixture.metrics, state_inventory=omitted,
+                )
+            with self.assertRaisesRegex(ValueError, "LOD|pair|selector|metric"):
+                self._rebuild_metrics(
+                    fixture,
+                    lambda metric: (
+                        item for item in metric.occurrences
+                        if item.qc_state_role
+                        != "lod-original-selector-nonrenderable-v1"
+                    ),
                 )
 
     def test_animation_pair_requires_exact_current_snapshot_members_and_roots(self) -> None:
