@@ -3804,8 +3804,15 @@ def main():
     original_dir = out_dir / "original"
     optimized_dir = out_dir / "optimized"
 
+    before_sha256s = [_file_sha256(path) for path in before]
+    after_sha256s = [_file_sha256(path) for path in after]
     before_tris, fit = _render_set("before", before, original_dir, angles, args.size, fit=None)
     after_tris, _ = _render_set("after", after, optimized_dir, angles, args.size, fit=fit)
+    if (
+        before_sha256s != [_file_sha256(path) for path in before]
+        or after_sha256s != [_file_sha256(path) for path in after]
+    ):
+        raise SystemExit("[ERROR] Render input changed while previews were generated.")
 
     before_files = [str(p) for p in before]
     after_files = [str(p) for p in after]
@@ -3815,12 +3822,14 @@ def main():
         "before": {
             "file": before_files[0] if before_files else "",
             "files": before_files,
+            "sha256s": before_sha256s,
             "tris": before_tris,
             "images": {angle: f"original/{angle}.png" for angle in angles},
         },
         "after": {
             "file": after_files[0] if after_files else "",
             "files": after_files,
+            "sha256s": after_sha256s,
             "tris": after_tris,
             "images": {angle: f"optimized/{angle}.png" for angle in angles},
         },

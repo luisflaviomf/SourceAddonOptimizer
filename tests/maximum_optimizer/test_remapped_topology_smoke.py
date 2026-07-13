@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import json
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from benchmarks.lvs_models.smoke_remapped_topology_v1 import (
     CompileResult,
     SmokeCase,
     StudioMdlCompiler,
+    compile_artifact_manifest_sha256,
     pair_compile_results,
     run_smoke_cases,
 )
@@ -90,6 +92,16 @@ class RemappedTopologySmokeTests(unittest.TestCase):
             self.assertEqual(compiled.delta_bytes, 0)
             self.assertEqual(len(compiled.source.artifacts), 4)
             self.assertTrue(all(isinstance(item, CompileArtifact) for item in compiled.source.artifacts))
+            with self.assertRaisesRegex(ValueError, "compile result"):
+                CompileResult(
+                    status="compiled",
+                    returncode=0,
+                    compiled_bytes=compiled.source.compiled_bytes,
+                    artifacts=compiled.source.artifacts,
+                    artifact_sha256="f" * 64,
+                    log_sha256=compiled.source.log_sha256,
+                    input_sha256=compiled.source.input_sha256,
+                )
             newest = max(work.iterdir(), key=lambda item: item.stat().st_mtime_ns)
             self.assertIn(
                 '$sequence "idle" "idle.smd" fps 1',
@@ -99,6 +111,36 @@ class RemappedTopologySmokeTests(unittest.TestCase):
             output.write_text(_fan_source(), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "changed after structural validation"):
                 compiler(case, proof)
+
+    def test_injected_compiler_cannot_omit_expected_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.smd"
+            output = root / "output.smd"
+            source.write_text(_fan_source(), encoding="utf-8")
+            output.write_text(_diagonal_output(), encoding="utf-8")
+            case = SmokeCase("accepted", 0.5, source, output)
+
+            def incomplete(case, proof):
+                artifacts = (
+                    CompileArtifact("maximum/remapped/accepted.mdl", 4, "a" * 64),
+                )
+                side = CompileResult(
+                    status="compiled", returncode=0, compiled_bytes=4,
+                    artifacts=artifacts,
+                    artifact_sha256=compile_artifact_manifest_sha256(artifacts),
+                    log_sha256="b" * 64, input_sha256=proof.source_sha256,
+                )
+                candidate = CompileResult(
+                    status="compiled", returncode=0, compiled_bytes=4,
+                    artifacts=artifacts,
+                    artifact_sha256=compile_artifact_manifest_sha256(artifacts),
+                    log_sha256="b" * 64, input_sha256=proof.output_sha256,
+                )
+                return pair_compile_results(side, candidate)
+
+            with self.assertRaisesRegex(RuntimeError, "artifact set"):
+                run_smoke_cases((case,), compiler=incomplete)
 
     def test_render_evidence_is_hashed_measured_and_stays_unverified(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -120,9 +162,11 @@ class RemappedTopologySmokeTests(unittest.TestCase):
             summary = {
                 "angles": list(angles),
                 "size": 2,
-                "before": {"file": str(source), "files": [str(source)], "tris": 4,
+                "before": {"file": str(source), "files": [str(source)],
+                           "sha256s": [hashlib.sha256(source.read_bytes()).hexdigest()], "tris": 4,
                            "images": {angle: f"original/{angle}.png" for angle in angles}},
-                "after": {"file": str(output), "files": [str(output)], "tris": 2,
+                "after": {"file": str(output), "files": [str(output)],
+                          "sha256s": [hashlib.sha256(output.read_bytes()).hexdigest()], "tris": 2,
                           "images": {angle: f"optimized/{angle}.png" for angle in angles}},
             }
             (render_case / "preview_summary.json").write_text(json.dumps(summary), encoding="utf-8")
@@ -163,15 +207,19 @@ class RemappedTopologySmokeTests(unittest.TestCase):
 
             def compiler(case, proof):
                 calls.append((case.name, proof.proof_sha256))
-                artifact = CompileArtifact(
-                    "maximum/remapped/accepted.mdl", 1234, "c" * 64
+                artifacts = tuple(
+                    CompileArtifact(f"maximum/remapped/accepted{suffix}", size, "c" * 64)
+                    for suffix, size in (
+                        (".mdl", 334), (".vvd", 300),
+                        (".dx80.vtx", 300), (".dx90.vtx", 300),
+                    )
                 )
                 side = CompileResult(
                     status="compiled",
                     returncode=0,
                     compiled_bytes=1234,
-                    artifacts=(artifact,),
-                    artifact_sha256="a" * 64,
+                    artifacts=artifacts,
+                    artifact_sha256=compile_artifact_manifest_sha256(artifacts),
                     log_sha256="b" * 64,
                     input_sha256=proof.source_sha256,
                 )
@@ -179,8 +227,8 @@ class RemappedTopologySmokeTests(unittest.TestCase):
                     status="compiled",
                     returncode=0,
                     compiled_bytes=1234,
-                    artifacts=(artifact,),
-                    artifact_sha256="a" * 64,
+                    artifacts=artifacts,
+                    artifact_sha256=compile_artifact_manifest_sha256(artifacts),
                     log_sha256="b" * 64,
                     input_sha256=proof.output_sha256,
                 )

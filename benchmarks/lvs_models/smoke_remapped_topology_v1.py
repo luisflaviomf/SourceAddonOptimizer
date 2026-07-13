@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 import hashlib
+import io
 import json
 import math
 import os
@@ -120,6 +121,7 @@ class CompileResult:
             or any(not isinstance(item, CompileArtifact) for item in self.artifacts)
             or self.compiled_bytes != sum(item.size for item in self.artifacts)
             or len({item.path for item in self.artifacts}) != len(self.artifacts)
+            or self.artifact_sha256 != compile_artifact_manifest_sha256(self.artifacts)
             or any(
                 type(value) is not str
                 or len(value) != 64
@@ -129,6 +131,16 @@ class CompileResult:
             )
         ):
             raise ValueError("remapped smoke compile result is invalid")
+
+
+def compile_artifact_manifest_sha256(
+    artifacts: tuple[CompileArtifact, ...],
+) -> str:
+    if type(artifacts) is not tuple or any(
+        not isinstance(item, CompileArtifact) for item in artifacts
+    ):
+        raise TypeError("remapped compile artifacts are invalid")
+    return _seal({"artifacts": [asdict(item) for item in artifacts]})
 
 
 @dataclass(frozen=True)
@@ -262,17 +274,18 @@ def _render_evidence(
     size = summary["size"]
     if not 1 <= size <= 4096:
         raise ValueError("remapped smoke render size is invalid")
-    for side, expected_path, expected_triangles, directory in (
-        ("before", case.source, proof.triangles_before, "original"),
-        ("after", case.output, proof.triangles_after, "optimized"),
+    for side, expected_path, expected_sha256, expected_triangles, directory in (
+        ("before", case.source, proof.source_sha256, proof.triangles_before, "original"),
+        ("after", case.output, proof.output_sha256, proof.triangles_after, "optimized"),
     ):
         value = summary[side]
         expected_images = {angle: f"{directory}/{angle}.png" for angle in _ANGLES}
         if (
             type(value) is not dict
-            or set(value) != {"file", "files", "tris", "images"}
+            or set(value) != {"file", "files", "sha256s", "tris", "images"}
             or Path(value["file"]).expanduser().resolve() != expected_path
             or value["files"] != [value["file"]]
+            or value["sha256s"] != [expected_sha256]
             or value["tris"] != expected_triangles
             or value["images"] != expected_images
         ):
@@ -284,10 +297,12 @@ def _render_evidence(
         if source_path.parent != case_root / "original" or candidate_path.parent != case_root / "optimized":
             raise ValueError("remapped smoke render path escaped case root")
         try:
-            with Image.open(source_path) as image:
+            source_png = source_path.read_bytes()
+            candidate_png = candidate_path.read_bytes()
+            with Image.open(io.BytesIO(source_png)) as image:
                 source_image = image.convert("RGB")
                 source_image.load()
-            with Image.open(candidate_path) as image:
+            with Image.open(io.BytesIO(candidate_png)) as image:
                 candidate_image = image.convert("RGB")
                 candidate_image.load()
         except (OSError, ValueError, UnidentifiedImageError) as exc:
@@ -305,8 +320,8 @@ def _render_evidence(
         changed = sum(value > 0 for value in per_pixel)
         view = {
             "angle": angle,
-            "source_sha256": _hash_file(source_path),
-            "candidate_sha256": _hash_file(candidate_path),
+            "source_sha256": _hash(source_png),
+            "candidate_sha256": _hash(candidate_png),
             "changed_pixels": changed,
             "changed_pixel_fraction": changed / len(per_pixel),
             "mean_abs_channel_delta_8bit": channel_total / (len(per_pixel) * 3),
@@ -402,6 +417,17 @@ def run_smoke_cases(
                     or result.candidate.input_sha256 != proof.output_sha256
                 ):
                     raise RuntimeError("remapped compile pair is not bound to structural proof")
+                expected_artifacts = {
+                    f"maximum/remapped/{case.name}.mdl",
+                    f"maximum/remapped/{case.name}.vvd",
+                    f"maximum/remapped/{case.name}.dx80.vtx",
+                    f"maximum/remapped/{case.name}.dx90.vtx",
+                }
+                if result.status == "compiled" and any(
+                    {item.path for item in side.artifacts} != expected_artifacts
+                    for side in (result.source, result.candidate)
+                ):
+                    raise RuntimeError("remapped compile pair artifact set is invalid")
                 compile_payload = asdict(result)
             render_payload = _render_not_run()
             if render_root is not None:
@@ -542,7 +568,7 @@ class StudioMdlCompiler:
             returncode=completed.returncode if completed.returncode != 0 or succeeded else -1,
             compiled_bytes=sum(item.size for item in artifacts),
             artifacts=tuple(artifacts),
-            artifact_sha256=_seal({"artifacts": [asdict(item) for item in artifacts]}),
+            artifact_sha256=compile_artifact_manifest_sha256(tuple(artifacts)),
             log_sha256=_hash(completed.stdout),
             input_sha256=input_sha256,
         )
