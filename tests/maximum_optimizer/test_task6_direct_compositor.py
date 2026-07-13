@@ -66,7 +66,11 @@ def _smd(triangles: int, material: str = "paint") -> bytes:
 
 
 class DirectCompositorFixture:
-    def __init__(self, root: Path, visual_count: int = 2, ratio: float = 0.5) -> None:
+    def __init__(
+        self, root: Path, visual_count: int = 2, ratio: float = 0.5,
+        *, components: tuple[str, ...] = ("component-000",),
+        poses: tuple[str, ...] = ("bind",),
+    ) -> None:
         self.root = root
         self.base_root = root / "base"
         self.base_root.mkdir()
@@ -122,6 +126,7 @@ class DirectCompositorFixture:
         }
         coverage_sources = tuple(coverage_source(
             identity, source_size=proof.size, source_sha256=proof.sha256,
+            components=components, poses=poses,
         ) for identity, proof in sorted(by_identity.items()))
         old_metrics = metrics_for_coverage(coverage_sources)
         old_inventory = inventory_for_coverage(coverage_sources)
