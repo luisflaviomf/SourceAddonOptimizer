@@ -36,7 +36,7 @@ from .smd_contract import (
 
 ProcessRunner = Callable[[Sequence[str | Path], Path, Path, threading.Event], ProcessResult]
 DirectSourceRunner = Callable[
-    [Path, Path, DirectSourceBuildRequest, threading.Event | None], None
+    [Path, Path, DirectSourceBuildRequest, threading.Event | None], object
 ]
 _DIRECT_BYTE_LIMIT = 2 * 1024 ** 3
 
