@@ -253,30 +253,29 @@ class LvsSourcePrepFixture(unittest.TestCase):
         descendant_checks = 0
         replacement: Path | None = None
 
-        def swap_after_last_identity_check(path, *, directory=None):
+        def swap_after_identity_check(path, *, directory=None):
             nonlocal descendant_checks, replacement
             identity = original_identity(path, directory=directory)
             if Path(path).name == "owned.bin":
                 descendant_checks += 1
-                if descendant_checks == 3:
+                if descendant_checks == 2:
                     Path(path).unlink()
                     Path(path).write_bytes(b"foreign")
                     replacement = Path(path)
             return identity
 
         with mock.patch.object(
-            module, "_owned_identity", side_effect=swap_after_last_identity_check
+            module, "_owned_identity", side_effect=swap_after_identity_check
         ):
             preserved = module._quarantine_private_staging(staging, ownership)
 
-        self.assertFalse(
-            replacement is not None and not os.path.lexists(replacement),
-            "a foreign replacement was deleted after its identity check",
-        )
+        self.assertIsNotNone(replacement)
+        self.assertTrue(os.path.lexists(replacement))
+        self.assertEqual(b"foreign", replacement.read_bytes())
         quarantines = tuple(self.root.glob(".owned-staging.cleanup-*"))
         self.assertEqual(1, len(quarantines))
         self.assertEqual(quarantines[0], preserved)
-        self.assertEqual(b"owned", (quarantines[0] / "owned.bin").read_bytes())
+        self.assertEqual(replacement, quarantines[0] / "owned.bin")
 
     def test_ignores_undeclared_regular_input_artifacts_but_publishes_exact_manifest(self):
         first = self.families[0]
