@@ -21,6 +21,7 @@ from maximum_optimizer.composite import (
 from maximum_optimizer.adaptive_direct_evidence import build_adaptive_direct_evidence
 from maximum_optimizer.domain import (
     CandidateSpec, ChangedSourceProof, CompositionProof, DirectDroppedTriangleProof,
+    DirectMaterialTriangleProof,
     ValidationResult,
 )
 from maximum_optimizer.focused_cache import build_final_whole_authorization_evidence
@@ -105,7 +106,12 @@ class MonacoScheduleTests(unittest.TestCase):
             snapshot = build_direct_source_snapshot(
                 request=request, source_root=ratio_root, output_relative_path="output.smd",
                 output_size=len(output), output_sha256=hashlib.sha256(output).hexdigest(),
-                triangles_before=9, triangles_after=5, prefilter=prefilter,
+                triangles_before=9,
+                triangles_after=max(1, int(9 * ratio)),
+                material_triangles=(DirectMaterialTriangleProof(
+                    0, "paint", 9, max(1, int(9 * ratio)), max(1, int(9 * ratio)),
+                ),),
+                prefilter=prefilter,
             )
             requests.append(request); snapshots.append(snapshot)
         return tuple(requests), tuple(snapshots)
@@ -191,6 +197,22 @@ class MonacoScheduleTests(unittest.TestCase):
             result = build_monaco_schedule(
                 base_spec=self.base_spec, coverage=self.coverage, remaining_candidates=1,
                 reserve=lambda *_: "token", access_ratio=lambda _: (requests, snapshots),
+            )
+        self.assertIsInstance(result[0], MonacoFailedReservation)
+
+    def test_schedule_rejects_snapshot_whose_sealed_ratio_matrix_is_bypassed(self) -> None:
+        def unsafe_copy(value, **changes):
+            copied = object.__new__(type(value))
+            for name in value.__dataclass_fields__:
+                object.__setattr__(copied, name, changes.get(name, getattr(value, name)))
+            return copied
+        with tempfile.TemporaryDirectory() as temporary:
+            requests, snapshots = self._ratio_payload(Path(temporary), 0.35)
+            forged = unsafe_copy(snapshots[0], triangles_after=5)
+            result = build_monaco_schedule(
+                base_spec=self.base_spec, coverage=self.coverage,
+                remaining_candidates=1, reserve=lambda *_: "token",
+                access_ratio=lambda _: (requests, (forged, snapshots[1])),
             )
         self.assertIsInstance(result[0], MonacoFailedReservation)
 

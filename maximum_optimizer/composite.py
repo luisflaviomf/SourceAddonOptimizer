@@ -44,6 +44,7 @@ from .domain import (
     direct_candidate_id,
     direct_cache_digest,
     direct_source_request_payload,
+    direct_source_snapshot_from_payload,
     direct_source_snapshot_payload,
     validation_result_payload,
     require_canonical_relative,
@@ -463,6 +464,10 @@ def revalidate_direct_source_snapshot(
 ) -> DirectSourceSnapshot:
     if not isinstance(snapshot, DirectSourceSnapshot):
         raise TypeError("direct source snapshot is invalid")
+    if direct_source_snapshot_from_payload(
+        direct_source_snapshot_payload(snapshot), source_root=snapshot.source_root
+    ) != snapshot:
+        raise ValueError("direct snapshot typed payload is not self-consistent")
     root = Path(os.path.abspath(snapshot.source_root))
     try:
         files = _safe_tree_files(root, cancel_event)

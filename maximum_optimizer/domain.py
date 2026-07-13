@@ -1168,6 +1168,39 @@ def direct_source_request_from_payload(value: object) -> DirectSourceBuildReques
 
 
 @dataclass(frozen=True)
+class DirectMaterialTriangleProof:
+    ordinal: int
+    material: str
+    triangles_before: int
+    target_triangles: int
+    triangles_after: int
+
+    def __post_init__(self) -> None:
+        if type(self.ordinal) is not int or self.ordinal < 0:
+            raise ValueError("direct material ordinal is invalid")
+        _require_text(self.material, "direct material")
+        if "\n" in self.material or "\r" in self.material:
+            raise ValueError("direct material is not one canonical line")
+        if (
+            type(self.triangles_before) is not int or self.triangles_before < 1
+            or type(self.target_triangles) is not int or self.target_triangles < 1
+            or type(self.triangles_after) is not int or self.triangles_after < 1
+            or self.triangles_after > self.target_triangles
+            or self.target_triangles > self.triangles_before
+        ):
+            raise ValueError("direct material triangle totals are invalid")
+
+
+def direct_material_triangle_payload(value: DirectMaterialTriangleProof) -> dict[str, object]:
+    return {
+        "ordinal": value.ordinal, "material": value.material,
+        "triangles_before": value.triangles_before,
+        "target_triangles": value.target_triangles,
+        "triangles_after": value.triangles_after,
+    }
+
+
+@dataclass(frozen=True)
 class DirectSourceSnapshot:
     schema: Literal[1]
     request: DirectSourceBuildRequest
@@ -1179,6 +1212,7 @@ class DirectSourceSnapshot:
     output_sha256: str
     triangles_before: int
     triangles_after: int
+    material_triangles: tuple[DirectMaterialTriangleProof, ...]
     prefilter: DirectPrefilterProof
     fallback_reason: None
     preserved_exact: Literal[False]
@@ -1195,9 +1229,24 @@ class DirectSourceSnapshot:
         if not self.output_relative_path.casefold().endswith(".smd"): raise ValueError("direct output must be an SMD")
         post_prefilter_count = self.request.expected_prefilter.source_triangle_count - self.request.expected_prefilter.dropped_count
         if self.output_sha256 == self.request.source_sha256 or type(self.triangles_before) is not int or type(self.triangles_after) is not int or self.triangles_before != post_prefilter_count or not 0 < self.triangles_after < self.triangles_before: raise ValueError("direct snapshot did not prove strict post-prefilter reduction")
+        materials = tuple(self.material_triangles)
+        if (
+            not materials
+            or any(not isinstance(item, DirectMaterialTriangleProof) for item in materials)
+            or tuple(item.ordinal for item in materials) != tuple(range(len(materials)))
+            or len({item.material.casefold() for item in materials}) != len(materials)
+            or sum(item.triangles_before for item in materials) != self.triangles_before
+            or sum(item.triangles_after for item in materials) != self.triangles_after
+            or any(
+                item.target_triangles != max(1, math.floor(item.triangles_before * self.request.direct_ratio))
+                for item in materials
+            )
+        ):
+            raise ValueError("direct snapshot material ratio evidence is invalid")
         if self.prefilter != self.request.expected_prefilter or self.fallback_reason is not None or self.preserved_exact is not False or self.reason != "approved-direct-position-v1": raise ValueError("direct snapshot result matrix is invalid")
         if _require_sha256(self.snapshot_sha256, "direct snapshot hash") != _seal(direct_source_snapshot_payload(self, include_seal=False)): raise ValueError("direct snapshot seal mismatch")
         object.__setattr__(self, "source_root", root)
+        object.__setattr__(self, "material_triangles", materials)
 
 
 def direct_candidate_id(request: DirectSourceBuildRequest) -> str:
@@ -1211,15 +1260,25 @@ def direct_cache_digest(request: DirectSourceBuildRequest) -> str:
 
 
 def direct_source_snapshot_payload(value: DirectSourceSnapshot, *, include_seal: bool = True) -> dict[str, object]:
-    payload = {"schema": value.schema, "request": direct_source_request_payload(value.request), "direct_candidate_id": value.direct_candidate_id, "direct_cache_digest": value.direct_cache_digest, "output_relative_path": value.output_relative_path, "output_size": value.output_size, "output_sha256": value.output_sha256, "triangles_before": value.triangles_before, "triangles_after": value.triangles_after, "prefilter": direct_prefilter_payload(value.prefilter), "fallback_reason": value.fallback_reason, "preserved_exact": value.preserved_exact, "reason": value.reason}
+    payload = {"schema": value.schema, "request": direct_source_request_payload(value.request), "direct_candidate_id": value.direct_candidate_id, "direct_cache_digest": value.direct_cache_digest, "output_relative_path": value.output_relative_path, "output_size": value.output_size, "output_sha256": value.output_sha256, "triangles_before": value.triangles_before, "triangles_after": value.triangles_after, "material_triangles": [direct_material_triangle_payload(item) for item in value.material_triangles], "prefilter": direct_prefilter_payload(value.prefilter), "fallback_reason": value.fallback_reason, "preserved_exact": value.preserved_exact, "reason": value.reason}
     if include_seal: payload["snapshot_sha256"] = value.snapshot_sha256
     return payload
 
 
 def direct_source_snapshot_from_payload(value: object, *, source_root: Path) -> DirectSourceSnapshot:
-    fields = {"schema", "request", "direct_candidate_id", "direct_cache_digest", "output_relative_path", "output_size", "output_sha256", "triangles_before", "triangles_after", "prefilter", "fallback_reason", "preserved_exact", "reason", "snapshot_sha256"}
-    if type(value) is not dict or set(value) != fields: raise ValueError("direct snapshot payload fields are invalid")
-    copied = dict(value); copied["request"] = direct_source_request_from_payload(copied["request"]); copied["prefilter"] = direct_prefilter_from_payload(copied["prefilter"]); return DirectSourceSnapshot(source_root=source_root, **copied)
+    fields = {"schema", "request", "direct_candidate_id", "direct_cache_digest", "output_relative_path", "output_size", "output_sha256", "triangles_before", "triangles_after", "material_triangles", "prefilter", "fallback_reason", "preserved_exact", "reason", "snapshot_sha256"}
+    if type(value) is not dict or set(value) != fields or type(value["material_triangles"]) is not list: raise ValueError("direct snapshot payload fields are invalid")
+    material_fields = {"ordinal", "material", "triangles_before", "target_triangles", "triangles_after"}
+    materials = []
+    for item in value["material_triangles"]:
+        if type(item) is not dict or set(item) != material_fields:
+            raise ValueError("direct material triangle payload is invalid")
+        materials.append(DirectMaterialTriangleProof(**item))
+    copied = dict(value)
+    copied["request"] = direct_source_request_from_payload(copied["request"])
+    copied["prefilter"] = direct_prefilter_from_payload(copied["prefilter"])
+    copied["material_triangles"] = tuple(materials)
+    return DirectSourceSnapshot(source_root=source_root, **copied)
 
 
 @dataclass(frozen=True)

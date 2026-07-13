@@ -14,7 +14,7 @@ from maximum_optimizer.composite import (
     build_direct_source_snapshot,
     revalidate_direct_source_snapshot,
 )
-from maximum_optimizer.domain import DirectDroppedTriangleProof
+from maximum_optimizer.domain import DirectDroppedTriangleProof, DirectMaterialTriangleProof
 
 
 H = {character: character * 64 for character in "0123456789abcdef"}
@@ -64,7 +64,8 @@ def _snapshot(root: Path, relative: str = "output.smd", content: bytes = b"direc
         output_size=len(content),
         output_sha256=hashlib.sha256(content).hexdigest(),
         triangles_before=9,
-        triangles_after=5,
+        triangles_after=4,
+        material_triangles=(DirectMaterialTriangleProof(0, "paint", 9, 4, 4),),
         prefilter=request.expected_prefilter,
     )
 

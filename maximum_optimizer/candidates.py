@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import threading
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -16,8 +17,8 @@ from typing import Protocol
 from vehicle_steer_turn_basis_fix import apply_under_root
 
 from .domain import (
-    CandidateSpec, DirectDroppedTriangleProof, DirectSourceBuildRequest,
-    DirectSourceSnapshot, FamilyManifest, RecoverySourceSnapshot,
+    CandidateSpec, DirectDroppedTriangleProof, DirectMaterialTriangleProof,
+    DirectSourceBuildRequest, DirectSourceSnapshot, FamilyManifest, RecoverySourceSnapshot,
 )
 from .focused_cache import (
     _copy_file_no_follow, _file_proof, _has_reparse_ancestor,
@@ -137,6 +138,15 @@ def _remove_owned_direct_tree_no_follow(root: Path) -> None:
     remove(root)
 
 
+def _quarantine_and_remove_owned_direct_tree(workspace: Path) -> None:
+    """Atomically detach the owned name before any cleanup traversal."""
+    quarantine = workspace.with_name(
+        f".{workspace.name}.direct-cleanup-{uuid.uuid4().hex}"
+    )
+    os.replace(workspace, quarantine)
+    _remove_owned_direct_tree_no_follow(quarantine)
+
+
 def _direct_prefilter_proof(text: str):
     evidence = prefilter_direct_degenerate_smd(text).evidence
     triangles = tuple(DirectDroppedTriangleProof(
@@ -166,7 +176,7 @@ def _require_exact_triangles_eof(text: str, parsed) -> None:
 
 def _validate_direct_smd_output(
     filtered_text: str, output_text: str, direct_ratio: float,
-) -> tuple[int, int]:
+) -> tuple[int, int, tuple[DirectMaterialTriangleProof, ...]]:
     if _direct_prefix(filtered_text) != _direct_prefix(output_text):
         raise RuntimeError("direct output changed nodes or skeleton frames")
     source = parse_smd_triangles(filtered_text)
@@ -220,7 +230,14 @@ def _validate_direct_smd_output(
         )
         if sum(value * value for value in cross) <= 1e-30:
             raise RuntimeError("direct output contains degenerate retained topology")
-    return len(source.triangles), len(output.triangles)
+    material_proofs = tuple(
+        DirectMaterialTriangleProof(
+            ordinal, material, source_counts[material], targets[material],
+            output_counts[material],
+        )
+        for ordinal, material in enumerate(source_material_order)
+    )
+    return len(source.triangles), len(output.triangles), material_proofs
 
 
 def build_direct_source_snapshot(
@@ -301,7 +318,7 @@ def build_direct_source_snapshot(
             output_text = output_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError("direct output SMD is not UTF-8") from exc
-        triangles_before, triangles_after = _validate_direct_smd_output(
+        triangles_before, triangles_after, material_triangles = _validate_direct_smd_output(
             prefilter.filtered_text, output_text, request.direct_ratio,
         )
         exact_input.unlink(); filtered_path.unlink()
@@ -309,11 +326,12 @@ def build_direct_source_snapshot(
             request=request, source_root=workspace, output_relative_path="output.smd",
             output_size=len(output_bytes), output_sha256=hashlib.sha256(output_bytes).hexdigest(),
             triangles_before=triangles_before, triangles_after=triangles_after,
+            material_triangles=material_triangles,
             prefilter=computed_prefilter, cancel_event=cancel_event,
         )
     except BaseException:
-        if created:
-            _remove_owned_direct_tree_no_follow(workspace)
+        if created and (workspace.exists() or workspace.is_symlink()):
+            _quarantine_and_remove_owned_direct_tree(workspace)
         raise
 
 

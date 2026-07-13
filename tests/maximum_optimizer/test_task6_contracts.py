@@ -28,6 +28,7 @@ from maximum_optimizer.domain import (
     AdaptiveGraphOccurrenceProof,
     CompositionProof,
     DirectDroppedTriangleProof,
+    DirectMaterialTriangleProof,
     EligibleAdaptiveSourceProof,
     IneligibleAdaptiveSourceProof,
     GateFailure,
@@ -429,13 +430,20 @@ class DirectContracts(unittest.TestCase):
                 request=request, source_root=Path(root).resolve(),
                 output_relative_path="output.smd", output_size=len(output),
                 output_sha256=hashlib.sha256(output).hexdigest(),
-                triangles_before=9, triangles_after=5, prefilter=request.expected_prefilter,
+                triangles_before=9, triangles_after=4,
+                material_triangles=(DirectMaterialTriangleProof(0, "paint", 9, 4, 4),),
+                prefilter=request.expected_prefilter,
             )
             self.assertEqual(snapshot.triangles_before, 10 - request.expected_prefilter.dropped_count)
             self.assertTrue(snapshot.direct_candidate_id.startswith("direct-source-"))
             self.assertEqual(len(snapshot.direct_cache_digest), 64)
             payload = direct_source_snapshot_payload(snapshot)
             self.assertEqual(direct_source_snapshot_from_payload(payload, source_root=Path(root).resolve()), snapshot)
+            for field in payload["material_triangles"][0]:
+                changed = direct_source_snapshot_payload(snapshot)
+                changed["material_triangles"][0][field] = None
+                with self.subTest(material_triangle_field=field), self.assertRaises((TypeError, ValueError)):
+                    direct_source_snapshot_from_payload(changed, source_root=Path(root).resolve())
             assert_every_field_rejected(
                 self, lambda item: direct_source_snapshot_from_payload(item, source_root=Path(root).resolve()), payload,
             )

@@ -11,6 +11,7 @@ from maximum_optimizer.candidates import (
     DirectSourceTools, _direct_prefilter_proof, _validate_direct_smd_output,
     build_direct_source_snapshot,
 )
+from maximum_optimizer import candidates as candidates_module
 from maximum_optimizer.composite import build_direct_source_request
 from maximum_optimizer.processes import ProcessCancelledError
 from maximum_optimizer.smd_contract import prefilter_direct_degenerate_smd
@@ -95,7 +96,9 @@ class DirectSourceBuilderTests(unittest.TestCase):
         glass = [record("glass", i + 10) for i in range(2)]
         source = prefix + "".join(metal + glass) + "end\n"
         output = prefix + "".join(metal[:2] + glass[:1]) + "end\n"
-        self.assertEqual(_validate_direct_smd_output(source, output, 0.5), (6, 3))
+        before, after, materials = _validate_direct_smd_output(source, output, 0.5)
+        self.assertEqual((before, after), (6, 3))
+        self.assertEqual(tuple(item.target_triangles for item in materials), (2, 1))
 
     def test_winding_provenance_is_independent_of_corner_normals(self) -> None:
         lines = prefilter_direct_degenerate_smd(self.text).filtered_text.splitlines(keepends=True)
@@ -110,7 +113,7 @@ class DirectSourceBuilderTests(unittest.TestCase):
                 tokens[6] = "-1"
                 lines[index] = " ".join(tokens) + "\n"
         negative = "".join(lines)
-        self.assertEqual(_validate_direct_smd_output(negative, _first_triangle(negative), 0.5), (2, 1))
+        self.assertEqual(_validate_direct_smd_output(negative, _first_triangle(negative), 0.5)[:2], (2, 1))
         with self.assertRaisesRegex(RuntimeError, "cycle or winding"):
             _validate_direct_smd_output(negative, _reverse_first(negative), 0.5)
 
@@ -191,6 +194,28 @@ class DirectSourceBuilderTests(unittest.TestCase):
                     self.request, workspace, DirectSourceTools(self.source_root, runner), event
                 )
             self.assertFalse(workspace.exists())
+
+    def test_failure_atomically_quarantines_workspace_before_cleanup_traversal(self) -> None:
+        workspace = self.root / "quarantine-me"
+        real_cleanup = candidates_module._remove_owned_direct_tree_no_follow
+        observed = []
+        def cleanup(quarantine):
+            observed.append(quarantine)
+            self.assertNotEqual(quarantine, workspace)
+            self.assertFalse(workspace.exists())
+            self.assertEqual(quarantine.parent, workspace.parent)
+            real_cleanup(quarantine)
+        def runner(*_args):
+            raise RuntimeError("runner failed")
+        with mock.patch(
+            "maximum_optimizer.candidates._remove_owned_direct_tree_no_follow",
+            side_effect=cleanup,
+        ), self.assertRaisesRegex(RuntimeError, "runner failed"):
+            build_direct_source_snapshot(
+                self.request, workspace, DirectSourceTools(self.source_root, runner), None
+            )
+        self.assertEqual(len(observed), 1)
+        self.assertFalse(observed[0].exists())
 
     def test_rejects_prefilter_only_extra_output_and_attribute_mutation_without_snapshot(self) -> None:
         variants = {
