@@ -298,7 +298,7 @@ class MonacoBaseSelectionTests(unittest.TestCase):
 
 
 class ExactFallbackSelectionTests(unittest.TestCase):
-    def test_zero_eligible_fake_output_hash_rejects_against_retained_candidate(self) -> None:
+    def test_zero_eligible_forged_metric_rejects_purely_without_snapshot_io(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             evaluation, build, proof = _retained(root)
@@ -306,9 +306,9 @@ class ExactFallbackSelectionTests(unittest.TestCase):
             forged_source = IneligibleAdaptiveSourceProof.create(
                 source_identity=source.source_identity,
                 source_relative_path=source.source_relative_path,
-                source_size=source.source_size, source_sha256=source.source_sha256,
+                source_size=source.source_size, source_sha256="f" * 64,
                 output_relative_path=source.output_relative_path,
-                output_size=source.output_size, output_sha256="f" * 64,
+                output_size=source.output_size, output_sha256=source.output_sha256,
                 occurrences=source.occurrences,
                 ineligibility_reason="adaptive-output-changed-v1",
             )
@@ -325,11 +325,26 @@ class ExactFallbackSelectionTests(unittest.TestCase):
                 raw_metrics_sha256=proof.metrics.raw_metrics_sha256,
                 sources=(forged_source,),
             )
-            with self.assertRaises(ValueError):
-                build_retained_monaco_base_proof(
-                    evaluation, build, forged_metrics, proof.state_inventory,
-                    proof.focused_evidence,
-                )
+            forged_proof = build_retained_monaco_base_proof(
+                evaluation, build, forged_metrics, proof.state_inventory,
+                proof.focused_evidence,
+            )
+            original_root = root / "zero-original"
+            original_root.mkdir()
+            original = _source_snapshot(original_root, None, output=False)
+            with mock.patch(
+                "maximum_optimizer.monaco_selection._validate_retained",
+                side_effect=AssertionError("current retained tree opened"),
+            ) as current_io, mock.patch(
+                "maximum_optimizer.monaco_selection.revalidate_recovery_snapshot",
+                side_effect=AssertionError("original snapshot opened"),
+            ) as original_io:
+                with self.assertRaises(ValueError):
+                    select_exact_fallback_sources(
+                        forged_proof, forged_metrics, proof.state_inventory, original,
+                    )
+            current_io.assert_not_called()
+            original_io.assert_not_called()
 
     def test_uses_exact_original_and_current_base_snapshots(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

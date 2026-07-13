@@ -315,39 +315,28 @@ class ExactFallbackSelection:
             raise ValueError("Monaco fallback selection differs from coverage")
 
 
-def select_exact_fallback_sources(
+def _validate_fallback_authority_pure(
     base_proof: RetainedMonacoBaseProof,
     metrics: AdaptiveCandidateMetricsProof,
     state_inventory: AdaptiveDirectStateInventory,
     original_snapshot: RecoverySourceSnapshot,
-    *,
-    coverage_factory: Callable[..., AdaptiveDirectCoverageManifest] = build_adaptive_direct_coverage_manifest,
-    reservation_callback: Callable[..., object] | None = None,
-    direct_io_callback: Callable[..., object] | None = None,
-    cancel_event: threading.Event | None = None,
-) -> ExactFallbackSelection | None:
-    _ = reservation_callback, direct_io_callback
-    eligible = tuple(item for item in metrics.sources if item.kind == "eligible-exact-v1")
-    if len(eligible) > 8:
-        raise ValueError("Monaco exact fallback exceeds eight eligible sources")
-    if not isinstance(base_proof, RetainedMonacoBaseProof):
-        raise TypeError("Monaco retained base proof is invalid")
-    if metrics != base_proof.metrics or state_inventory != base_proof.state_inventory:
-        raise ValueError("Monaco fallback inputs differ from retained proof")
-    if not isinstance(original_snapshot, RecoverySourceSnapshot) or original_snapshot.kind != "original":
-        raise TypeError("Monaco original recovery snapshot is invalid")
-    _validate_retained(base_proof, base_proof.evaluation, cancel_event)
-    revalidate_recovery_snapshot(original_snapshot, cancel_event)
+) -> None:
     candidate_snapshot = base_proof.build.source_snapshot
+    if not isinstance(candidate_snapshot, RecoverySourceSnapshot) or candidate_snapshot.kind != "candidate":
+        raise ValueError("Monaco retained candidate snapshot is invalid")
     if (
-        original_snapshot.family_id != candidate_snapshot.family_id
+        metrics != base_proof.metrics
+        or state_inventory != base_proof.state_inventory
+        or metrics.source_manifest_sha256 != candidate_snapshot.source_manifest.digest
+        or metrics.source_snapshot_sha256 != candidate_snapshot.snapshot_sha256
+        or original_snapshot.family_id != candidate_snapshot.family_id
         or original_snapshot.family_input_sha256 != candidate_snapshot.family_input_sha256
         or original_snapshot.optimizer_contract_sha256 != candidate_snapshot.optimizer_contract_sha256
         or original_snapshot.whole_profile_sha256 != candidate_snapshot.whole_profile_sha256
         or original_snapshot.focused_profile_sha256 != candidate_snapshot.focused_profile_sha256
         or original_snapshot.dependency_proof_sha256 != candidate_snapshot.dependency_proof_sha256
     ):
-        raise ValueError("Monaco original and base snapshot contracts differ")
+        raise ValueError("Monaco fallback sealed authority bindings differ")
     original = {item.file_identity: item for item in original_snapshot.source_manifest.files}
     current = {item.file_identity: item for item in candidate_snapshot.source_manifest.files}
     metric_identities = tuple(item.source_identity for item in metrics.sources)
@@ -367,8 +356,36 @@ def select_exact_fallback_sources(
             or (output.size, output.sha256) != (item.output_size, item.output_sha256)
         ):
             raise ValueError("Monaco exact fallback source path or bytes are stale")
+
+
+def select_exact_fallback_sources(
+    base_proof: RetainedMonacoBaseProof,
+    metrics: AdaptiveCandidateMetricsProof,
+    state_inventory: AdaptiveDirectStateInventory,
+    original_snapshot: RecoverySourceSnapshot,
+    *,
+    coverage_factory: Callable[..., AdaptiveDirectCoverageManifest] = build_adaptive_direct_coverage_manifest,
+    reservation_callback: Callable[..., object] | None = None,
+    direct_io_callback: Callable[..., object] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> ExactFallbackSelection | None:
+    _ = reservation_callback, direct_io_callback
+    eligible = tuple(item for item in metrics.sources if item.kind == "eligible-exact-v1")
+    if len(eligible) > 8:
+        raise ValueError("Monaco exact fallback exceeds eight eligible sources")
+    if not isinstance(base_proof, RetainedMonacoBaseProof):
+        raise TypeError("Monaco retained base proof is invalid")
+    if not isinstance(original_snapshot, RecoverySourceSnapshot) or original_snapshot.kind != "original":
+        raise TypeError("Monaco original recovery snapshot is invalid")
+    _validate_fallback_authority_pure(
+        base_proof, metrics, state_inventory, original_snapshot,
+    )
     if not eligible:
         return None
+    _validate_retained(base_proof, base_proof.evaluation, cancel_event)
+    revalidate_recovery_snapshot(original_snapshot, cancel_event)
+    candidate_snapshot = base_proof.build.source_snapshot
+    metric_identities = tuple(item.source_identity for item in metrics.sources)
     coverage = coverage_factory(
         metrics_proof=metrics, state_inventory=state_inventory,
         family_id=state_inventory.family_id,
