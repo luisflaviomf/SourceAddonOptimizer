@@ -2,6 +2,7 @@
 # Render before/after previews for a single model using Blender (headless).
 
 import argparse
+import importlib
 import hashlib
 import json
 import math
@@ -2418,11 +2419,9 @@ def _set_camera_pose(cam_obj, center: Vector, direction: Vector, dist: float):
 def _import_source(path: Path):
     ext = path.suffix.lower()
     if ext == ".smd" and hasattr(bpy.ops.import_scene, "smd"):
-        bpy.ops.import_scene.smd(filepath=str(path))
-        return
+        return bpy.ops.import_scene.smd(filepath=str(path))
     if ext == ".dmx" and hasattr(bpy.ops.import_scene, "dmx"):
-        bpy.ops.import_scene.dmx(filepath=str(path))
-        return
+        return bpy.ops.import_scene.dmx(filepath=str(path))
     raise RuntimeError(
         "Importador SMD/DMX nao encontrado. Verifique se o Blender Source Tools esta habilitado."
     )
@@ -2623,6 +2622,60 @@ def _aggregate_triangle_regions(regions) -> dict:
     })
 
 
+_ANIMATION_TOOLCHAIN_PROOF = None
+
+
+def _bounded_file_proof(path: Path, *, max_bytes: int) -> dict:
+    path = Path(path).resolve(strict=True)
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+        raise RuntimeError("representative-animation-unavailable: tool/input file cap differs")
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            size += len(block)
+            if size > max_bytes:
+                raise RuntimeError("representative-animation-unavailable: tool/input byte cap exceeded")
+            digest.update(block)
+    after = path.lstat()
+    if (
+        size != before.st_size
+        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    ):
+        raise RuntimeError("representative-animation-unavailable: tool/input changed while hashed")
+    return {"path": str(path), "size": size, "sha256": digest.hexdigest()}
+
+
+def _animation_toolchain_proof() -> dict:
+    global _ANIMATION_TOOLCHAIN_PROOF
+    if _ANIMATION_TOOLCHAIN_PROOF is not None:
+        return dict(_ANIMATION_TOOLCHAIN_PROOF)
+    blender_path = Path(getattr(bpy.app, "binary_path", ""))
+    modules = tuple(importlib.import_module(name) for name in (
+        "io_scene_valvesource.import_smd", "io_scene_valvesource.utils",
+    ))
+    files = [
+        _bounded_file_proof(blender_path, max_bytes=1024 * 1024 * 1024),
+        *(
+            _bounded_file_proof(Path(module.__file__), max_bytes=32 * 1024 * 1024)
+            for module in modules
+        ),
+    ]
+    unsigned = {
+        "blender_version": list(bpy.app.version),
+        "files": files,
+        "kind": "blender5-source-tools-action-runtime-v1",
+    }
+    proof = dict(unsigned)
+    proof["toolchain_sha256"] = hashlib.sha256(
+        _canonical_json(unsigned).encode("utf-8")
+    ).hexdigest()
+    _ANIMATION_TOOLCHAIN_PROOF = proof
+    return dict(proof)
+
+
 def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
     armatures = tuple(obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE")
     if len(armatures) != 1:
@@ -2630,21 +2683,166 @@ def _apply_animation_source(path: Path, poses: tuple[tuple[str, int], ...]):
             f"representative-animation-unavailable: expected one armature, found {len(armatures)}"
         )
     armature = armatures[0]
+    try:
+        resolved_source = path.resolve(strict=True)
+        before_source = resolved_source.lstat()
+        if not stat.S_ISREG(before_source.st_mode) or before_source.st_size > 256 * 1024 * 1024:
+            raise RuntimeError("representative-animation-unavailable: exact source byte cap exceeded")
+        source_bytes = resolved_source.read_bytes()
+        after_source = resolved_source.lstat()
+        if (
+            len(source_bytes) != before_source.st_size
+            or (before_source.st_dev, before_source.st_ino, before_source.st_size, before_source.st_mtime_ns)
+            != (after_source.st_dev, after_source.st_ino, after_source.st_size, after_source.st_mtime_ns)
+        ):
+            raise RuntimeError("representative-animation-unavailable: exact source changed while read")
+        source_text = source_bytes.decode("utf-8", errors="strict")
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError("representative-animation-unavailable: exact source is unreadable") from exc
+    node_pattern = re.compile(r'^\s*(-?\d+)\s+"([^"]+)"\s+(-?\d+)\s*$')
+    time_pattern = re.compile(r"^\s*time\s+(-?\d+)\s*$", re.IGNORECASE)
+    section = None
+    source_bones = {}
+    source_parents = {}
+    source_times = []
+    for line in source_text.splitlines():
+        folded = line.strip().casefold()
+        if folded in {"nodes", "skeleton"}:
+            section = folded
+            continue
+        if folded == "end":
+            section = None
+            continue
+        if section == "nodes":
+            match = node_pattern.fullmatch(line)
+            if match is not None:
+                source_bones[int(match.group(1))] = match.group(2)
+                source_parents[int(match.group(1))] = int(match.group(3))
+        elif section == "skeleton":
+            match = time_pattern.fullmatch(line)
+            if match is not None:
+                source_times.append(int(match.group(1)))
+    if (
+        not source_bones or not source_times
+        or len(source_bones) > 4096 or len(source_times) > 4096
+        or len(set(source_times)) != len(source_times)
+        or any(parent != -1 and parent not in source_bones for parent in source_parents.values())
+    ):
+        raise RuntimeError("representative-animation-unavailable: exact source contract is invalid")
+    requested_frames = tuple(frame for name, frame in poses if name != "bind")
+    if any(frame < 0 or frame >= len(source_times) for frame in requested_frames):
+        raise RuntimeError("representative-animation-unavailable: pose ordinal is outside exact source")
+    actions = getattr(bpy.data, "actions", ())
+    prior_actions = tuple(actions)
+    if len(prior_actions) > 32:
+        raise RuntimeError("representative-animation-unavailable: stale action cap exceeded")
+    if getattr(armature, "animation_data", None) is not None:
+        armature.animation_data.action = None
+        if hasattr(armature.animation_data, "action_slot"):
+            armature.animation_data.action_slot = None
+    for stale in prior_actions:
+        actions.remove(stale, do_unlink=True)
     for obj in bpy.context.scene.objects:
         obj.select_set(False)
     armature.select_set(True)
     bpy.context.view_layer.objects.active = armature
-    _import_source(path)
+    import_result = _import_source(path)
+    if import_result != {"FINISHED"}:
+        raise RuntimeError("representative-animation-unavailable: Source Tools import did not finish")
+    final_source = resolved_source.lstat()
+    if (
+        (before_source.st_dev, before_source.st_ino, before_source.st_size, before_source.st_mtime_ns)
+        != (final_source.st_dev, final_source.st_ino, final_source.st_size, final_source.st_mtime_ns)
+    ):
+        raise RuntimeError("representative-animation-unavailable: exact source changed after import")
     armatures_after = tuple(obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE")
     if len(armatures_after) != 1 or armatures_after[0] is not armature:
         raise RuntimeError("representative-animation-unavailable: animation import is ambiguous")
     action = getattr(getattr(armature, "animation_data", None), "action", None)
-    if action is None:
-        raise RuntimeError("representative-animation-unavailable: no action was assigned")
-    start, end = (float(value) for value in action.frame_range)
-    if any(frame < start or frame > end for name, frame in poses if name != "bind"):
-        raise RuntimeError("representative-animation-unavailable: pose is outside action frame range")
-    return armature, action
+    current_actions = tuple(actions)
+    if action is None or len(current_actions) != 1 or current_actions[0] is not action:
+        raise RuntimeError("representative-animation-unavailable: exactly one new action was not assigned")
+    slot = getattr(armature.animation_data, "action_slot", None)
+    slots = tuple(getattr(action, "slots", ()))
+    if slot is None or slot not in slots:
+        raise RuntimeError("representative-animation-unavailable: active Blender5 action slot differs")
+    slot_name = str(getattr(slot, "name_display", getattr(slot, "name", "")))
+    if slot_name.casefold() != path.stem.casefold():
+        raise RuntimeError("representative-animation-unavailable: action slot stem differs")
+    if getattr(slot, "target_id_type", "OBJECT") != "OBJECT":
+        raise RuntimeError("representative-animation-unavailable: action slot target differs")
+    source_lineage = {
+        name: None if source_parents[bone] == -1 else source_bones[source_parents[bone]]
+        for bone, name in source_bones.items()
+    }
+    armature_bones = tuple(getattr(armature.data, "bones", ()))
+    if len({bone.name for bone in armature_bones}) != len(armature_bones):
+        raise RuntimeError("representative-animation-unavailable: armature bone names are duplicated")
+    armature_lineage = {
+        bone.name: None if getattr(bone, "parent", None) is None else bone.parent.name
+        for bone in armature_bones
+    }
+    if armature_lineage != source_lineage:
+        raise RuntimeError("representative-animation-unavailable: armature/source bone lineage differs")
+    channelbags = []
+    for layer in tuple(getattr(action, "layers", ())):
+        for strip in tuple(getattr(layer, "strips", ())):
+            resolver = getattr(strip, "channelbag", None)
+            bag = resolver(slot) if callable(resolver) else None
+            if bag is not None:
+                channelbags.append(bag)
+            else:
+                channelbags.extend(
+                    item for item in tuple(getattr(strip, "channelbags", ()))
+                    if getattr(item, "slot", None) is slot
+                )
+    if len(channelbags) != 1:
+        raise RuntimeError("representative-animation-unavailable: active slot channelbag differs")
+    fcurves = tuple(getattr(channelbags[0], "fcurves", ()))
+    if not fcurves or len(fcurves) > 100_000:
+        raise RuntimeError("representative-animation-unavailable: active slot fcurve inventory differs")
+    armature_bone_names = {bone.name for bone in tuple(getattr(armature.pose, "bones", ())) }
+    bone_path = re.compile(r'^pose\.bones\["([^"]+)"\]\.(location|rotation_euler|rotation_quaternion|scale)$')
+    curve_inventory = []
+    keyed_frames = set()
+    for curve in fcurves:
+        match = bone_path.fullmatch(str(getattr(curve, "data_path", "")))
+        if match is None or match.group(1) not in armature_bone_names or match.group(1) not in set(source_bones.values()):
+            raise RuntimeError("representative-animation-unavailable: active slot bone channel differs")
+        points = []
+        for keyframe in tuple(getattr(curve, "keyframe_points", ())):
+            co = tuple(float(value) for value in keyframe.co)
+            if len(co) != 2 or any(not math.isfinite(value) for value in co):
+                raise RuntimeError("representative-animation-unavailable: non-finite action keyframe")
+            frame = co[0]
+            if frame != int(frame) or not 0 <= int(frame) < len(source_times):
+                raise RuntimeError("representative-animation-unavailable: action keyframe ordinal differs")
+            keyed_frames.add(int(frame))
+            points.append([frame, co[1]])
+        if not points:
+            raise RuntimeError("representative-animation-unavailable: empty active slot fcurve")
+        curve_inventory.append({
+            "array_index": int(curve.array_index),
+            "data_path": str(curve.data_path),
+            "keyframes": points,
+        })
+    if any(frame not in keyed_frames for frame in requested_frames):
+        raise RuntimeError("representative-animation-unavailable: requested action ordinal has no key")
+    curve_inventory.sort(key=lambda item: (item["data_path"], item["array_index"]))
+    unsigned = {
+        "animation_input_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "bone_lineage": [
+            {"id": bone, "name": source_bones[bone], "parent": source_parents[bone]}
+            for bone in sorted(source_bones)
+        ],
+        "curves": curve_inventory,
+        "slot_name": slot_name,
+        "source_times": source_times,
+        "toolchain": _animation_toolchain_proof(),
+    }
+    proof = dict(unsigned)
+    proof["action_sha256"] = hashlib.sha256(_canonical_json(unsigned).encode("utf-8")).hexdigest()
+    return armature, action, slot, proof
 
 
 def _set_pose_state(
@@ -2658,13 +2856,162 @@ def _set_pose_state(
     scene = scene or bpy.context.scene
     view_layer = view_layer or bpy.context.view_layer
     if animation_binding is not None:
-        armature, action = animation_binding
+        armature, action, slot, _proof = animation_binding
         is_bind = pose_name == "bind"
-        armature.animation_data.action = None if is_bind else action
+        if is_bind:
+            armature.animation_data.action_slot = None
+            armature.animation_data.action = None
+        else:
+            armature.animation_data.action = action
+            armature.animation_data.action_slot = slot
         armature.data.pose_position = "REST" if is_bind else "POSE"
         armature.update_tag(refresh={"DATA"})
     scene.frame_set(frame)
     view_layer.update()
+
+
+def _validate_region_pose_influence(render_objs, armature, selected_bone: str) -> None:
+    bones = tuple(getattr(armature.data, "bones", ()))
+    selected = next((bone for bone in bones if bone.name == selected_bone), None)
+    if selected is None:
+        raise ValueError("selected pose bone is absent from armature lineage")
+    influenced_names = set()
+    for bone in bones:
+        cursor = bone
+        visited = set()
+        while cursor is not None and id(cursor) not in visited:
+            if cursor is selected:
+                influenced_names.add(bone.name)
+                break
+            visited.add(id(cursor))
+            cursor = getattr(cursor, "parent", None)
+    for obj in render_objs:
+        groups = {index: group.name for index, group in enumerate(tuple(obj.vertex_groups))}
+        for vertex in tuple(obj.data.vertices):
+            for link in tuple(vertex.groups):
+                if (
+                    math.isfinite(float(link.weight)) and float(link.weight) > 0.0
+                    and groups.get(int(link.group)) in influenced_names
+                ):
+                    return
+    raise ValueError("focused region is not influenced by selected bone or descendants")
+
+
+def _normalized_evaluated_vertex_snapshot(snapshot, *, label: str):
+    if type(snapshot) is not tuple or not snapshot:
+        raise ValueError(f"evaluated region {label} snapshot is empty or untyped")
+    normalized = []
+    seen = set()
+    for identity, vertices in snapshot:
+        if type(identity) is not str or not identity or identity in seen:
+            raise ValueError(f"evaluated region {label} object identity is invalid")
+        if type(vertices) is not tuple or not vertices:
+            raise ValueError(f"evaluated region {label} vertex inventory is empty")
+        seen.add(identity)
+        points = []
+        for point in vertices:
+            if type(point) is not tuple or len(point) != 3:
+                raise ValueError(f"evaluated region {label} vertex is invalid")
+            values = tuple(float(component) for component in point)
+            if any(not math.isfinite(component) for component in values):
+                raise ValueError(f"evaluated region {label} vertex is non-finite")
+            points.append(values)
+        normalized.append((identity, tuple(points)))
+    if tuple(identity for identity, _points in normalized) != tuple(sorted(seen)):
+        raise ValueError(f"evaluated region {label} object order is not canonical")
+    return tuple(normalized)
+
+
+def _evaluated_vertex_snapshot_hash(snapshot) -> str:
+    payload = [
+        {
+            "identity": identity,
+            "vertices": [[component.hex() for component in point] for point in vertices],
+        }
+        for identity, vertices in snapshot
+    ]
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _build_evaluated_region_pose_proof(
+    bind_first,
+    posed_first,
+    bind_repeat,
+    posed_repeat,
+    *,
+    action_proof: dict,
+    frame: int,
+    source_time: int,
+    selected_bone: str,
+    influenced_bones: tuple[str, ...],
+) -> dict:
+    """Seal exact Blender REST-to-Action evaluated vertex displacement."""
+
+    snapshots = tuple(
+        _normalized_evaluated_vertex_snapshot(value, label=label)
+        for label, value in (
+            ("bind-first", bind_first), ("posed-first", posed_first),
+            ("bind-repeat", bind_repeat), ("posed-repeat", posed_repeat),
+        )
+    )
+    bind, posed, repeated_bind, repeated_pose = snapshots
+    if bind != repeated_bind or posed != repeated_pose:
+        raise ValueError("evaluated region pose repeat differs")
+    bind_topology = tuple((identity, len(vertices)) for identity, vertices in bind)
+    posed_topology = tuple((identity, len(vertices)) for identity, vertices in posed)
+    if bind_topology != posed_topology:
+        raise ValueError("evaluated region pose topology differs")
+    if (
+        type(action_proof) is not dict
+        or re.fullmatch(r"[0-9a-f]{64}", action_proof.get("action_sha256", "")) is None
+        or re.fullmatch(r"[0-9a-f]{64}", action_proof.get("animation_input_sha256", "")) is None
+        or type(action_proof.get("toolchain")) is not dict
+        or re.fullmatch(
+            r"[0-9a-f]{64}", action_proof["toolchain"].get("toolchain_sha256", "")
+        ) is None
+        or type(frame) is not int or frame < 0
+        or type(source_time) is not int
+        or type(selected_bone) is not str or not selected_bone
+        or type(influenced_bones) is not tuple or not influenced_bones
+        or any(type(name) is not str or not name for name in influenced_bones)
+        or tuple(sorted(set(influenced_bones), key=lambda name: (name.casefold(), name)))
+        != influenced_bones
+        or selected_bone not in influenced_bones
+    ):
+        raise ValueError("evaluated region pose authority is invalid")
+    squared = []
+    for (_bind_identity, bind_vertices), (_pose_identity, posed_vertices) in zip(bind, posed):
+        for rest, animated in zip(bind_vertices, posed_vertices):
+            value = sum((animated[axis] - rest[axis]) ** 2 for axis in range(3))
+            if not math.isfinite(value):
+                raise ValueError("evaluated region pose displacement is non-finite")
+            squared.append(value)
+    if not squared:
+        raise ValueError("evaluated region pose has no vertices")
+    unsigned = {
+        "action_sha256": action_proof["action_sha256"],
+        "animation_input_sha256": action_proof["animation_input_sha256"],
+        "baseline": "armature-rest",
+        "bind_geometry_sha256": _evaluated_vertex_snapshot_hash(bind),
+        "candidate_inputs_consulted": False,
+        "corrective_used_as_baseline": False,
+        "frame": frame,
+        "influenced_bones": list(influenced_bones),
+        "kind": "blender-evaluated-region-pose-delta-v1",
+        "maximum_displacement": math.sqrt(max(squared)),
+        "moved_vertex_count": sum(value > 0.0 for value in squared),
+        "posed_geometry_sha256": _evaluated_vertex_snapshot_hash(posed),
+        "rms_displacement": math.sqrt(sum(squared) / len(squared)),
+        "selected_bone": selected_bone,
+        "source_time": source_time,
+        "toolchain_sha256": action_proof["toolchain"]["toolchain_sha256"],
+        "vertex_count": len(squared),
+    }
+    proof = dict(unsigned)
+    proof["proof_sha256"] = hashlib.sha256(
+        _canonical_json(unsigned).encode("utf-8")
+    ).hexdigest()
+    return proof
 
 
 def _flatten_region(region: dict):
@@ -3013,6 +3360,7 @@ def _capture_pose_snapshots(
     finally:
         if animation_binding is not None:
             animation_binding[0].animation_data.action = animation_binding[1]
+            animation_binding[0].animation_data.action_slot = animation_binding[2]
         scene.frame_set(original_frame)
 
 
