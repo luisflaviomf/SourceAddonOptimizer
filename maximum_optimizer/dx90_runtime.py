@@ -8,22 +8,315 @@ import math
 import os
 import re
 import shutil
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from PIL import Image
 
-from .benchmarking import canonical_json_bytes, compiled_kind, safe_existing_root
+from .benchmarking import (
+    canonical_json_bytes,
+    compiled_kind,
+    safe_existing_file,
+    safe_existing_root,
+)
 
 
 _RUN_ID = re.compile(r"[a-z0-9][a-z0-9-]{7,47}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_LOGICAL_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _RUNTIME_PREFIX = "models/maximum_dx90_runtime"
+_CAPTURE_SIZE = (800, 600)
+_MIN_RENDER_CHANGED_FRACTION = 0.005
+_MAX_RENDER_CHANGED_FRACTION = 0.50
+_MIN_ANIMATION_CHANGED_FRACTION = 0.001
+_MAX_ANIMATION_CHANGED_FRACTION = 0.25
+_REPARSE_POINT = 0x400
 
 
 class Dx90RuntimeError(ValueError):
     pass
+
+
+def _path_is_reparse(path: Path) -> bool:
+    try:
+        stat = path.lstat()
+    except OSError as exc:
+        raise Dx90RuntimeError(f"cannot inspect runtime cleanup path {path}: {exc}") from exc
+    return path.is_symlink() or bool(
+        getattr(stat, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _validated_cleanup_tree(path: Path, context: str) -> Path | None:
+    if not os.path.lexists(path):
+        return None
+    try:
+        canonical = safe_existing_root(path.absolute(), context)
+    except Exception as exc:
+        raise Dx90RuntimeError(str(exc)) from exc
+    if canonical != path:
+        raise Dx90RuntimeError(f"{context} is not the exact canonical runtime path")
+    for current, directories, files in os.walk(path, topdown=True, followlinks=False):
+        for name in (*directories, *files):
+            child = Path(current) / name
+            if _path_is_reparse(child):
+                raise Dx90RuntimeError(
+                    f"refusing cleanup of {context} containing reparse point: {child}"
+                )
+    return canonical
+
+
+class PrivateProcessJob:
+    def __init__(self, job_handle: int, process_handle: int, root_pid: int) -> None:
+        self._job_handle = job_handle
+        self._process_handle = process_handle
+        self.root_pid = root_pid
+        self._closed = False
+
+    def active_pids(self) -> tuple[int, ...]:
+        if self._closed:
+            return ()
+        import ctypes
+        from ctypes import wintypes
+
+        buffer = ctypes.create_string_buffer(16 * 1024)
+        returned = wintypes.DWORD()
+        query = ctypes.windll.kernel32.QueryInformationJobObject
+        if not query(
+            wintypes.HANDLE(self._job_handle), 3, buffer, len(buffer), ctypes.byref(returned)
+        ):
+            raise ctypes.WinError()
+        count = ctypes.c_uint32.from_buffer(buffer, 4).value
+        pointer_type = ctypes.c_uint64 if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_uint32
+        values = (pointer_type * count).from_buffer(buffer, 8)
+        return tuple(sorted(int(value) for value in values if value))
+
+    def process_identities(self) -> tuple[dict[str, Any], ...]:
+        import psutil
+
+        identities = []
+        for pid in self.active_pids():
+            try:
+                process = psutil.Process(pid)
+                executable = Path(process.exe()).resolve(strict=True)
+                identities.append({
+                    "pid": pid,
+                    "parent_pid": process.ppid(),
+                    "create_time": process.create_time(),
+                    "exe_path": str(executable),
+                    "exe_sha256": _sha256(executable),
+                })
+            except (OSError, psutil.Error):
+                continue
+        return tuple(sorted(identities, key=lambda item: item["pid"]))
+
+    def terminate(self, exit_code: int = 1) -> None:
+        if self._closed:
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        if not ctypes.windll.kernel32.TerminateJobObject(
+            wintypes.HANDLE(self._job_handle), wintypes.UINT(exit_code)
+        ):
+            raise ctypes.WinError()
+
+    def wait_empty(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not self.active_pids():
+                return True
+            time.sleep(0.05)
+        return not self.active_pids()
+
+    def root_exit_code(self) -> int | None:
+        if self._closed:
+            return None
+        import _winapi
+
+        code = _winapi.GetExitCodeProcess(self._process_handle)
+        return None if code == 259 else int(code)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        import _winapi
+
+        try:
+            if self.active_pids():
+                self.terminate()
+                self.wait_empty(5.0)
+        finally:
+            _winapi.CloseHandle(self._process_handle)
+            _winapi.CloseHandle(self._job_handle)
+            self._closed = True
+
+
+def launch_private_process_job(arguments: list[str], cwd: Path) -> PrivateProcessJob:
+    if sys.platform != "win32":
+        raise Dx90RuntimeError("private runtime jobs require Windows")
+    if not isinstance(arguments, list) or not arguments or any(not isinstance(item, str) for item in arguments):
+        raise Dx90RuntimeError("private runtime process arguments are invalid")
+    try:
+        working = safe_existing_root(Path(cwd).resolve(strict=True), "private runtime cwd")
+    except Exception as exc:
+        raise Dx90RuntimeError(str(exc)) from exc
+    import _winapi
+    import ctypes
+    from ctypes import wintypes
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_uint64), ("WriteOperationCount", ctypes.c_uint64),
+            ("OtherOperationCount", ctypes.c_uint64), ("ReadTransferCount", ctypes.c_uint64),
+            ("WriteTransferCount", ctypes.c_uint64), ("OtherTransferCount", ctypes.c_uint64),
+        ]
+
+    class BASIC_LIMITS(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class EXTENDED_LIMITS(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BASIC_LIMITS), ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError()
+    limits = EXTENDED_LIMITS()
+    limits.BasicLimitInformation.LimitFlags = 0x00002000
+    if not kernel32.SetInformationJobObject(
+        wintypes.HANDLE(job), 9, ctypes.byref(limits), ctypes.sizeof(limits)
+    ):
+        _winapi.CloseHandle(job)
+        raise ctypes.WinError()
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = 0
+    process_handle = thread_handle = None
+    try:
+        process_handle, thread_handle, pid, _ = _winapi.CreateProcess(
+            arguments[0],
+            subprocess.list2cmdline(arguments),
+            None,
+            None,
+            False,
+            0x00000004 | subprocess.CREATE_NEW_PROCESS_GROUP,
+            None,
+            str(working),
+            startup,
+        )
+        if not kernel32.AssignProcessToJobObject(
+            wintypes.HANDLE(job), wintypes.HANDLE(process_handle)
+        ):
+            raise ctypes.WinError()
+        if kernel32.ResumeThread(wintypes.HANDLE(thread_handle)) == 0xFFFFFFFF:
+            raise ctypes.WinError()
+        _winapi.CloseHandle(thread_handle)
+        thread_handle = None
+        return PrivateProcessJob(int(job), int(process_handle), int(pid))
+    except Exception:
+        if process_handle is not None:
+            _winapi.TerminateProcess(process_handle, 1)
+            _winapi.CloseHandle(process_handle)
+        if thread_handle is not None:
+            _winapi.CloseHandle(thread_handle)
+        _winapi.CloseHandle(job)
+        raise
+
+
+def owned_process_identity_matches(
+    identity: Mapping[str, Any],
+    *,
+    owner_marker: str,
+    launched_after: float,
+    allowed_executables: Mapping[str, str],
+    owned_parent_pids: set[int] | frozenset[int] = frozenset(),
+) -> bool:
+    if (
+        not isinstance(identity, Mapping)
+        or not isinstance(owner_marker, str) or not owner_marker
+        or not isinstance(launched_after, (int, float)) or isinstance(launched_after, bool)
+        or not math.isfinite(launched_after)
+        or not isinstance(allowed_executables, Mapping)
+        or not isinstance(owned_parent_pids, (set, frozenset))
+        or any(type(item) is not int or item <= 0 for item in owned_parent_pids)
+    ):
+        return False
+    path = identity.get("exe_path")
+    digest = identity.get("exe_sha256")
+    created = identity.get("create_time")
+    command = identity.get("cmdline")
+    return (
+        isinstance(path, str)
+        and isinstance(digest, str)
+        and isinstance(created, (int, float))
+        and not isinstance(created, bool)
+        and math.isfinite(created)
+        and created >= launched_after
+        and isinstance(command, list)
+        and all(isinstance(item, str) for item in command)
+        and (owner_marker in command or identity.get("parent_pid") in owned_parent_pids)
+        and allowed_executables.get(path.replace("\\", "/").casefold()) == digest
+    )
+
+
+def process_identities_by_name(executable_name: str) -> tuple[dict[str, Any], ...]:
+    if (
+        not isinstance(executable_name, str)
+        or not executable_name
+        or Path(executable_name).name != executable_name
+    ):
+        raise Dx90RuntimeError("process executable name must be a basename")
+    import psutil
+
+    rows: list[dict[str, Any]] = []
+    try:
+        processes = psutil.process_iter(("pid", "ppid", "name", "exe", "create_time"))
+        for process in processes:
+            try:
+                observed_name = str(process.info["name"] or "")
+            except (OSError, psutil.Error, KeyError, TypeError) as exc:
+                raise Dx90RuntimeError("cannot inspect running process name") from exc
+            if observed_name.casefold() != executable_name.casefold():
+                continue
+            try:
+                executable = safe_existing_file(
+                    Path(process.info["exe"]).absolute(),
+                    f"running {executable_name} identity",
+                )
+                rows.append({
+                    "pid": process.info["pid"],
+                    "parent_pid": process.info["ppid"],
+                    "create_time": process.info["create_time"],
+                    "exe_path": str(executable),
+                    "exe_sha256": _sha256(executable),
+                    "cmdline": list(process.cmdline()),
+                })
+            except (OSError, psutil.Error, KeyError, TypeError, ValueError) as exc:
+                raise Dx90RuntimeError(
+                    f"cannot inspect running {executable_name} identity"
+                ) from exc
+    except Dx90RuntimeError:
+        raise
+    except (OSError, psutil.Error) as exc:
+        raise Dx90RuntimeError("cannot enumerate running processes") from exc
+    return tuple(sorted(rows, key=lambda item: item["pid"]))
 
 
 def console_has_runtime_lua_error(text: str) -> bool:
@@ -87,8 +380,11 @@ class RuntimeArtifact:
 @dataclass(frozen=True)
 class RuntimePlan:
     run_id: str
+    proof_nonce: str
     corpus_id: str
     manifest_sha256: str
+    engine_build_sha256: str
+    runtime_executable_sha256: str
     family_ids: tuple[str, ...]
     artifacts: tuple[RuntimeArtifact, ...]
     model_paths: tuple[str, ...]
@@ -109,10 +405,27 @@ class StagedRuntimeProbe:
         expected_data = self.game_root / "data/maximum_dx90_runtime" / self.data_root.name
         if self.model_root != expected_model or self.lua_path != expected_lua or self.data_root != expected_data:
             raise Dx90RuntimeError("refusing cleanup outside exact DX90 runtime namespace")
-        shutil.rmtree(self.model_root, ignore_errors=True)
-        shutil.rmtree(self.data_root, ignore_errors=True)
-        if self.lua_path.exists() and self.lua_path.is_file():
-            self.lua_path.unlink()
+        model_tree = _validated_cleanup_tree(self.model_root, "DX90 runtime model tree")
+        data_tree = _validated_cleanup_tree(self.data_root, "DX90 runtime data tree")
+        lua_file = None
+        if os.path.lexists(self.lua_path):
+            try:
+                lua_file = safe_existing_file(
+                    self.lua_path.absolute(), "DX90 runtime Lua probe"
+                )
+            except Exception as exc:
+                raise Dx90RuntimeError(str(exc)) from exc
+            if lua_file != self.lua_path:
+                raise Dx90RuntimeError("DX90 runtime Lua probe is not the exact canonical path")
+        try:
+            if model_tree is not None:
+                shutil.rmtree(model_tree)
+            if data_tree is not None:
+                shutil.rmtree(data_tree)
+            if lua_file is not None:
+                lua_file.unlink()
+        except OSError as exc:
+            raise Dx90RuntimeError(f"failed to remove DX90 runtime probe: {exc}") from exc
         for parent in (
             self.model_root.parent,
             self.data_root.parent,
@@ -167,10 +480,23 @@ def _strict_manifest(experiment: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def build_runtime_plan(
-    experiment: Mapping[str, Any], candidate_root: Path, run_id: str
+    experiment: Mapping[str, Any],
+    candidate_root: Path,
+    run_id: str,
+    *,
+    proof_nonce: str,
+    engine_build_sha256: str,
+    runtime_executable_sha256: str,
 ) -> RuntimePlan:
     if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
         raise Dx90RuntimeError("run_id must contain 8-48 lowercase alphanumeric/hyphen characters")
+    for value, label in (
+        (proof_nonce, "proof nonce"),
+        (engine_build_sha256, "engine build hash"),
+        (runtime_executable_sha256, "runtime executable hash"),
+    ):
+        if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+            raise Dx90RuntimeError(f"{label} must be a lowercase SHA-256")
     manifest = _strict_manifest(experiment)
     try:
         root = safe_existing_root(Path(candidate_root).resolve(strict=True), "DX90 runtime candidates")
@@ -182,6 +508,8 @@ def build_runtime_plan(
     for expected_family_id, family in zip(
         manifest["family_ids"], manifest["families"], strict=True
     ):
+        if not isinstance(expected_family_id, str) or _LOGICAL_ID.fullmatch(expected_family_id) is None:
+            raise Dx90RuntimeError("candidate family identity must be a safe logical id")
         if not isinstance(family, dict) or family.get("family_id") != expected_family_id:
             raise Dx90RuntimeError("candidate family identity/order mismatch")
         compiled_stem = family.get("compiled_stem")
@@ -248,8 +576,11 @@ def build_runtime_plan(
         )
     return RuntimePlan(
         run_id=run_id,
+        proof_nonce=proof_nonce,
         corpus_id=manifest["corpus_id"],
         manifest_sha256=manifest["sha256"],
+        engine_build_sha256=engine_build_sha256,
+        runtime_executable_sha256=runtime_executable_sha256,
         family_ids=tuple(manifest["family_ids"]),
         artifacts=tuple(artifacts),
         model_paths=tuple(model_paths),
@@ -278,8 +609,11 @@ def _lua_spec(plan: RuntimePlan) -> dict[str, Any]:
         )
     return {
         "run_id": plan.run_id,
+        "proof_nonce": plan.proof_nonce,
         "corpus_id": plan.corpus_id,
         "candidate_manifest_sha256": plan.manifest_sha256,
+        "engine_build_sha256": plan.engine_build_sha256,
+        "runtime_executable_sha256": plan.runtime_executable_sha256,
         "required_capabilities": [
             "animation",
             "bodygroups_skins",
@@ -304,6 +638,11 @@ def render_probe_lua(plan: RuntimePlan) -> str:
 if SERVER then AddCSLuaFile() end
 local spec = util.JSONToTable({encoded_spec})
 local dataRoot = "maximum_dx90_runtime/" .. spec.run_id
+local luaPath = "lua/autorun/maximum_dx90_runtime_" .. spec.run_id .. ".lua"
+local luaBytes = file.Read(luaPath, "GAME")
+local luaSha256 = luaBytes and util.SHA256(luaBytes) or nil
+local consoleOwner = "maximum_dx90_console_owner_" .. spec.proof_nonce
+print(consoleOwner)
 local netName = "maxdx90_done_{plan.run_id[-12:]}"
 local poseNetName = "maxdx90_pose_{plan.run_id[-12:]}"
 local function save(name, value)
@@ -313,9 +652,24 @@ local function save(name, value)
 end
 local function validateEnvironment(realm)
     local apiAvailable = isfunction(GetAddonStatus)
-    local noaddons, noworkshop = nil, nil
+    local noaddons, noworkshop = "unavailable", "unavailable"
     if apiAvailable then noaddons, noworkshop = GetAddonStatus() end
-    local result = {{realm=realm, addon_status_api_available=apiAvailable, noaddons=noaddons, noworkshop=noworkshop, artifacts={{}}, errors={{}}}}
+    local result = {{
+        realm=realm,
+        run_id=spec.run_id,
+        proof_nonce=spec.proof_nonce,
+        corpus_id=spec.corpus_id,
+        candidate_manifest_sha256=spec.candidate_manifest_sha256,
+        lua_sha256=luaSha256,
+        engine_build_sha256=spec.engine_build_sha256,
+        runtime_executable_sha256=spec.runtime_executable_sha256,
+        addon_status_api_available=apiAvailable,
+        noaddons=noaddons,
+        noworkshop=noworkshop,
+        artifacts={{}},
+        errors={{}},
+    }}
+    if not luaSha256 then table.insert(result.errors, "cannot hash generated Lua") end
     if apiAvailable and not noaddons then table.insert(result.errors, "noaddons=false") end
     if apiAvailable and not noworkshop then table.insert(result.errors, "noworkshop=false") end
     for _, family in ipairs(spec.families) do
@@ -339,6 +693,10 @@ if SERVER then
     util.AddNetworkString(poseNetName)
     local damageSeen = {{}}
     local animatedEntities = {{}}
+    local function vectorValues(value)
+        if not value then return nil end
+        return {{value.x, value.y, value.z}}
+    end
     net.Receive(poseNetName, function(_, ply)
         local familyId = net.ReadString()
         local useMaximum = net.ReadBool()
@@ -408,7 +766,7 @@ if SERVER then
                     phys:EnableGravity(false)
                     phys:EnableMotion(true)
                     phys:Wake()
-                    row.physics_start = ent:GetPos()
+                    row.physics_start = vectorValues(ent:GetPos())
                     phys:SetVelocity(Vector(120, 0, 0))
                 end
                 entities[family.family_id] = ent
@@ -417,13 +775,16 @@ if SERVER then
             timer.Simple(1, function()
                 for _, row in ipairs(report.families) do
                     local ent = entities[row.family_id]
-                    row.physics_end = IsValid(ent) and ent:GetPos() or nil
-                    row.physics_moved = row.physics_start and row.physics_end and row.physics_start:DistToSqr(row.physics_end) > 1 or false
+                    local physicsEnd = IsValid(ent) and ent:GetPos() or nil
+                    row.physics_end = vectorValues(physicsEnd)
+                    local physicsStart = row.physics_start
+                    row.physics_moved = physicsStart and physicsEnd and Vector(physicsStart[1], physicsStart[2], physicsStart[3]):DistToSqr(physicsEnd) > 1 or false
                     if IsValid(ent) then ent:TakeDamage(17, game.GetWorld(), game.GetWorld()) end
                 end
                 timer.Simple(0.25, function()
                     for _, row in ipairs(report.families) do
                         local seen = damageSeen[row.family_id]
+                        row.damage_value = seen and seen.damage or nil
                         row.damage_observed = seen ~= nil and seen.damage == 17
                     end
                     report.capabilities = {{
@@ -613,11 +974,7 @@ else
                         }})
                     end
                     local animationSetter = nil
-                    local preferredPoseNames = {{
-                        "hood", "vehicle_hood", "left_door", "right_door",
-                        "rear_left_door", "rear_right_door", "trunk",
-                        "vehicle_steer", "steer",
-                    }}
+                    local preferredPoseNames = {{"hood"}}
                     local poseIds, seenPoseIds = {{}}, {{}}
                     for _, preferredName in ipairs(preferredPoseNames) do
                         local poseId = active:LookupPoseParameter(preferredName)
@@ -625,9 +982,6 @@ else
                             table.insert(poseIds, poseId)
                             seenPoseIds[poseId] = true
                         end
-                    end
-                    for poseId=0, row.pose_parameter_count-1 do
-                        if not seenPoseIds[poseId] then table.insert(poseIds, poseId) end
                     end
                     for _, poseId in ipairs(poseIds) do
                         local minimum, maximum = active:GetPoseParameterRange(poseId)
@@ -833,8 +1187,8 @@ def _verify_capture_pairs(
                 model = opened.convert("RGB")
         except (OSError, ValueError) as exc:
             raise Dx90RuntimeError(f"cannot parse capture pair for {family_id}: {exc}") from exc
-        if baseline.size != model.size or baseline.width <= 0 or baseline.height <= 0:
-            raise Dx90RuntimeError(f"capture dimensions differ for {family_id}")
+        if baseline.size != model.size or baseline.size != _CAPTURE_SIZE:
+            raise Dx90RuntimeError(f"capture dimensions must be exactly 800 x 600 for {family_id}")
         changed = 0
         maximum = 0
         absolute_sum = 0
@@ -849,6 +1203,11 @@ def _verify_capture_pairs(
         if changed == 0 or maximum == 0:
             raise Dx90RuntimeError(f"{label} capture pair is identical; no rendered difference for {family_id}")
         total_pixels = baseline.width * baseline.height
+        changed_fraction = changed / total_pixels
+        if label == "rendering" and not (
+            _MIN_RENDER_CHANGED_FRACTION <= changed_fraction <= _MAX_RENDER_CHANGED_FRACTION
+        ):
+            raise Dx90RuntimeError(f"rendering capture changed fraction is weak or global for {family_id}")
         metrics.append(
             {
                 "family_id": family_id,
@@ -856,7 +1215,7 @@ def _verify_capture_pairs(
                 "width": baseline.width,
                 "height": baseline.height,
                 "changed_pixels": changed,
-                "changed_fraction": changed / total_pixels,
+                "changed_fraction": changed_fraction,
                 "max_channel_delta": maximum,
                 "mean_absolute_channel_delta": absolute_sum / (total_pixels * 3),
                 "baseline_sha256": _sha256(baseline_path),
@@ -879,11 +1238,14 @@ def verify_animation_capture_pairs(
         family_ids, capture_root, "animation-a", "animation-b", "animation"
     )
     for metric in metrics:
-        if metric["changed_pixels"] < 4 or metric["max_channel_delta"] < 8:
+        if (
+            metric["changed_fraction"] < _MIN_ANIMATION_CHANGED_FRACTION
+            or metric["max_channel_delta"] < 8
+        ):
             raise Dx90RuntimeError(
                 "animation capture difference is too weak for " + metric["family_id"]
             )
-        if metric["changed_fraction"] > 0.25:
+        if metric["changed_fraction"] > _MAX_ANIMATION_CHANGED_FRACTION:
             raise Dx90RuntimeError(
                 "animation capture changed a global pixel fraction for " + metric["family_id"]
             )
@@ -945,13 +1307,113 @@ def _verify_animation_bones(row: Mapping[str, Any], family_id: str) -> None:
     before, after = snapshots
     if before.keys() != after.keys():
         raise Dx90RuntimeError(f"animation bone coverage differs for {family_id}")
-    maximum_delta = max(
-        abs(left - right)
-        for key in before
-        for left, right in zip(before[key], after[key], strict=True)
+    relevant = tuple(key for key in before if "hood" in key[1].casefold())
+    if not relevant:
+        raise Dx90RuntimeError(f"animation lacks a relevant Hood bone for {family_id}")
+    meaningful = False
+    for key in relevant:
+        left, right = before[key], after[key]
+        position_delta = math.sqrt(sum(
+            (left[index] - right[index]) ** 2 for index in range(3)
+        ))
+        angle_delta = max(
+            abs((left[index] - right[index] + 180.0) % 360.0 - 180.0)
+            for index in range(3, 6)
+        )
+        if position_delta >= 0.1 or angle_delta >= 1.0:
+            meaningful = True
+            break
+    if not meaningful:
+        raise Dx90RuntimeError(f"animation Hood bone change is too weak for {family_id}")
+
+
+def _finite_vector(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 3
+        and all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(item)
+            for item in value
+        )
     )
-    if maximum_delta <= 1e-4:
-        raise Dx90RuntimeError(f"animation bone transforms are identical for {family_id}")
+
+
+_REALM_KEYS = {
+    "realm", "run_id", "proof_nonce", "corpus_id", "candidate_manifest_sha256",
+    "lua_sha256", "engine_build_sha256", "runtime_executable_sha256",
+    "addon_status_api_available", "noaddons", "noworkshop", "artifacts", "errors",
+    "families", "capabilities",
+}
+_SERVER_ROW_KEYS = {
+    "family_id", "model_path", "valid_model", "animation_entity_valid",
+    "animation_loaded_model", "entity_valid", "loaded_model", "physics_object_valid",
+    "physics_mass", "physics_start", "physics_end", "physics_moved", "damage_observed",
+    "damage_value",
+}
+_CLIENT_ROW_KEYS = {
+    "family_id", "model_path", "entity_valid", "loaded_model", "bodygroups_skins",
+    "bodygroups", "skin_count", "skin_values", "sequence_count", "sequences",
+    "pose_parameter_count", "pose_parameters", "animation", "animation_mode",
+    "animation_pose_name", "animation_pose_minimum", "animation_pose_maximum",
+    "animation_value_a", "animation_value_b", "animation_blend_sequence",
+    "animation_blend_sequence_name", "animation_base_sequence",
+    "animation_base_sequence_name", "baseline_png", "model_png", "animation_a_png",
+    "animation_b_png", "animation_bones_a", "animation_bones_b",
+}
+
+
+def _require_exact_keys(value: object, expected: set[str], label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise Dx90RuntimeError(f"{label} schema keys are not exact")
+    return value
+
+
+def _verify_client_raw_observations(row: Mapping[str, Any], family_id: str) -> None:
+    groups = row.get("bodygroups")
+    if not isinstance(groups, list):
+        raise Dx90RuntimeError(f"bodygroup observations are invalid for {family_id}")
+    for index, group in enumerate(groups):
+        group = _require_exact_keys(group, {"id", "count", "values"}, "bodygroup")
+        count = group["count"]
+        if (
+            group["id"] != index or type(count) is not int or count < 1
+            or group["values"] != list(range(count))
+        ):
+            raise Dx90RuntimeError(f"bodygroup observations differ for {family_id}")
+    skin_count = row.get("skin_count")
+    if type(skin_count) is not int or skin_count < 1 or row.get("skin_values") != list(range(skin_count)):
+        raise Dx90RuntimeError(f"skin observations differ for {family_id}")
+    poses = row.get("pose_parameters")
+    pose_count = row.get("pose_parameter_count")
+    if type(pose_count) is not int or pose_count < 1 or not isinstance(poses, list) or len(poses) != pose_count:
+        raise Dx90RuntimeError(f"pose observations are invalid for {family_id}")
+    for index, pose in enumerate(poses):
+        pose = _require_exact_keys(pose, {"id", "name", "minimum", "maximum"}, "pose")
+        if pose["id"] != index or not isinstance(pose["name"], str):
+            raise Dx90RuntimeError(f"pose observations differ for {family_id}")
+    sequences = row.get("sequences")
+    sequence_count = row.get("sequence_count")
+    if type(sequence_count) is not int or sequence_count < 1 or not isinstance(sequences, list) or len(sequences) != sequence_count:
+        raise Dx90RuntimeError(f"sequence observations are invalid for {family_id}")
+    for index, sequence in enumerate(sequences):
+        sequence = _require_exact_keys(
+            sequence, {"id", "name", "duration", "lastframe"}, "sequence"
+        )
+        if sequence["id"] != index or not isinstance(sequence["name"], str):
+            raise Dx90RuntimeError(f"sequence observations differ for {family_id}")
+    if (
+        row.get("bodygroups_skins") is not True
+        or row.get("animation") is not True
+        or row.get("animation_mode") != "pose_parameter"
+        or row.get("animation_pose_name") != "hood"
+        or row.get("animation_pose_minimum") != 0
+        or row.get("animation_pose_maximum") != 1
+        or row.get("animation_value_a") != 0
+        or row.get("animation_value_b") != 1
+    ):
+        raise Dx90RuntimeError(f"animation Hood observation is invalid for {family_id}")
 
 
 def verify_realm_reports(
@@ -970,14 +1432,28 @@ def verify_realm_reports(
     ]
     addon_status_fallback_required = False
     for realm, report in (("server", server), ("client", client)):
-        if not isinstance(report, Mapping) or report.get("realm") != realm:
+        report = _require_exact_keys(report, _REALM_KEYS, f"{realm} runtime report")
+        if report.get("realm") != realm:
             raise Dx90RuntimeError(f"{realm} runtime report is missing or has wrong realm")
+        if (
+            report.get("run_id") != plan.run_id
+            or report.get("proof_nonce") != plan.proof_nonce
+            or report.get("corpus_id") != plan.corpus_id
+            or report.get("engine_build_sha256") != plan.engine_build_sha256
+            or report.get("runtime_executable_sha256") != plan.runtime_executable_sha256
+            or not isinstance(report.get("lua_sha256"), str)
+            or _SHA256.fullmatch(report["lua_sha256"]) is None
+        ):
+            raise Dx90RuntimeError(f"{realm} runtime report binding or nonce differs")
         api_available = report.get("addon_status_api_available")
         if api_available is True:
             if report.get("noaddons") is not True or report.get("noworkshop") is not True:
                 raise Dx90RuntimeError(f"{realm} did not prove -noaddons and -noworkshop")
         elif api_available is False:
-            if report.get("noaddons") is not None or report.get("noworkshop") is not None:
+            if (
+                report.get("noaddons") != "unavailable"
+                or report.get("noworkshop") != "unavailable"
+            ):
                 raise Dx90RuntimeError(f"{realm} unavailable addon-status API returned invented flags")
             addon_status_fallback_required = True
         else:
@@ -1007,27 +1483,43 @@ def verify_realm_reports(
     for index, family_id in enumerate(plan.family_ids):
         model_path = plan.model_paths[index]
         server_row = server["families"][index]
+        server_row = _require_exact_keys(
+            server_row, _SERVER_ROW_KEYS, f"server family {family_id}"
+        )
         if (
             server_row.get("family_id") != family_id
             or server_row.get("model_path") != model_path
             or server_row.get("valid_model") is not True
             or server_row.get("entity_valid") is not True
             or server_row.get("loaded_model") != model_path
+            or server_row.get("animation_entity_valid") is not True
+            or server_row.get("animation_loaded_model") != model_path
         ):
             raise Dx90RuntimeError(f"dynamic_model_load failed for {family_id}")
         mass = server_row.get("physics_mass")
+        start = server_row.get("physics_start")
+        end = server_row.get("physics_end")
         if (
             server_row.get("physics_object_valid") is not True
             or not isinstance(mass, (int, float))
             or isinstance(mass, bool)
             or not (0 < mass < float("inf"))
             or server_row.get("physics_moved") is not True
+            or not _finite_vector(start)
+            or not _finite_vector(end)
+            or sum((float(right) - float(left)) ** 2 for left, right in zip(start, end, strict=True)) <= 1.0
         ):
             raise Dx90RuntimeError(f"physics failed for {family_id}")
-        if server_row.get("damage_observed") is not True:
+        if (
+            server_row.get("damage_observed") is not True
+            or server_row.get("damage_value") != 17
+        ):
             raise Dx90RuntimeError(f"damage failed for {family_id}")
 
         client_row = client["families"][index]
+        client_row = _require_exact_keys(
+            client_row, _CLIENT_ROW_KEYS, f"client family {family_id}"
+        )
         if (
             client_row.get("family_id") != family_id
             or client_row.get("model_path") != model_path
@@ -1035,10 +1527,7 @@ def verify_realm_reports(
             or client_row.get("loaded_model") != model_path
         ):
             raise Dx90RuntimeError(f"client dynamic_model_load failed for {family_id}")
-        if client_row.get("bodygroups_skins") is not True:
-            raise Dx90RuntimeError(f"bodygroups_skins failed for {family_id}")
-        if client_row.get("animation") is not True:
-            raise Dx90RuntimeError(f"animation failed for {family_id}")
+        _verify_client_raw_observations(client_row, family_id)
         _verify_animation_bones(client_row, family_id)
         if (
             client_row.get("baseline_png") != f"{family_id}-baseline"
@@ -1053,6 +1542,10 @@ def verify_realm_reports(
 
     if not isinstance(console_text, str):
         raise Dx90RuntimeError("runtime console log is invalid")
+    if console_has_runtime_lua_error(console_text):
+        raise Dx90RuntimeError("runtime console contains generated Lua error")
+    if server["lua_sha256"] != client["lua_sha256"]:
+        raise Dx90RuntimeError("server/client Lua binding differs")
     if addon_status_fallback_required and (
         "Game is ran with -noaddons, not loading legacy/folder addons!" not in console_text
         or "Mounted 0 of 0 workshop addons!" not in console_text
@@ -1080,4 +1573,205 @@ def verify_realm_reports(
         "dynamic_model_load",
         "physics",
         "rendering",
+    )
+
+
+_PROOF_REPORT_BODY_KEYS = {
+    "schema_version", "status", "reason", "run_id", "proof_nonce", "target",
+    "corpus_id", "family_ids", "candidate_manifest_sha256", "launcher_script_sha256",
+    "lua_sha256", "launcher_executable_sha256", "runtime_executable_sha256",
+    "launcher_executable_sha256_after", "runtime_executable_sha256_after",
+    "engine_build_id", "engine_build_sha256", "engine_build_fingerprint",
+    "appmanifest_sha256_before", "appmanifest_sha256_after",
+    "stable_build_identity_unchanged", "launch_arguments", "hidden_window",
+    "timeout_seconds", "process_exit_code", "runtime_processes_exited",
+    "external_completion_termination", "timed_out", "candidate_artifacts",
+    "observed_processes",
+    "server_report_sha256", "client_report_sha256", "console_sha256",
+    "capture_metrics", "capabilities", "raw_inventory", "cleanup_verified",
+}
+
+
+def seal_runtime_proof_report(body: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(body, Mapping) or set(body) != _PROOF_REPORT_BODY_KEYS:
+        raise Dx90RuntimeError("runtime proof report body schema keys are not exact")
+    copied = dict(body)
+    copied["evidence_sha256"] = _manifest_digest(copied)
+    return copied
+
+
+def _parse_sealed_runtime_report(value: object) -> dict[str, Any]:
+    expected = _PROOF_REPORT_BODY_KEYS | {"evidence_sha256"}
+    if not isinstance(value, dict) or set(value) != expected:
+        raise Dx90RuntimeError("runtime proof report schema keys are not exact")
+    body = {key: value[key] for key in _PROOF_REPORT_BODY_KEYS}
+    if (
+        not isinstance(value["evidence_sha256"], str)
+        or _SHA256.fullmatch(value["evidence_sha256"]) is None
+        or value["evidence_sha256"] != _manifest_digest(body)
+    ):
+        raise Dx90RuntimeError("runtime proof report seal differs")
+    return value
+
+
+def verify_runtime_proof_bundle(
+    proof_root: Path,
+    plan: RuntimePlan,
+    *,
+    expected_proof_sha256: str,
+    expected_launcher_script_sha256: str,
+) -> dict[str, Any]:
+    if not isinstance(plan, RuntimePlan):
+        raise Dx90RuntimeError("runtime proof plan is invalid")
+    for digest, label in (
+        (expected_proof_sha256, "expected proof"),
+        (expected_launcher_script_sha256, "expected launcher"),
+    ):
+        if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+            raise Dx90RuntimeError(f"{label} SHA-256 is invalid")
+    try:
+        root = safe_existing_root(Path(proof_root).resolve(strict=True), "runtime proof root")
+        proof_path = safe_existing_file(root / "runtime-proof.json", "runtime proof report")
+        raw_root = safe_existing_root((root / "raw").resolve(strict=True), "runtime proof raw root")
+    except Exception as exc:
+        raise Dx90RuntimeError(str(exc)) from exc
+    if {path.name for path in root.iterdir()} != {"raw", "runtime-proof.json"}:
+        raise Dx90RuntimeError("runtime proof root inventory is not exact")
+    if _sha256(proof_path) != expected_proof_sha256:
+        raise Dx90RuntimeError("runtime proof file hash differs from trusted hash")
+    try:
+        report = _parse_sealed_runtime_report(json.loads(proof_path.read_text("utf-8")))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise Dx90RuntimeError(f"runtime proof report cannot be parsed: {exc}") from exc
+    if (
+        report["schema_version"] != 2
+        or report["status"] != "proven"
+        or report["reason"] is not None
+        or report["run_id"] != plan.run_id
+        or report["proof_nonce"] != plan.proof_nonce
+        or report["target"] != "gmod_dynamic_runtime"
+        or report["corpus_id"] != plan.corpus_id
+        or report["family_ids"] != list(plan.family_ids)
+        or report["candidate_manifest_sha256"] != plan.manifest_sha256
+        or report["launcher_script_sha256"] != expected_launcher_script_sha256
+        or report["lua_sha256"] != hashlib.sha256(render_probe_lua(plan).encode("utf-8")).hexdigest()
+        or report["runtime_executable_sha256"] != plan.runtime_executable_sha256
+        or report["runtime_executable_sha256_after"] != plan.runtime_executable_sha256
+        or report["launcher_executable_sha256_after"] != report["launcher_executable_sha256"]
+        or report["engine_build_sha256"] != plan.engine_build_sha256
+        or not isinstance(report["engine_build_fingerprint"], dict)
+        or report["engine_build_fingerprint"].get("sha256") != plan.engine_build_sha256
+        or report["stable_build_identity_unchanged"] is not True
+        or report["runtime_processes_exited"] is not True
+        or report["timed_out"] is not False
+        or report["cleanup_verified"] is not True
+    ):
+        raise Dx90RuntimeError("runtime proof report identity or completion binding differs")
+    observed = report["observed_processes"]
+    if not isinstance(observed, list) or not observed:
+        raise Dx90RuntimeError("runtime proof observed private process identities are missing")
+    process_keys = {"pid", "parent_pid", "create_time", "exe_path", "exe_sha256"}
+    allowed_process_hashes = {
+        report["launcher_executable_sha256"], report["runtime_executable_sha256"]
+    }
+    for identity in observed:
+        if (
+            not isinstance(identity, dict) or set(identity) != process_keys
+            or type(identity["pid"]) is not int or identity["pid"] <= 0
+            or type(identity["parent_pid"]) is not int or identity["parent_pid"] < 0
+            or not isinstance(identity["create_time"], (int, float))
+            or isinstance(identity["create_time"], bool)
+            or not math.isfinite(identity["create_time"])
+            or not isinstance(identity["exe_path"], str) or not identity["exe_path"]
+            or identity["exe_sha256"] not in allowed_process_hashes
+        ):
+            raise Dx90RuntimeError("runtime proof private process identity is invalid")
+    if not any(
+        item["exe_sha256"] == report["runtime_executable_sha256"] for item in observed
+    ):
+        raise Dx90RuntimeError("runtime proof did not observe the exact runtime executable")
+    actual_candidates = [
+        {
+            "family_id": item.family_id,
+            "staged_path": item.staged_relative,
+            "size_bytes": item.size_bytes,
+            "sha256": item.sha256,
+        }
+        for item in plan.artifacts
+    ]
+    if report["candidate_artifacts"] != actual_candidates:
+        raise Dx90RuntimeError("runtime proof candidate artifact binding differs")
+    actual_inventory = []
+    for path in sorted(raw_root.iterdir(), key=lambda item: item.name):
+        if path.is_symlink() or not path.is_file():
+            raise Dx90RuntimeError("runtime proof raw inventory contains non-regular entry")
+        actual_inventory.append({
+            "path": path.name,
+            "size_bytes": path.stat().st_size,
+            "sha256": _sha256(path),
+        })
+    if report["raw_inventory"] != actual_inventory:
+        raise Dx90RuntimeError("runtime proof raw inventory or hash differs")
+    expected_names = {"server.json", "client.json", "console.log"}
+    for family_id in plan.family_ids:
+        expected_names.update({
+            f"{family_id}-baseline.png", f"{family_id}-model.png",
+            f"{family_id}-animation-a.png", f"{family_id}-animation-b.png",
+        })
+    if {item["path"] for item in actual_inventory} != expected_names:
+        raise Dx90RuntimeError("runtime proof raw filename inventory differs")
+    server_path, client_path = raw_root / "server.json", raw_root / "client.json"
+    console_path = raw_root / "console.log"
+    if (
+        report["server_report_sha256"] != _sha256(server_path)
+        or report["client_report_sha256"] != _sha256(client_path)
+        or report["console_sha256"] != _sha256(console_path)
+    ):
+        raise Dx90RuntimeError("runtime proof raw report hash differs")
+    try:
+        server = json.loads(server_path.read_text("utf-8"))
+        client = json.loads(client_path.read_text("utf-8"))
+        console_text = console_path.read_text("utf-8", errors="strict")
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise Dx90RuntimeError(f"runtime proof raw evidence cannot be parsed: {exc}") from exc
+    owner_marker = "maximum_dx90_console_owner_" + plan.proof_nonce
+    if owner_marker not in console_text:
+        raise Dx90RuntimeError("runtime proof console owner nonce is missing")
+    capabilities = list(verify_realm_reports(plan, server, client, console_text))
+    metrics = {
+        "rendering": list(verify_capture_pairs(plan.family_ids, raw_root)),
+        "animation": list(verify_animation_capture_pairs(plan.family_ids, raw_root)),
+    }
+    if report["capabilities"] != capabilities or report["capture_metrics"] != metrics:
+        raise Dx90RuntimeError("runtime proof derived capabilities or capture metrics differ")
+    if server["lua_sha256"] != report["lua_sha256"] or client["lua_sha256"] != report["lua_sha256"]:
+        raise Dx90RuntimeError("runtime proof Lua/report binding differs")
+    return report
+
+
+def runtime_evidence_from_proof(
+    proof_root: Path,
+    plan: RuntimePlan,
+    *,
+    expected_proof_sha256: str,
+    expected_launcher_script_sha256: str,
+):
+    report = verify_runtime_proof_bundle(
+        proof_root,
+        plan,
+        expected_proof_sha256=expected_proof_sha256,
+        expected_launcher_script_sha256=expected_launcher_script_sha256,
+    )
+    from .dx90_optional import RuntimeEvidence
+
+    return RuntimeEvidence.proven(
+        corpus_id=plan.corpus_id,
+        family_ids=plan.family_ids,
+        candidate_manifest_sha256=plan.manifest_sha256,
+        engine_name="Garry's Mod",
+        engine_executable_sha256=report["runtime_executable_sha256"],
+        engine_build_id=report["engine_build_id"],
+        engine_build_sha256=report["engine_build_sha256"],
+        log_sha256=report["console_sha256"],
+        capabilities=report["capabilities"],
     )
