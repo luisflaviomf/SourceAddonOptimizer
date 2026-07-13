@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import math
+import os
 from pathlib import Path
 import threading
 from typing import Callable
@@ -11,13 +13,17 @@ from .adaptive_direct_evidence import (
     build_adaptive_direct_evidence,
 )
 from .candidates import CandidateBuild
-from .compiled_size import scan_compiled_models
-from .composite import AdaptiveDirectSourceUnionRecord
+from .composite import (
+    AdaptiveDirectSourceUnionRecord, _has_reparse_ancestor,
+    _hash_current_file, _safe_tree_files,
+)
 from .domain import (
-    AdaptiveDirectCoverageManifest,
+    AdaptiveDirectCoverageManifest, ArtifactStat,
     CandidateEvaluation,
+    CompiledSizeSnapshot, CompositeRecipe,
     ComposedSourceTree,
     StructuralAuthorizationEvidence,
+    validation_result_payload,
 )
 from .focused_cache import FinalWholeAuthorizationEvidence, FocusedRenderEvidence
 from .monaco_schedule import (
@@ -27,8 +33,58 @@ from .monaco_schedule import (
     MONACO_DIRECT_RATIOS,
     build_monaco_schedule,
 )
+from .monaco_selection import (
+    RetainedMonacoBaseProof, require_current_retained_monaco_base,
+)
 from .processes import ProcessCancelledError
 from .production_adapters import AdaptiveDirectCompileResult
+from .reporting import canonical_json
+from .search import select_winner
+
+
+def _evaluation_attempt_payload(value: CandidateEvaluation | None):
+    if value is None:
+        return None
+    return {
+        "candidate_id": value.spec.candidate_id,
+        "compiled_models_dir": str(Path(value.compiled_models_dir)),
+        "size": {
+            "root": str(Path(value.size.root)),
+            "total_bytes": value.size.total_bytes,
+            "bytes_by_kind": dict(value.size.bytes_by_kind),
+            "vertices_by_lod": dict(value.size.vertices_by_lod),
+            "artifacts": [{
+                "relative_path": item.relative_path, "kind": item.kind,
+                "size_bytes": item.size_bytes,
+                "lod_vertices": list(item.lod_vertices),
+            } for item in value.size.artifacts],
+        },
+        "structural": validation_result_payload(value.structural),
+        "visual": validation_result_payload(value.visual),
+        "whole_visual": validation_result_payload(value.whole_visual),
+        "focused": [{
+            "region_key": key,
+            "evidence_sha256": item.evidence_sha256,
+            "cache_hit": item.cache_hit,
+        } for key, item in sorted(value.focused_by_region.items())],
+    }
+
+
+def _attempt_payload(value) -> dict[str, object]:
+    return {
+        "schema": 1, "ratio": float(value.ratio), "status": value.status,
+        "candidate_id": value.candidate_id,
+        "recipe_sha256": None if value.recipe is None else value.recipe.recipe_sha256,
+        "evaluation": _evaluation_attempt_payload(value.evaluation),
+        "build": None if value.build is None else {
+            "candidate_id": value.build.spec.candidate_id,
+            "compiled_models_dir": str(Path(value.build.compiled_models_dir)),
+        },
+        "evidence_sha256": (
+            None if value.evidence is None else value.evidence.evidence_sha256
+        ),
+        "error": value.error,
+    }
 
 
 def require_adaptive_direct_source_count(
@@ -60,6 +116,8 @@ class AdaptiveDirectExecutionAttempt:
     build: CandidateBuild | None = None
     evidence: AdaptiveDirectEvidence | None = None
     error: str = ""
+    recipe: CompositeRecipe | None = None
+    attempt_sha256: str = ""
 
     def __post_init__(self) -> None:
         statuses = {
@@ -76,7 +134,7 @@ class AdaptiveDirectExecutionAttempt:
             or (self.candidate_id is not None and (
                 type(self.candidate_id) is not str or not self.candidate_id
             ))
-            or type(self.error) is not str
+            or type(self.error) is not str or len(self.error) > 2048
             or (self.evaluation is not None and not isinstance(
                 self.evaluation, CandidateEvaluation
             ))
@@ -86,6 +144,12 @@ class AdaptiveDirectExecutionAttempt:
             ))
         ):
             raise ValueError("adaptive-direct attempt identity is invalid")
+        if self.recipe is not None and (
+            not isinstance(self.recipe, CompositeRecipe)
+            or self.recipe.kind != "adaptive-direct-fallback-v1"
+            or self.recipe.round_index != 0
+        ):
+            raise ValueError("adaptive-direct attempt recipe is invalid")
         authorized = self.status == "authorized"
         if authorized != all((
             self.candidate_id is not None, self.evaluation is not None,
@@ -96,6 +160,69 @@ class AdaptiveDirectExecutionAttempt:
             raise ValueError("adaptive-direct attempt/evidence status differs")
         if self.evaluation is not None and not authorized:
             raise ValueError("non-authorized adaptive-direct attempt exposed an evaluation")
+        expected_id = (
+            None if self.recipe is None else "recovery-" + self.recipe.recipe_sha256
+        )
+        if self.recipe is not None and self.candidate_id != expected_id:
+            raise ValueError("adaptive-direct attempt candidate/recipe differs")
+        if self.evidence is not None and (
+            self.recipe is None or self.evidence.recipe != self.recipe
+        ):
+            raise ValueError("adaptive-direct attempt evidence/recipe differs")
+        if self.build is not None and (
+            self.candidate_id is None or self.build.spec.candidate_id != self.candidate_id
+            or self.build.spec.composite_recipe != self.recipe
+        ):
+            raise ValueError("adaptive-direct attempt build identity differs")
+        if self.evaluation is not None and (
+            self.build is None or self.evaluation.spec != self.build.spec
+            or Path(self.evaluation.compiled_models_dir) != Path(self.build.compiled_models_dir)
+        ):
+            raise ValueError("adaptive-direct attempt evaluation/build differs")
+        if self.evaluation is not None:
+            files = self.evidence.compile_files
+            artifacts = tuple(
+                (item.relative_path, item.kind, item.size)
+                for item in files
+            )
+            size_artifacts = tuple(
+                (item.relative_path, item.kind, item.size_bytes)
+                for item in self.evaluation.size.artifacts
+            )
+            expected_by_kind = {}
+            for item in files:
+                expected_by_kind[item.kind] = expected_by_kind.get(item.kind, 0) + item.size
+            if (
+                Path(self.evaluation.size.root) != Path(self.build.compiled_models_dir)
+                or self.evaluation.size.total_bytes != sum(item.size for item in files)
+                or size_artifacts != artifacts
+                or dict(self.evaluation.size.bytes_by_kind) != dict(sorted(expected_by_kind.items()))
+                or dict(self.evaluation.size.vertices_by_lod)
+                or self.evaluation.structural != self.evidence.structural.validation
+                or self.evaluation.visual != self.evidence.final_whole.validation
+                or self.evaluation.whole_visual != self.evidence.final_whole.validation
+                or self.evaluation.focused_by_region
+            ):
+                raise ValueError("adaptive-direct authorized evaluation differs from evidence")
+        if self.status not in {"schedule_failed", "cancelled"} and self.recipe is None:
+            raise ValueError("adaptive-direct scheduled attempt has no recipe")
+        expected_seal = hashlib.sha256(
+            canonical_json(_attempt_payload(self)).encode("utf-8")
+        ).hexdigest()
+        if self.attempt_sha256 != expected_seal:
+            raise ValueError("adaptive-direct attempt seal mismatch")
+
+    @classmethod
+    def create(cls, ratio: float, status: str, **values):
+        values["error"] = str(values.get("error", "")).strip()[:2048]
+        raw = dict(ratio=ratio, status=status, attempt_sha256="", **values)
+        provisional = object.__new__(cls)
+        for name, value in raw.items():
+            object.__setattr__(provisional, name, value)
+        raw["attempt_sha256"] = hashlib.sha256(
+            canonical_json(_attempt_payload(provisional)).encode("utf-8")
+        ).hexdigest()
+        return cls(**raw)
 
 
 @dataclass(frozen=True)
@@ -121,13 +248,80 @@ class AdaptiveDirectScheduleExecution:
             raise ValueError("adaptive-direct selected evaluation was not authorized")
         if self.cancelled != any(item.status == "cancelled" for item in attempts):
             raise ValueError("adaptive-direct execution cancellation matrix differs")
+        if self.selected is not select_winner([self.base, *authorized]):
+            raise ValueError("adaptive-direct provisional ranking differs")
         object.__setattr__(self, "attempts", attempts)
+
+
+def _overlaps(left: Path, right: Path) -> bool:
+    try:
+        common = os.path.commonpath((os.path.abspath(left), os.path.abspath(right)))
+    except ValueError:
+        return False
+    return os.path.normcase(common) in {
+        os.path.normcase(os.path.abspath(left)), os.path.normcase(os.path.abspath(right)),
+    }
+
+
+def _validate_workspace_root(root: Path, base_build: CandidateBuild) -> Path:
+    root = Path(root)
+    if not root.is_absolute() or os.path.lexists(root):
+        raise ValueError("adaptive-direct workspace root must be absolute and fresh")
+    parent = root.parent
+    if not parent.is_dir() or _has_reparse_ancestor(parent):
+        raise ValueError("adaptive-direct workspace parent is unavailable or unsafe")
+    protected = (
+        Path(base_build.workspace), Path(base_build.compiled_models_dir),
+        Path(base_build.optimized_qc).parent,
+    )
+    snapshot = base_build.source_snapshot
+    if snapshot is not None:
+        protected += (Path(snapshot.source_root),)
+    if any(_overlaps(root, item) for item in protected):
+        raise ValueError("adaptive-direct workspace overlaps retained base")
+    return root
+
+
+def _current_compile_files(
+    compiled: AdaptiveDirectCompileResult, event: threading.Event,
+) -> tuple:
+    expected = compiled.compile_files
+    root = Path(compiled.build.compiled_models_dir)
+    paths = _safe_tree_files(root, event)
+    if len(paths) != len(expected):
+        raise ValueError("adaptive-direct current compile inventory differs")
+    current = []
+    by_path = {item.relative_path: item for item in expected}
+    for path in paths:
+        relative = path.relative_to(root).as_posix()
+        proof = by_path.get(relative)
+        if proof is None:
+            raise ValueError("adaptive-direct current compile contains an extra file")
+        size, digest = _hash_current_file(path, root, event, max_bytes=proof.size)
+        if (size, digest) != (proof.size, proof.sha256):
+            raise ValueError("adaptive-direct current compile bytes differ")
+        current.append(proof)
+    result = tuple(current)
+    if result != expected:
+        raise ValueError("adaptive-direct current compile order differs")
+    return result
+
+
+def _size_from_compile_files(build: CandidateBuild, files) -> CompiledSizeSnapshot:
+    by_kind = {}
+    artifacts = []
+    for item in files:
+        by_kind[item.kind] = by_kind.get(item.kind, 0) + item.size
+        artifacts.append(ArtifactStat(item.relative_path, item.kind, item.size))
+    return CompiledSizeSnapshot(
+        Path(build.compiled_models_dir), sum(item.size for item in files),
+        dict(sorted(by_kind.items())), {}, tuple(artifacts),
+    )
 
 
 def execute_adaptive_direct_schedule(
     *,
-    base_evaluation: CandidateEvaluation,
-    base_build: CandidateBuild,
+    base_proof: RetainedMonacoBaseProof,
     coverage: AdaptiveDirectCoverageManifest,
     remaining_candidates: int,
     reserve_ratio: Callable[[int, float], str],
@@ -146,10 +340,14 @@ def execute_adaptive_direct_schedule(
     Ratio slots are reserved by :func:`build_monaco_schedule` before its first
     ratio accessor is allowed to perform direct-source I/O.
     """
+    proof = require_current_retained_monaco_base(
+        base_proof,
+        None if cancel_event is not None and cancel_event.is_set() else cancel_event,
+    )
+    base_evaluation = proof.evaluation
+    base_build = proof.build
     if (
-        not isinstance(base_evaluation, CandidateEvaluation)
-        or not isinstance(base_build, CandidateBuild)
-        or base_evaluation.spec != base_build.spec
+        base_evaluation.spec != base_build.spec
         or not base_evaluation.passed
         or not base_evaluation.whole_visual.passed
         or not base_evaluation.focused_by_region
@@ -163,6 +361,16 @@ def execute_adaptive_direct_schedule(
         raise ValueError("adaptive-direct scheduler base is not an approved ordinary adaptive candidate")
     if not isinstance(coverage, AdaptiveDirectCoverageManifest):
         raise TypeError("adaptive-direct scheduler coverage is invalid")
+    if (
+        coverage.metrics_proof != proof.metrics
+        or coverage.state_inventory != proof.state_inventory
+        or coverage.base_candidate_id != proof.candidate_id
+        or coverage.base_cache_digest != proof.candidate_cache_digest
+        or coverage.base_spec_sha256 != proof.base_spec_sha256
+        or coverage.base_source_manifest_sha256 != proof.source_manifest_sha256
+        or coverage.base_source_snapshot_sha256 != proof.source_snapshot_sha256
+    ):
+        raise ValueError("adaptive-direct coverage differs from retained base authority")
     for callback in (
         reserve_ratio, access_ratio, compose_candidate, compile_candidate,
         authorize_structural, rerender_base_focus, render_source_union,
@@ -172,6 +380,7 @@ def execute_adaptive_direct_schedule(
             raise TypeError("adaptive-direct scheduler callback is invalid")
     require_adaptive_direct_source_count(coverage.sources)
     event = cancel_event or threading.Event()
+    root = _validate_workspace_root(Path(workspace_root), base_build)
     schedule = build_monaco_schedule(
         base_spec=base_evaluation.spec,
         coverage=coverage,
@@ -181,24 +390,38 @@ def execute_adaptive_direct_schedule(
         cancel_event=event,
     )
     attempts: list[AdaptiveDirectExecutionAttempt] = []
-    selected = base_evaluation
-    root = Path(workspace_root)
-    if schedule.outcomes:
-        root.mkdir(parents=True, exist_ok=True)
+    scheduled = tuple(
+        outcome for outcome in schedule
+        if isinstance(outcome, MonacoScheduledCandidate)
+    )
+    if scheduled:
+        snapshots = tuple(
+            snapshot for outcome in scheduled for snapshot in outcome.snapshots
+        )
+        if any(
+            _overlaps(root, Path(snapshot.source_root))
+            or _overlaps(root, Path(snapshot.input_source_root))
+            for snapshot in snapshots
+        ):
+            raise ValueError("adaptive-direct workspace overlaps direct source inputs")
+        root.mkdir(exist_ok=False)
     for outcome in schedule:
         if isinstance(outcome, MonacoFailedReservation):
-            attempts.append(AdaptiveDirectExecutionAttempt(
+            attempts.append(AdaptiveDirectExecutionAttempt.create(
                 outcome.ratio, "schedule_failed", error=outcome.failure_reason,
             ))
             continue
         if isinstance(outcome, MonacoCancelledReservation):
-            attempts.append(AdaptiveDirectExecutionAttempt(
+            attempts.append(AdaptiveDirectExecutionAttempt.create(
                 outcome.ratio, "cancelled", error=outcome.failure_reason,
             ))
             continue
         if not isinstance(outcome, MonacoScheduledCandidate):
             raise TypeError("adaptive-direct schedule returned an invalid outcome")
         stage = "composition"
+        recipe = outcome.spec.composite_recipe
+        composed = compiled = structural = None
+        base_records = direct_records = ()
         try:
             if event.is_set():
                 raise ProcessCancelledError("adaptive-direct cancelled before composition")
@@ -218,7 +441,7 @@ def execute_adaptive_direct_schedule(
                 raise ProcessCancelledError("adaptive-direct cancelled after compile")
 
             stage = "structural"
-            structural = authorize_structural(outcome, composed, compiled)
+            structural = authorize_structural(outcome, composed, compiled, event)
             if not isinstance(structural, StructuralAuthorizationEvidence):
                 raise TypeError("adaptive-direct structural authorization is invalid")
             if event.is_set():
@@ -234,9 +457,10 @@ def execute_adaptive_direct_schedule(
                     base_focus_records=(), direct_focus_records=(),
                     final_whole=None,
                 )
-                attempts.append(AdaptiveDirectExecutionAttempt(
-                    outcome.ratio, "structural_failed", outcome.spec.candidate_id,
-                    build=compiled.build, evidence=evidence,
+                attempts.append(AdaptiveDirectExecutionAttempt.create(
+                    outcome.ratio, "structural_failed",
+                    candidate_id=outcome.spec.candidate_id,
+                    build=compiled.build, evidence=evidence, recipe=recipe,
                 ))
                 continue
 
@@ -257,6 +481,7 @@ def execute_adaptive_direct_schedule(
             if (
                 not base_records
                 or any(not isinstance(item, FocusedRenderEvidence) for item in base_records)
+                or any(item.cache_hit for item in base_records)
                 or tuple(item.target for item in base_records) != expected_targets
                 or tuple(item.target.rank for item in base_records) != tuple(range(len(base_records)))
             ):
@@ -308,9 +533,10 @@ def execute_adaptive_direct_schedule(
                     direct_focus_records=direct_records,
                     final_whole=None,
                 )
-                attempts.append(AdaptiveDirectExecutionAttempt(
-                    outcome.ratio, "focused_failed", outcome.spec.candidate_id,
-                    build=compiled.build, evidence=evidence,
+                attempts.append(AdaptiveDirectExecutionAttempt.create(
+                    outcome.ratio, "focused_failed",
+                    candidate_id=outcome.spec.candidate_id,
+                    build=compiled.build, evidence=evidence, recipe=recipe,
                 ))
                 continue
 
@@ -318,7 +544,7 @@ def execute_adaptive_direct_schedule(
             if event.is_set():
                 raise ProcessCancelledError("adaptive-direct cancelled before final whole")
             final_whole = authorize_final_whole(
-                outcome, composed, compiled, structural
+                outcome, composed, compiled, structural, event
             )
             if not isinstance(final_whole, FinalWholeAuthorizationEvidence):
                 raise TypeError("adaptive-direct final-whole authorization is invalid")
@@ -336,28 +562,31 @@ def execute_adaptive_direct_schedule(
                 direct_focus_records=direct_records,
                 final_whole=final_whole,
             )
-            size = scan_compiled_models(compiled.build.compiled_models_dir)
+            current_files = _current_compile_files(compiled, event)
+            size = _size_from_compile_files(compiled.build, current_files)
             evaluation = CandidateEvaluation(
                 outcome.spec, size, structural.validation,
                 final_whole.validation, compiled.build.compiled_models_dir,
                 final_whole.validation, {},
             )
-            attempts.append(AdaptiveDirectExecutionAttempt(
-                outcome.ratio, terminal, outcome.spec.candidate_id,
-                evaluation if terminal == "authorized" else None,
-                compiled.build, evidence,
+            attempts.append(AdaptiveDirectExecutionAttempt.create(
+                outcome.ratio, terminal, candidate_id=outcome.spec.candidate_id,
+                evaluation=evaluation if terminal == "authorized" else None,
+                build=compiled.build, evidence=evidence, recipe=recipe,
             ))
-            if (
-                terminal == "authorized"
-                and evaluation.size.total_bytes < selected.size.total_bytes
-            ):
-                selected = evaluation
         except ProcessCancelledError as exc:
             event.set()
-            attempts.append(AdaptiveDirectExecutionAttempt(
-                outcome.ratio, "cancelled", outcome.spec.candidate_id, error=str(exc),
+            attempts.append(AdaptiveDirectExecutionAttempt.create(
+                outcome.ratio, "cancelled", candidate_id=outcome.spec.candidate_id,
+                recipe=recipe, error=str(exc),
             ))
         except Exception as exc:
+            if event.is_set():
+                attempts.append(AdaptiveDirectExecutionAttempt.create(
+                    outcome.ratio, "cancelled", candidate_id=outcome.spec.candidate_id,
+                    recipe=recipe, error=str(exc) or "adaptive-direct cancelled",
+                ))
+                continue
             failure_status = {
                 "composition": "composition_failed",
                 "compile": "compile_failed",
@@ -365,10 +594,32 @@ def execute_adaptive_direct_schedule(
                 "focused": "focused_failed",
                 "final_whole": "final_whole_failed",
             }[stage]
-            attempts.append(AdaptiveDirectExecutionAttempt(
-                outcome.ratio, failure_status, outcome.spec.candidate_id,
-                error=str(exc),
+            evidence = None
+            if stage == "composition":
+                evidence = build_adaptive_direct_evidence(
+                    terminal_status="composition_failed", recipe=recipe,
+                    composition=None, changed_sources=(), compile_files=(),
+                    structural=None, base_focus_records=(),
+                    direct_focus_records=(), final_whole=None,
+                )
+            elif stage == "compile" and composed is not None:
+                evidence = build_adaptive_direct_evidence(
+                    terminal_status="compile_failed", recipe=recipe,
+                    composition=composed.composition,
+                    changed_sources=composed.composition.changed_sources,
+                    compile_files=(), structural=None, base_focus_records=(),
+                    direct_focus_records=(), final_whole=None,
+                )
+            attempts.append(AdaptiveDirectExecutionAttempt.create(
+                outcome.ratio, failure_status,
+                candidate_id=outcome.spec.candidate_id,
+                build=(compiled.build if compiled is not None else None),
+                evidence=evidence, recipe=recipe, error=str(exc),
             ))
+    authorized = [
+        item.evaluation for item in attempts if item.status == "authorized"
+    ]
+    selected = select_winner([base_evaluation, *authorized])
     return AdaptiveDirectScheduleExecution(
         base_evaluation, selected, tuple(attempts), schedule.cancelled or event.is_set(),
     )

@@ -267,6 +267,17 @@ def build_retained_monaco_base_proof(
     return proof
 
 
+def require_current_retained_monaco_base(
+    proof: RetainedMonacoBaseProof,
+    cancel_event: threading.Event | None = None,
+) -> RetainedMonacoBaseProof:
+    """Revalidate every retained byte binding before terminal scheduling."""
+    if not isinstance(proof, RetainedMonacoBaseProof):
+        raise TypeError("Monaco retained base proof is invalid")
+    _validate_retained(proof, proof.evaluation, cancel_event)
+    return proof
+
+
 def select_monaco_base(
     evaluations: Sequence[CandidateEvaluation],
     retained_proofs: Mapping[str, RetainedMonacoBaseProof],
