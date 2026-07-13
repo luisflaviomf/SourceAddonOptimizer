@@ -51,7 +51,7 @@ def _is_boundary_set(value: object) -> bool:
         if decoded_edge[0] > decoded_edge[1]:
             return False
         decoded_edges.append(decoded_edge)
-    return value == _encode_boundary_set(decoded_edges)
+    return value == _encode_boundary_set(set(decoded_edges))
 
 
 def _encoded_boundary_payload(

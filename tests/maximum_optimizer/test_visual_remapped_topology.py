@@ -171,6 +171,27 @@ class VisualRemappedTopologyContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "relationships"):
             visual_remapped_topology_proof_from_payload(payload)
 
+    def test_proof_loader_rejects_resealed_duplicate_boundary_edge_padding(self) -> None:
+        proof = validate_visual_remapped_topology_smd(
+            _fan_source(), _boundary_change(), 0.5
+        )
+        payload = visual_remapped_topology_proof_payload(proof)
+        component = payload["components"][0]
+        edges = component["source_boundary_set"]
+        edges.insert(1, edges[0])
+        digest = hashlib.sha256(json.dumps(
+            [{"component": [0, 0], "edges": edges}],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")).hexdigest()
+        component["source_boundary_sha256"] = digest
+        payload["source_boundary_sha256"] = digest
+        _reseal(payload)
+
+        with self.assertRaisesRegex(ValueError, "boundary set"):
+            visual_remapped_topology_proof_from_payload(payload)
+
     def test_ambiguous_duplicate_direction_and_orientation_still_fail(self) -> None:
         shells = _smd([
             ("metal", ("a", "c", "b")),
