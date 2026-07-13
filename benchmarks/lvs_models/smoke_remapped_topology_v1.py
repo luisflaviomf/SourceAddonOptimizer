@@ -8,11 +8,13 @@ import math
 import os
 from pathlib import Path
 import re
-import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 from typing import Callable, Literal, Sequence
+
+from PIL import Image, UnidentifiedImageError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,6 +34,14 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _seal(payload: dict[str, object]) -> str:
@@ -68,12 +78,36 @@ class SmokeCase:
 
 
 @dataclass(frozen=True)
+class CompileArtifact:
+    path: str
+    size: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.path) is not str
+            or not self.path
+            or "\\" in self.path
+            or self.path.startswith("/")
+            or ".." in self.path.split("/")
+            or type(self.size) is not int
+            or self.size < 0
+            or type(self.sha256) is not str
+            or len(self.sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.sha256)
+        ):
+            raise ValueError("remapped smoke compile artifact is invalid")
+
+
+@dataclass(frozen=True)
 class CompileResult:
     status: Literal["compiled", "failed"]
     returncode: int
     compiled_bytes: int
+    artifacts: tuple[CompileArtifact, ...]
     artifact_sha256: str
     log_sha256: str
+    input_sha256: str
 
     def __post_init__(self) -> None:
         if (
@@ -82,32 +116,229 @@ class CompileResult:
             or (self.status == "compiled") != (self.returncode == 0)
             or type(self.compiled_bytes) is not int
             or self.compiled_bytes < 0
+            or type(self.artifacts) is not tuple
+            or any(not isinstance(item, CompileArtifact) for item in self.artifacts)
+            or self.compiled_bytes != sum(item.size for item in self.artifacts)
+            or len({item.path for item in self.artifacts}) != len(self.artifacts)
             or any(
                 type(value) is not str
                 or len(value) != 64
                 or value != value.casefold()
                 or any(character not in "0123456789abcdef" for character in value)
-                for value in (self.artifact_sha256, self.log_sha256)
+                for value in (self.artifact_sha256, self.log_sha256, self.input_sha256)
             )
         ):
             raise ValueError("remapped smoke compile result is invalid")
 
 
-Compiler = Callable[[SmokeCase, RemappedTopologyProof], CompileResult]
+@dataclass(frozen=True)
+class PairedCompileResult:
+    status: Literal["compiled", "failed"]
+    source: CompileResult
+    candidate: CompileResult
+    delta_bytes: int | None
+    reduction_ratio: float | None
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        compiled = self.source.status == self.candidate.status == "compiled"
+        if (
+            self.status not in {"compiled", "failed"}
+            or not isinstance(self.source, CompileResult)
+            or not isinstance(self.candidate, CompileResult)
+            or (self.status == "compiled") != compiled
+            or (compiled and type(self.delta_bytes) is not int)
+            or (not compiled and self.delta_bytes is not None)
+            or (compiled and self.source.compiled_bytes <= 0)
+            or (
+                compiled
+                and self.delta_bytes
+                != self.source.compiled_bytes - self.candidate.compiled_bytes
+            )
+            or (compiled and type(self.reduction_ratio) is not float)
+            or (not compiled and self.reduction_ratio is not None)
+            or (
+                compiled
+                and self.reduction_ratio
+                != 1.0 - self.candidate.compiled_bytes / self.source.compiled_bytes
+            )
+            or type(self.evidence_sha256) is not str
+            or len(self.evidence_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.evidence_sha256)
+            or self.evidence_sha256 != _seal({
+                "status": self.status,
+                "source": asdict(self.source),
+                "candidate": asdict(self.candidate),
+                "delta_bytes": self.delta_bytes,
+                "reduction_ratio": self.reduction_ratio,
+            })
+        ):
+            raise ValueError("remapped paired compile result is invalid")
 
 
-def _not_run() -> dict[str, object]:
+def pair_compile_results(
+    source: CompileResult, candidate: CompileResult,
+) -> PairedCompileResult:
+    if not isinstance(source, CompileResult) or not isinstance(candidate, CompileResult):
+        raise TypeError("remapped compile pair inputs are invalid")
+    compiled = source.status == candidate.status == "compiled"
+    if compiled and source.compiled_bytes <= 0:
+        raise ValueError("remapped compiled source is empty")
+    delta = source.compiled_bytes - candidate.compiled_bytes if compiled else None
+    reduction = 1.0 - candidate.compiled_bytes / source.compiled_bytes if compiled else None
+    values = {
+        "status": "compiled" if compiled else "failed",
+        "source": asdict(source),
+        "candidate": asdict(candidate),
+        "delta_bytes": delta,
+        "reduction_ratio": reduction,
+    }
+    return PairedCompileResult(
+        status=values["status"],
+        source=source,
+        candidate=candidate,
+        delta_bytes=delta,
+        reduction_ratio=reduction,
+        evidence_sha256=_seal(values),
+    )
+
+
+Compiler = Callable[[SmokeCase, RemappedTopologyProof], PairedCompileResult]
+
+
+def _compile_not_run() -> dict[str, object]:
     return {
         "status": "not-run",
-        "returncode": None,
-        "compiled_bytes": None,
-        "artifact_sha256": None,
-        "log_sha256": None,
+        "source": None,
+        "candidate": None,
+        "delta_bytes": None,
+        "reduction_ratio": None,
+        "evidence_sha256": None,
     }
 
 
+def _render_not_run() -> dict[str, object]:
+    return {
+        "status": "not-run",
+        "quality_status": "unverified",
+        "quality_claim": None,
+        "evidence_sha256": None,
+    }
+
+
+_ANGLES = ("front", "back", "left", "right", "top", "bottom", "iso1", "iso2")
+
+
+def _percentile(values: list[int], percentile: float) -> int:
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(len(ordered) * percentile) - 1)]
+
+
+def _render_evidence(
+    case: SmokeCase,
+    proof: RemappedTopologyProof,
+    *,
+    render_root: Path,
+    renderer: Path,
+    render_script: Path,
+) -> dict[str, object]:
+    if (
+        _hash_file(case.source) != proof.source_sha256
+        or _hash_file(case.output) != proof.output_sha256
+    ):
+        raise RuntimeError("remapped render inputs changed after structural validation")
+    case_root = (render_root / case.name).resolve()
+    summary_path = case_root / "preview_summary.json"
+    if not summary_path.is_file():
+        raise ValueError("remapped smoke render summary is missing")
+    summary_bytes = summary_path.read_bytes()
+    if len(summary_bytes) > 1024 * 1024:
+        raise ValueError("remapped smoke render summary exceeds byte cap")
+    summary = json.loads(summary_bytes.decode("utf-8"))
+    if type(summary) is not dict or set(summary) != {"angles", "size", "before", "after"}:
+        raise ValueError("remapped smoke render summary fields are invalid")
+    if summary["angles"] != list(_ANGLES) or type(summary["size"]) is not int:
+        raise ValueError("remapped smoke render matrix is invalid")
+    size = summary["size"]
+    if not 1 <= size <= 4096:
+        raise ValueError("remapped smoke render size is invalid")
+    for side, expected_path, expected_triangles, directory in (
+        ("before", case.source, proof.triangles_before, "original"),
+        ("after", case.output, proof.triangles_after, "optimized"),
+    ):
+        value = summary[side]
+        expected_images = {angle: f"{directory}/{angle}.png" for angle in _ANGLES}
+        if (
+            type(value) is not dict
+            or set(value) != {"file", "files", "tris", "images"}
+            or Path(value["file"]).expanduser().resolve() != expected_path
+            or value["files"] != [value["file"]]
+            or value["tris"] != expected_triangles
+            or value["images"] != expected_images
+        ):
+            raise ValueError("remapped smoke render side binding is invalid")
+    views = []
+    for angle in _ANGLES:
+        source_path = (case_root / "original" / f"{angle}.png").resolve()
+        candidate_path = (case_root / "optimized" / f"{angle}.png").resolve()
+        if source_path.parent != case_root / "original" or candidate_path.parent != case_root / "optimized":
+            raise ValueError("remapped smoke render path escaped case root")
+        try:
+            with Image.open(source_path) as image:
+                source_image = image.convert("RGB")
+                source_image.load()
+            with Image.open(candidate_path) as image:
+                candidate_image = image.convert("RGB")
+                candidate_image.load()
+        except (OSError, ValueError, UnidentifiedImageError) as exc:
+            raise ValueError("remapped smoke render image is invalid") from exc
+        if source_image.size != (size, size) or candidate_image.size != (size, size):
+            raise ValueError("remapped smoke render dimensions are invalid")
+        source_pixels = tuple(source_image.get_flattened_data())
+        candidate_pixels = tuple(candidate_image.get_flattened_data())
+        per_pixel = []
+        channel_total = 0
+        for source_pixel, candidate_pixel in zip(source_pixels, candidate_pixels):
+            differences = tuple(abs(left - right) for left, right in zip(source_pixel, candidate_pixel))
+            per_pixel.append(max(differences))
+            channel_total += sum(differences)
+        changed = sum(value > 0 for value in per_pixel)
+        view = {
+            "angle": angle,
+            "source_sha256": _hash_file(source_path),
+            "candidate_sha256": _hash_file(candidate_path),
+            "changed_pixels": changed,
+            "changed_pixel_fraction": changed / len(per_pixel),
+            "mean_abs_channel_delta_8bit": channel_total / (len(per_pixel) * 3),
+            "p95_max_channel_delta": _percentile(per_pixel, 0.95),
+            "p99_max_channel_delta": _percentile(per_pixel, 0.99),
+            "max_channel_delta": max(per_pixel),
+        }
+        views.append(view)
+    payload: dict[str, object] = {
+        "status": "rendered",
+        "quality_status": "unverified",
+        "quality_claim": None,
+        "renderer_sha256": _hash_file(renderer),
+        "render_script_sha256": _hash_file(render_script),
+        "summary_sha256": _hash(summary_bytes),
+        "source_sha256": proof.source_sha256,
+        "candidate_sha256": proof.output_sha256,
+        "angles": list(_ANGLES),
+        "size": size,
+        "views": views,
+    }
+    payload["evidence_sha256"] = _seal(payload)
+    return payload
+
+
 def run_smoke_cases(
-    cases: Sequence[SmokeCase], *, compiler: Compiler | None = None,
+    cases: Sequence[SmokeCase],
+    *,
+    compiler: Compiler | None = None,
+    render_root: Path | None = None,
+    renderer: Path | None = None,
+    render_script: Path | None = None,
 ) -> dict[str, object]:
     frozen = tuple(cases)
     if not frozen or any(not isinstance(case, SmokeCase) for case in frozen):
@@ -116,6 +347,17 @@ def run_smoke_cases(
         raise ValueError("remapped smoke case names are duplicated")
     if compiler is not None and not callable(compiler):
         raise TypeError("remapped smoke compiler is invalid")
+    render_values = (render_root, renderer, render_script)
+    if any(value is not None for value in render_values) != all(
+        value is not None for value in render_values
+    ):
+        raise ValueError("remapped smoke render evidence inputs are incomplete")
+    if render_root is not None:
+        render_root = Path(render_root).expanduser().resolve()
+        renderer = Path(renderer).expanduser().resolve()
+        render_script = Path(render_script).expanduser().resolve()
+        if not render_root.is_dir() or not renderer.is_file() or not render_script.is_file():
+            raise ValueError("remapped smoke render evidence inputs are unavailable")
     records = []
     for case in frozen:
         if case.source.stat().st_size > MAX_TEXT_BYTES or case.output.stat().st_size > MAX_TEXT_BYTES:
@@ -146,20 +388,36 @@ def run_smoke_cases(
                 "structural_status": "rejected",
                 "rejection_reason": f"{type(exc).__name__}: {exc}",
                 "proof": None,
-                "compile": _not_run(),
+                "compile": _compile_not_run(),
+                "render": _render_not_run(),
             })
         else:
-            compile_payload = _not_run()
+            compile_payload = _compile_not_run()
             if compiler is not None:
                 result = compiler(case, proof)
-                if not isinstance(result, CompileResult):
+                if not isinstance(result, PairedCompileResult):
                     raise TypeError("remapped smoke compiler returned an invalid result")
+                if (
+                    result.source.input_sha256 != proof.source_sha256
+                    or result.candidate.input_sha256 != proof.output_sha256
+                ):
+                    raise RuntimeError("remapped compile pair is not bound to structural proof")
                 compile_payload = asdict(result)
+            render_payload = _render_not_run()
+            if render_root is not None:
+                render_payload = _render_evidence(
+                    case,
+                    proof,
+                    render_root=render_root,
+                    renderer=renderer,
+                    render_script=render_script,
+                )
             record.update({
                 "structural_status": "passed",
                 "rejection_reason": None,
                 "proof": remapped_topology_proof_payload(proof),
                 "compile": compile_payload,
+                "render": render_payload,
             })
         records.append(record)
     payload: dict[str, object] = {
@@ -189,13 +447,21 @@ class StudioMdlCompiler:
         if not self.work_root.is_dir():
             raise ValueError("remapped smoke compile work root is unavailable")
 
-    def __call__(self, case: SmokeCase, proof: RemappedTopologyProof) -> CompileResult:
-        if not isinstance(case, SmokeCase) or not isinstance(proof, RemappedTopologyProof):
-            raise TypeError("remapped smoke compile inputs are invalid")
-        run = Path(tempfile.mkdtemp(prefix=f"{case.name}-", dir=self.work_root))
+    def _compile(
+        self,
+        case: SmokeCase,
+        side: str,
+        source_path: Path,
+        expected_sha256: str,
+    ) -> CompileResult:
+        run = Path(tempfile.mkdtemp(prefix=f"{case.name}-{side}-", dir=self.work_root))
+        source_bytes = source_path.read_bytes()
+        input_sha256 = _hash(source_bytes)
+        if input_sha256 != expected_sha256:
+            raise RuntimeError("remapped smoke input changed after structural validation")
         source = run / "source.smd"
-        shutil.copyfile(case.output, source)
-        source_text = case.output.read_bytes().decode("utf-8")
+        source.write_bytes(source_bytes)
+        source_text = source_bytes.decode("utf-8")
         lines = source_text.splitlines(keepends=True)
         triangle_index = next(
             (index for index, line in enumerate(lines) if line.strip().casefold() == "triangles"),
@@ -232,31 +498,61 @@ class StudioMdlCompiler:
         )
         log = run / "smoke_compile.log"
         log.write_bytes(completed.stdout)
-        artifacts = []
+        artifacts: list[CompileArtifact] = []
+        artifact_bytes: dict[str, bytes] = {}
         model_root = compiled / "models"
         if model_root.is_dir():
             for path in sorted(
-                (
-                    item for item in model_root.rglob("*")
-                    if item.is_file() and item.suffix.casefold() in {".mdl", ".vvd", ".vtx", ".phy", ".ani"}
-                ),
+                (item for item in model_root.rglob("*") if item.is_file()),
                 key=lambda item: item.relative_to(model_root).as_posix(),
             ):
                 data = path.read_bytes()
-                artifacts.append({
-                    "path": path.relative_to(model_root).as_posix(),
-                    "size": len(data),
-                    "sha256": _hash(data),
-                })
-        has_mdl = any(item["path"].casefold().endswith(".mdl") for item in artifacts)
-        succeeded = completed.returncode == 0 and has_mdl
+                relative = path.relative_to(model_root).as_posix()
+                artifact_bytes[relative] = data
+                artifacts.append(CompileArtifact(relative, len(data), _hash(data)))
+        prefix = f"maximum/remapped/{case.name}"
+        expected = {
+            f"{prefix}.mdl",
+            f"{prefix}.vvd",
+            f"{prefix}.dx80.vtx",
+            f"{prefix}.dx90.vtx",
+        }
+        coherent = False
+        if set(artifact_bytes) == expected:
+            mdl = artifact_bytes[f"{prefix}.mdl"]
+            vvd = artifact_bytes[f"{prefix}.vvd"]
+            dx80 = artifact_bytes[f"{prefix}.dx80.vtx"]
+            dx90 = artifact_bytes[f"{prefix}.dx90.vtx"]
+            coherent = (
+                len(mdl) >= 408
+                and mdl[:4] == b"IDST"
+                and struct.unpack_from("<I", mdl, 4)[0] == 48
+                and len(vvd) >= 64
+                and vvd[:4] == b"IDSV"
+                and struct.unpack_from("<I", vvd, 4)[0] == 4
+                and len(dx80) >= 36
+                and len(dx90) >= 36
+                and struct.unpack_from("<I", dx80, 0)[0] == 7
+                and struct.unpack_from("<I", dx90, 0)[0] == 7
+                and mdl[8:12] == vvd[8:12] == dx80[16:20] == dx90[16:20]
+            )
+        succeeded = completed.returncode == 0 and coherent
         return CompileResult(
             status="compiled" if succeeded else "failed",
             returncode=completed.returncode if completed.returncode != 0 or succeeded else -1,
-            compiled_bytes=sum(item["size"] for item in artifacts),
-            artifact_sha256=_seal({"artifacts": artifacts}),
+            compiled_bytes=sum(item.size for item in artifacts),
+            artifacts=tuple(artifacts),
+            artifact_sha256=_seal({"artifacts": [asdict(item) for item in artifacts]}),
             log_sha256=_hash(completed.stdout),
+            input_sha256=input_sha256,
         )
+
+    def __call__(self, case: SmokeCase, proof: RemappedTopologyProof) -> PairedCompileResult:
+        if not isinstance(case, SmokeCase) or not isinstance(proof, RemappedTopologyProof):
+            raise TypeError("remapped smoke compile inputs are invalid")
+        source = self._compile(case, "source", case.source, proof.source_sha256)
+        candidate = self._compile(case, "candidate", case.output, proof.output_sha256)
+        return pair_compile_results(source, candidate)
 
 
 def _case(value: str) -> SmokeCase:
@@ -274,17 +570,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--case", action="append", type=_case, required=True)
     parser.add_argument("--studiomdl")
     parser.add_argument("--compile-work-root")
+    parser.add_argument("--render-root")
+    parser.add_argument("--renderer")
+    parser.add_argument("--render-script", default=str(ROOT / "render_previews.py"))
     parser.add_argument("--output-json")
     args = parser.parse_args(argv)
     if bool(args.studiomdl) != bool(args.compile_work_root):
         parser.error("--studiomdl and --compile-work-root must be provided together")
+    if bool(args.render_root) != bool(args.renderer):
+        parser.error("--render-root and --renderer must be provided together")
     compiler = None
     if args.studiomdl:
         compiler = StudioMdlCompiler(
             studiomdl=Path(args.studiomdl),
             work_root=Path(args.compile_work_root),
         )
-    payload = run_smoke_cases(tuple(args.case), compiler=compiler)
+    render_values = {}
+    if args.render_root:
+        render_values = {
+            "render_root": Path(args.render_root),
+            "renderer": Path(args.renderer),
+            "render_script": Path(args.render_script),
+        }
+    payload = run_smoke_cases(tuple(args.case), compiler=compiler, **render_values)
     rendered = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     if args.output_json:
         destination = Path(args.output_json).expanduser().resolve()
