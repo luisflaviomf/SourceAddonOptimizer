@@ -21,7 +21,7 @@ from maximum_optimizer.visual_remapped_source_runner import (
     visual_remapped_source_request_payload,
 )
 from tests.maximum_optimizer.test_task6_direct_builder import _request
-from tests.maximum_optimizer.test_remapped_topology import _fan_source
+from tests.maximum_optimizer.test_remapped_topology import _corner, _fan_source
 from tests.maximum_optimizer.test_visual_remapped_topology import _boundary_change
 
 
@@ -37,11 +37,13 @@ class FakeVisualBlender:
     def __init__(
         self, *, returncode: int = 0, output_text: str | None = None,
         mutate_tool: Path | None = None, metrics_strategy: str | None = None,
+        elapsed_seconds: float = 0.01,
     ) -> None:
         self.returncode = returncode
         self.output_text = output_text
         self.mutate_tool = mutate_tool
         self.metrics_strategy = metrics_strategy
+        self.elapsed_seconds = elapsed_seconds
         self.commands: list[tuple[str, ...]] = []
 
     def __call__(self, command, cwd, log_path, cancel_event):
@@ -96,7 +98,9 @@ class FakeVisualBlender:
         Path(log_path).write_text("fake visual blender\n", encoding="utf-8")
         if self.mutate_tool is not None:
             self.mutate_tool.write_bytes(b"mutated")
-        return ProcessResult(normalized, self.returncode, 0.01, Path(log_path))
+        return ProcessResult(
+            normalized, self.returncode, self.elapsed_seconds, Path(log_path)
+        )
 
 
 class VisualRemappedSourceRunnerTests(unittest.TestCase):
@@ -246,7 +250,31 @@ class VisualRemappedSourceRunnerTests(unittest.TestCase):
             )
         self.assertFalse((self.root / "toctou.smd").exists())
 
-    def test_symlink_budget_collision_and_replaced_root_fail_closed(self) -> None:
+    def test_tools_and_work_root_are_pinned_at_configuration_time(self) -> None:
+        process = FakeVisualBlender()
+        tools = self.tools(process)
+        self.meshopt.write_bytes(b"changed-before-call")
+        with self.assertRaisesRegex(ValueError, "pin changed"):
+            BlenderVisualRemappedSourceRunner(tools)(
+                self.input, self.root / "stale-tool.smd", self.request,
+                threading.Event(),
+            )
+        self.assertEqual(process.commands, [])
+        self.meshopt.write_bytes(b"meshopt")
+
+        process = FakeVisualBlender()
+        tools = self.tools(process)
+        detached = self.root / "detached-work"
+        os.rename(self.work_root, detached)
+        self.work_root.mkdir()
+        with self.assertRaisesRegex(ValueError, "pin changed"):
+            BlenderVisualRemappedSourceRunner(tools)(
+                self.input, self.root / "stale-root.smd", self.request,
+                threading.Event(),
+            )
+        self.assertEqual(process.commands, [])
+
+    def test_symlink_artifact_fails_closed_when_platform_allows_it(self) -> None:
         base = FakeVisualBlender()
 
         def unsafe(command, cwd, log_path, event):
@@ -262,6 +290,8 @@ class VisualRemappedSourceRunnerTests(unittest.TestCase):
             BlenderVisualRemappedSourceRunner(self.tools(unsafe))(
                 self.input, self.root / "unsafe.smd", self.request, threading.Event(),
             )
+
+    def test_budget_collision_and_replaced_root_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "budget"):
             BlenderVisualRemappedSourceRunner(self.tools(
                 FakeVisualBlender(), max_artifact_files=3,
@@ -294,6 +324,149 @@ class VisualRemappedSourceRunnerTests(unittest.TestCase):
             )
         self.assertEqual((state["run_root"] / "foreign.marker").read_bytes(), b"preserve")
         self.assertTrue(state["owned"].is_dir())
+
+    def test_timeout_malformed_metrics_provenance_and_transfer_fail_closed(self) -> None:
+        with self.assertRaises(ProcessCancelledError):
+            BlenderVisualRemappedSourceRunner(self.tools(
+                FakeVisualBlender(elapsed_seconds=2.0), max_process_seconds=1.0,
+            ))(self.input, self.root / "timeout.smd", self.request, threading.Event())
+
+        mutations = {
+            "malformed": None,
+            "provenance": ("provenance", "output_sha256", "f" * 64),
+            "transfer": ("files", "transfer", "direct-v1"),
+        }
+        for name, mutation in mutations.items():
+            process = FakeVisualBlender()
+
+            def corrupt(command, cwd, log_path, event, *, process=process, mutation=mutation):
+                result = process(command, cwd, log_path, event)
+                root = Path(command[command.index("--") + 1])
+                path = root / "candidate_metrics.json"
+                if mutation is None:
+                    path.write_bytes(b"{")
+                else:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    section, field, value = mutation
+                    if section == "provenance":
+                        payload["provenance"][0][field] = value
+                    else:
+                        payload["files"][0]["objects"][0][field] = value
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                return result
+
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                BlenderVisualRemappedSourceRunner(self.tools(corrupt))(
+                    self.input, self.root / f"{name}.smd", self.request,
+                    threading.Event(),
+                )
+            self.assertFalse((self.root / f"{name}.smd").exists())
+
+    def test_source_and_output_mutation_and_structural_regression_never_publish(self) -> None:
+        changed = self.source_bytes + b"\n"
+        self.input.write_bytes(changed)
+        with self.assertRaisesRegex(ValueError, "input byte proof"):
+            BlenderVisualRemappedSourceRunner(self.tools(FakeVisualBlender()))(
+                self.input, self.root / "changed-input.smd", self.request,
+                threading.Event(),
+            )
+        self.input.write_bytes(self.source_bytes)
+
+        import maximum_optimizer.visual_remapped_source_runner as runner_module
+        real_copy = runner_module._copy_file_no_follow
+
+        def mutate_before_copy(source, destination, event, **kwargs):
+            Path(source).write_bytes(changed)
+            return real_copy(source, destination, event, **kwargs)
+
+        with mock.patch(
+            "maximum_optimizer.visual_remapped_source_runner._copy_file_no_follow",
+            side_effect=mutate_before_copy,
+        ), self.assertRaisesRegex(ValueError, "changed during snapshot"):
+            BlenderVisualRemappedSourceRunner(self.tools(FakeVisualBlender()))(
+                self.input, self.root / "source-toctou.smd", self.request,
+                threading.Event(),
+            )
+        self.input.write_bytes(self.source_bytes)
+
+        bad_output = _boundary_change().replace(
+            _corner("a"),
+            _corner("a").replace(" 0 0 0 ", " 0.25 0 0 ", 1),
+            1,
+        )
+        with self.assertRaises(RuntimeError):
+            BlenderVisualRemappedSourceRunner(self.tools(
+                FakeVisualBlender(output_text=bad_output),
+            ))(self.input, self.root / "structural.smd", self.request, threading.Event())
+
+        real_publish = runner_module._publish_no_replace
+
+        def mutate_before_publish(source, destination, event, **kwargs):
+            Path(source).write_bytes(b"mutated")
+            return real_publish(source, destination, event, **kwargs)
+
+        with mock.patch(
+            "maximum_optimizer.visual_remapped_source_runner._publish_no_replace",
+            side_effect=mutate_before_publish,
+        ), self.assertRaisesRegex(ValueError, "publication differs"):
+            BlenderVisualRemappedSourceRunner(self.tools(FakeVisualBlender()))(
+                self.input, self.root / "output-toctou.smd", self.request,
+                threading.Event(),
+            )
+        self.assertFalse((self.root / "output-toctou.smd").exists())
+
+    def test_resealed_artifact_role_lie_is_rejected(self) -> None:
+        evidence = BlenderVisualRemappedSourceRunner(
+            self.tools(FakeVisualBlender())
+        )(self.input, self.root / "candidate.smd", self.request, threading.Event()).evidence
+        payload = visual_remapped_source_evidence_payload(evidence)
+        source = next(
+            item for item in payload["artifacts"]
+            if item["relative_path"] == "source.smd"
+        )
+        source["kind"] = "auxiliary"
+        _reseal(payload, "evidence_sha256")
+
+        with self.assertRaisesRegex(ValueError, "relationships"):
+            visual_remapped_source_evidence_from_payload(payload)
+
+        payload = visual_remapped_source_evidence_payload(evidence)
+        payload["artifacts"] = [
+            item for item in payload["artifacts"]
+            if item["relative_path"] != "candidate_metrics.json"
+        ]
+        _reseal(payload, "evidence_sha256")
+        with self.assertRaisesRegex(ValueError, "relationships"):
+            visual_remapped_source_evidence_from_payload(payload)
+
+    def test_post_process_cancel_and_publication_collision_preserve_external_bytes(self) -> None:
+        event = threading.Event()
+        base = FakeVisualBlender()
+
+        def cancel_after_process(command, cwd, log_path, deadline):
+            result = base(command, cwd, log_path, deadline)
+            event.set()
+            return result
+
+        with self.assertRaises(ProcessCancelledError):
+            BlenderVisualRemappedSourceRunner(self.tools(cancel_after_process))(
+                self.input, self.root / "post-cancel.smd", self.request, event,
+            )
+        self.assertFalse((self.root / "post-cancel.smd").exists())
+
+        collision = self.root / "racing-output.smd"
+        base = FakeVisualBlender()
+
+        def collide_after_process(command, cwd, log_path, deadline):
+            result = base(command, cwd, log_path, deadline)
+            collision.write_bytes(b"foreign")
+            return result
+
+        with self.assertRaises(FileExistsError):
+            BlenderVisualRemappedSourceRunner(self.tools(collide_after_process))(
+                self.input, collision, self.request, threading.Event(),
+            )
+        self.assertEqual(collision.read_bytes(), b"foreign")
 
 
 if __name__ == "__main__":

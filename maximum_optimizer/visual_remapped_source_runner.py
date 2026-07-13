@@ -279,6 +279,15 @@ def _artifact_payload(value: SourceFileProof) -> dict[str, object]:
     }
 
 
+def _expected_artifact_kind(relative_path: str) -> str:
+    folded = relative_path.casefold()
+    if folded.endswith(".qc"):
+        return "qc"
+    if folded in {"source.smd", "output/source_opt.smd"}:
+        return "visual-source"
+    return "auxiliary"
+
+
 @dataclass(frozen=True)
 class VisualRemappedSourceEvidence:
     schema: Literal[1]
@@ -313,6 +322,11 @@ class VisualRemappedSourceEvidence:
             raise ValueError("visual remapped source evidence cache digest is stale")
         artifacts = tuple(self.artifacts)
         artifact_keys = tuple(item.relative_path for item in artifacts)
+        required_artifacts = {
+            "blender.log", "candidate.json", "candidate_metrics.json",
+            "maximum_region_manifest.json", "model.qc",
+            "output/source_opt.smd", "source.smd",
+        }
         artifact_by_path = {item.relative_path: item for item in artifacts}
         output_artifact = artifact_by_path.get("output/source_opt.smd")
         source_artifact = artifact_by_path.get("source.smd")
@@ -349,6 +363,12 @@ class VisualRemappedSourceEvidence:
             or any(not isinstance(item, SourceFileProof) for item in artifacts)
             or artifact_keys != tuple(sorted(artifact_keys))
             or len(set(artifact_keys)) != len(artifact_keys)
+            or not required_artifacts.issubset(artifact_keys)
+            or any(
+                item.file_identity != item.relative_path
+                or item.kind != _expected_artifact_kind(item.relative_path)
+                for item in artifacts
+            )
             or len(artifacts) > _MAX_ARTIFACT_FILES
             or sum(item.size for item in artifacts) > _MAX_ARTIFACT_BYTES
             or source_artifact is None
@@ -439,6 +459,14 @@ class VisualRemappedRunnerTools:
     max_artifact_files: int = _MAX_ARTIFACT_FILES
     max_artifact_bytes: int = _MAX_ARTIFACT_BYTES
     max_process_seconds: float = _MAX_PROCESS_SECONDS
+    _root_pins: tuple[tuple[int, int, int], tuple[int, int, int]] = field(
+        init=False, repr=False, compare=False,
+    )
+    _tool_pins: tuple[
+        tuple[int, int, int, int],
+        tuple[int, int, int, int],
+        tuple[int, int, int, int],
+    ] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for name in ("blender_exe", "repo_root", "meshopt_dll", "work_root"):
@@ -464,10 +492,32 @@ class VisualRemappedRunnerTools:
             or _has_reparse_ancestor(self.work_root)
         ):
             raise ValueError("visual remapped runner roots are unavailable or unsafe")
-        _directory_identity(self.work_root)
-        _regular_identity(self.blender_exe)
-        _regular_identity(self.meshopt_dll)
-        _regular_identity(self.repo_root / "batch_optimize_maximum.py")
+        object.__setattr__(self, "_root_pins", (
+            _directory_identity(self.repo_root),
+            _directory_identity(self.work_root),
+        ))
+        object.__setattr__(self, "_tool_pins", (
+            _regular_identity(self.blender_exe),
+            _regular_identity(self.repo_root / "batch_optimize_maximum.py"),
+            _regular_identity(self.meshopt_dll),
+        ))
+
+
+def _assert_tool_and_root_pins(tools: VisualRemappedRunnerTools) -> None:
+    try:
+        roots = (
+            _directory_identity(tools.repo_root),
+            _directory_identity(tools.work_root),
+        )
+        files = (
+            _regular_identity(tools.blender_exe),
+            _regular_identity(tools.repo_root / "batch_optimize_maximum.py"),
+            _regular_identity(tools.meshopt_dll),
+        )
+    except (OSError, ValueError) as exc:
+        raise ValueError("visual remapped runner pin changed") from exc
+    if roots != tools._root_pins or files != tools._tool_pins:
+        raise ValueError("visual remapped runner pin changed")
 
 
 def _toolchain_proof(
@@ -656,6 +706,7 @@ class BlenderVisualRemappedSourceRunner:
             raise ValueError("visual remapped source runner strategy is invalid")
         event = cancel_event or threading.Event()
         _cancel(event, "visual remapped source runner cancelled before preflight")
+        _assert_tool_and_root_pins(self.tools)
         source = _abspath(input_path)
         destination = _abspath(output_path)
         if (
@@ -756,6 +807,7 @@ class BlenderVisualRemappedSourceRunner:
                 )
             if _directory_identity(run_root) != ownership:
                 raise ValueError("visual remapped runner root changed during process")
+            _assert_tool_and_root_pins(self.tools)
             if _toolchain_proof(self.tools, event) != initial_tools:
                 raise ValueError("visual remapped runner tool changed during process")
             optimized = run_root / "output" / "source_opt.smd"
@@ -799,6 +851,7 @@ class BlenderVisualRemappedSourceRunner:
                 raise ValueError("visual remapped runner artifacts changed before publication")
             if _toolchain_proof(self.tools, event) != initial_tools:
                 raise ValueError("visual remapped runner tool changed before publication")
+            _assert_tool_and_root_pins(self.tools)
             _cancel(event, "visual remapped source runner cancelled before publication")
             _publish_no_replace(
                 optimized, destination, event, source_root=run_root,
