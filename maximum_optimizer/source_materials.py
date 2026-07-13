@@ -6,6 +6,7 @@ import os
 import re
 import stat
 import uuid
+import weakref
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -25,6 +26,11 @@ from .smd_contract import direct_smd_material_counts
 from .source_union import (
     _quarantine_cleanup_if_owned, _workspace_root_identity,
 )
+from .visual_validation import (
+    MATERIAL_EVIDENCE_FIELDS,
+    MATERIAL_RESOLUTION_RULE,
+    SUPPORTED_MATERIAL_SHADERS,
+)
 
 
 _HASH = re.compile(r"[0-9a-f]{64}")
@@ -38,7 +44,9 @@ _MAX_SEARCH_PATHS = 64
 _MAX_DUPLICATE_DIRECTIVES = 64
 _MAX_IGNORED_VALUES = 64
 _MAX_DUPLICATE_VALUES_TOTAL = 1024
-_CURRENT_MATERIAL_AUTHORITY = object()
+_MAX_AUTHORIZATION_JSON_CHARS = 32 * 1024 * 1024
+_CURRENT_MATERIAL_ISSUER = object()
+_ISSUED_MATERIAL_AUTHORIZATIONS: dict[int, tuple[object, str, str, str]] = {}
 
 
 def _cancel(event, message: str) -> None:
@@ -345,21 +353,142 @@ class SourceUnionMaterialContract:
         object.__setattr__(self, "bindings", bindings)
 
 
-@dataclass(frozen=True)
 class CurrentSourceUnionMaterialAuthorization:
-    material_contract_sha256: str
-    _render_evidence_json: str
-    _authority: object
+    __slots__ = (
+        "_material_contract_sha256", "_render_evidence_json",
+        "_authorization_sha256", "__weakref__",
+    )
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self, issuer: object, material_contract_sha256: str,
+        render_evidence_json: str, authorization_sha256: str,
+    ) -> None:
+        if issuer is not _CURRENT_MATERIAL_ISSUER:
+            raise TypeError("source-union material authorization is issued internally")
+        object.__setattr__(self, "_material_contract_sha256", material_contract_sha256)
+        object.__setattr__(self, "_render_evidence_json", render_evidence_json)
+        object.__setattr__(self, "_authorization_sha256", authorization_sha256)
+
+    def __setattr__(self, name, value) -> None:
+        raise AttributeError("source-union material authorization is immutable")
+
+    @property
+    def material_contract_sha256(self) -> str:
+        return self._material_contract_sha256
+
+    @property
+    def authorization_sha256(self) -> str:
+        return self._authorization_sha256
+
+
+def _validated_render_evidence_json(value: str) -> tuple[dict[str, object], ...]:
+    if type(value) is not str or len(value) > _MAX_AUTHORIZATION_JSON_CHARS:
+        raise ValueError("source-union current material evidence is invalid")
+    try:
+        raw = json.loads(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("source-union current material evidence is invalid") from exc
+    if (
+        type(raw) is not list or not 0 < len(raw) <= _MAX_BINDINGS
+        or canonical_json(raw) != value
+    ):
+        raise ValueError("source-union current material evidence is invalid")
+    identities: set[str] = set()
+    for evidence in raw:
+        if type(evidence) is not dict or set(evidence) != MATERIAL_EVIDENCE_FIELDS:
+            raise ValueError("source-union current material evidence fields are invalid")
+        identity = _relative(
+            evidence["material_identity"], "source-union material evidence identity",
+        )
+        indices = (
+            evidence["root_index"], evidence["search_path_index"],
+            evidence["vtf_root_index"],
+        )
+        duplicates = evidence["duplicate_root_directives"]
         if (
-            self._authority is not _CURRENT_MATERIAL_AUTHORITY
-            or type(self.material_contract_sha256) is not str
-            or len(self.material_contract_sha256) != 64
-            or _HASH.fullmatch(self.material_contract_sha256) is None
-            or type(self._render_evidence_json) is not str
+            identity.casefold() in identities
+            or evidence["resolution_rule"] != MATERIAL_RESOLUTION_RULE
+            or any(type(item) is not int or item < 0 for item in indices)
+            or any(
+                type(evidence[name]) is not str or len(evidence[name]) != 64
+                or _HASH.fullmatch(evidence[name]) is None
+                for name in ("vmt_sha256", "vtf_sha256")
+            )
+            or evidence["shader"] not in SUPPORTED_MATERIAL_SHADERS
+            or evidence["texture_directive"] != (
+                "$refracttinttexture"
+                if evidence["shader"] == "refract" else "$basetexture"
+            )
+            or type(evidence["uses_texture_alpha"]) is not bool
+            or (evidence["shader"] == "refract" and evidence["uses_texture_alpha"] is not True)
+            or type(duplicates) is not list
+            or len(duplicates) > _MAX_DUPLICATE_DIRECTIVES
         ):
-            raise ValueError("source-union current material authorization is invalid")
+            raise ValueError("source-union current material evidence is invalid")
+        identities.add(identity.casefold())
+        total_ignored = 0
+        names = []
+        for duplicate in duplicates:
+            if (
+                type(duplicate) is not dict
+                or set(duplicate) != {"directive", "ignored_values"}
+                or type(duplicate["directive"]) is not str
+                or not duplicate["directive"]
+                or len(duplicate["directive"]) > _MAX_TEXT_CHARS
+                or duplicate["directive"] != duplicate["directive"].casefold()
+                or type(duplicate["ignored_values"]) is not list
+                or not duplicate["ignored_values"]
+                or len(duplicate["ignored_values"]) > _MAX_IGNORED_VALUES
+                or any(
+                    type(item) is not str or not item or len(item) > _MAX_TEXT_CHARS
+                    or any(char in item for char in "\r\n\0")
+                    for item in duplicate["ignored_values"]
+                )
+            ):
+                raise ValueError("source-union current material duplicate evidence is invalid")
+            names.append(duplicate["directive"])
+            total_ignored += len(duplicate["ignored_values"])
+        if (
+            names != sorted(set(names))
+            or total_ignored > _MAX_DUPLICATE_VALUES_TOTAL
+        ):
+            raise ValueError("source-union current material duplicate evidence is invalid")
+    return tuple(raw)
+
+
+def _material_authorization_seal(
+    material_contract_sha256: str, evidence: tuple[dict[str, object], ...],
+) -> str:
+    return hashlib.sha256(canonical_json({
+        "schema": 1,
+        "kind": "current-source-union-material-authorization-v1",
+        "material_contract_sha256": material_contract_sha256,
+        "render_evidence": list(evidence),
+    }).encode()).hexdigest()
+
+
+def _issue_current_material_authorization(
+    contract: SourceUnionMaterialContract,
+) -> CurrentSourceUnionMaterialAuthorization:
+    evidence_json = canonical_json(list(_render_evidence_for_contract(contract)))
+    evidence = _validated_render_evidence_json(evidence_json)
+    seal = _material_authorization_seal(contract.material_contract_sha256, evidence)
+    authorization = CurrentSourceUnionMaterialAuthorization(
+        _CURRENT_MATERIAL_ISSUER, contract.material_contract_sha256,
+        evidence_json, seal,
+    )
+    key = id(authorization)
+
+    def discard(reference) -> None:
+        issued = _ISSUED_MATERIAL_AUTHORIZATIONS.get(key)
+        if issued is not None and issued[0] is reference:
+            _ISSUED_MATERIAL_AUTHORIZATIONS.pop(key, None)
+
+    reference = weakref.ref(authorization, discard)
+    _ISSUED_MATERIAL_AUTHORIZATIONS[key] = (
+        reference, contract.material_contract_sha256, evidence_json, seal,
+    )
+    return authorization
 
 
 def source_union_material_contract_payload(value: SourceUnionMaterialContract) -> dict[str, object]:
@@ -679,12 +808,7 @@ def require_current_source_union_material_contract(
         raise ValueError("source-union current material contract is unavailable") from exc
     if current != contract:
         raise ValueError("source-union current material contract differs")
-    evidence = _render_evidence_for_contract(current)
-    return CurrentSourceUnionMaterialAuthorization(
-        current.material_contract_sha256,
-        canonical_json(list(evidence)),
-        _CURRENT_MATERIAL_AUTHORITY,
-    )
+    return _issue_current_material_authorization(current)
 
 
 def materialize_private_source_union_material_roots(
@@ -770,7 +894,18 @@ def source_union_material_render_evidence(
 ) -> tuple[dict[str, object], ...]:
     if type(authorization) is not CurrentSourceUnionMaterialAuthorization:
         raise TypeError("source-union current material authorization is required")
-    raw = json.loads(authorization._render_evidence_json)
-    if type(raw) is not list or any(type(item) is not dict for item in raw):
-        raise ValueError("source-union current material evidence is invalid")
-    return tuple(raw)
+    issued = _ISSUED_MATERIAL_AUTHORIZATIONS.get(id(authorization))
+    if (
+        issued is None or issued[0]() is not authorization
+        or issued[1] != authorization.material_contract_sha256
+        or issued[2] != authorization._render_evidence_json
+        or issued[3] != authorization.authorization_sha256
+    ):
+        raise ValueError("source-union material authorization was not issued")
+    evidence = _validated_render_evidence_json(authorization._render_evidence_json)
+    expected = _material_authorization_seal(
+        authorization.material_contract_sha256, evidence,
+    )
+    if expected != authorization.authorization_sha256:
+        raise ValueError("source-union material authorization seal differs")
+    return evidence

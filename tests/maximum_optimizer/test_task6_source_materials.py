@@ -336,6 +336,34 @@ class SourceUnionMaterialContractTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             source_union_material_render_evidence(forged)
 
+    def test_current_authorization_cannot_be_copied_or_forged_with_recomputed_seal(self) -> None:
+        contract = self.build()
+        authorization = require_current_source_union_material_contract(
+            contract, filtered_source_bytes=self.filtered,
+            roots=self.roots, cancel_event=threading.Event(),
+        )
+        forged_json = canonical_json([{"forged": True}])
+        forged_seal = hashlib.sha256(canonical_json({
+            "schema": 1,
+            "kind": "current-source-union-material-authorization-v1",
+            "material_contract_sha256": contract.material_contract_sha256,
+            "render_evidence": [{"forged": True}],
+        }).encode()).hexdigest()
+        with self.assertRaises((TypeError, ValueError)):
+            replace(
+                authorization,
+                _render_evidence_json=forged_json,
+                authorization_sha256=forged_seal,
+            )
+        forged = object.__new__(type(authorization))
+        object.__setattr__(
+            forged, "_material_contract_sha256", contract.material_contract_sha256,
+        )
+        object.__setattr__(forged, "_render_evidence_json", forged_json)
+        object.__setattr__(forged, "_authorization_sha256", forged_seal)
+        with self.assertRaises(ValueError):
+            source_union_material_render_evidence(forged)
+
     def test_invalid_request_control_fails_before_any_selected_file_read(self) -> None:
         from maximum_optimizer import source_materials as module
         for searches in (
