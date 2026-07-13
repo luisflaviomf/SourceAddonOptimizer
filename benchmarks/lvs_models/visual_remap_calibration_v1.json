@@ -1,0 +1,281 @@
+{
+  "schema": "maximum-visual-remap-calibration-v1",
+  "schema_version": 1,
+  "quality_status": "research-only-non-authorizing",
+  "authorizing": false,
+  "holdout_consulted": false,
+  "profile_activation_allowed": false,
+  "scope": "Fresh LVS calibration evidence for visual-remapped-source candidates. Results may guide search and provisional caps but cannot authorize a fidelity profile or holdout acceptance.",
+  "metric_semantics": {
+    "aggregation": "maximum across the mandatory textured/clay, bind-pose, eight-angle render matrix",
+    "lower_is_better": [
+      "silhouette_iou",
+      "rgb_mae",
+      "edge_error",
+      "surface_bidirectional_p95",
+      "surface_max",
+      "normal_angle_p95",
+      "uv_error_p95",
+      "skinning_error_p95"
+    ],
+    "whole_state_count_per_family": 9,
+    "png_count_per_whole_family": 288,
+    "focused_png_count_per_target": 32
+  },
+  "tools": {
+    "blender_5_0_1_sha256": "f81d3bca0af0d917e03fdf09255981b2ed0750d3a2815da991ea5425a87f8f7c",
+    "vtfcmd_sha256": "30d185a6df81d0c5d09c7ecda91a3f49ff183c14a2db12aaa845dc88059ee11e",
+    "studiomdl_sha256": "9e40454499890d0de941068f2b47db4d3be69ab7213f95e4d9c09f255a7230cf",
+    "render_previews_py_sha256": "4f6473ef19dc2aaff800a5bcb0063f284da84ccb5a566cbac589a8d9fbe69561",
+    "visual_validation_py_sha256": "5224857bb72104d5f61c4f0d40ca1cf7d79641e2a742b6060610610a6ef0bdc0",
+    "run_visual_states_py_sha256": "3c0c3b3427835719e5d630a59c94fc54bc25cef092f01e17178210640ca58a9f",
+    "batch_compile_opt_qc_py_sha256": "9ae7a78878fd281de99cd3476ce8d1fc8e073b20e8f4897a9df36dc97c3215cc"
+  },
+  "provisional_caps_used_only_for_boundary_search": {
+    "silhouette_iou": 0.04,
+    "rgb_mae": 0.002,
+    "edge_error": 0.078678,
+    "surface_bidirectional_p95": 0.0015,
+    "surface_max": 0.004,
+    "normal_angle_p95": 100.0,
+    "uv_error_p95": 1.0,
+    "skinning_error_p95": 0.0
+  },
+  "hybrids": [
+    {
+      "family_id": "nissan_skyline_gtr32",
+      "classification": "pareto-winner-among-tested-trunk-candidates",
+      "target": {
+        "source_identity": "trunk.smd",
+        "region_key": "r-72fc766c8c0e52afa0fd8ee31b81fb9b8ca31757c291ae6adb2da6caa58cc71f",
+        "source_sha256": "bf67f9402a5c87d416c50ecc33f9b0e984dcf51354f4885a13169654bdc64b12",
+        "old_candidate_sha256": "477379fc32aa115a5c3b33eb9e95adcf30bf677fa63d0a27e24aa3482a76822c",
+        "candidate_sha256": "7e57e4fec4d797b56c37c646646154473c3398f94477469789fbf78568d9f13e",
+        "requested_keep_ratio": 0.6,
+        "visual_remap_error": 0.005,
+        "source_triangles": 1556,
+        "candidate_triangles": 1258,
+        "achieved_keep_ratio": 0.8084832904884319,
+        "achieved_reduction": 0.19151670951156807
+      },
+      "compiled": {
+        "baseline_bytes": 11687140,
+        "old_winner_bytes": 5635015,
+        "candidate_bytes": 5717227,
+        "reduction_from_baseline": 0.510810429241029,
+        "delta_from_old_winner_bytes": 82212,
+        "artifacts": [
+          {"name": "bnr32.dx80.vtx", "size_bytes": 929724, "sha256": "205f4b4e07b6840a15f5997aebb7776b01433ab902d61008c8a6d941cc7297c5"},
+          {"name": "bnr32.dx90.vtx", "size_bytes": 929670, "sha256": "5fb67ff8f22c306b913dde472d3d936bf81c4e7c5e19c133278b871c1ecca2c1"},
+          {"name": "bnr32.mdl", "size_bytes": 164764, "sha256": "518851903616a220197cb629ccea21a56612436d52a4fae21dd3e287fa397fcb"},
+          {"name": "bnr32.phy", "size_bytes": 15629, "sha256": "d70226f8b5050a3424fce15a3033fbe7e469049cbb8a31674f5789b3d0b87af2"},
+          {"name": "bnr32.vvd", "size_bytes": 3677440, "sha256": "5801422138021c65accee6d98e2e3873e4f431e5264c49118c80acf30769bae3"}
+        ]
+      },
+      "old_focused_metrics": {"silhouette_iou": 0.17980996751057443, "rgb_mae": 0.007924525861336998, "edge_error": 0.3329076202639421, "surface_bidirectional_p95": 0.003392430759409412, "surface_max": 0.005461791039814555, "normal_angle_p95": 105.22122452093359, "uv_error_p95": 0.7764830670497382, "skinning_error_p95": 0.0},
+      "focused_metrics": {"silhouette_iou": 0.00777980850541482, "rgb_mae": 0.0003782774396063316, "edge_error": 0.02556715880446525, "surface_bidirectional_p95": 0.00038235506299635625, "surface_max": 0.001366630042621953, "normal_angle_p95": 94.648645517003, "uv_error_p95": 0.19570974766400207, "skinning_error_p95": 0.0},
+      "old_whole_metrics": {"silhouette_iou": 0.003953875971622889, "rgb_mae": 0.0017901575516604145, "edge_error": 0.0751940058870752, "surface_bidirectional_p95": 0.0015644949994017886, "surface_max": 0.010706644633173086, "normal_angle_p95": 159.8949335801284, "uv_error_p95": 1.9449857410508797, "skinning_error_p95": 0.0},
+      "whole_metrics": {"silhouette_iou": 0.003889784871695001, "rgb_mae": 0.0017901575516604145, "edge_error": 0.0751940058870752, "surface_bidirectional_p95": 0.0015644949994017886, "surface_max": 0.010706644633173086, "normal_angle_p95": 159.8949335801284, "uv_error_p95": 1.94498574105088, "skinning_error_p95": 0.0},
+      "infrastructure_failures": 0,
+      "texture_missing_entries": 0
+    },
+    {
+      "family_id": "dodge_monaco_police",
+      "classification": "conditional-fidelity-for-byte-tradeoff",
+      "targets": [
+        {
+          "source_identity": "police_gear.smd",
+          "region_key": "r-57d34ac5964951c9a801a3899736ac36101831630e843f1df98e1d89daf5e2c0",
+          "source_sha256": "524fbaad3fe44636acea9d6454365e3a66388c0bb13fa5b6fed934ddb3b834d5",
+          "old_candidate_sha256": "5f8ff6a491caf7b6eb5484f31ed5a47baee1f71cad6248beb564492144e0e206",
+          "candidate_sha256": "f14fb9748c91615e7f1044f6ddd3ee7a3dde2286383fb2a532b45e6d23309658",
+          "requested_keep_ratio": 0.5,
+          "visual_remap_error": 0.01,
+          "source_triangles": 11639,
+          "candidate_triangles": 5735,
+          "achieved_keep_ratio": 0.4927399261104906,
+          "old_focused_metrics": {"silhouette_iou": 0.025997432698185552, "rgb_mae": 0.002531052658800728, "edge_error": 0.10766016713091922, "surface_bidirectional_p95": 0.0005715584795870859, "surface_max": 0.026931973244658073, "normal_angle_p95": 119.3587808970859, "uv_error_p95": 0.499246069620651, "skinning_error_p95": 0.0},
+          "focused_metrics": {"silhouette_iou": 0.005175267459456845, "rgb_mae": 0.00004647682428317615, "edge_error": 0.031157894736842107, "surface_bidirectional_p95": 0.0010825486187804826, "surface_max": 0.0035448240876778878, "normal_angle_p95": 113.40010763827293, "uv_error_p95": 0.5012728693304259, "skinning_error_p95": 0.0}
+        },
+        {
+          "source_identity": "body21_model0.smd",
+          "region_key": "r-a73f9bef1ac92fdec0014e0ebc579a248588ccab0edcfcbaee6edc5014d57a9e",
+          "source_sha256": "bf5e1333f9a42e957c73f25a256749e03c7830b8ba6c813f2cc30e99dd5242c4",
+          "old_candidate_sha256": "85fb539d8f5c884a194be2f610794db95396f696dbb4bd15dd36954caceaf04c",
+          "candidate_sha256": "d0f892bf59394244d2bd4d62ca0832b6e34e2a2672cd36f818f6110e944889bd",
+          "requested_keep_ratio": 0.5,
+          "visual_remap_error": 0.01,
+          "source_triangles": 19789,
+          "candidate_triangles": 9893,
+          "achieved_keep_ratio": 0.4999242003133054,
+          "old_focused_metrics": {"silhouette_iou": 0.05544492119868338, "rgb_mae": 0.001223370471315883, "edge_error": 0.07152533188837713, "surface_bidirectional_p95": 0.0018276376878084098, "surface_max": 0.006050137829972055, "normal_angle_p95": 91.16986850684468, "uv_error_p95": 0.32895659493761936, "skinning_error_p95": 0.0},
+          "focused_metrics": {"silhouette_iou": 0.033660691337676796, "rgb_mae": 0.0010014876963429713, "edge_error": 0.047481420313790254, "surface_bidirectional_p95": 0.0013764453828268134, "surface_max": 0.005223343965035657, "normal_angle_p95": 90.44234862645429, "uv_error_p95": 0.3271403608072593, "skinning_error_p95": 0.0}
+        }
+      ],
+      "compiled": {
+        "baseline_bytes": 21669512,
+        "old_winner_bytes": 11592080,
+        "candidate_bytes": 11805148,
+        "reduction_from_baseline": 0.455218557759861,
+        "delta_from_old_winner_bytes": 213068,
+        "artifacts": [
+          {"name": "monaco_police.dx80.vtx", "size_bytes": 1738573, "sha256": "584d3c1f435f2c5a0e8fd5cf4dd22236d64ff056a3a4a8d67f30870a5c47ded2"},
+          {"name": "monaco_police.dx90.vtx", "size_bytes": 1738546, "sha256": "371ad982e355e522eb70ded2c4a6dbd8d9f100159cb7ca3763df8ec1317f414b"},
+          {"name": "monaco_police.mdl", "size_bytes": 198280, "sha256": "fdf398741c1743b7152128d8db3ca934cf585d34fe1de0784be6fe1a133064cf"},
+          {"name": "monaco_police.phy", "size_bytes": 14933, "sha256": "e9f719571a9ec574e1f4d5a7f2c9a85eab8de629e54c868702f3aaed305406bd"},
+          {"name": "monaco_police.vvd", "size_bytes": 8114816, "sha256": "40a905ad951e058e823f7740729446e8c7d07d15985f87b610c2bd8ee38c55a4"}
+        ]
+      },
+      "old_whole_metrics": {"silhouette_iou": 0.0022617983752056814, "rgb_mae": 0.0004981973818804873, "edge_error": 0.03305046895935686, "surface_bidirectional_p95": 0.0014971364696047197, "surface_max": 0.006156751507814842, "normal_angle_p95": 179.99897066422085, "uv_error_p95": 6.534609763645413, "skinning_error_p95": 0.0},
+      "whole_metrics": {"silhouette_iou": 0.0019742157639252023, "rgb_mae": 0.00045089701999098035, "edge_error": 0.03305046895935686, "surface_bidirectional_p95": 0.0011275356132101591, "surface_max": 0.00489030811251199, "normal_angle_p95": 179.99897066422085, "uv_error_p95": 6.534609763645413, "skinning_error_p95": 0.0},
+      "infrastructure_failures": 0,
+      "texture_missing_entries": 0
+    },
+    {
+      "family_id": "toyota_supra",
+      "classification": "conditional-boundary-candidate-not-global-dominance",
+      "target": {
+        "source_identity": "body12_model0.smd",
+        "region_key": "r-f77a03a33aa8a641b594122b196b139ba9df2f47b9fc0771d3f2a66cd013b6c2",
+        "source_sha256": "30ac48a2839f5df7c42c34d26217d191f72026dc5466d8c08e1e7ebf4e2e9069",
+        "old_candidate_sha256": "649fdb94650a23112410530708bb1ac92252462596a4e614edc3ff0104d97e44",
+        "candidate_sha256": "e0a3e66831fe0a952ef2b21fb7b98ddc46d8253b4ec7a59ee693e8545607b314",
+        "requested_keep_ratio": 0.3,
+        "visual_remap_error": 0.02,
+        "source_triangles": 32694,
+        "candidate_triangles": 9804,
+        "achieved_keep_ratio": 0.2998715366733951,
+        "achieved_reduction": 0.7001284633266049
+      },
+      "compiled": {
+        "baseline_bytes": 21413271,
+        "old_winner_bytes": 6324311,
+        "candidate_bytes": 6756223,
+        "reduction_from_baseline": 0.6844843088195167,
+        "delta_from_old_winner_bytes": 431912,
+        "artifacts": [
+          {"name": "supra.dx80.vtx", "size_bytes": 1149105, "sha256": "4b027484793dd03f60910881cea271ec5e1a8b21e3a7cd6d6d2c9a3391979888"},
+          {"name": "supra.dx90.vtx", "size_bytes": 1149105, "sha256": "af24b94bad105a46b4e439b81e64d566d0db1e282bcd460da7193b61ab083216"},
+          {"name": "supra.mdl", "size_bytes": 63808, "sha256": "cbb4d283ed77a502b90299b51b32b4bbfeebf1792afdd9e59f8635327b5b1002"},
+          {"name": "supra.phy", "size_bytes": 18973, "sha256": "0138fa53c398365c09ea6d54e05daaa6b570dfe994a8db08a93e29fa9efc1370"},
+          {"name": "supra.vvd", "size_bytes": 4375232, "sha256": "8d465a46f8abfa35b0aff4b2e56cee0ce2a9b3a2a45afca23691305b6ba4f1ff"}
+        ]
+      },
+      "old_focused_metrics": {"silhouette_iou": 0.012683873428421255, "rgb_mae": 0.0017515276155103978, "edge_error": 0.03874467260751647, "surface_bidirectional_p95": 0.0006658919822139345, "surface_max": 0.00659051887967343, "normal_angle_p95": 78.65448124137822, "uv_error_p95": 0.1695276390745002, "skinning_error_p95": 0.0},
+      "focused_metrics": {"silhouette_iou": 0.016726188018661547, "rgb_mae": 0.00047144708650911015, "edge_error": 0.059024255279904084, "surface_bidirectional_p95": 0.001218875950009369, "surface_max": 0.003291064786225554, "normal_angle_p95": 90.00001254984694, "uv_error_p95": 0.10020890435957895, "skinning_error_p95": 0.0},
+      "old_whole_metrics": {"silhouette_iou": 0.0017085436761196116, "rgb_mae": 0.0010246950283256753, "edge_error": 0.03185727938834024, "surface_bidirectional_p95": 0.0005428901912126667, "surface_max": 0.0037063746307515718, "normal_angle_p95": 155.27409144608524, "uv_error_p95": 1.4876667430295063, "skinning_error_p95": 0.0},
+      "whole_metrics": {"silhouette_iou": 0.0017085436761196116, "rgb_mae": 0.0010323140207696962, "edge_error": 0.03185727938834024, "surface_bidirectional_p95": 0.0006854712021357263, "surface_max": 0.003629381623289139, "normal_angle_p95": 155.27409144608524, "uv_error_p95": 1.4876667430295063, "skinning_error_p95": 0.0},
+      "infrastructure_failures": 0,
+      "texture_missing_entries": 0
+    },
+    {
+      "family_id": "dodge_charger",
+      "classification": "conditional-fidelity-for-byte-tradeoff",
+      "target": {
+        "source_identity": "body31_model0.smd",
+        "region_key": "r-9697f24c003384eb1ec1dc8d680fe2c7dd86a491238c86d9e1a175c06af916ea",
+        "source_sha256": "48cbeb5bfbcf0b76c02203fb455c35fe42ca92f1d1cd2aa1d2de4c9c114080bc",
+        "old_candidate_sha256": "44b260763a4efa6ded2e89b1f029f5ddcfdd6912949f8662fd58dad333bc4be1",
+        "candidate_sha256": "2421b4953230bd8f35b01c0e296342960157e61ddba74b505a4b5e959d44a92a",
+        "requested_keep_ratio": 0.6,
+        "visual_remap_error": 0.005,
+        "source_triangles": 16881,
+        "candidate_triangles": 10127,
+        "achieved_keep_ratio": 0.599905218885136,
+        "achieved_reduction": 0.400094781114864
+      },
+      "compiled": {
+        "baseline_bytes": 25838015,
+        "old_winner_bytes": 11154899,
+        "candidate_bytes": 11713407,
+        "reduction_from_baseline": 0.546659950464461,
+        "delta_from_old_winner_bytes": 558508,
+        "stale_directory_excluded": "The copied source root also contains an old `compiled` directory. It is stale and excluded. Only `compiled-hybrid` is bound here.",
+        "artifacts": [
+          {"name": "charger.dx80.vtx", "size_bytes": 1807448, "sha256": "a59f741fb35d9c5a78656b9db608bdb5e3aae7e8e6e74c91daf43c454a1d8ece"},
+          {"name": "charger.dx90.vtx", "size_bytes": 1807448, "sha256": "97560ed641e39391d1275966a7cea5afae1b8c07a29c9e6529eddf53658ec556"},
+          {"name": "charger.mdl", "size_bytes": 107944, "sha256": "52ed0c947b3e1973a9dd43f2578d173688eb29073d1b4001d8da639d78ddde29"},
+          {"name": "charger.phy", "size_bytes": 18023, "sha256": "e28fc9f1cb66f7f594df2e2ec9136d86a0a38f48e677fa0987a4bc9d48299ed3"},
+          {"name": "charger.vvd", "size_bytes": 7972544, "sha256": "7ffc32be2352cf6e5c37183050917f241f91690cc460849520706c283503b87e"}
+        ]
+      },
+      "old_focused_metrics": {"silhouette_iou": 0.03350329034420707, "rgb_mae": 0.003624598060764806, "edge_error": 0.05282528685862741, "surface_bidirectional_p95": 0.0004542358652317083, "surface_max": 0.001378229101851735, "normal_angle_p95": 102.54761524053343, "uv_error_p95": 0.9453012854516599, "skinning_error_p95": 0.0},
+      "focused_metrics": {"silhouette_iou": 0.01710806001411158, "rgb_mae": 0.001140406256504021, "edge_error": 0.020896273917421954, "surface_bidirectional_p95": 0.0006179106408178019, "surface_max": 0.0018719164073287436, "normal_angle_p95": 90.00029626625563, "uv_error_p95": 0.9167438732043238, "skinning_error_p95": 0.0},
+      "old_whole_metrics": {"silhouette_iou": 0.002706447280538482, "rgb_mae": 0.0007402126564940787, "edge_error": 0.05303030303030303, "surface_bidirectional_p95": 0.0004206681784445036, "surface_max": 0.0018315554317712293, "normal_angle_p95": 126.19939799073143, "uv_error_p95": 14.089902100869532, "skinning_error_p95": 0.0},
+      "whole_metrics": {"silhouette_iou": 0.002706447280538482, "rgb_mae": 0.0006821695215044338, "edge_error": 0.05303030303030303, "surface_bidirectional_p95": 0.000572263789543202, "surface_max": 0.0018315554317712293, "normal_angle_p95": 126.19939799073143, "uv_error_p95": 14.089902100869532, "skinning_error_p95": 0.0},
+      "infrastructure_failures": 0,
+      "texture_missing_entries": 0
+    }
+  ],
+  "negative_boundaries": [
+    {
+      "family_id": "toyota_supra",
+      "source_identity": "body12_model0.smd",
+      "requested_keep_ratio": 0.275,
+      "visual_remap_error": 0.02,
+      "source_triangles": 32694,
+      "candidate_triangles": 8990,
+      "classification": "rejected-provisional-edge-cap",
+      "metrics": {"silhouette_iou": 0.01903793490537331, "rgb_mae": 0.0005448630782872351, "edge_error": 0.08180329281958452, "surface_bidirectional_p95": 0.0013571691600996387, "surface_max": 0.0035389178291696443, "normal_angle_p95": 90.00064772236406, "uv_error_p95": 0.10537721303162836, "skinning_error_p95": 0.0},
+      "infrastructure_failures": 0
+    },
+    {
+      "family_id": "dodge_monaco_police",
+      "source_identity": "police_gear.smd",
+      "requested_keep_ratio": 0.4,
+      "visual_remap_error": 0.02,
+      "classification": "rejected-multiple-provisional-caps",
+      "metrics": {"silhouette_iou": 0.026617842512827616, "rgb_mae": 0.0004566418600541986, "edge_error": 0.1104170184028364, "surface_bidirectional_p95": 0.0026273489501721058, "surface_max": 0.007968126696213275, "normal_angle_p95": 124.51746154972264, "uv_error_p95": 0.5975939702558779, "skinning_error_p95": 0.0},
+      "infrastructure_failures": 0
+    },
+    {
+      "family_id": "dodge_monaco_police",
+      "source_identity": "body21_model0.smd",
+      "requested_keep_ratio": 0.4,
+      "visual_remap_error": 0.02,
+      "classification": "rejected-multiple-provisional-caps",
+      "metrics": {"silhouette_iou": 0.08584712223549995, "rgb_mae": 0.0018654320807292614, "edge_error": 0.14077483697736862, "surface_bidirectional_p95": 0.002657706190786737, "surface_max": 0.0075716578200043065, "normal_angle_p95": 93.1797480287086, "uv_error_p95": 0.34331144197283314, "skinning_error_p95": 0.0},
+      "infrastructure_failures": 0
+    },
+    {
+      "family_id": "dodge_charger",
+      "candidate_label": "pre-remap-r030",
+      "classification": "negative-whole-and-focused-anchor",
+      "whole_metrics": {"silhouette_iou": 0.002706447280538482, "rgb_mae": 0.0007647521353481882, "edge_error": 0.05303030303030303, "surface_bidirectional_p95": 0.004064761636335918, "surface_max": 0.00411124958204131, "normal_angle_p95": 148.94957083842723, "uv_error_p95": 14.089902100869532, "skinning_error_p95": 0.0},
+      "body31_focused_metrics": {"silhouette_iou": 0.03350329034420707, "rgb_mae": 0.003624598060764806, "edge_error": 0.05282528685862741, "surface_bidirectional_p95": 0.0004542358652317083, "surface_max": 0.001378229101851735, "normal_angle_p95": 102.54761524053343, "uv_error_p95": 0.9453012854516599, "skinning_error_p95": 0.0},
+      "infrastructure_failures": 0
+    },
+    {
+      "family_id": "wheel_round_surrogate",
+      "classification": "fresh-negative-sweep",
+      "candidates": [
+        {"label": "v4-r035", "whole_metrics": {"silhouette_iou": 0.0038579882179986535, "rgb_mae": 0.0014135745891401268, "edge_error": 0.13962033067973056, "surface_bidirectional_p95": 0.00695871000032431, "surface_max": 0.02531913488740253, "normal_angle_p95": 98.6777652122359, "uv_error_p95": 0.860077997377906, "skinning_error_p95": 0.0}},
+        {"label": "v4-r045", "whole_metrics": {"silhouette_iou": 0.0038579882179986535, "rgb_mae": 0.0009320373963198378, "edge_error": 0.1397981033955338, "surface_bidirectional_p95": 0.00266338146647474, "surface_max": 0.005135064334039563, "normal_angle_p95": 90.02448800373085, "uv_error_p95": 0.7369136072764857, "skinning_error_p95": 0.0}},
+        {"label": "v4-r0475", "whole_metrics": {"silhouette_iou": 0.0038579882179986535, "rgb_mae": 0.0007492115714504381, "edge_error": 0.1338244321669736, "surface_bidirectional_p95": 0.00266338146647474, "surface_max": 0.005135064334039563, "normal_angle_p95": 90.35473803701032, "uv_error_p95": 0.7369136072764857, "skinning_error_p95": 0.0}}
+      ],
+      "known_gap": "The older pure r035 source was not re-openable and remains excluded from fresh authority."
+    }
+  ],
+  "repeatability": {
+    "comparison": "decoded RGBA pixels, ordered by relative render path",
+    "exact_pixel_repeats": true,
+    "records": [
+      {"label": "wheel-r050-whole", "png_count": 64, "pixel_bundle_sha256": "e6a71e3b6e844d792f676864698b9eb6a96f7e5e19a506b9255fa0695cd96972"},
+      {"label": "wheel-v4-r0475-whole", "png_count": 64, "pixel_bundle_sha256": "357e5795a029cf0f6f80916d07588802b42950234d9795f5b488c941d23cb11c"},
+      {"label": "wheel-r050-focused-top3", "png_count": 96, "pixel_bundle_sha256": "4032d315143509bf0ad6efb8d9f3544e350baed5163eec876c7a6b3159da4c49"},
+      {"label": "wheel-v4-r0475-focused-top3", "png_count": 96, "pixel_bundle_sha256": "fcb12a41cd161d9cf8dd6bb457af2f9bc78774b68fed65cb6f9a8e8450180a72"}
+    ]
+  },
+  "conclusions": [
+    "Visual-remap boundary refinement can replace visibly damaged regional candidates while preserving large whole-model reductions.",
+    "Skyline trunk r060/e005 is the only tested hybrid that is a clear regional Pareto winner over the prior candidate and over trunk r050/e010.",
+    "Monaco, Supra, and Charger hybrids are conditional trade-offs: they improve important regional image metrics but spend compiled bytes and do not improve every geometry maximum.",
+    "Whole-model maxima can hide severe local damage; focused regional renders are mandatory for candidate selection.",
+    "The evidence supports continued adaptive per-region search, not activation of a calibrated profile."
+  ],
+  "evidence_seal": {
+    "algorithm": "sha256",
+    "scope": "canonical-json-without-evidence_seal",
+    "sha256": "a5cc78c860964110bd4119afb2052420da5c106f2f23a2da0cdc3bc92a58ebd2"
+  }
+}
