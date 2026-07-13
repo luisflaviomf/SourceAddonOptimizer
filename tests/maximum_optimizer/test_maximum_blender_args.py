@@ -214,6 +214,81 @@ class MaximumBlenderPureTests(unittest.TestCase):
             ("preserved", "invalid retained normal"),
         )
 
+    def test_adaptive_exact_preservation_payload_has_closed_authorization_matrix(self) -> None:
+        producer = getattr(maximum, "adaptive_exact_preservation_payload", None)
+        parser = getattr(maximum, "parse_adaptive_exact_preservation_payload", None)
+        self.assertIsNotNone(producer, "adaptive exact preservation producer is missing")
+        self.assertIsNotNone(parser, "adaptive exact preservation parser is missing")
+        self.assertIn(
+            "source_identity", producer.__annotations__,
+            "adaptive preservation payload is not bound to a canonical source",
+        )
+        cases = (
+            (
+                dict(source_identity="meshes/body.smd", preserved_exact=True,
+                     ratio_preserved=True, approved_fallback=False),
+                {
+                    "schema": 1, "source_identity": "meshes/body.smd",
+                    "kind": "eligible-exact-v1", "preserved_exact": True,
+                    "reason": "ratio-preserved-exact-v1",
+                },
+            ),
+            (
+                dict(source_identity="meshes/body.smd", preserved_exact=True,
+                     ratio_preserved=False, approved_fallback=True),
+                {
+                    "schema": 1, "source_identity": "meshes/body.smd",
+                    "kind": "eligible-exact-v1", "preserved_exact": True,
+                    "reason": "approved-exact-source-fallback-v1",
+                },
+            ),
+            (
+                dict(source_identity="meshes/body.smd", preserved_exact=False,
+                     ratio_preserved=False, approved_fallback=False),
+                {
+                    "schema": 1, "source_identity": "meshes/body.smd",
+                    "kind": "ineligible-changed-v1", "preserved_exact": False,
+                    "reason": "adaptive-output-changed-v1",
+                },
+            ),
+            (
+                dict(source_identity="meshes/body.smd", preserved_exact=True,
+                     ratio_preserved=False, approved_fallback=False),
+                {
+                    "schema": 1, "source_identity": "meshes/body.smd",
+                    "kind": "unauthorized-v1", "preserved_exact": True,
+                    "reason": "unproven-exact-preservation-v1",
+                },
+            ),
+        )
+        for inputs, expected in cases:
+            with self.subTest(inputs=inputs):
+                payload = producer(**inputs)
+                self.assertEqual(payload, expected)
+                self.assertEqual(parser(payload), expected)
+
+    def test_adaptive_exact_preservation_parser_rejects_free_form_authority(self) -> None:
+        parser = getattr(maximum, "parse_adaptive_exact_preservation_payload", None)
+        self.assertIsNotNone(parser, "adaptive exact preservation parser is missing")
+        with self.assertRaisesRegex(ValueError, "matrix"):
+            parser({
+                "schema": 1,
+                "source_identity": "meshes/body.smd",
+                "kind": "eligible-exact-v1",
+                "preserved_exact": True,
+                "reason": "exact-source-fallback-v1: arbitrary diagnostic text",
+            })
+
+    def test_adaptive_exact_preservation_inconsistent_state_is_unauthorized(self) -> None:
+        producer = getattr(maximum, "adaptive_exact_preservation_payload", None)
+        self.assertIsNotNone(producer, "adaptive exact preservation producer is missing")
+        payload = producer(
+            source_identity="meshes/body.smd", preserved_exact=False,
+            ratio_preserved=True, approved_fallback=False,
+        )
+        self.assertEqual(payload["kind"], "unauthorized-v1")
+        self.assertEqual(payload["reason"], "unproven-exact-preservation-v1")
+
     def test_round_export_runtime_failure_writes_exact_source_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

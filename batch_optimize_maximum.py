@@ -104,6 +104,13 @@ _PRESERVE_EXACT_BLENDER_STRATEGIES = frozenset({
     "blender-adaptive-v1",
     "blender-importance-map-v1",
 })
+_ADAPTIVE_EXACT_PRESERVATION_MATRIX = frozenset({
+    ("eligible-exact-v1", True, "ratio-preserved-exact-v1"),
+    ("eligible-exact-v1", True, "approved-exact-source-fallback-v1"),
+    ("ineligible-changed-v1", False, "adaptive-output-changed-v1"),
+    ("unauthorized-v1", True, "unproven-exact-preservation-v1"),
+    ("unauthorized-v1", False, "unproven-exact-preservation-v1"),
+})
 
 
 @dataclass(frozen=True)
@@ -1823,6 +1830,61 @@ def processed_provenance_status(
     return "optimized", strategy
 
 
+def parse_adaptive_exact_preservation_payload(value: object) -> dict[str, object]:
+    """Parse only the closed producer matrix; diagnostic text has no authority."""
+    if type(value) is not dict or set(value) != {
+        "schema", "source_identity", "kind", "preserved_exact", "reason",
+    }:
+        raise ValueError("adaptive exact preservation matrix fields are invalid")
+    if type(value["schema"]) is not int or value["schema"] != 1:
+        raise ValueError("adaptive exact preservation matrix schema is invalid")
+    try:
+        canonical_source = normalized_source_identity(value["source_identity"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("adaptive exact preservation source identity is invalid") from exc
+    if (
+        value["source_identity"] != canonical_source
+        or type(value["kind"]) is not str
+        or type(value["preserved_exact"]) is not bool
+        or type(value["reason"]) is not str
+        or (value["kind"], value["preserved_exact"], value["reason"])
+        not in _ADAPTIVE_EXACT_PRESERVATION_MATRIX
+    ):
+        raise ValueError("adaptive exact preservation matrix is invalid")
+    return dict(value)
+
+
+def adaptive_exact_preservation_payload(
+    *, source_identity: str, preserved_exact: bool, ratio_preserved: bool,
+    approved_fallback: bool,
+) -> dict[str, object]:
+    """Create one normalized adaptive-source authorization disposition.
+
+    ``fallback_reason`` remains a human diagnostic elsewhere in the metrics file.
+    It is deliberately not accepted here: the producer must retain the trusted
+    control-flow state that caused exact preservation.
+    """
+    if any(type(value) is not bool for value in (
+        preserved_exact, ratio_preserved, approved_fallback,
+    )):
+        raise ValueError("adaptive exact preservation state must be boolean")
+    if not preserved_exact and not ratio_preserved and not approved_fallback:
+        kind, reason = "ineligible-changed-v1", "adaptive-output-changed-v1"
+    elif preserved_exact and ratio_preserved and not approved_fallback:
+        kind, reason = "eligible-exact-v1", "ratio-preserved-exact-v1"
+    elif preserved_exact and approved_fallback and not ratio_preserved:
+        kind, reason = "eligible-exact-v1", "approved-exact-source-fallback-v1"
+    else:
+        kind, reason = "unauthorized-v1", "unproven-exact-preservation-v1"
+    return parse_adaptive_exact_preservation_payload({
+        "schema": 1,
+        "source_identity": source_identity,
+        "kind": kind,
+        "preserved_exact": preserved_exact,
+        "reason": reason,
+    })
+
+
 def bind_direct_degenerate_provenance(
     provenance: dict[str, object], file_metrics: dict[str, object]
 ) -> dict[str, object]:
@@ -1884,6 +1946,8 @@ def _process_source_file(
         source_manifest, source_observations, source_overrides, candidate.ratio
     )
     preserve_exact = should_preserve_exact(candidate, tuple(source_ratios.values()))
+    ratio_preserved_exact = preserve_exact
+    approved_exact_fallback = False
     fallback_reason: str | None = None
     if candidate.strategy in {"meshopt-direct-v1", "meshopt-direct-position-v1"}:
         dropped_source_triangles = frozenset(
@@ -1937,6 +2001,8 @@ def _process_source_file(
         ):
             raise
         preserve_exact = True
+        ratio_preserved_exact = False
+        approved_exact_fallback = True
         fallback_reason = str(exc)
         object_metrics = [
             {
@@ -2040,6 +2106,8 @@ def _process_source_file(
         ):
             raise
         preserve_exact = True
+        ratio_preserved_exact = False
+        approved_exact_fallback = True
         fallback_reason = str(exc)
         atomic_write_bytes(source.parent, destination, exact_source_payload(source.read_bytes()))
         audit_text = (
@@ -2093,6 +2161,13 @@ def _process_source_file(
     if direct_prefilter is not None:
         result["direct_degenerate_prefilter"] = direct_prefilter_runtime_evidence(
             direct_prefilter.evidence, applied=not preserve_exact
+        )
+    if candidate.strategy == "blender-adaptive-v1":
+        result["adaptive_exact_preservation"] = adaptive_exact_preservation_payload(
+            source_identity=source_identity,
+            preserved_exact=preserve_exact,
+            ratio_preserved=ratio_preserved_exact,
+            approved_fallback=approved_exact_fallback,
         )
     return result
 
