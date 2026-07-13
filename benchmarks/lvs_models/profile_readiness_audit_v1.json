@@ -1,0 +1,1184 @@
+{
+  "schema_version": 1,
+  "strategy": "lvs-profile-readiness-audit-v1",
+  "status": "profile-readiness-insufficient",
+  "calibrated": false,
+  "authorizing": false,
+  "scope": {
+    "calibration_family_ids": [
+      "pontiac_transam_wheel",
+      "dodge_charger",
+      "toyota_supra",
+      "nissan_skyline_gtr32",
+      "dodge_monaco_police"
+    ],
+    "holdout_consulted": false,
+    "audit_basis": "read-only inventory of calibration_evidence_v3 and surviving calibration research artifacts"
+  },
+  "source_artifacts": [
+    {
+      "kind": "calibration-evidence-v3",
+      "label": "research://lvs/calibration_evidence_v3.json",
+      "file_sha256": "7bf78af398ae33f817dbae8b7d734801dfafdad4ec21ab5869cb77f8d3792c7e",
+      "payload_sha256": "2cc6b330ef97466f4d10986787f2ffd0d35f960c0bd47a32e0159f9559c6615c"
+    },
+    {
+      "kind": "focused-region-summary",
+      "label": "research://focused-regions-v1/focused_summary.json",
+      "file_sha256": "82d0f8f41f247dc7e7562a315e4a599c60f23962cb7206082b0295673f979b72",
+      "payload_sha256": "dc00a37b2db07555970afc2fa0069c79f3c7804bc74b540ab207e4fb71c378f4"
+    },
+    {
+      "kind": "focused-recovery-evidence",
+      "label": "research://focused-recovery-v1/focused_recovery_evidence_v1.json",
+      "file_sha256": "b312581e2ce5a6f308df0e19a826866578f05aecd0c6f15157bb3783b0820d55",
+      "payload_sha256": "b5b83a8ae2e343346e35d2499d768681ea2a93be840f6517f0b7814afeec609a"
+    },
+    {
+      "kind": "importance-ablation-evidence",
+      "label": "research://wheel/importance-r035/blender_importance_map_v1.json",
+      "file_sha256": "e2a832caa5ecabfd6940e12885b786661fe8130649b38e948229a6673fbe6a3e",
+      "payload_sha256": "76f55a6c1a6ade3257a53e8e436cdb5791e94dcfbbf4aa9711962d7f776b1df3"
+    }
+  ],
+  "metric_names": [
+    "silhouette_iou",
+    "rgb_mae",
+    "edge_error",
+    "surface_bidirectional_p95",
+    "surface_max",
+    "normal_angle_p95",
+    "uv_error_p95",
+    "skinning_error_p95"
+  ],
+  "classes": {
+    "round-rigid-v1": {
+      "whole": {
+        "coverage": {
+          "accepted_sample_count": 1,
+          "rejected_sample_count": 4,
+          "auxiliary_sample_count": 0,
+          "notes": [
+            "One accepted family and four comparable manual rejections.",
+            "Importance r035 is recorded separately because only clay image metrics are comparable."
+          ]
+        },
+        "accepted_samples": [
+          {
+            "sample_id": "round-whole-r050",
+            "family_id": "pontiac_transam_wheel",
+            "candidate_id": "r050",
+            "region": null,
+            "verdict": "accepted-manual",
+            "evidence_scope": "strict-region-paired candidate maximum across 2 states",
+            "metrics": {
+              "silhouette_iou": 0.0017451163359213373,
+              "rgb_mae": 0.0007821425491734859,
+              "edge_error": 0.08775376555337262,
+              "surface_bidirectional_p95": 0.0006450915008463556,
+              "surface_max": 0.0008576273728347582,
+              "normal_angle_p95": 90.36771092532764,
+              "uv_error_p95": 0.6415426237892701,
+              "skinning_error_p95": 0
+            }
+          }
+        ],
+        "rejected_samples": [
+          {
+            "sample_id": "round-whole-r035",
+            "family_id": "pontiac_transam_wheel",
+            "candidate_id": "r035",
+            "region": null,
+            "verdict": "rejected-manual",
+            "evidence_scope": "strict-region-paired manual wheel faceting",
+            "metrics": {
+              "silhouette_iou": 0.003712078868973956,
+              "rgb_mae": 0.0012267455364937346,
+              "edge_error": 0.16966151274550773,
+              "surface_bidirectional_p95": 0.0015646696431513135,
+              "surface_max": 0.0019671073972379275,
+              "normal_angle_p95": 90.13312250562622,
+              "uv_error_p95": 0.7370400234949228,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "round-whole-v4-r035",
+            "family_id": "pontiac_transam_wheel",
+            "candidate_id": "v4-r035",
+            "region": null,
+            "verdict": "rejected-manual",
+            "evidence_scope": "strict-region-paired polygonized inner ring and lost hub detail",
+            "metrics": {
+              "silhouette_iou": 0.0038579882179986535,
+              "rgb_mae": 0.0014135745891402502,
+              "edge_error": 0.13962033067973056,
+              "surface_bidirectional_p95": 0.00695871000032431,
+              "surface_max": 0.02531913488740253,
+              "normal_angle_p95": 98.6777652122359,
+              "uv_error_p95": 0.860077997377906,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "round-whole-v4-r045",
+            "family_id": "pontiac_transam_wheel",
+            "candidate_id": "v4-r045",
+            "region": null,
+            "verdict": "rejected-manual",
+            "evidence_scope": "strict-region-paired missing hub holes and distorted center detail",
+            "metrics": {
+              "silhouette_iou": 0.0038579882179986535,
+              "rgb_mae": 0.0009320373963198172,
+              "edge_error": 0.1397981033955338,
+              "surface_bidirectional_p95": 0.00266338146647474,
+              "surface_max": 0.005135064334039563,
+              "normal_angle_p95": 90.02448800373085,
+              "uv_error_p95": 0.7369136072764857,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "round-whole-v4-r0475",
+            "family_id": "pontiac_transam_wheel",
+            "candidate_id": "v4-r0475",
+            "region": null,
+            "verdict": "rejected-manual",
+            "evidence_scope": "strict-region-paired collapsed hub recesses and altered center detail",
+            "metrics": {
+              "silhouette_iou": 0.0038579882179986535,
+              "rgb_mae": 0.0007492115714504179,
+              "edge_error": 0.1338244321669736,
+              "surface_bidirectional_p95": 0.00266338146647474,
+              "surface_max": 0.005135064334039563,
+              "normal_angle_p95": 90.35473803701032,
+              "uv_error_p95": 0.7369136072764857,
+              "skinning_error_p95": 0
+            }
+          }
+        ],
+        "auxiliary_samples": [],
+        "accepted_distribution": {
+          "silhouette_iou": {
+            "count": 1,
+            "min": 0.0017451163359213373,
+            "median": 0.0017451163359213373,
+            "p95": 0.0017451163359213373,
+            "max": 0.0017451163359213373
+          },
+          "rgb_mae": {
+            "count": 1,
+            "min": 0.0007821425491734859,
+            "median": 0.0007821425491734859,
+            "p95": 0.0007821425491734859,
+            "max": 0.0007821425491734859
+          },
+          "edge_error": {
+            "count": 1,
+            "min": 0.08775376555337262,
+            "median": 0.08775376555337262,
+            "p95": 0.08775376555337262,
+            "max": 0.08775376555337262
+          },
+          "surface_bidirectional_p95": {
+            "count": 1,
+            "min": 0.0006450915008463556,
+            "median": 0.0006450915008463556,
+            "p95": 0.0006450915008463556,
+            "max": 0.0006450915008463556
+          },
+          "surface_max": {
+            "count": 1,
+            "min": 0.0008576273728347582,
+            "median": 0.0008576273728347582,
+            "p95": 0.0008576273728347582,
+            "max": 0.0008576273728347582
+          },
+          "normal_angle_p95": {
+            "count": 1,
+            "min": 90.36771092532764,
+            "median": 90.36771092532764,
+            "p95": 90.36771092532764,
+            "max": 90.36771092532764
+          },
+          "uv_error_p95": {
+            "count": 1,
+            "min": 0.6415426237892701,
+            "median": 0.6415426237892701,
+            "p95": 0.6415426237892701,
+            "max": 0.6415426237892701
+          },
+          "skinning_error_p95": {
+            "count": 1,
+            "min": 0,
+            "median": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "rejected_distribution": {
+          "silhouette_iou": {
+            "count": 4,
+            "min": 0.003712078868973956,
+            "median": 0.0038579882179986535,
+            "p95": 0.0038579882179986535,
+            "max": 0.0038579882179986535
+          },
+          "rgb_mae": {
+            "count": 4,
+            "min": 0.0007492115714504179,
+            "median": 0.001079391466406776,
+            "p95": 0.0013855502312432727,
+            "max": 0.0014135745891402502
+          },
+          "edge_error": {
+            "count": 4,
+            "min": 0.1338244321669736,
+            "median": 0.13970921703763217,
+            "p95": 0.16518200134301164,
+            "max": 0.16966151274550773
+          },
+          "surface_bidirectional_p95": {
+            "count": 4,
+            "min": 0.0015646696431513135,
+            "median": 0.00266338146647474,
+            "p95": 0.006314410720246873,
+            "max": 0.00695871000032431
+          },
+          "surface_max": {
+            "count": 4,
+            "min": 0.0019671073972379275,
+            "median": 0.005135064334039563,
+            "p95": 0.02229152430439808,
+            "max": 0.02531913488740253
+          },
+          "normal_angle_p95": {
+            "count": 4,
+            "min": 90.02448800373085,
+            "median": 90.24393027131828,
+            "p95": 97.42931113595206,
+            "max": 98.6777652122359
+          },
+          "uv_error_p95": {
+            "count": 4,
+            "min": 0.7369136072764857,
+            "median": 0.7369768153857043,
+            "p95": 0.8416223012954585,
+            "max": 0.860077997377906
+          },
+          "skinning_error_p95": {
+            "count": 4,
+            "min": 0,
+            "median": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "auxiliary_distribution": {},
+        "provisional_hypothesis": {
+          "status": "provisional-non-authorizing-hypothesis",
+          "authorizing": false,
+          "approved": false,
+          "margin_fraction": 0.2,
+          "upper_bounds": {
+            "silhouette_iou": 0.0021,
+            "rgb_mae": 0.000939,
+            "edge_error": 0.1053,
+            "surface_bidirectional_p95": 0.000774,
+            "surface_max": 0.001029,
+            "normal_angle_p95": 108.44,
+            "uv_error_p95": 0.77,
+            "skinning_error_p95": 0
+          },
+          "separating_metrics": [
+            "silhouette_iou",
+            "edge_error",
+            "surface_bidirectional_p95",
+            "surface_max"
+          ],
+          "limitations": [
+            "Derived from one accepted family; not a class-general calibration.",
+            "Margin is heuristic and not estimated from fresh repeat variance."
+          ]
+        }
+      },
+      "focused": {
+        "coverage": {
+          "accepted_sample_count": 0,
+          "rejected_sample_count": 0,
+          "auxiliary_sample_count": 0,
+          "notes": [
+            "No accepted or rejected focused round-rigid render exists."
+          ]
+        },
+        "accepted_samples": [],
+        "rejected_samples": [],
+        "auxiliary_samples": [],
+        "accepted_distribution": {},
+        "rejected_distribution": {},
+        "auxiliary_distribution": {},
+        "provisional_hypothesis": null
+      }
+    },
+    "general-body-detail-v1": {
+      "whole": {
+        "coverage": {
+          "accepted_sample_count": 4,
+          "rejected_sample_count": 0,
+          "auxiliary_sample_count": 1,
+          "notes": [
+            "Four accepted family winners exist.",
+            "The sole whole negative is auxiliary and not a v3 manual alternative."
+          ]
+        },
+        "accepted_samples": [
+          {
+            "sample_id": "body-whole-charger",
+            "family_id": "dodge_charger",
+            "candidate_id": "r030-recovered-exact",
+            "region": null,
+            "verdict": "accepted-manual",
+            "evidence_scope": "strict-region-paired candidate maximum across 5 states",
+            "metrics": {
+              "silhouette_iou": 0.0026398827587731377,
+              "rgb_mae": 0.0007402126564940606,
+              "edge_error": 0.03787878787878788,
+              "surface_bidirectional_p95": 0.00041827831321486323,
+              "surface_max": 0.0018211156287250734,
+              "normal_angle_p95": 126.19939799073143,
+              "uv_error_p95": 14.089902100869532,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "body-whole-supra",
+            "family_id": "toyota_supra",
+            "candidate_id": "r015-recovered-body-r025",
+            "region": null,
+            "verdict": "accepted-manual",
+            "evidence_scope": "strict-region-paired candidate maximum across 5 states",
+            "metrics": {
+              "silhouette_iou": 0.0016581050838661016,
+              "rgb_mae": 0.0009476016397483825,
+              "edge_error": 0.029974489795918366,
+              "surface_bidirectional_p95": 0.0005425893901966014,
+              "surface_max": 0.003704321027144628,
+              "normal_angle_p95": 155.27409144608524,
+              "uv_error_p95": 1.104074613025821,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "body-whole-skyline",
+            "family_id": "nissan_skyline_gtr32",
+            "candidate_id": "r020-recovered-exact",
+            "region": null,
+            "verdict": "accepted-manual",
+            "evidence_scope": "strict-region-paired candidate maximum across 5 states",
+            "metrics": {
+              "silhouette_iou": 0.003953875971622889,
+              "rgb_mae": 0.0017901575516604282,
+              "edge_error": 0.0751940058870752,
+              "surface_bidirectional_p95": 0.0015644949994017886,
+              "surface_max": 0.010706644633173086,
+              "normal_angle_p95": 159.8949335801284,
+              "uv_error_p95": 1.9449857410508797,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "body-whole-monaco",
+            "family_id": "dodge_monaco_police",
+            "candidate_id": "hybrid-stable",
+            "region": null,
+            "verdict": "accepted-manual",
+            "evidence_scope": "strict-region-paired candidate maximum across 5 states",
+            "metrics": {
+              "silhouette_iou": 0.0022617983752056814,
+              "rgb_mae": 0.0004884387892035848,
+              "edge_error": 0.029787234042553193,
+              "surface_bidirectional_p95": 0.0014971364696047197,
+              "surface_max": 0.006156751507814842,
+              "normal_angle_p95": 179.99897066422085,
+              "uv_error_p95": 6.534609763645413,
+              "skinning_error_p95": 0
+            }
+          }
+        ],
+        "rejected_samples": [],
+        "auxiliary_samples": [
+          {
+            "sample_id": "body-whole-skyline-r015",
+            "family_id": "nissan_skyline_gtr32",
+            "candidate_id": "r015",
+            "region": null,
+            "verdict": "auxiliary-unapproved",
+            "evidence_scope": "near-negative whole diagnostic not declared as a v3 manual alternative",
+            "metrics": {
+              "silhouette_iou": 0.005288662419869139,
+              "rgb_mae": 0.0023828908450053456,
+              "edge_error": 0.14244016345592528,
+              "surface_bidirectional_p95": 0.0037614573715330072,
+              "surface_max": 0.01099992422872018,
+              "normal_angle_p95": 155.56616929868818,
+              "uv_error_p95": 19.711197268572946,
+              "skinning_error_p95": 0
+            }
+          }
+        ],
+        "accepted_distribution": {
+          "silhouette_iou": {
+            "count": 4,
+            "min": 0.0016581050838661016,
+            "median": 0.0024508405669894096,
+            "p95": 0.0037567769896954257,
+            "max": 0.003953875971622889
+          },
+          "rgb_mae": {
+            "count": 4,
+            "min": 0.0004884387892035848,
+            "median": 0.0008439071481212215,
+            "p95": 0.001663774164873621,
+            "max": 0.0017901575516604282
+          },
+          "edge_error": {
+            "count": 4,
+            "min": 0.029787234042553193,
+            "median": 0.033926638837353126,
+            "p95": 0.06959672318583209,
+            "max": 0.0751940058870752
+          },
+          "surface_bidirectional_p95": {
+            "count": 4,
+            "min": 0.00041827831321486323,
+            "median": 0.0010198629299006607,
+            "p95": 0.001554391219932228,
+            "max": 0.0015644949994017886
+          },
+          "surface_max": {
+            "count": 4,
+            "min": 0.0018211156287250734,
+            "median": 0.004930536267479735,
+            "p95": 0.010024160664369347,
+            "max": 0.010706644633173086
+          },
+          "normal_angle_p95": {
+            "count": 4,
+            "min": 126.19939799073143,
+            "median": 157.5845125131068,
+            "p95": 176.98336510160695,
+            "max": 179.99897066422085
+          },
+          "uv_error_p95": {
+            "count": 4,
+            "min": 1.104074613025821,
+            "median": 4.239797752348147,
+            "p95": 12.956608250285912,
+            "max": 14.089902100869532
+          },
+          "skinning_error_p95": {
+            "count": 4,
+            "min": 0,
+            "median": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "rejected_distribution": {},
+        "auxiliary_distribution": {
+          "silhouette_iou": {
+            "count": 1,
+            "min": 0.005288662419869139,
+            "median": 0.005288662419869139,
+            "p95": 0.005288662419869139,
+            "max": 0.005288662419869139
+          },
+          "rgb_mae": {
+            "count": 1,
+            "min": 0.0023828908450053456,
+            "median": 0.0023828908450053456,
+            "p95": 0.0023828908450053456,
+            "max": 0.0023828908450053456
+          },
+          "edge_error": {
+            "count": 1,
+            "min": 0.14244016345592528,
+            "median": 0.14244016345592528,
+            "p95": 0.14244016345592528,
+            "max": 0.14244016345592528
+          },
+          "surface_bidirectional_p95": {
+            "count": 1,
+            "min": 0.0037614573715330072,
+            "median": 0.0037614573715330072,
+            "p95": 0.0037614573715330072,
+            "max": 0.0037614573715330072
+          },
+          "surface_max": {
+            "count": 1,
+            "min": 0.01099992422872018,
+            "median": 0.01099992422872018,
+            "p95": 0.01099992422872018,
+            "max": 0.01099992422872018
+          },
+          "normal_angle_p95": {
+            "count": 1,
+            "min": 155.56616929868818,
+            "median": 155.56616929868818,
+            "p95": 155.56616929868818,
+            "max": 155.56616929868818
+          },
+          "uv_error_p95": {
+            "count": 1,
+            "min": 19.711197268572946,
+            "median": 19.711197268572946,
+            "p95": 19.711197268572946,
+            "max": 19.711197268572946
+          },
+          "skinning_error_p95": {
+            "count": 1,
+            "min": 0,
+            "median": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "provisional_hypothesis": {
+          "status": "provisional-non-authorizing-hypothesis",
+          "authorizing": false,
+          "approved": false,
+          "margin_fraction": 0.15,
+          "upper_bounds": {
+            "silhouette_iou": 0.004547,
+            "rgb_mae": 0.002059,
+            "edge_error": 0.086473,
+            "surface_bidirectional_p95": 0.001799,
+            "surface_max": 0.012313,
+            "normal_angle_p95": 180,
+            "uv_error_p95": 16.203,
+            "skinning_error_p95": 0
+          },
+          "separating_metrics": [
+            "silhouette_iou",
+            "rgb_mae",
+            "edge_error",
+            "surface_bidirectional_p95",
+            "uv_error_p95"
+          ],
+          "limitations": [
+            "Negative separation depends on one auxiliary Skyline candidate.",
+            "No manual whole rejection spans Charger, Supra, or Monaco."
+          ]
+        }
+      },
+      "focused": {
+        "coverage": {
+          "accepted_sample_count": 8,
+          "rejected_sample_count": 5,
+          "auxiliary_sample_count": 2,
+          "notes": [
+            "Eight accepted and five manually rejected focused regions are comparable.",
+            "Only rgb_mae separates every accepted region from every manual rejection monotonically."
+          ]
+        },
+        "accepted_samples": [
+          {
+            "sample_id": "focus-charger-grille-exact",
+            "family_id": "dodge_charger",
+            "candidate_id": "r030-recovered-exact",
+            "region": "grille_a",
+            "verdict": "accepted-manual",
+            "evidence_scope": "focused recovered exact",
+            "metrics": {
+              "silhouette_iou": 0,
+              "rgb_mae": 0,
+              "edge_error": 0,
+              "surface_bidirectional_p95": 0,
+              "surface_max": 0,
+              "normal_angle_p95": 0,
+              "uv_error_p95": 0,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-charger-headlight-exact",
+            "family_id": "dodge_charger",
+            "candidate_id": "r030-recovered-exact",
+            "region": "headlight",
+            "verdict": "accepted-manual",
+            "evidence_scope": "focused recovered exact",
+            "metrics": {
+              "silhouette_iou": 0,
+              "rgb_mae": 0,
+              "edge_error": 0,
+              "surface_bidirectional_p95": 0,
+              "surface_max": 0,
+              "normal_angle_p95": 0,
+              "uv_error_p95": 0,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-supra-body-r025",
+            "family_id": "toyota_supra",
+            "candidate_id": "r015-recovered-body-r025",
+            "region": "body",
+            "verdict": "accepted-manual",
+            "evidence_scope": "focused recovered r025",
+            "metrics": {
+              "silhouette_iou": 0.005576757463716442,
+              "rgb_mae": 0.0013556492813612366,
+              "edge_error": 0.018986063421531005,
+              "surface_bidirectional_p95": 0.00041570479997798493,
+              "surface_max": 0.0025086305279646446,
+              "normal_angle_p95": 91.38842374152955,
+              "uv_error_p95": 0.27697681780941297,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-supra-body13-r015",
+            "family_id": "toyota_supra",
+            "candidate_id": "r015-recovered-body-r025",
+            "region": "body13_model0",
+            "verdict": "accepted-manual",
+            "evidence_scope": "focused preserved r015",
+            "metrics": {
+              "silhouette_iou": 0.009077146825526627,
+              "rgb_mae": 0.00037664841289831525,
+              "edge_error": 0.026814215790593742,
+              "surface_bidirectional_p95": 0.0003037589214686694,
+              "surface_max": 0.001999419880508774,
+              "normal_angle_p95": 88.38507031644856,
+              "uv_error_p95": 0.2076136924960457,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-skyline-fenders-exact",
+            "family_id": "nissan_skyline_gtr32",
+            "candidate_id": "r020-recovered-exact",
+            "region": "fenders_a",
+            "verdict": "accepted-manual",
+            "evidence_scope": "focused recovered exact",
+            "metrics": {
+              "silhouette_iou": 0,
+              "rgb_mae": 0,
+              "edge_error": 0,
+              "surface_bidirectional_p95": 0,
+              "surface_max": 0,
+              "normal_angle_p95": 0,
+              "uv_error_p95": 0,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-skyline-headlights-exact",
+            "family_id": "nissan_skyline_gtr32",
+            "candidate_id": "r020-recovered-exact",
+            "region": "headlights_a",
+            "verdict": "accepted-manual",
+            "evidence_scope": "focused recovered exact",
+            "metrics": {
+              "silhouette_iou": 0,
+              "rgb_mae": 0,
+              "edge_error": 0,
+              "surface_bidirectional_p95": 0,
+              "surface_max": 0,
+              "normal_angle_p95": 0,
+              "uv_error_p95": 0,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-monaco-body20",
+            "family_id": "dodge_monaco_police",
+            "candidate_id": "hybrid-stable",
+            "region": "body20_model0",
+            "verdict": "accepted-manual",
+            "evidence_scope": "focused accepted composite",
+            "metrics": {
+              "silhouette_iou": 0.004151701266671415,
+              "rgb_mae": 0.00028428358090676586,
+              "edge_error": 0.04805725971370143,
+              "surface_bidirectional_p95": 0.001219770949238261,
+              "surface_max": 0.006369654743643057,
+              "normal_angle_p95": 112.47167297142435,
+              "uv_error_p95": 2.399507426419788,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-monaco-body21",
+            "family_id": "dodge_monaco_police",
+            "candidate_id": "hybrid-stable",
+            "region": "body21_model0",
+            "verdict": "accepted-manual",
+            "evidence_scope": "focused accepted composite",
+            "metrics": {
+              "silhouette_iou": 0.05544492119868338,
+              "rgb_mae": 0.0012233704713158768,
+              "edge_error": 0.07152533188837713,
+              "surface_bidirectional_p95": 0.0018276376878084098,
+              "surface_max": 0.006050137829972055,
+              "normal_angle_p95": 91.16986850684468,
+              "uv_error_p95": 0.32895659493761936,
+              "skinning_error_p95": 0
+            }
+          }
+        ],
+        "rejected_samples": [
+          {
+            "sample_id": "focus-charger-grille-r030",
+            "family_id": "dodge_charger",
+            "candidate_id": "r030",
+            "region": "grille_a",
+            "verdict": "rejected-manual",
+            "evidence_scope": "focused pre-recovery lost grille contour and tooth detail",
+            "metrics": {
+              "silhouette_iou": 0.41881828660055553,
+              "rgb_mae": 0.011220875794373617,
+              "edge_error": 0.4701032406079725,
+              "surface_bidirectional_p95": 0.02819233581042823,
+              "surface_max": 0.02851476647026017,
+              "normal_angle_p95": 95.73316819822078,
+              "uv_error_p95": 0.6584754813076488,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-charger-headlight-r030",
+            "family_id": "dodge_charger",
+            "candidate_id": "r030",
+            "region": "headlight",
+            "verdict": "rejected-manual",
+            "evidence_scope": "focused pre-recovery damaged circular headlight boundaries",
+            "metrics": {
+              "silhouette_iou": 0.07404498784064717,
+              "rgb_mae": 0.00425790277531795,
+              "edge_error": 0.33540372670807456,
+              "surface_bidirectional_p95": 0.003445433120172852,
+              "surface_max": 0.005658743484221886,
+              "normal_angle_p95": 148.94957083842723,
+              "uv_error_p95": 1.072560920036567,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-supra-body-r015",
+            "family_id": "toyota_supra",
+            "candidate_id": "r015",
+            "region": "body",
+            "verdict": "rejected-manual",
+            "evidence_scope": "focused pre-recovery triangular body shading artifact",
+            "metrics": {
+              "silhouette_iou": 0.01702277951405906,
+              "rgb_mae": 0.0018651761956846118,
+              "edge_error": 0.06905710491367861,
+              "surface_bidirectional_p95": 0.0008372271578143146,
+              "surface_max": 0.00699183200702173,
+              "normal_angle_p95": 94.61102618368867,
+              "uv_error_p95": 0.41572175780512033,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-skyline-fenders-r020",
+            "family_id": "nissan_skyline_gtr32",
+            "candidate_id": "r020",
+            "region": "fenders_a",
+            "verdict": "rejected-manual",
+            "evidence_scope": "focused pre-recovery damaged fender cutouts and thin detail",
+            "metrics": {
+              "silhouette_iou": 0.043526795831288156,
+              "rgb_mae": 0.007316810584996925,
+              "edge_error": 0.29731613802718715,
+              "surface_bidirectional_p95": 0.003779096716399514,
+              "surface_max": 0.011690640894452433,
+              "normal_angle_p95": 144.04803784192336,
+              "uv_error_p95": 0.735625194146167,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-skyline-headlights-r020",
+            "family_id": "nissan_skyline_gtr32",
+            "candidate_id": "r020",
+            "region": "headlights_a",
+            "verdict": "rejected-manual",
+            "evidence_scope": "focused pre-recovery damaged curved headlight outlines",
+            "metrics": {
+              "silhouette_iou": 0.10352946561552623,
+              "rgb_mae": 0.01357140472773741,
+              "edge_error": 0.5043609022556391,
+              "surface_bidirectional_p95": 0.005994837613389737,
+              "surface_max": 0.016680046842585755,
+              "normal_angle_p95": 147.7132962491824,
+              "uv_error_p95": 0.9109305754432686,
+              "skinning_error_p95": 0
+            }
+          }
+        ],
+        "auxiliary_samples": [
+          {
+            "sample_id": "focus-skyline-r015-headlights",
+            "family_id": "nissan_skyline_gtr32",
+            "candidate_id": "r015",
+            "region": "headlights_a",
+            "verdict": "auxiliary-unapproved",
+            "evidence_scope": "near-negative exact source diagnostic",
+            "metrics": {
+              "silhouette_iou": 0,
+              "rgb_mae": 0,
+              "edge_error": 0,
+              "surface_bidirectional_p95": 0,
+              "surface_max": 0,
+              "normal_angle_p95": 0,
+              "uv_error_p95": 0,
+              "skinning_error_p95": 0
+            }
+          },
+          {
+            "sample_id": "focus-skyline-r015-fenders",
+            "family_id": "nissan_skyline_gtr32",
+            "candidate_id": "r015",
+            "region": "fenders_a",
+            "verdict": "auxiliary-unapproved",
+            "evidence_scope": "near-negative visibly degraded fender diagnostic",
+            "metrics": {
+              "silhouette_iou": 0.06907932687603713,
+              "rgb_mae": 0.011805711975289963,
+              "edge_error": 0.42584991053573307,
+              "surface_bidirectional_p95": 0.008227531901427075,
+              "surface_max": 0.024060415569242807,
+              "normal_angle_p95": 135.6207157508297,
+              "uv_error_p95": 0.7554357903075204,
+              "skinning_error_p95": 0
+            }
+          }
+        ],
+        "accepted_distribution": {
+          "silhouette_iou": {
+            "count": 8,
+            "min": 0,
+            "median": 0.0020758506333357074,
+            "p95": 0.03921620016807849,
+            "max": 0.05544492119868338
+          },
+          "rgb_mae": {
+            "count": 8,
+            "min": 0,
+            "median": 0.00014214179045338293,
+            "p95": 0.0013093516978453608,
+            "max": 0.0013556492813612366
+          },
+          "edge_error": {
+            "count": 8,
+            "min": 0,
+            "median": 0.009493031710765503,
+            "p95": 0.06331150662724062,
+            "max": 0.07152533188837713
+          },
+          "surface_bidirectional_p95": {
+            "count": 8,
+            "min": 0,
+            "median": 0.0001518794607343347,
+            "p95": 0.0016148843293088573,
+            "max": 0.0018276376878084098
+          },
+          "surface_max": {
+            "count": 8,
+            "min": 0,
+            "median": 0.000999709940254387,
+            "p95": 0.0062578238238582065,
+            "max": 0.006369654743643057
+          },
+          "normal_angle_p95": {
+            "count": 8,
+            "min": 0,
+            "median": 44.19253515822428,
+            "p95": 105.09253574096115,
+            "max": 112.47167297142435
+          },
+          "uv_error_p95": {
+            "count": 8,
+            "min": 0,
+            "median": 0.10380684624802285,
+            "p95": 1.674814635401028,
+            "max": 2.399507426419788
+          },
+          "skinning_error_p95": {
+            "count": 8,
+            "min": 0,
+            "median": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "rejected_distribution": {
+          "silhouette_iou": {
+            "count": 5,
+            "min": 0.01702277951405906,
+            "median": 0.07404498784064717,
+            "p95": 0.3557605224035496,
+            "max": 0.41881828660055553
+          },
+          "rgb_mae": {
+            "count": 5,
+            "min": 0.0018651761956846118,
+            "median": 0.007316810584996925,
+            "p95": 0.01310129894106465,
+            "max": 0.01357140472773741
+          },
+          "edge_error": {
+            "count": 5,
+            "min": 0.06905710491367861,
+            "median": 0.33540372670807456,
+            "p95": 0.49750936992610584,
+            "max": 0.5043609022556391
+          },
+          "surface_bidirectional_p95": {
+            "count": 5,
+            "min": 0.0008372271578143146,
+            "median": 0.003779096716399514,
+            "p95": 0.023752836171020527,
+            "max": 0.02819233581042823
+          },
+          "surface_max": {
+            "count": 5,
+            "min": 0.005658743484221886,
+            "median": 0.011690640894452433,
+            "p95": 0.026147822544725287,
+            "max": 0.02851476647026017
+          },
+          "normal_angle_p95": {
+            "count": 5,
+            "min": 94.61102618368867,
+            "median": 144.04803784192336,
+            "p95": 148.7023159205783,
+            "max": 148.94957083842723
+          },
+          "uv_error_p95": {
+            "count": 5,
+            "min": 0.41572175780512033,
+            "median": 0.735625194146167,
+            "p95": 1.0402348511179071,
+            "max": 1.072560920036567
+          },
+          "skinning_error_p95": {
+            "count": 5,
+            "min": 0,
+            "median": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "auxiliary_distribution": {
+          "silhouette_iou": {
+            "count": 2,
+            "min": 0,
+            "median": 0.034539663438018564,
+            "p95": 0.06562536053223526,
+            "max": 0.06907932687603713
+          },
+          "rgb_mae": {
+            "count": 2,
+            "min": 0,
+            "median": 0.005902855987644982,
+            "p95": 0.011215426376525464,
+            "max": 0.011805711975289963
+          },
+          "edge_error": {
+            "count": 2,
+            "min": 0,
+            "median": 0.21292495526786653,
+            "p95": 0.4045574150089464,
+            "max": 0.42584991053573307
+          },
+          "surface_bidirectional_p95": {
+            "count": 2,
+            "min": 0,
+            "median": 0.0041137659507135375,
+            "p95": 0.00781615530635572,
+            "max": 0.008227531901427075
+          },
+          "surface_max": {
+            "count": 2,
+            "min": 0,
+            "median": 0.012030207784621404,
+            "p95": 0.022857394790780666,
+            "max": 0.024060415569242807
+          },
+          "normal_angle_p95": {
+            "count": 2,
+            "min": 0,
+            "median": 67.81035787541485,
+            "p95": 128.8396799632882,
+            "max": 135.6207157508297
+          },
+          "uv_error_p95": {
+            "count": 2,
+            "min": 0,
+            "median": 0.3777178951537602,
+            "p95": 0.7176640007921443,
+            "max": 0.7554357903075204
+          },
+          "skinning_error_p95": {
+            "count": 2,
+            "min": 0,
+            "median": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "provisional_hypothesis": {
+          "status": "provisional-non-authorizing-hypothesis",
+          "authorizing": false,
+          "approved": false,
+          "margin_fraction": 0.1,
+          "upper_bounds": {
+            "silhouette_iou": 0.060989,
+            "rgb_mae": 0.001491,
+            "edge_error": 0.078678,
+            "surface_bidirectional_p95": 0.00201,
+            "surface_max": 0.007007,
+            "normal_angle_p95": 123.719,
+            "uv_error_p95": 2.639,
+            "skinning_error_p95": 0
+          },
+          "separating_metrics": [
+            "rgb_mae"
+          ],
+          "limitations": [
+            "The separating frontier is controlled by one accepted and one rejected Supra body sample.",
+            "Existing regions were manually targeted and do not satisfy deterministic top_k=3 coverage."
+          ]
+        }
+      }
+    }
+  },
+  "noncomparable_observations": [
+    {
+      "sample_id": "round-whole-importance-r035",
+      "class": "round-rigid-v1",
+      "scope": "whole",
+      "verdict": "rejected-manual-incomparable",
+      "evidence_scope": "rim1 bind-only 8-view clay ablation",
+      "available_metrics": {
+        "silhouette_iou": 0.00485803183781619,
+        "rgb_mae": 0.0002513946879513835,
+        "edge_error": 0.10354223433242507
+      },
+      "missing_metrics": [
+        "surface_bidirectional_p95",
+        "surface_max",
+        "normal_angle_p95",
+        "uv_error_p95",
+        "skinning_error_p95"
+      ],
+      "reason": "The rejection is manual but lacks the strict textured plus clay state matrix and geometry metrics required for direct distribution membership."
+    }
+  ],
+  "implementation_hashes": {
+    "archived_calibration_v3": {
+      "visual_validation": "d1c2dd507a5f29e8f81d9cc4e7b925edab92698c7177df8716af166797f3efc9",
+      "render_previews": "209d978f0f5b24e69f119824ab682a0bb98286b5683c9bb989f00be43ab5615b",
+      "run_visual_states": "3c0c3b3427835719e5d630a59c94fc54bc25cef092f01e17178210640ca58a9f",
+      "build_calibration_corpus": "4fdec8619fffc42d43a9d0551366a3f33ec5cf1907da2061aaaff056fb898925"
+    },
+    "current_at_audit": {
+      "visual_validation": "05a9d9eaaddddad2d52fa8b843d4d2018d19cd5f6b7b5bfb9941f17c395d1daf",
+      "render_previews": "326d5d4c5791009a21ce7e9207ffba5f3bae4c4f8580e6cadba0bce9e69c4d0a",
+      "run_visual_states": "3c0c3b3427835719e5d630a59c94fc54bc25cef092f01e17178210640ca58a9f",
+      "build_calibration_corpus": "4fdec8619fffc42d43a9d0551366a3f33ec5cf1907da2061aaaff056fb898925"
+    }
+  },
+  "coverage_gaps": [
+    "Focused round-rigid evidence has zero samples.",
+    "Focused body evidence has two manually targeted regions per family rather than deterministic top_k=3 coverage.",
+    "Whole general-body negative coverage is limited to one auxiliary Skyline candidate.",
+    "Importance r035 lacks a comparable strict textured-plus-clay matrix and geometry metrics.",
+    "Current renderer and comparator hashes differ from the archived calibration v3 implementations.",
+    "No fresh repeat distribution measures current decoded-pixel or geometry variance."
+  ],
+  "required_fresh_matrix": [
+    {
+      "matrix_id": "fresh-round-whole",
+      "class": "round-rigid-v1",
+      "scope": "whole",
+      "subjects": [
+        "research://wheel/r050",
+        "research://wheel/r035",
+        "research://wheel/v4-r035",
+        "research://wheel/v4-r045",
+        "research://wheel/v4-r0475",
+        "research://wheel/importance-r035"
+      ],
+      "state_or_target_contract": "all declared whole states with 8 angles, textured and clay, bind or declared representative pose",
+      "repeat_contract": "fresh run plus one decoded-RGBA and geometry repeat for r050 and v4-r0475",
+      "evidence_required": "per-view image metrics, per-region geometry metrics, manifests, manual labels, and exact implementation identities",
+      "status": "required-before-profile-calibration",
+      "authorizing": false
+    },
+    {
+      "matrix_id": "fresh-body-whole",
+      "class": "general-body-detail-v1",
+      "scope": "whole",
+      "subjects": [
+        "research://body/dodge_charger/r030-recovered-exact",
+        "research://body/toyota_supra/r015-recovered-body-r025",
+        "research://body/nissan_skyline_gtr32/r020-recovered-exact",
+        "research://body/dodge_monaco_police/hybrid-stable",
+        "research://body/nissan_skyline_gtr32/r015-negative",
+        "research://required/general-body-negative-per-uncovered-family"
+      ],
+      "state_or_target_contract": "all declared whole states with the canonical render matrix",
+      "repeat_contract": "fresh run plus repeat for Skyline r020 recovered and r015 negative",
+      "evidence_required": "per-view metrics and at least one manually labelled whole negative for every uncovered body family",
+      "status": "required-before-profile-calibration",
+      "authorizing": false
+    },
+    {
+      "matrix_id": "fresh-round-focused",
+      "class": "round-rigid-v1",
+      "scope": "focused",
+      "subjects": [
+        "research://wheel/r050",
+        "research://wheel/r035",
+        "research://wheel/v4-r035",
+        "research://wheel/v4-r045",
+        "research://wheel/v4-r0475",
+        "research://wheel/importance-r035"
+      ],
+      "state_or_target_contract": "deterministic focused selector top_k=3 with hub, inner-ring, and rim risks represented when selected",
+      "repeat_contract": "fresh run plus repeat for r050 and v4-r0475 boundary cases",
+      "evidence_required": "isolated renders and exact per-view and geometry metrics for accepted and rejected candidates",
+      "status": "required-before-profile-calibration",
+      "authorizing": false
+    },
+    {
+      "matrix_id": "fresh-body-focused",
+      "class": "general-body-detail-v1",
+      "scope": "focused",
+      "subjects": [
+        "research://body/dodge_charger/r030-recovered-exact",
+        "research://body/toyota_supra/r015-recovered-body-r025",
+        "research://body/nissan_skyline_gtr32/r020-recovered-exact",
+        "research://body/dodge_monaco_police/hybrid-stable",
+        "research://body/pre-recovery-manual-rejections"
+      ],
+      "state_or_target_contract": "deterministic focused selector top_k=3 for every accepted winner and declared negative",
+      "repeat_contract": "fresh repeat for Supra body r025 accepted, Supra body r015 rejected, and Monaco body21 accepted",
+      "evidence_required": "per-view metrics, geometry metrics, selection proofs, manual labels, and complete top_k cardinality",
+      "status": "required-before-profile-calibration",
+      "authorizing": false
+    }
+  ],
+  "decision": {
+    "status": "insufficient-for-profile-activation",
+    "authorizing": false,
+    "reason_code": "missing-focused-round-rigid-evidence",
+    "reason": "Provisional separations exist, but a complete whole-plus-focused class profile cannot be derived without any focused round-rigid sample and fresh current-toolchain matrices."
+  },
+  "evidence_sha256": "3cfcbe21d8e11c3b61bc34e8bc3e3d4e371947e64b004436248c037805563c3c"
+}
