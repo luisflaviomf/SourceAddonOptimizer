@@ -745,7 +745,7 @@ class AdaptiveDirectStateInventoryRow:
         components = _canonical_text_tuple(self.component_keys, "inventory components", limit=_ADAPTIVE_COMPONENT_LIMIT)
         materials = _canonical_text_tuple(self.material_region_keys, "inventory materials", limit=_ADAPTIVE_MATERIAL_LIMIT)
         poses = tuple(self.pose_keys)
-        if not 1 <= len(poses) <= 2 or poses[0] != "bind" or len(set(poses)) != len(poses): raise ValueError("inventory poses are invalid")
+        if not 1 <= len(poses) <= 2 or any(type(item) is not str or not item for item in poses) or poses[0] != "bind" or len({item.casefold() for item in poses}) != len(poses): raise ValueError("inventory poses are invalid")
         for label, value in (("inventory skeleton", self.skeleton_contract_sha256), ("inventory component manifest", self.component_manifest_sha256), ("inventory material contract", self.material_contract_sha256), ("inventory pose contract", self.pose_contract_sha256), ("inventory equivalence class", self.equivalence_class_sha256)):
             _require_sha256(value, label)
         if _require_sha256(self.row_sha256, "inventory row hash") != _seal(adaptive_direct_state_inventory_row_payload(self, include_seal=False)): raise ValueError("inventory row seal mismatch")
@@ -894,7 +894,7 @@ class AdaptiveDirectCoverageSourceProof:
         components = _canonical_text_tuple(self.component_keys, "coverage components", limit=_ADAPTIVE_COMPONENT_LIMIT)
         materials = _canonical_text_tuple(self.material_region_keys, "coverage materials", limit=_ADAPTIVE_MATERIAL_LIMIT)
         poses = tuple(self.pose_keys)
-        if not 1 <= len(poses) <= _ADAPTIVE_POSE_LIMIT or poses[0] != "bind" or len(set(poses)) != len(poses) or any(type(item) is not str or not item for item in poses):
+        if not 1 <= len(poses) <= _ADAPTIVE_POSE_LIMIT or poses[0] != "bind" or len({item.casefold() for item in poses if type(item) is str}) != len(poses) or any(type(item) is not str or not item for item in poses):
             raise ValueError("coverage poses are invalid")
         _require_sha256(self.skeleton_contract_sha256, "coverage skeleton contract")
         _require_sha256(self.equivalence_class_sha256, "coverage equivalence class")
@@ -997,6 +997,10 @@ class AdaptiveDirectCoverageManifest:
             inventory_rows = tuple((item.occurrence_key, item.source_identity, item.graph_relative_path, item.directive, item.line, item.state_key, item.bodygroup_key, item.lod_key, item.skin_key, item.source_size, item.source_sha256, item.component_manifest_sha256, item.material_contract_sha256, item.skeleton_contract_sha256, item.pose_contract_sha256, item.equivalence_class_sha256) for item in rows)
             if witness_rows != inventory_rows:
                 raise ValueError("coverage witnesses differ from typed state inventory")
+            expected_components = tuple(sorted({key for row in rows for key in row.component_keys}, key=lambda key: (key.casefold(), key)))
+            expected_materials = tuple(sorted({key for row in rows for key in row.material_region_keys}, key=lambda key: (key.casefold(), key)))
+            if source.component_keys != expected_components or source.material_region_keys != expected_materials or any(row.pose_keys != source.pose_keys for row in rows):
+                raise ValueError("coverage source regions or poses differ from typed state inventory")
         eligible = tuple(item for item in sources if item.eligibility_kind == "eligible-exact-v1")
         if not 1 <= len(eligible) <= _ADAPTIVE_SOURCE_LIMIT:
             raise ValueError("coverage eligible source count is outside 1..8")
@@ -1004,7 +1008,8 @@ class AdaptiveDirectCoverageManifest:
         component_count = sum(len(item.component_keys) for item in sources)
         state_count = sum(len(item.state_keys) for item in sources)
         maximum_images = sum(32 * len(item.pose_keys) for item in eligible)
-        if occurrence_count > _ADAPTIVE_OCCURRENCE_LIMIT or (self.occurrence_count, self.component_count, self.state_count, self.maximum_candidate_images) != (occurrence_count, component_count, state_count, maximum_images) or maximum_images > 512:
+        totals = (self.occurrence_count, self.component_count, self.state_count, self.maximum_candidate_images)
+        if any(type(item) is not int for item in totals) or occurrence_count > _ADAPTIVE_OCCURRENCE_LIMIT or totals != (occurrence_count, component_count, state_count, maximum_images) or maximum_images > 512:
             raise ValueError("coverage manifest totals mismatch or exceed bound")
         if _require_sha256(self.coverage_manifest_sha256, "coverage manifest hash") != _seal(adaptive_direct_coverage_manifest_payload(self, include_seal=False)):
             raise ValueError("coverage manifest seal mismatch")

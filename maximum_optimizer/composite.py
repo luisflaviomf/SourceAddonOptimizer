@@ -225,6 +225,7 @@ class AdaptiveDirectVisibilityProof:
     camera_key: str
     reference_visible_mask_pixels: int
     candidate_visible_mask_pixels: int
+    preceding_camera_mask_pixels: tuple[tuple[str, int, int], ...]
     evidence_sha256: str
 
     def __post_init__(self) -> None:
@@ -232,12 +233,19 @@ class AdaptiveDirectVisibilityProof:
             raise ValueError("source-union visibility identity is invalid")
         if any(type(item) is not int or item < 1 for item in (self.reference_visible_mask_pixels, self.candidate_visible_mask_pixels)):
             raise ValueError("source-union visibility pixels are invalid")
+        cameras = tuple(f"camera-{index:02d}" for index in range(8))
+        if self.camera_key not in cameras: raise ValueError("source-union visibility camera is invalid")
+        preceding = tuple(tuple(item) for item in self.preceding_camera_mask_pixels)
+        selected_index = cameras.index(self.camera_key)
+        if len(preceding) != selected_index or tuple(item[0] for item in preceding if len(item) == 3) != cameras[:selected_index]: raise ValueError("source-union preceding camera proof is incomplete")
+        if any(len(item) != 3 or type(item[1]) is not int or type(item[2]) is not int or item[1] < 0 or item[2] < 0 or (item[1] > 0 and item[2] > 0) for item in preceding): raise ValueError("source-union preceding camera was already bilaterally visible")
         if self.evidence_sha256 != _pure_seal(_visibility_payload(self, False)):
             raise ValueError("source-union visibility seal mismatch")
+        object.__setattr__(self, "preceding_camera_mask_pixels", preceding)
 
 
 def _visibility_payload(value: AdaptiveDirectVisibilityProof, include_seal: bool = True) -> dict[str, object]:
-    payload = {"component_key": value.component_key, "pose_key": value.pose_key, "camera_key": value.camera_key, "reference_visible_mask_pixels": value.reference_visible_mask_pixels, "candidate_visible_mask_pixels": value.candidate_visible_mask_pixels}
+    payload = {"component_key": value.component_key, "pose_key": value.pose_key, "camera_key": value.camera_key, "reference_visible_mask_pixels": value.reference_visible_mask_pixels, "candidate_visible_mask_pixels": value.candidate_visible_mask_pixels, "preceding_camera_mask_pixels": [{"camera_key": item[0], "reference_visible_mask_pixels": item[1], "candidate_visible_mask_pixels": item[2]} for item in value.preceding_camera_mask_pixels]}
     if include_seal: payload["evidence_sha256"] = value.evidence_sha256
     return payload
 
@@ -246,9 +254,14 @@ adaptive_direct_visibility_payload = _visibility_payload
 
 
 def adaptive_direct_visibility_from_payload(value: object) -> AdaptiveDirectVisibilityProof:
-    fields = {"component_key", "pose_key", "camera_key", "reference_visible_mask_pixels", "candidate_visible_mask_pixels", "evidence_sha256"}
-    if type(value) is not dict or set(value) != fields: raise ValueError("source-union visibility payload fields are invalid")
-    return AdaptiveDirectVisibilityProof(**value)
+    fields = {"component_key", "pose_key", "camera_key", "reference_visible_mask_pixels", "candidate_visible_mask_pixels", "preceding_camera_mask_pixels", "evidence_sha256"}
+    if type(value) is not dict or set(value) != fields or type(value["preceding_camera_mask_pixels"]) is not list: raise ValueError("source-union visibility payload fields are invalid")
+    preceding = []
+    for raw in value["preceding_camera_mask_pixels"]:
+        if type(raw) is not dict or set(raw) != {"camera_key", "reference_visible_mask_pixels", "candidate_visible_mask_pixels"}: raise ValueError("source-union preceding camera payload is invalid")
+        preceding.append((raw["camera_key"], raw["reference_visible_mask_pixels"], raw["candidate_visible_mask_pixels"]))
+    copied = dict(value); copied["preceding_camera_mask_pixels"] = tuple(preceding)
+    return AdaptiveDirectVisibilityProof(**copied)
 
 
 @dataclass(frozen=True)
@@ -323,7 +336,7 @@ class AdaptiveDirectSourceUnionRecord:
             raise ValueError("source-union files are not the exact canonical matrix")
         expected_visibility = {(component, pose) for component in self.target.component_keys for pose in self.target.pose_keys}
         actual_visibility = {(item.component_key, item.pose_key) for item in visibility if isinstance(item, AdaptiveDirectVisibilityProof)}
-        if len(visibility) != len(expected_visibility) or actual_visibility != expected_visibility or tuple((item.component_key, item.pose_key) for item in visibility) != tuple(sorted(actual_visibility)) or any(item.camera_key != cameras[0] for item in visibility):
+        if len(visibility) != len(expected_visibility) or actual_visibility != expected_visibility or tuple((item.component_key, item.pose_key) for item in visibility) != tuple(sorted(actual_visibility)):
             raise ValueError("source-union visibility is not exact")
         if self.evidence_sha256 != _pure_seal(_union_record_payload(self, False)): raise ValueError("source-union record seal mismatch")
         object.__setattr__(self, "files", files); object.__setattr__(self, "visibility", visibility)
@@ -345,7 +358,7 @@ def adaptive_direct_source_union_record_from_payload(value: object) -> AdaptiveD
     if type(validation) is not dict or set(validation) != {"passed", "failures", "metrics", "worst_scope"} or type(validation["failures"]) is not list or type(validation["metrics"]) is not dict: raise ValueError("source-union validation payload is invalid")
     failures = []
     for raw in validation["failures"]:
-        if type(raw) is not dict or set(raw) != {"gate", "scope", "metric", "observed", "limit", "detail"}: raise ValueError("source-union failure payload is invalid")
+        if type(raw) is not dict or set(raw) != {"gate", "scope", "measured", "limit", "message"}: raise ValueError("source-union failure payload is invalid")
         failures.append(GateFailure(**raw))
     validation_value = ValidationResult(validation["passed"], tuple(failures), validation["metrics"], validation["worst_scope"])
     files = []
@@ -361,8 +374,11 @@ def adaptive_direct_source_union_record_from_payload(value: object) -> AdaptiveD
 
 def build_adaptive_direct_source_union_record(*, target, validation, files, visibility) -> AdaptiveDirectSourceUnionRecord:
     visibility_proofs = []
-    for component, pose, camera, reference_pixels, candidate_pixels in visibility:
-        raw = dict(component_key=component, pose_key=pose, camera_key=camera, reference_visible_mask_pixels=reference_pixels, candidate_visible_mask_pixels=candidate_pixels, evidence_sha256=_ZERO_HASH)
+    for item in visibility:
+        if type(item) not in (tuple, list) or len(item) not in {5, 6}: raise ValueError("source-union visibility input is invalid")
+        component, pose, camera, reference_pixels, candidate_pixels = item[:5]
+        preceding = () if len(item) == 5 else tuple(item[5])
+        raw = dict(component_key=component, pose_key=pose, camera_key=camera, reference_visible_mask_pixels=reference_pixels, candidate_visible_mask_pixels=candidate_pixels, preceding_camera_mask_pixels=preceding, evidence_sha256=_ZERO_HASH)
         provisional = _unsealed(AdaptiveDirectVisibilityProof, **raw); raw["evidence_sha256"] = _pure_seal(_visibility_payload(provisional, False)); visibility_proofs.append(AdaptiveDirectVisibilityProof(**raw))
     raw = dict(target=target, validation=validation, files=tuple(files), visibility=tuple(visibility_proofs), evidence_sha256=_ZERO_HASH)
     provisional = _unsealed(AdaptiveDirectSourceUnionRecord, **raw); raw["evidence_sha256"] = _pure_seal(_union_record_payload(provisional, False)); return AdaptiveDirectSourceUnionRecord(**raw)

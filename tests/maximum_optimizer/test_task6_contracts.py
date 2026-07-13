@@ -30,6 +30,7 @@ from maximum_optimizer.domain import (
     DirectDroppedTriangleProof,
     EligibleAdaptiveSourceProof,
     IneligibleAdaptiveSourceProof,
+    GateFailure,
     SourceOverlay,
     ValidationResult,
     adaptive_candidate_metrics_from_payload,
@@ -37,6 +38,7 @@ from maximum_optimizer.domain import (
     adaptive_direct_coverage_manifest_from_payload,
     adaptive_direct_coverage_manifest_payload,
     adaptive_direct_state_inventory_from_payload,
+    adaptive_direct_state_inventory_row_from_payload,
     adaptive_direct_state_inventory_payload,
     direct_source_request_from_payload,
     direct_source_request_payload,
@@ -266,6 +268,21 @@ class CoverageContracts(unittest.TestCase):
             replace(manifest.sources[0].witnesses[0], line=99)
         with self.assertRaises(ValueError):
             replace(manifest, base_spec_sha256=H["f"])
+        boolean_total = adaptive_direct_coverage_manifest_payload(manifest)
+        boolean_total["occurrence_count"] = True
+        unsealed = dict(boolean_total); unsealed.pop("coverage_manifest_sha256")
+        boolean_total["coverage_manifest_sha256"] = payload_seal(unsealed)
+        with self.assertRaises(ValueError):
+            adaptive_direct_coverage_manifest_from_payload(boolean_total)
+        forged = adaptive_direct_coverage_manifest_payload(manifest)
+        forged_source = forged["sources"][0]
+        forged_source["component_keys"] = ["forged-component"]
+        source_unsealed = dict(forged_source); source_unsealed.pop("source_coverage_sha256")
+        forged_source["source_coverage_sha256"] = payload_seal(source_unsealed)
+        manifest_unsealed = dict(forged); manifest_unsealed.pop("coverage_manifest_sha256")
+        forged["coverage_manifest_sha256"] = payload_seal(manifest_unsealed)
+        with self.assertRaises(ValueError):
+            adaptive_direct_coverage_manifest_from_payload(forged)
 
     def test_typed_state_inventory_round_trips_and_coverage_rejects_metrics_or_occurrence_mismatch(self) -> None:
         sources = (coverage_source(states=("a", "b")),)
@@ -316,6 +333,15 @@ class CoverageContracts(unittest.TestCase):
             self.manifest((coverage_source(states=tuple(f"state-{i:02d}" for i in range(17))),))
         with self.assertRaises(ValueError):
             self.manifest((coverage_source(components=tuple(f"component-{i:03d}" for i in range(257))),))
+        with self.assertRaises(ValueError):
+            coverage_source(poses=("bind", "Bind"))
+        inventory = inventory_for_coverage((coverage_source(),))
+        row = adaptive_direct_state_inventory_payload(inventory)["rows"][0]
+        row["pose_keys"] = ["bind", "Bind"]
+        row_unsealed = dict(row); row_unsealed.pop("row_sha256")
+        row["row_sha256"] = payload_seal(row_unsealed)
+        with self.assertRaises(ValueError):
+            adaptive_direct_state_inventory_row_from_payload(row)
 
     def test_manifest_accepts_4096_and_rejects_4097_aggregate_witnesses(self) -> None:
         first = coverage_source_many("body.smd", 2048)
@@ -483,6 +509,22 @@ class SourceUnionContracts(unittest.TestCase):
                 files=tuple(sorted(files, key=lambda item: item.path)),
                 visibility=(("component-000", "bind", "camera-01", 1, 1),),
             )
+        later = build_adaptive_direct_source_union_record(
+            target=target, validation=ValidationResult(True),
+            files=tuple(sorted(files, key=lambda item: item.path)),
+            visibility=(("component-000", "bind", "camera-01", 1, 1, (("camera-00", 0, 3),)),),
+        )
+        self.assertEqual(later.visibility[0].camera_key, "camera-01")
+        failed = build_adaptive_direct_source_union_record(
+            target=target,
+            validation=ValidationResult(False, (GateFailure("focused", "body", 2.0, 1.0, "too different"),)),
+            files=tuple(sorted(files, key=lambda item: item.path)),
+            visibility=(("component-000", "bind", "camera-00", 1, 1),),
+        )
+        self.assertEqual(
+            adaptive_direct_source_union_record_from_payload(adaptive_direct_source_union_record_payload(failed)),
+            failed,
+        )
 
     def test_union_target_rejects_windows_and_noncanonical_relative_aliases(self) -> None:
         for identity in ("C:body.smd", "C:/body.smd", "//server/share/body.smd", "parts\\body.smd", "parts/./body.smd", "parts/../body.smd", "/body.smd"):
