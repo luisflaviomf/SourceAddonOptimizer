@@ -9,13 +9,18 @@ import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+import zlib
+from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
+
+sys.dont_write_bytecode = True
 
 _SCRIPT_ROOT = Path(__file__).resolve().parent
 if str(_SCRIPT_ROOT) not in sys.path:
@@ -59,6 +64,747 @@ GEOMETRY_AUDIT_ALGORITHM = {
     "relative_area_squared_epsilon": 1e-24,
     "max_filtered_fraction": 0.05,
 }
+
+
+@dataclass(frozen=True)
+class _SourceUnionControl:
+    comparison: object
+    component_manifest: object
+    candidate_transfer: object
+    material_contract: object
+    material_evidence: tuple[dict[str, object], ...]
+    component_keys: tuple[str, ...]
+    material_region_keys: tuple[str, ...]
+    python_runtime_contract_sha256: str
+    python_runtime_files: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True)
+class _SourceUnionComparisonControl:
+    target_sha256: str
+    source_identity: str
+    source_coverage_sha256: str
+    reference_source_sha256: str
+    candidate_source_sha256: str
+    material_contract_sha256: str
+    pose_frames: tuple[tuple[str, int], ...]
+    union_key: str
+    contract_sha256: str
+
+
+@dataclass(frozen=True)
+class _SourceUnionMaterialBindingControl:
+    material_region_key: str
+    smd_material: str
+    search_paths: tuple[str, ...]
+    root_index: int
+    search_path_index: int
+    vmt_file_index: int
+    vmt_path: str
+    texture_identity: str
+    vtf_root_index: int
+    vtf_file_index: int
+    vtf_path: str
+    shader: str
+    texture_directive: str
+    uses_texture_alpha: bool
+    duplicate_root_directives: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True)
+class _SourceUnionMaterialControl:
+    source_identity: str
+    filtered_source_sha256: str
+    bindings: tuple[_SourceUnionMaterialBindingControl, ...]
+    material_contract_sha256: str
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value, ensure_ascii=False, allow_nan=False, sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _strict_hash(value: object, label: str) -> str:
+    if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _strict_relative(value: object, label: str) -> str:
+    if (
+        type(value) is not str or not value or len(value) > 4096
+        or any(char in value for char in "\r\n\0")
+    ):
+        raise ValueError(f"{label} is invalid")
+    normalized = value.replace("\\", "/")
+    posix = PurePosixPath(normalized)
+    windows = PureWindowsPath(value)
+    canonical = PurePosixPath(*(part for part in posix.parts if part not in ("", "."))).as_posix()
+    if (
+        posix.is_absolute() or windows.is_absolute() or windows.drive
+        or ".." in posix.parts or canonical != value or canonical in ("", ".")
+    ):
+        raise ValueError(f"{label} is not canonical")
+    return value
+
+
+def _strict_smd_material(value: object) -> str:
+    if type(value) is not str or "\\" in value:
+        raise ValueError("source-union SMD material is invalid")
+    _strict_relative(value, "source-union SMD material")
+    if any(part in ("", ".", "..") for part in value.split("/")):
+        raise ValueError("source-union SMD material is unsafe")
+    return value
+
+
+def _strict_duplicate_directives(raw: object) -> tuple[dict[str, object], ...]:
+    if type(raw) is not list or len(raw) > 64:
+        raise ValueError("source-union duplicate directives are invalid")
+    result = []
+    total = 0
+    for item in raw:
+        if (
+            type(item) is not dict
+            or set(item) != {"directive", "ignored_values"}
+            or type(item["directive"]) is not str
+            or not item["directive"]
+            or len(item["directive"]) > 4096
+            or item["directive"] != item["directive"].casefold()
+            or type(item["ignored_values"]) is not list
+            or not 0 < len(item["ignored_values"]) <= 64
+            or any(
+                type(value) is not str or not value or len(value) > 4096
+                or any(char in value for char in "\r\n\0")
+                for value in item["ignored_values"]
+            )
+        ):
+            raise ValueError("source-union duplicate directive shape is invalid")
+        total += len(item["ignored_values"])
+        if total > 1024:
+            raise ValueError("source-union duplicate directive bound exceeded")
+        result.append({
+            "directive": item["directive"],
+            "ignored_values": list(item["ignored_values"]),
+        })
+    names = tuple(item["directive"] for item in result)
+    if names != tuple(sorted(set(names))):
+        raise ValueError("source-union duplicate directive order differs")
+    return tuple(result)
+
+
+def _parse_source_union_comparison(raw: object) -> _SourceUnionComparisonControl:
+    fields = {
+        "contract_sha256", "target_sha256", "source_identity",
+        "source_coverage_sha256", "reference_source_sha256",
+        "candidate_source_sha256", "material_contract_sha256",
+        "pose_frames", "union_key",
+    }
+    if type(raw) is not dict or set(raw) != fields or type(raw["pose_frames"]) is not list:
+        raise ValueError("source-union comparison control fields are invalid")
+    poses = tuple(
+        tuple(item) if type(item) is list else () for item in raw["pose_frames"]
+    )
+    if poses != (("bind", 0),) or type(poses[0][1]) is not int:
+        raise ValueError("source-union comparison pose contract is invalid")
+    hashes = tuple(_strict_hash(raw[name], f"source-union comparison {name}") for name in (
+        "target_sha256", "source_coverage_sha256", "reference_source_sha256",
+        "candidate_source_sha256", "material_contract_sha256", "contract_sha256",
+    ))
+    source_identity = _strict_relative(raw["source_identity"], "source-union comparison source")
+    union_key = raw["union_key"]
+    if (
+        type(union_key) is not str
+        or union_key != "source-union-" + raw["source_coverage_sha256"][:32]
+    ):
+        raise ValueError("source-union comparison union key is invalid")
+    unsigned = {
+        key: raw[key] for key in (
+            "target_sha256", "source_identity", "source_coverage_sha256",
+            "reference_source_sha256", "candidate_source_sha256",
+            "material_contract_sha256", "pose_frames", "union_key",
+        )
+    }
+    if hashlib.sha256(_canonical_json(unsigned).encode()).hexdigest() != raw["contract_sha256"]:
+        raise ValueError("source-union comparison contract seal mismatch")
+    return _SourceUnionComparisonControl(
+        target_sha256=hashes[0], source_identity=source_identity,
+        source_coverage_sha256=hashes[1], reference_source_sha256=hashes[2],
+        candidate_source_sha256=hashes[3], material_contract_sha256=hashes[4],
+        pose_frames=poses, union_key=union_key, contract_sha256=hashes[5],
+    )
+
+
+def _parse_source_union_material_control(
+    raw: object, reference_bytes: bytes, material_roots,
+) -> tuple[_SourceUnionMaterialControl, tuple[dict[str, object], ...]]:
+    fields = {
+        "schema", "kind", "resolution_rule", "source_identity",
+        "filtered_source_sha256", "roots", "files", "bindings",
+        "material_contract_sha256",
+    }
+    if type(raw) is not dict or set(raw) != fields:
+        raise ValueError("source-union material control fields are invalid")
+    if (
+        type(raw["schema"]) is not int or raw["schema"] != 1
+        or raw["kind"] != "adaptive-direct-source-union-material-v1"
+        or raw["resolution_rule"] != "materials-root-order-then-qc-search-order-v1"
+        or type(raw["roots"]) is not list or type(raw["files"]) is not list
+        or type(raw["bindings"]) is not list
+    ):
+        raise ValueError("source-union material control identity is invalid")
+    if (
+        not 0 < len(raw["roots"]) <= 64
+        or not 0 < len(raw["files"]) <= 512
+        or not 0 < len(raw["bindings"]) <= 256
+    ):
+        raise ValueError("source-union material control bound exceeded")
+    source_identity = _strict_relative(raw["source_identity"], "source-union material source")
+    filtered_hash = _strict_hash(raw["filtered_source_sha256"], "source-union material source hash")
+    if filtered_hash != hashlib.sha256(reference_bytes).hexdigest():
+        raise ValueError("source-union material filtered source differs")
+    contract_hash = _strict_hash(raw["material_contract_sha256"], "source-union material contract hash")
+    unsigned = dict(raw); unsigned.pop("material_contract_sha256")
+    if hashlib.sha256(_canonical_json(unsigned).encode()).hexdigest() != contract_hash:
+        raise ValueError("source-union material contract seal mismatch")
+    roots = tuple(material_roots)
+    if len(raw["roots"]) != len(roots) or not roots:
+        raise ValueError("source-union material root count differs")
+    for index, root in enumerate(raw["roots"]):
+        if (
+            type(root) is not dict
+            or set(root) != {"root_index", "root_identity"}
+            or type(root["root_index"]) is not int
+            or root["root_index"] != index
+            or type(root["root_identity"]) is not str
+            or root["root_identity"] != f"material-root-{index:03d}"
+        ):
+            raise ValueError("source-union material root contract differs")
+    file_fields = {"root_index", "path", "kind", "size", "sha256"}
+    files = []
+    total_size = 0
+    for item in raw["files"]:
+        if type(item) is not dict or set(item) != file_fields:
+            raise ValueError("source-union material file fields are invalid")
+        root_index = item["root_index"]
+        path = _strict_relative(item["path"], "source-union material file")
+        if (
+            type(root_index) is not int or root_index not in range(len(roots))
+            or item["kind"] not in {"vmt", "vtf"}
+            or type(item["size"]) is not int or item["size"] < 0
+            or (item["kind"] == "vmt" and item["size"] > 8 * 1024 * 1024)
+            or not path.casefold().endswith("." + item["kind"])
+        ):
+            raise ValueError("source-union material file contract is invalid")
+        total_size += item["size"]
+        if total_size > 512 * 1024 * 1024:
+            raise ValueError("source-union material byte bound exceeded")
+        digest = _strict_hash(item["sha256"], "source-union material file hash")
+        current = _contained_material_path(roots[root_index], path, "")
+        if current is None or not current.is_file():
+            raise ValueError("source-union material file is unavailable")
+        payload = current.read_bytes()
+        if len(payload) != item["size"] or hashlib.sha256(payload).hexdigest() != digest:
+            raise ValueError("source-union material file bytes differ")
+        files.append(dict(item))
+    file_keys = tuple(
+        (item["root_index"], item["path"].casefold(), item["path"])
+        for item in files
+    )
+    if file_keys != tuple(sorted(file_keys)) or len({key[:2] for key in file_keys}) != len(files):
+        raise ValueError("source-union material file order differs")
+    binding_fields = {
+        "material_region_key", "smd_material", "search_paths", "root_index",
+        "search_path_index", "vmt_file_index", "vmt_path", "texture_identity",
+        "vtf_root_index", "vtf_file_index", "vtf_path", "shader",
+        "texture_directive", "uses_texture_alpha", "duplicate_root_directives",
+    }
+    bindings = []
+    evidence = []
+    referenced = set()
+    for item in raw["bindings"]:
+        if type(item) is not dict or set(item) != binding_fields:
+            raise ValueError("source-union material binding fields are invalid")
+        searches = item["search_paths"]
+        duplicates = item["duplicate_root_directives"]
+        if (
+            type(searches) is not list or type(duplicates) is not list
+            or type(item["uses_texture_alpha"]) is not bool
+            or any(type(item[name]) is not int for name in (
+                "root_index", "search_path_index", "vmt_file_index",
+                "vtf_root_index", "vtf_file_index",
+            ))
+        ):
+            raise ValueError("source-union material binding contract is invalid")
+        searches_tuple = tuple(
+            _strict_relative(value, "source-union material search path")
+            for value in searches
+        )
+        if (
+            len(searches_tuple) > 64
+            or len({value.casefold() for value in searches_tuple}) != len(searches_tuple)
+        ):
+            raise ValueError("source-union material search paths differ")
+        duplicate_values = _strict_duplicate_directives(duplicates)
+        smd_material = _strict_smd_material(item["smd_material"])
+        shader = item["shader"]
+        texture_directive = item["texture_directive"]
+        if (
+            type(shader) is not str or not shader or len(shader) > 4096
+            or shader not in _SUPPORTED_VMT_SHADERS
+            or type(texture_directive) is not str or not texture_directive
+            or len(texture_directive) > 4096
+            or texture_directive != (
+                "$refracttinttexture" if shader == "refract" else "$basetexture"
+            )
+            or (shader == "refract" and item["uses_texture_alpha"] is not True)
+        ):
+            raise ValueError("source-union material shader/directive contract differs")
+        binding = _SourceUnionMaterialBindingControl(
+            material_region_key=_strict_relative(item["material_region_key"], "source-union material region"),
+            smd_material=smd_material,
+            search_paths=searches_tuple,
+            root_index=item["root_index"], search_path_index=item["search_path_index"],
+            vmt_file_index=item["vmt_file_index"],
+            vmt_path=_strict_relative(item["vmt_path"], "source-union material VMT"),
+            texture_identity=_strict_relative(item["texture_identity"], "source-union texture identity"),
+            vtf_root_index=item["vtf_root_index"], vtf_file_index=item["vtf_file_index"],
+            vtf_path=_strict_relative(item["vtf_path"], "source-union material VTF"),
+            shader=shader, texture_directive=texture_directive,
+            uses_texture_alpha=item["uses_texture_alpha"],
+            duplicate_root_directives=duplicate_values,
+        )
+        material_identity = (
+            binding.smd_material[:-4]
+            if binding.smd_material.casefold().endswith(".vmt")
+            else binding.smd_material
+        )
+        expected_vmt = material_identity
+        if binding.search_paths and len(PurePosixPath(material_identity).parts) == 1:
+            expected_vmt = (
+                PurePosixPath(binding.search_paths[binding.search_path_index])
+                / material_identity
+            ).as_posix() if binding.search_path_index < len(binding.search_paths) else ""
+        elif binding.search_path_index != 0:
+            expected_vmt = ""
+        expected_vmt = expected_vmt if expected_vmt.casefold().endswith(".vmt") else expected_vmt + ".vmt"
+        expected_vtf = (
+            binding.texture_identity
+            if binding.texture_identity.casefold().endswith(".vtf")
+            else binding.texture_identity + ".vtf"
+        )
+        if (
+            binding.root_index not in range(len(roots))
+            or binding.vtf_root_index not in range(len(roots))
+            or binding.vmt_file_index not in range(len(files))
+            or binding.vtf_file_index not in range(len(files))
+            or binding.search_path_index not in range(max(1, len(searches_tuple)))
+            or files[binding.vmt_file_index]["path"] != binding.vmt_path
+            or files[binding.vtf_file_index]["path"] != binding.vtf_path
+            or files[binding.vmt_file_index]["root_index"] != binding.root_index
+            or files[binding.vmt_file_index]["kind"] != "vmt"
+            or files[binding.vtf_file_index]["root_index"] != binding.vtf_root_index
+            or files[binding.vtf_file_index]["kind"] != "vtf"
+            or binding.vmt_path.casefold() != expected_vmt.casefold()
+            or binding.vtf_path.casefold() != expected_vtf.casefold()
+        ):
+            raise ValueError("source-union material binding/file relation differs")
+        current = _source_material_evidence(
+            binding.smd_material, roots, search_paths=searches_tuple,
+        )
+        expected = {
+            "material_identity": binding.material_region_key,
+            "resolution_rule": raw["resolution_rule"],
+            "root_index": binding.root_index,
+            "search_path_index": binding.search_path_index,
+            "vtf_root_index": binding.vtf_root_index,
+            "vmt_sha256": files[binding.vmt_file_index]["sha256"],
+            "vtf_sha256": files[binding.vtf_file_index]["sha256"],
+            "shader": binding.shader,
+            "texture_directive": binding.texture_directive,
+            "uses_texture_alpha": binding.uses_texture_alpha,
+            "duplicate_root_directives": list(duplicate_values),
+        }
+        if current is None or {**current, "material_identity": binding.material_region_key} != expected:
+            raise ValueError("source-union current material evidence differs")
+        bindings.append(binding); evidence.append(expected)
+        referenced.update((binding.vmt_file_index, binding.vtf_file_index))
+    binding_region_keys = tuple(item.material_region_key.casefold() for item in bindings)
+    binding_materials = tuple(item.smd_material.casefold() for item in bindings)
+    if (
+        referenced != set(range(len(files))) or not bindings
+        or len(set(binding_region_keys)) != len(bindings)
+        or len(set(binding_materials)) != len(bindings)
+    ):
+        raise ValueError("source-union material file coverage differs")
+    return _SourceUnionMaterialControl(
+        source_identity, filtered_hash, tuple(bindings), contract_hash,
+    ), tuple(evidence)
+
+
+def _parse_source_union_python_runtime(
+    raw_files: object, raw_contract_hash: object, runtime_root: Path | None = None,
+) -> tuple[str, tuple[dict[str, object], ...]]:
+    names = (
+        "__init__.py", "qc_graph.py", "regions.py", "reporting.py",
+        "smd_contract.py", "source_components.py",
+    )
+    contract_hash = _strict_hash(
+        raw_contract_hash, "source-union Python runtime contract hash",
+    )
+    if type(raw_files) is not list or len(raw_files) != len(names):
+        raise ValueError("source-union Python runtime file count differs")
+    files = []
+    total = 0
+    for index, item in enumerate(raw_files):
+        if (
+            type(item) is not dict or set(item) != {"path", "size", "sha256"}
+            or type(item["path"]) is not str or item["path"] != names[index]
+            or type(item["size"]) is not int or item["size"] < 0
+        ):
+            raise ValueError("source-union Python runtime file proof is invalid")
+        digest = _strict_hash(
+            item["sha256"], "source-union Python runtime file hash",
+        )
+        total += item["size"]
+        if total > 16 * 1024 * 1024:
+            raise ValueError("source-union Python runtime byte bound exceeded")
+        files.append({
+            "path": item["path"], "size": item["size"], "sha256": digest,
+        })
+    unsigned = {
+        "schema": 1,
+        "kind": "adaptive-direct-source-union-python-runtime-v1",
+        "files": files,
+    }
+    if hashlib.sha256(_canonical_json(unsigned).encode()).hexdigest() != contract_hash:
+        raise ValueError("source-union Python runtime contract seal mismatch")
+    runtime_root = (
+        Path(runtime_root).resolve()
+        if runtime_root is not None
+        else Path(__file__).resolve().parent / "maximum_optimizer"
+    )
+    if (
+        runtime_root.parent.name != "inputs"
+        or runtime_root.name != "maximum_optimizer"
+        or not runtime_root.is_dir()
+        or _path_is_link_or_reparse(runtime_root)
+    ):
+        raise ValueError("source-union private Python runtime root differs")
+    try:
+        entries = tuple(runtime_root.iterdir())
+    except OSError as exc:
+        raise ValueError("source-union private Python runtime is unavailable") from exc
+    if tuple(sorted(path.name for path in entries)) != names:
+        raise ValueError("source-union private Python runtime inventory differs")
+    for proof in files:
+        path = runtime_root / proof["path"]
+        try:
+            info = path.lstat()
+            payload = path.read_bytes()
+        except OSError as exc:
+            raise ValueError("source-union private Python runtime file is unavailable") from exc
+        if (
+            _path_is_link_or_reparse(path)
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_size != proof["size"]
+            or len(payload) != proof["size"]
+            or hashlib.sha256(payload).hexdigest() != proof["sha256"]
+        ):
+            raise ValueError("source-union private Python runtime bytes differ")
+    return contract_hash, tuple(files)
+
+
+def _parse_source_union_control(
+    payload: object,
+    reference_bytes: bytes,
+    candidate_bytes: bytes,
+    material_roots,
+    *,
+    private_python_runtime_root: Path | None = None,
+) -> _SourceUnionControl:
+    from maximum_optimizer.source_components import (
+        source_component_manifest_from_payload,
+        source_component_transfer_from_payload,
+        validate_source_component_transfer_against_manifest,
+    )
+    from maximum_optimizer.smd_contract import (
+        direct_smd_material_counts,
+        match_direct_output_triangle_ordinals,
+        parse_smd_triangles,
+    )
+
+    fields = {
+        "schema", "kind", "target_sha256", "comparison_contract",
+        "source_identity", "source_coverage_sha256", "component_keys",
+        "component_manifest", "candidate_component_transfer",
+        "material_region_keys", "material_contract_sha256",
+        "material_contract", "material_render_evidence", "pose_frames",
+        "angles", "cameras", "renderer_sha256",
+        "python_runtime_contract_sha256", "python_runtime_files",
+    }
+    if type(payload) is not dict or set(payload) != fields:
+        raise ValueError("source-union control fields are invalid")
+    if (
+        type(payload["schema"]) is not int
+        or payload["schema"] != 1
+        or payload["kind"] != "adaptive-direct-source-union-render-v1"
+    ):
+        raise ValueError("source-union control identity is invalid")
+    raw_comparison = payload["comparison_contract"]
+    comparison_fields = {
+        "contract_sha256", "target_sha256", "source_identity",
+        "source_coverage_sha256", "reference_source_sha256",
+        "candidate_source_sha256", "material_contract_sha256",
+        "pose_frames", "union_key",
+    }
+    if type(raw_comparison) is not dict or set(raw_comparison) != comparison_fields:
+        raise ValueError("source-union comparison control fields are invalid")
+    try:
+        comparison = _parse_source_union_comparison(raw_comparison)
+        component_manifest = source_component_manifest_from_payload(
+            payload["component_manifest"]
+        )
+        candidate_transfer = source_component_transfer_from_payload(
+            payload["candidate_component_transfer"]
+        )
+        validate_source_component_transfer_against_manifest(
+            candidate_transfer, component_manifest,
+        )
+        material_contract, material_evidence = _parse_source_union_material_control(
+            payload["material_contract"], reference_bytes, material_roots,
+        )
+        runtime_hash, runtime_files = _parse_source_union_python_runtime(
+            payload["python_runtime_files"],
+            payload["python_runtime_contract_sha256"],
+            private_python_runtime_root,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("source-union sealed control is invalid") from exc
+
+    component_keys = tuple(payload["component_keys"]) if type(payload["component_keys"]) is list else ()
+    material_region_keys = (
+        tuple(payload["material_region_keys"])
+        if type(payload["material_region_keys"]) is list else ()
+    )
+    expected_components = tuple(
+        item.component_key for item in component_manifest.components
+    )
+    expected_materials = tuple(
+        item.material_region_key for item in material_contract.bindings
+    )
+    reference_hash = hashlib.sha256(reference_bytes).hexdigest()
+    candidate_hash = hashlib.sha256(candidate_bytes).hexdigest()
+    renderer_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    if any((
+        payload["target_sha256"] != comparison.target_sha256,
+        payload["source_identity"] != comparison.source_identity,
+        payload["source_coverage_sha256"] != comparison.source_coverage_sha256,
+        payload["material_contract_sha256"] != comparison.material_contract_sha256,
+        material_contract.material_contract_sha256 != comparison.material_contract_sha256,
+        material_contract.source_identity != comparison.source_identity,
+        material_contract.filtered_source_sha256 != reference_hash,
+        component_manifest.filtered_source_sha256 != reference_hash,
+        candidate_transfer.candidate_sha256 != candidate_hash,
+        comparison.reference_source_sha256 != reference_hash,
+        comparison.candidate_source_sha256 != candidate_hash,
+        component_keys != expected_components,
+        material_region_keys != expected_materials,
+        payload["pose_frames"] != {"bind": 0},
+        payload["angles"] != list(ANGLE_DIRS),
+        payload["cameras"] != [f"camera-{index:02d}" for index in range(8)],
+        payload["renderer_sha256"] != renderer_hash,
+    )):
+        raise ValueError("source-union control binding differs")
+
+    try:
+        reference_text = reference_bytes.decode("utf-8", errors="strict")
+        candidate_text = candidate_bytes.decode("utf-8", errors="strict")
+        direct_smd_material_counts(reference_text)
+        direct_smd_material_counts(candidate_text)
+        reference_triangles = parse_smd_triangles(reference_text).triangles
+        candidate_triangles = parse_smd_triangles(candidate_text).triangles
+        reference_materials = tuple(
+            item[0] for item in direct_smd_material_counts(reference_text)
+        )
+        source_ordinals = match_direct_output_triangle_ordinals(
+            reference_text, candidate_text,
+        )
+    except (UnicodeError, TypeError, ValueError, RuntimeError) as exc:
+        raise ValueError("source-union current SMD provenance is invalid") from exc
+    if (
+        len(reference_triangles) != component_manifest.triangle_count
+        or len(candidate_triangles) != candidate_transfer.triangle_count
+        or source_ordinals != tuple(
+            item.source_triangle_ordinal for item in candidate_transfer.triangles
+        )
+        or reference_materials != tuple(
+            item.smd_material for item in material_contract.bindings
+        )
+    ):
+        raise ValueError("source-union current SMD provenance differs")
+
+    if (
+        type(payload["material_render_evidence"]) is not list
+        or list(material_evidence) != payload["material_render_evidence"]
+    ):
+        raise ValueError("source-union material render evidence differs")
+    return _SourceUnionControl(
+        comparison=comparison,
+        component_manifest=component_manifest,
+        candidate_transfer=candidate_transfer,
+        material_contract=material_contract,
+        material_evidence=material_evidence,
+        component_keys=component_keys,
+        material_region_keys=material_region_keys,
+        python_runtime_contract_sha256=runtime_hash,
+        python_runtime_files=runtime_files,
+    )
+
+
+def _source_union_component_groups(
+    smd_bytes: bytes, component_manifest, candidate_transfer=None,
+):
+    from maximum_optimizer.smd_contract import (
+        direct_smd_material_counts, parse_smd_triangles,
+    )
+    from maximum_optimizer.source_components import (
+        SourceComponentManifest, SourceComponentTransferProof,
+        validate_source_component_transfer_against_manifest,
+    )
+
+    if not isinstance(component_manifest, SourceComponentManifest):
+        raise TypeError("source-union component manifest is invalid")
+    try:
+        text = smd_bytes.decode("utf-8", errors="strict")
+        direct_smd_material_counts(text)
+        triangles = parse_smd_triangles(text).triangles
+    except (UnicodeError, TypeError, ValueError) as exc:
+        raise ValueError("source-union direct SMD is invalid") from exc
+    if candidate_transfer is None:
+        if len(triangles) != component_manifest.triangle_count:
+            raise ValueError("source-union reference triangle count differs")
+        by_ordinal = {
+            ordinal: component.component_key
+            for component in component_manifest.components
+            for ordinal in component.triangle_ordinals
+        }
+    else:
+        if not isinstance(candidate_transfer, SourceComponentTransferProof):
+            raise TypeError("source-union candidate transfer is invalid")
+        validate_source_component_transfer_against_manifest(
+            candidate_transfer, component_manifest,
+        )
+        if len(triangles) != candidate_transfer.triangle_count:
+            raise ValueError("source-union candidate triangle count differs")
+        by_ordinal = {
+            item.candidate_triangle_ordinal: item.component_key
+            for item in candidate_transfer.triangles
+        }
+    grouped = {key: [] for key in (
+        item.component_key for item in component_manifest.components
+    )}
+    for ordinal, triangle in enumerate(triangles):
+        try:
+            grouped[by_ordinal[ordinal]].append(triangle)
+        except KeyError as exc:
+            raise ValueError("source-union component provenance is incomplete") from exc
+    if any(not grouped[key] for key in grouped):
+        raise ValueError("source-union component provenance dropped a component")
+    return tuple((key, tuple(grouped[key])) for key in grouped)
+
+
+def _count_cryptomatte_components(
+    pixels,
+    manifest: dict[str, str],
+    component_keys: tuple[str, ...],
+) -> dict[str, int]:
+    if (
+        type(manifest) is not dict
+        or set(manifest) != set(component_keys)
+        or any(
+            type(value) is not str
+            or re.fullmatch(r"[0-9a-f]{8}", value) is None
+            for value in manifest.values()
+        )
+    ):
+        raise ValueError("cryptomatte manifest component set is invalid")
+    by_hash = {int(value, 16): key for key, value in manifest.items()}
+    if len(by_hash) != len(component_keys):
+        raise ValueError("cryptomatte manifest component hashes collide")
+    counts = {key: 0 for key in component_keys}
+    for pixel in pixels:
+        visible = set()
+        for identifier, coverage in pixel:
+            if not isinstance(coverage, (int, float)) or not math.isfinite(float(coverage)):
+                raise ValueError("cryptomatte coverage is invalid")
+            if float(coverage) <= 0.0:
+                continue
+            try:
+                value = struct.unpack("<I", struct.pack("<f", float(identifier)))[0]
+            except (OverflowError, TypeError, ValueError, struct.error) as exc:
+                raise ValueError("cryptomatte identifier is invalid") from exc
+            key = by_hash.get(value)
+            if key is not None:
+                visible.add(key)
+        for key in visible:
+            counts[key] += 1
+    return counts
+
+
+def _source_union_visibility_payload(
+    control: _SourceUnionControl,
+    counts: dict[tuple[str, str, str], int],
+) -> dict[str, object]:
+    if not isinstance(control, _SourceUnionControl) or type(counts) is not dict:
+        raise TypeError("source-union visibility inputs are invalid")
+    expected_keys = tuple(
+        (side, component, f"camera-{camera:02d}")
+        for side in ("candidate", "reference")
+        for component in control.component_keys
+        for camera in range(8)
+    )
+    if set(counts) != set(expected_keys) or any(
+        type(counts[key]) is not int or counts[key] < 0 for key in expected_keys
+    ):
+        raise ValueError("source-union visibility count matrix differs")
+    comparison = control.comparison
+    unsigned = {
+        "schema": 1,
+        "kind": "adaptive-direct-source-union-visibility-v1",
+        "target_sha256": comparison.target_sha256,
+        "source_identity": comparison.source_identity,
+        "source_coverage_sha256": comparison.source_coverage_sha256,
+        "cameras": [f"camera-{index:02d}" for index in range(8)],
+        "pose_keys": ["bind"],
+        "observations": [{
+            "side": side,
+            "component_key": component,
+            "pose_key": "bind",
+            "camera_key": camera,
+            "visible_mask_pixels": counts[(side, component, camera)],
+        } for side, component, camera in expected_keys],
+    }
+    seal = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return {**unsigned, "evidence_sha256": seal}
+
+
+def _require_source_union_dithered_alpha(material, uses_alpha: bool) -> None:
+    if type(uses_alpha) is not bool:
+        raise TypeError("source-union alpha contract is invalid")
+    if not uses_alpha:
+        return
+    if not hasattr(material, "surface_render_method"):
+        raise ValueError("source-union alpha requires Blender DITHERED rendering")
+    try:
+        material.surface_render_method = "DITHERED"
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("source-union alpha requires Blender DITHERED rendering") from exc
+    if material.surface_render_method != "DITHERED":
+        raise ValueError("source-union alpha requires Blender DITHERED rendering")
 
 
 def _eevee_engine(
@@ -302,6 +1048,37 @@ def _parse_args(argv: list[str]):
         help="Strict source-union component visibility JSON output",
     )
     return ap.parse_args(argv)
+
+
+def _validate_source_union_cli_args(args) -> None:
+    enabled = getattr(args, "source_union_contract", None)
+    visibility = getattr(args, "source_union_visibility_out", None)
+    if bool(enabled) != bool(visibility):
+        raise ValueError("source-union contract and visibility output must be paired")
+    if not enabled:
+        raise ValueError("source-union mode is not enabled")
+    if any((
+        getattr(args, "configuration_manifest", None) is not None,
+        getattr(args, "focus_region", None) is not None,
+        bool(getattr(args, "aggregate_regions", False)),
+    )):
+        raise ValueError("source-union mode cannot carry state/focus selectors")
+    if args.passes != "textured,clay":
+        raise ValueError("source-union pass command is not canonical")
+    if args.angles != "front,back,left,right,top,bottom,iso1,iso2":
+        raise ValueError("source-union angle command is not canonical")
+    tokens = tuple(
+        token.strip() for token in str(args.poses or "").split(",")
+        if token.strip()
+    )
+    parsed = []
+    for token in tokens:
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+):(\d+)", token)
+        if match is None:
+            raise ValueError("source-union pose command is malformed")
+        parsed.append((match.group(1), int(match.group(2))))
+    if parsed != [("bind", 0)]:
+        raise ValueError("source-union E2A accepts bind:0 only")
 
 
 def _load_region_manifest(path: Path) -> RegionManifest:
@@ -1989,6 +2766,505 @@ def _framing_from_snapshots(snapshots: dict[str, dict[str, dict]]) -> tuple[dict
     return bbox, (center, ortho_scale, distance)
 
 
+def _source_union_build_objects(groups, material_contract):
+    if bpy is None:
+        raise RuntimeError("source-union mesh construction requires Blender")
+    material_indices = {
+        binding.smd_material.casefold(): index
+        for index, binding in enumerate(material_contract.bindings)
+    }
+    objects = []
+    for component_key, triangles in groups:
+        vertices = []
+        faces = []
+        loop_uvs = []
+        loop_normals = []
+        face_materials = []
+        for triangle in triangles:
+            material_index = material_indices.get(triangle.material.casefold())
+            if material_index is None:
+                raise ValueError(
+                    f"source-union SMD material is not contract-bound: {triangle.material}"
+                )
+            face = []
+            for corner in triangle.corners:
+                face.append(len(vertices))
+                vertices.append(tuple(float(value) for value in corner.position))
+                loop_normals.append(tuple(float(value) for value in corner.normal))
+                loop_uvs.append((float(corner.uv[0]), 1.0 - float(corner.uv[1])))
+            faces.append(tuple(face))
+            face_materials.append(material_index)
+        mesh = bpy.data.meshes.new(f"{component_key}-mesh")
+        mesh.from_pydata(vertices, (), faces)
+        mesh.update(calc_edges=False)
+        if len(mesh.polygons) != len(faces) or len(mesh.loops) != len(loop_uvs):
+            raise ValueError("source-union Blender mesh cardinality differs")
+        uv_layer = mesh.uv_layers.new(name="UVMap")
+        for index, uv in enumerate(loop_uvs):
+            uv_layer.data[index].uv = uv
+        for polygon, material_index in zip(mesh.polygons, face_materials):
+            polygon.material_index = material_index
+            polygon.use_smooth = True
+        if not hasattr(mesh, "normals_split_custom_set"):
+            raise ValueError("source-union Blender custom normals are unavailable")
+        mesh.normals_split_custom_set(loop_normals)
+        obj = bpy.data.objects.new(component_key, mesh)
+        bpy.context.collection.objects.link(obj)
+        if obj.name != component_key:
+            raise ValueError("source-union component object name is not exact")
+        objects.append(obj)
+    if tuple(obj.name for obj in objects) != tuple(key for key, _ in groups):
+        raise ValueError("source-union component object order differs")
+    return tuple(objects)
+
+
+def _source_union_apply_textured_materials(
+    objects, control: _SourceUnionControl, material_roots, vtfcmd, texture_cache,
+) -> None:
+    materials = []
+    for binding in control.material_contract.bindings:
+        png_path = _source_texture_png(
+            binding.smd_material,
+            material_roots,
+            vtfcmd,
+            texture_cache,
+            search_paths=binding.search_paths,
+        )
+        if png_path is None:
+            raise ValueError(
+                f"source-union contracted texture conversion failed: {binding.smd_material}"
+            )
+        material = _make_textured_material(
+            binding.smd_material,
+            png_path,
+            use_texture_alpha=binding.uses_texture_alpha,
+        )
+        _require_source_union_dithered_alpha(
+            material, binding.uses_texture_alpha,
+        )
+        materials.append(material)
+    for obj in objects:
+        obj.data.materials.clear()
+        for material in materials:
+            obj.data.materials.append(material)
+        if len(obj.data.materials) != len(materials):
+            raise ValueError("source-union Blender material slots differ")
+
+
+def _source_union_apply_clay(objects) -> None:
+    clay = _make_clay_material()
+    for obj in objects:
+        obj.data.materials.clear()
+        obj.data.materials.append(clay)
+        for polygon in obj.data.polygons:
+            polygon.material_index = 0
+
+
+def _source_union_capture(objects, union_key: str) -> dict[str, dict[str, dict]]:
+    bpy.context.scene.frame_set(0)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    captured = []
+    for obj in objects:
+        region = _capture_object_region(obj, union_key, depsgraph, audited=False)
+        if region is not None:
+            captured.append(region)
+    aggregate = _aggregate_triangle_regions(captured)
+    aggregate["scope"] = union_key
+    aggregate["source_object"] = union_key
+    return {"bind": {union_key: aggregate}}
+
+
+def _source_union_setup_cryptomatte(directory: Path):
+    scene = bpy.context.scene
+    view_layer = scene.view_layers[0]
+    view_layer.use_pass_cryptomatte_object = True
+    view_layer.pass_cryptomatte_depth = 16
+    if hasattr(view_layer, "use_pass_cryptomatte_accurate"):
+        view_layer.use_pass_cryptomatte_accurate = True
+    tree = bpy.data.node_groups.new(
+        f"MaximumSourceUnionCompositor-{uuid.uuid4().hex}", "CompositorNodeTree"
+    )
+    scene.compositing_node_group = tree
+    layers = tree.nodes.new("CompositorNodeRLayers")
+    output = tree.nodes.new("CompositorNodeOutputFile")
+    output.directory = str(directory)
+    output.file_name = "source-union-crypto"
+    output.format.file_format = "OPEN_EXR_MULTILAYER"
+    output.format.color_depth = "32"
+    for index in range(8):
+        name = f"CryptoObject{index:02d}"
+        if name not in layers.outputs:
+            raise ValueError(f"source-union Cryptomatte layer is unavailable: {name}")
+        output.file_output_items.new("RGBA", name)
+        tree.links.new(layers.outputs[name], output.inputs[name])
+    return output
+
+
+def _source_union_crypto_exr(directory: Path) -> Path:
+    values = tuple(sorted(directory.glob("*.exr")))
+    if len(values) != 1 or not values[0].is_file():
+        raise ValueError("source-union Cryptomatte EXR output is not exact")
+    return values[0]
+
+
+def _source_union_read_cryptomatte(path: Path, component_keys: tuple[str, ...]):
+    try:
+        import OpenImageIO as oiio
+    except ModuleNotFoundError as exc:
+        raise ValueError("source-union OpenImageIO is unavailable") from exc
+    image = oiio.ImageInput.open(str(path))
+    if image is None:
+        raise ValueError("source-union Cryptomatte EXR cannot be opened")
+    manifest = None
+    layers = {}
+    width = height = None
+    try:
+        subimage = 0
+        while image.seek_subimage(subimage, 0):
+            spec = image.spec()
+            if width is None:
+                width, height = int(spec.width), int(spec.height)
+            elif (int(spec.width), int(spec.height)) != (width, height):
+                raise ValueError("source-union Cryptomatte dimensions differ")
+            attributes = {
+                item.name: item.value for item in spec.extra_attribs
+            }
+            for key, value in attributes.items():
+                if key.startswith("cryptomatte/") and key.endswith("/manifest"):
+                    parsed = json.loads(value)
+                    if manifest is not None and parsed != manifest:
+                        raise ValueError("source-union Cryptomatte manifests differ")
+                    manifest = parsed
+            names = tuple(str(value) for value in spec.channelnames)
+            subimage_name = str(attributes.get("oiio:subimagename", ""))
+            match = re.search(r"CryptoObject([0-7][0-9]?)", subimage_name)
+            if match is None:
+                match = next((
+                    re.search(r"CryptoObject([0-7][0-9]?)", name)
+                    for name in names
+                    if re.search(r"CryptoObject([0-7][0-9]?)", name)
+                ), None)
+            if match is not None:
+                layer_index = int(match.group(1))
+                if layer_index not in range(8) or int(spec.nchannels) != 4:
+                    raise ValueError("source-union Cryptomatte layer schema differs")
+                values = image.read_image(subimage, 0, 0, 4, oiio.FLOAT)
+                flat = tuple(float(value) for value in values.flat)
+                if len(flat) != width * height * 4:
+                    raise ValueError("source-union Cryptomatte pixel count differs")
+                if layer_index in layers:
+                    raise ValueError("source-union Cryptomatte layer is duplicated")
+                layers[layer_index] = flat
+            subimage += 1
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("source-union Cryptomatte EXR is invalid") from exc
+    finally:
+        image.close()
+    if manifest is None or set(layers) != set(range(8)) or width is None or height is None:
+        raise ValueError("source-union Cryptomatte EXR coverage is incomplete")
+    pixels = []
+    for pixel in range(width * height):
+        pairs = []
+        for layer_index in range(8):
+            offset = pixel * 4
+            values = layers[layer_index]
+            pairs.extend(((values[offset], values[offset + 1]), (
+                values[offset + 2], values[offset + 3],
+            )))
+        pixels.append(tuple(pairs))
+    return _count_cryptomatte_components(pixels, manifest, component_keys)
+
+
+def _source_union_manifest_payload(
+    control: _SourceUnionControl,
+    side: str,
+    entries: list[dict],
+    geometry: list[dict],
+    geometry_audit: dict,
+) -> dict[str, object]:
+    comparison = control.comparison
+    if side not in {"reference", "candidate"}:
+        raise ValueError("source-union manifest side is invalid")
+    return {
+        "schema": 1,
+        "kind": "adaptive-direct-source-union-render-v1",
+        "side": side,
+        "contract_sha256": comparison.contract_sha256,
+        "target_sha256": comparison.target_sha256,
+        "source_identity": comparison.source_identity,
+        "source_coverage_sha256": comparison.source_coverage_sha256,
+        "source_sha256": (
+            comparison.reference_source_sha256
+            if side == "reference" else comparison.candidate_source_sha256
+        ),
+        "material_contract_sha256": comparison.material_contract_sha256,
+        "expected": {
+            "passes": ["textured", "clay"],
+            "angles": list(ANGLE_DIRS),
+            "poses": ["bind"],
+            "pose_frames": {"bind": 0},
+            "regions": [comparison.union_key],
+        },
+        "entries": entries,
+        "geometry": geometry,
+        "geometry_audit": geometry_audit,
+        "geometry_audit_algorithm": GEOMETRY_AUDIT_ALGORITHM,
+    }
+
+
+def _source_union_write_json(path: Path, payload: dict) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _canonicalize_source_union_png(path: Path) -> None:
+    path = Path(path)
+    payload = path.read_bytes()
+    signature = b"\x89PNG\r\n\x1a\n"
+    if not payload.startswith(signature) or len(payload) > 512 * 1024 * 1024:
+        raise ValueError("source-union PNG signature/size is invalid")
+    offset = len(signature)
+    chunks = []
+    names = []
+    while offset < len(payload):
+        if len(payload) - offset < 12:
+            raise ValueError("source-union PNG chunk is truncated")
+        size = struct.unpack(">I", payload[offset:offset + 4])[0]
+        end = offset + 12 + size
+        if size > 512 * 1024 * 1024 or end > len(payload):
+            raise ValueError("source-union PNG chunk size is invalid")
+        kind = payload[offset + 4:offset + 8]
+        data = payload[offset + 8:offset + 8 + size]
+        expected_crc = struct.unpack(">I", payload[offset + 8 + size:end])[0]
+        if (
+            len(kind) != 4
+            or any(not (65 <= value <= 90 or 97 <= value <= 122) for value in kind)
+            or zlib.crc32(kind + data) != expected_crc
+        ):
+            raise ValueError("source-union PNG chunk CRC/type is invalid")
+        names.append(kind)
+        volatile = (
+            kind == b"tEXt" and data.partition(b"\0")[0]
+            in {b"Date", b"RenderTime"}
+        )
+        if not volatile:
+            chunks.append(payload[offset:end])
+        offset = end
+        if kind == b"IEND":
+            break
+    if (
+        offset != len(payload)
+        or not names or names[0] != b"IHDR"
+        or names.count(b"IHDR") != 1
+        or names.count(b"IEND") != 1
+        or names[-1] != b"IEND"
+        or b"IDAT" not in names
+    ):
+        raise ValueError("source-union PNG chunk inventory is invalid")
+    canonical = signature + b"".join(chunks)
+    if canonical != payload:
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(canonical)
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+
+def _render_source_union_side(
+    *,
+    logical_side: str,
+    groups,
+    control: _SourceUnionControl,
+    out_dir: Path,
+    size: int,
+    material_roots,
+    vtfcmd,
+    texture_cache: Path,
+    fit=None,
+):
+    _clear_scene()
+    scene = _setup_scene(size, transparent=True)
+    scene.render.resolution_percentage = 100
+    objects = _source_union_build_objects(groups, control.material_contract)
+    snapshots = _source_union_capture(objects, control.comparison.union_key)
+    bbox, evaluated_fit = _framing_from_snapshots(snapshots)
+    center, ortho_scale, distance = fit or evaluated_fit
+    camera = _ensure_camera()
+    camera.data.ortho_scale = ortho_scale
+    _setup_lights(center, ortho_scale)
+    _source_union_apply_textured_materials(
+        objects, control, material_roots, vtfcmd, texture_cache,
+    )
+    out_dir.mkdir(parents=True, exist_ok=False)
+    entries = []
+    counts = {}
+    render_calls = 0
+    with tempfile.TemporaryDirectory(prefix="maximum-source-union-crypto-") as temporary:
+        crypto_dir = Path(temporary)
+        crypto_output = _source_union_setup_cryptomatte(crypto_dir)
+        for render_pass in ("textured", "clay"):
+            if render_pass == "clay":
+                _source_union_apply_clay(objects)
+                crypto_output.mute = True
+            else:
+                crypto_output.mute = False
+            for camera_index, angle in enumerate(ANGLE_DIRS):
+                for stale in crypto_dir.glob("*.exr"):
+                    stale.unlink()
+                _set_camera_pose(camera, center, ANGLE_DIRS[angle], distance)
+                image_path = out_dir / render_pass / "bind" / f"{angle}.png"
+                image_path.parent.mkdir(parents=True, exist_ok=True)
+                scene.render.filepath = str(image_path)
+                bpy.ops.render.render(write_still=True)
+                render_calls += 1
+                if not image_path.is_file():
+                    raise ValueError("source-union PNG output is missing")
+                _canonicalize_source_union_png(image_path)
+                if render_pass == "textured":
+                    exr = _source_union_crypto_exr(crypto_dir)
+                    try:
+                        visible = _source_union_read_cryptomatte(
+                            exr, control.component_keys,
+                        )
+                    finally:
+                        if exr.exists():
+                            exr.unlink()
+                    for component, pixels in visible.items():
+                        counts[(logical_side, component, f"camera-{camera_index:02d}")] = pixels
+                elif tuple(crypto_dir.glob("*.exr")):
+                    raise ValueError("source-union clay render emitted auxiliary EXR")
+                entries.append(_render_entry(
+                    out_dir, render_pass, "bind", angle, image_path,
+                    texture_missing=False,
+                    missing_materials=(),
+                    resolved_materials=(
+                        control.material_evidence if render_pass == "textured" else ()
+                    ),
+                ))
+    if render_calls != 16 or len(entries) != 16 or len(counts) != len(control.component_keys) * 8:
+        raise ValueError("source-union render matrix is incomplete")
+    return entries, snapshots, (center, ortho_scale, distance), bbox, counts, render_calls
+
+
+def _run_source_union(args, before: list[Path], after: list[Path], out_dir: Path) -> None:
+    if bpy is None:
+        raise SystemExit("[ERROR] render_previews.py must be executed by Blender.")
+    if len(before) != 1 or len(after) != 1:
+        raise ValueError("source-union renderer requires one reference/candidate SMD pair")
+    reference_path = before[0].resolve(strict=True)
+    candidate_path = after[0].resolve(strict=True)
+    contract_path = Path(args.source_union_contract).resolve(strict=True)
+    visibility_path = Path(args.source_union_visibility_out).resolve()
+    out_dir = out_dir.resolve()
+    workspace = contract_path.parent.parent
+    inputs = workspace / "inputs"
+    material_tree = workspace / "material-roots"
+    if any((
+        reference_path != inputs / "reference.smd",
+        candidate_path != inputs / "candidate.smd",
+        out_dir != workspace / "raw",
+        contract_path != workspace / "control" / "source-union-contract.json",
+        visibility_path != workspace / "control" / "source-union-visibility.json",
+        Path(__file__).resolve() != inputs / "render_previews.py",
+    )):
+        raise ValueError("source-union renderer private workspace paths differ")
+    material_roots = tuple(Path(value).resolve(strict=True) for value in (args.materials_root or ()))
+    if (
+        not material_roots
+        or tuple(root.parent for root in material_roots) != (material_tree,) * len(material_roots)
+        or tuple(root.name for root in material_roots) != tuple(
+            f"root-{index:03d}" for index in range(len(material_roots))
+        )
+    ):
+        raise ValueError("source-union renderer material roots are not exact private roots")
+    if out_dir.exists() or visibility_path.exists():
+        raise ValueError("source-union renderer outputs already exist")
+    reference_bytes = reference_path.read_bytes()
+    candidate_bytes = candidate_path.read_bytes()
+    try:
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("source-union control JSON is invalid") from exc
+    control = _parse_source_union_control(
+        payload, reference_bytes, candidate_bytes, material_roots,
+    )
+    reference_groups = _source_union_component_groups(
+        reference_bytes, control.component_manifest,
+    )
+    candidate_groups = _source_union_component_groups(
+        candidate_bytes, control.component_manifest, control.candidate_transfer,
+    )
+    vtfcmd = Path(args.vtfcmd).resolve(strict=True) if args.vtfcmd else None
+    texture_cache = Path(args.texture_cache).resolve(strict=True)
+    if texture_cache != workspace / "texture-cache":
+        raise ValueError("source-union renderer texture cache is not private")
+    original_dir = out_dir / "original"
+    optimized_dir = out_dir / "optimized"
+    reference = _render_source_union_side(
+        logical_side="reference", groups=reference_groups,
+        control=control, out_dir=original_dir, size=args.size,
+        material_roots=material_roots, vtfcmd=vtfcmd,
+        texture_cache=texture_cache,
+    )
+    candidate = _render_source_union_side(
+        logical_side="candidate", groups=candidate_groups,
+        control=control, out_dir=optimized_dir, size=args.size,
+        material_roots=material_roots, vtfcmd=vtfcmd,
+        texture_cache=texture_cache, fit=reference[2],
+    )
+    if reference[5] + candidate[5] != 32:
+        raise ValueError("source-union renderer did not execute exactly 32 renders")
+    diagonal = max(float(reference[3]["diagonal"]), 1e-12)
+    geometry = _geometry_entries(reference[1], candidate[1], diagonal, 7)
+    reference_geometry = _reference_geometry_entries(
+        reference[1], (control.comparison.union_key,), ("bind",),
+    )
+    reference_manifest = _source_union_manifest_payload(
+        control, "reference", reference[0], reference_geometry,
+        _geometry_audit_payload(reference[1]),
+    )
+    candidate_manifest = _source_union_manifest_payload(
+        control, "candidate", candidate[0], geometry,
+        _geometry_audit_payload(candidate[1]),
+    )
+    _source_union_write_json(original_dir / "render_manifest.json", reference_manifest)
+    _source_union_write_json(optimized_dir / "render_manifest.json", candidate_manifest)
+    visibility = _source_union_visibility_payload(
+        control, {**reference[4], **candidate[4]},
+    )
+    _source_union_write_json(visibility_path, visibility)
+    if (
+        not visibility_path.is_file()
+        or {path.name for path in visibility_path.parent.iterdir() if path.is_file()}
+        != {contract_path.name, visibility_path.name}
+    ):
+        raise ValueError("source-union renderer control output inventory differs")
+    final = {
+        path.relative_to(out_dir).as_posix()
+        for path in out_dir.rglob("*") if path.is_file()
+    }
+    expected = {
+        f"{side}/render_manifest.json" for side in ("original", "optimized")
+    } | {
+        f"{side}/{render_pass}/bind/{angle}.png"
+        for side in ("original", "optimized")
+        for render_pass in ("textured", "clay")
+        for angle in ANGLE_DIRS
+    }
+    if final != expected:
+        raise ValueError("source-union renderer final raw inventory differs")
+
+
 def _render_extended_set(
     label: str,
     src_paths: list[Path],
@@ -2241,16 +3517,19 @@ def main():
         argv = argv[1:]
 
     args = _parse_args(argv)
-    if args.source_union_contract is not None or args.source_union_visibility_out is not None:
-        from maximum_optimizer.production_adapters import validate_source_union_cli_contract
+    source_union = (
+        args.source_union_contract is not None
+        or args.source_union_visibility_out is not None
+    )
+    if source_union:
         try:
-            validate_source_union_cli_contract(args)
+            _validate_source_union_cli_args(args)
         except ValueError as exc:
             raise SystemExit(f"[ERROR] {exc}") from exc
-        raise SystemExit("[ERROR] source-union renderer unavailable before E2B")
     if bpy is None:
         raise SystemExit("[ERROR] render_previews.py must be executed by Blender.")
-    _ensure_source_tools()
+    if not source_union:
+        _ensure_source_tools()
     before_inputs = [Path(p).expanduser() for p in _expand_paths(args.before)]
     after_inputs = [Path(p).expanduser() for p in _expand_paths(args.after)]
     if args.focus_region is not None:
@@ -2272,6 +3551,13 @@ def main():
     for p in after:
         if not p.exists():
             raise SystemExit(f"[ERROR] After file not found: {p}")
+
+    if source_union:
+        try:
+            _run_source_union(args, before, after, out_dir)
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            raise SystemExit(f"[ERROR] {exc}") from exc
+        return
 
     if _is_extended_mode(args):
         _run_extended(args, before, after, out_dir, angles)
