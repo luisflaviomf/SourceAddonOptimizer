@@ -157,17 +157,57 @@ def _current_composed_manifest(composed: ComposedSourceTree, event) -> None:
 
 @dataclass(frozen=True)
 class AdaptiveDirectCompileResult:
+    schema: int
     build: CandidateBuild
     compile_files: tuple[CompileFileProof, ...]
     composition_evidence_sha256: str
+    result_sha256: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.build, CandidateBuild) or not self.compile_files:
+        if (
+            type(self.schema) is not int or self.schema != 1
+            or not isinstance(self.build, CandidateBuild) or not self.compile_files
+        ):
             raise TypeError("adaptive-direct compile result is invalid")
-        if any(not isinstance(item, CompileFileProof) for item in self.compile_files):
+        files = tuple(self.compile_files)
+        if any(not isinstance(item, CompileFileProof) for item in files):
             raise TypeError("adaptive-direct compile proofs are invalid")
-        if _HASH.fullmatch(self.composition_evidence_sha256 or "") is None:
+        if any(_HASH.fullmatch(value or "") is None for value in (
+            self.composition_evidence_sha256, self.result_sha256,
+        )):
             raise ValueError("adaptive-direct composition evidence is invalid")
+        if hashlib.sha256(canonical_json(self._unsigned_payload()).encode()).hexdigest() != self.result_sha256:
+            raise ValueError("adaptive-direct compile result seal is invalid")
+        object.__setattr__(self, "compile_files", files)
+
+    def _unsigned_payload(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "candidate_spec_sha256": candidate_spec_sha256(self.build.spec),
+            "compile_files": [{
+                "relative_path": item.relative_path, "kind": item.kind,
+                "size": item.size, "sha256": item.sha256,
+            } for item in self.compile_files],
+            "composition_evidence_sha256": self.composition_evidence_sha256,
+        }
+
+    @classmethod
+    def create(
+        cls, build: CandidateBuild, compile_files: tuple[CompileFileProof, ...],
+        composition_evidence_sha256: str,
+    ) -> "AdaptiveDirectCompileResult":
+        files = tuple(compile_files)
+        provisional = object.__new__(cls)
+        for name, value in (
+            ("schema", 1), ("build", build), ("compile_files", files),
+            ("composition_evidence_sha256", composition_evidence_sha256),
+            ("result_sha256", "0" * 64),
+        ):
+            object.__setattr__(provisional, name, value)
+        seal = hashlib.sha256(
+            canonical_json(provisional._unsigned_payload()).encode()
+        ).hexdigest()
+        return cls(1, build, files, composition_evidence_sha256, seal)
 
 
 @dataclass(frozen=True)
@@ -223,6 +263,31 @@ def _write_private_bytes_fsync(path: Path, payload: bytes) -> None:
         stream.write(payload)
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def _assert_source_union_workspace_root(
+    workspace: Path, *, authorized: bool,
+) -> None:
+    expected = {"inputs", "control", "raw", "source-union-render.log"}
+    if authorized:
+        expected.add("authorized")
+    if _has_reparse_ancestor(workspace):
+        raise ValueError("source-union workspace root has reparse ancestry")
+    try:
+        entries = tuple(os.scandir(workspace))
+    except OSError as exc:
+        raise ValueError("source-union workspace root is unavailable") from exc
+    if {item.name for item in entries} != expected:
+        raise ValueError("source-union workspace root tree is not exact")
+    for entry in entries:
+        path = Path(entry.path)
+        if _is_reparse(path):
+            raise ValueError("source-union workspace root contains a reparse point")
+        if entry.name == "source-union-render.log":
+            if not entry.is_file(follow_symlinks=False):
+                raise ValueError("source-union render log is not a regular file")
+        elif not entry.is_dir(follow_symlinks=False):
+            raise ValueError("source-union workspace root child is not a directory")
 
 
 def _parse_source_union_visibility(path: Path, target, event) -> tuple[SourceUnionMaskObservation, ...]:
@@ -457,7 +522,7 @@ class AdaptiveDirectProductionBoundary:
             if _current_recovery_compile_files(manifest, build, cancel_event) != proofs:
                 raise ValueError("adaptive-direct compiled bytes changed during proof")
             _current_composed_manifest(composed, cancel_event)
-            return AdaptiveDirectCompileResult(
+            return AdaptiveDirectCompileResult.create(
                 build, proofs, composed.composition.evidence_sha256
             )
         except BaseException:
@@ -535,8 +600,6 @@ class AdaptiveDirectProductionBoundary:
             != source_proof.witnesses[0].component_manifest_sha256,
             tuple(item.component_key for item in component_manifest.components)
             != source_proof.component_keys,
-            candidate_build.compile_record.get("composition_evidence_sha256")
-            != candidate_compile.composition_evidence_sha256,
         )):
             raise ValueError("source-union production binding differs")
         reference_source = Path(snapshot.input_source_root) / Path(
@@ -550,6 +613,8 @@ class AdaptiveDirectProductionBoundary:
             from .orchestrator import _current_recovery_compile_files
             revalidate_recovery_snapshot(base_snapshot, event)
             revalidate_direct_source_snapshot(snapshot, event)
+            if _has_reparse_ancestor(candidate_build.compiled_models_dir):
+                raise ValueError("source-union compiled root has reparse ancestry")
             current_compile = _current_recovery_compile_files(manifest, candidate_build, event)
             if current_compile != candidate_compile.compile_files or _current_recovery_compile_files(
                 manifest, candidate_build, event
@@ -677,6 +742,10 @@ class AdaptiveDirectProductionBoundary:
             contract_size, contract_digest = _file_proof(
                 contract_path, event, contained_root=control
             )
+            render_log = output_root / "source-union-render.log"
+            _write_private_bytes_fsync(render_log, b"")
+            private_texture_cache = output_root / "texture-cache"
+            private_texture_cache.mkdir()
             command = [
                 str(tools.blender_exe), "--background", "--python", str(renderer_input), "--",
                 "--before", str(reference_input), "--after", str(candidate_input),
@@ -687,7 +756,7 @@ class AdaptiveDirectProductionBoundary:
             ]
             for root in tools.materials_roots: command.extend(("--materials-root", str(root)))
             if tools.vtfcmd is not None: command.extend(("--vtfcmd", str(tools.vtfcmd)))
-            if tools.texture_cache is not None: command.extend(("--texture-cache", str(tools.texture_cache)))
+            command.extend(("--texture-cache", str(private_texture_cache)))
             if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
                 raise ValueError("source-union dependency changed before Blender")
             process = self._process_runner(
@@ -696,10 +765,21 @@ class AdaptiveDirectProductionBoundary:
             )
             if process.returncode != 0:
                 raise ValueError("source-union Blender process failed")
+            cache_unsafe = _is_reparse(private_texture_cache) or _has_reparse_ancestor(
+                private_texture_cache
+            )
+            if os.path.lexists(private_texture_cache):
+                from .candidates import _quarantine_and_remove_owned_direct_tree
+                _quarantine_and_remove_owned_direct_tree(private_texture_cache)
+            if cache_unsafe:
+                raise ValueError("source-union private texture cache became unsafe")
             if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
                 raise ValueError("source-union dependency changed during Blender")
             if any(_has_reparse_ancestor(path) for path in (inputs, control, raw)):
                 raise ValueError("source-union process output has reparse ancestry")
+            if os.path.lexists(authorized):
+                raise ValueError("source-union authorized root was precreated by renderer")
+            _assert_source_union_workspace_root(output_root, authorized=False)
             _assert_safe_tree(
                 inputs, event,
                 {"reference.smd", "candidate.smd", "render_previews.py"},
@@ -736,9 +816,8 @@ class AdaptiveDirectProductionBoundary:
                 contract_size, contract_digest
             ):
                 raise ValueError("source-union control contract changed during Blender")
-            if os.path.lexists(authorized):
-                raise ValueError("source-union authorized root was precreated by renderer")
             authorized.mkdir()
+            _assert_source_union_workspace_root(output_root, authorized=True)
             observations = _parse_source_union_visibility(
                 visibility_path, target, event
             )
@@ -806,7 +885,9 @@ class AdaptiveDirectProductionBoundary:
             _prove_source_union_bijection(
                 raw, authorized, target, comparison, event
             )
+            _assert_source_union_workspace_root(workspace, authorized=True)
 
+        owned_workspace = False
         try:
             record = validate_adaptive_direct_source_union(
                 coverage=coverage, source_proof=source_proof, snapshot=snapshot,
@@ -816,6 +897,7 @@ class AdaptiveDirectProductionBoundary:
                 renderer=render_fresh, comparator=compare_authorized,
                 cancel_event=cancel_event,
             )
+            owned_workspace = True
             _final_source, final_filtered, final_candidate, final_transfer = (
                 validate_current_inputs(cancel_event)
             )
@@ -828,6 +910,6 @@ class AdaptiveDirectProductionBoundary:
             validate_render_workspace_current(cancel_event)
             return record
         except BaseException:
-            if os.path.lexists(workspace):
+            if owned_workspace and os.path.lexists(workspace):
                 _quarantine_cleanup(workspace)
             raise

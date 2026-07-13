@@ -339,8 +339,10 @@ def validate_adaptive_direct_source_union(
     render_request = SourceUnionRenderRequest(
         target, reference_source, candidate_source, dependency_proof_sha256, bindings,
     )
+    owned_workspace = False
     try:
         workspace.mkdir(parents=False, exist_ok=False)
+        owned_workspace = True
         _cancel(cancel_event, "cancelled before source-union render")
         rendered = renderer(render_request, workspace, cancel_event)
         if not isinstance(rendered, SourceUnionRenderOutput):
@@ -368,6 +370,6 @@ def validate_adaptive_direct_source_union(
             target=target, validation=validation, files=files, visibility=visibility,
         )
     except BaseException:
-        if os.path.lexists(workspace):
+        if owned_workspace and os.path.lexists(workspace):
             _quarantine_cleanup(workspace)
         raise

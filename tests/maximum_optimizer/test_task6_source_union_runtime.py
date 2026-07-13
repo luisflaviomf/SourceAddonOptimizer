@@ -159,6 +159,21 @@ class SourceUnionRuntimeTests(unittest.TestCase):
                 self._run(fixture, renderer, root / "none", comparator=None)
             self.assertEqual(renderer.requests, [])
 
+    def test_workspace_acquisition_race_never_deletes_external_winner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture = DirectCompositorFixture(root)
+            workspace = root / "union"; marker = workspace / "external.marker"
+            original_mkdir = Path.mkdir
+            def raced_mkdir(path, *args, **kwargs):
+                if Path(path) == workspace:
+                    original_mkdir(path, parents=False, exist_ok=False)
+                    marker.write_bytes(b"preserve")
+                    raise FileExistsError("external winner")
+                return original_mkdir(path, *args, **kwargs)
+            with mock.patch.object(Path, "mkdir", new=raced_mkdir), self.assertRaises(FileExistsError):
+                self._run(fixture, HermeticRenderer(), workspace)
+            self.assertEqual(marker.read_bytes(), b"preserve")
+
     def test_material_dependency_bindings_and_fresh_execution_are_exact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

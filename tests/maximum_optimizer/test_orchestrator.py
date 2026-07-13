@@ -3297,6 +3297,21 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(any(label.startswith("blender_extension/") for label in labels))
         self.assertNotEqual(first["digest"], second["digest"])
 
+    def test_dependency_proof_binds_vtfcmd_bytes_and_authorized_material_roots(self):
+        vtfcmd = self.root / "VTFCmd.exe"; vtfcmd.write_bytes(b"version-1")
+        materials = self.root / "external-materials"; materials.mkdir()
+        with patch.dict(os.environ, {
+            "VTFCMD": str(vtfcmd),
+            "MAXIMUM_MATERIAL_ROOTS": str(materials),
+        }, clear=False):
+            first = _dependency_proof(self.config)
+            vtfcmd.write_bytes(b"version-2")
+            second = _dependency_proof(self.config)
+        indexed = {entry["label"]: entry for entry in first["files"]}
+        self.assertEqual(indexed["tool/vtfcmd"]["state"], "file")
+        self.assertIn(str(materials.resolve()), first["material_roots"])
+        self.assertNotEqual(first["digest"], second["digest"])
+
     def test_unknown_schedule_engine_is_rejected_before_candidate_build(self):
         self.adapters.candidate_schedule = lambda _manifest: (
             CandidateSpec("unknown-engine", "unknown", 0.5, 0.01, "test"),

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -191,7 +194,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
     def _render_case(
         self, root: Path, runner, workspace: Path, component_manifest, *,
         dependency_provider=None, base_build=None, candidate_transform=None,
-        event=None, source_proof=None, snapshot=None,
+        event=None, source_proof=None, snapshot=None, tools_texture_cache=None,
     ):
         fixture = runner.fixture
         spec = CandidateSpec(
@@ -205,10 +208,10 @@ class ProductionAdapterContractTests(unittest.TestCase):
         artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
         candidate = CandidateBuild(
             spec, root / "candidate", fixture.base_root / "main.qc", compiled,
-            {"composition_evidence_sha256": "a" * 64},
+            {"status": "ok", "returncode": 0},
             {"task6.mdl": "candidate-compile"}, (), None,
         )
-        compile_result = AdaptiveDirectCompileResult(
+        compile_result = AdaptiveDirectCompileResult.create(
             candidate, (CompileFileProof(
                 "task6.mdl", ".mdl", len(artifact.read_bytes()), artifact_hash,
             ),), "a" * 64,
@@ -228,6 +231,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
         if not blender.exists(): blender.write_bytes(b"blender")
         tools = SourceUnionRenderTools(
             blender, renderer_script, hashlib.sha256(renderer_script.read_bytes()).hexdigest(),
+            texture_cache=tools_texture_cache,
             dependency_digest_provider=dependency_provider or (
                 lambda _event: fixture.requests[0].dependency_proof_sha256
             ),
@@ -295,15 +299,25 @@ class ProductionAdapterContractTests(unittest.TestCase):
     def test_real_orchestrator_wrapper_replaces_untrusted_dependency_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            blender = root / "blender.exe"; blender.write_bytes(b"blender")
-            renderer = root / "renderer.py"; renderer.write_bytes(b"renderer")
+            blender = root / "caller-blender.exe"; blender.write_bytes(b"caller")
+            renderer = root / "caller-renderer.py"; renderer.write_bytes(b"caller")
+            authoritative_blender = root / "real-blender.exe"; authoritative_blender.write_bytes(b"real")
+            repo = root / "repo"; repo.mkdir()
+            authoritative_renderer = repo / "render_previews.py"; authoritative_renderer.write_bytes(b"real renderer")
+            materials = root / "materials"; materials.mkdir()
+            vtfcmd = root / "VTFCmd.exe"; vtfcmd.write_bytes(b"vtfcmd")
+            texture_cache = root / "texture-cache"; texture_cache.mkdir()
+            (texture_cache / "poison.png").write_bytes(b"fake cached png")
             caller = mock.Mock(side_effect=AssertionError("caller provider must not run"))
             tools = SourceUnionRenderTools(
                 blender, renderer, hashlib.sha256(renderer.read_bytes()).hexdigest(),
                 dependency_digest_provider=caller,
             )
             adapter = object.__new__(OrchestratorProductionAdapters)
-            adapter.config = object()
+            adapter.config = mock.Mock(
+                blender_path=authoritative_blender,
+                repo_root=repo,
+            )
             adapter.cancel_event = threading.Event()
             expected = object()
             with mock.patch(
@@ -316,11 +330,24 @@ class ProductionAdapterContractTests(unittest.TestCase):
             ) as boundary, mock.patch(
                 "maximum_optimizer.orchestrator.FocusedRenderCache",
                 side_effect=AssertionError("source union must never access focused cache"),
-            ) as focused_cache:
+            ) as focused_cache, mock.patch.object(
+                adapter, "_materials_roots", return_value=(materials,),
+            ), mock.patch.object(
+                adapter, "_vtfcmd", return_value=vtfcmd,
+            ):
+                compile_result = mock.Mock()
+                compile_result.build.workspace = root / "candidate"
                 self.assertIs(
-                    adapter.render_adaptive_direct_source_union(tools=tools), expected
+                    adapter.render_adaptive_direct_source_union(
+                        tools=tools, candidate_compile=compile_result,
+                    ), expected
                 )
                 passed = boundary.call_args.kwargs["tools"]
+                self.assertEqual(passed.blender_exe, authoritative_blender)
+                self.assertEqual(passed.renderer_script, authoritative_renderer)
+                self.assertEqual(passed.materials_roots, (materials,))
+                self.assertEqual(passed.vtfcmd, vtfcmd)
+                self.assertIsNone(passed.texture_cache)
                 self.assertEqual(
                     passed.dependency_digest_provider(adapter.cancel_event), "8" * 64
                 )
@@ -436,6 +463,26 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 "task6.dx90.vtx", "task6.mdl", "task6.vvd",
             ))
             self.assertEqual(result.build.spec, spec)
+            self.assertEqual(
+                result.build.compile_record.get("composition_evidence_sha256"), None
+            )
+            self.assertEqual(
+                result.composition_evidence_sha256,
+                composed.composition.evidence_sha256,
+            )
+            with self.assertRaisesRegex(ValueError, "seal"):
+                replace(result, composition_evidence_sha256="0" * 64)
+            rerooted = AdaptiveDirectCompileResult.create(
+                replace(
+                    result.build,
+                    workspace=root / "rerooted",
+                    optimized_qc=root / "rerooted" / "src" / "main.qc",
+                    compiled_models_dir=root / "rerooted" / "compiled" / "models",
+                ),
+                result.compile_files,
+                result.composition_evidence_sha256,
+            )
+            self.assertEqual(rerooted.result_sha256, result.result_sha256)
 
     def test_compile_adapter_rejects_extra_artifact_and_wrong_composition_before_success(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -503,6 +550,9 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 "front,back,left,right,top,bottom,iso1,iso2",
             )
             self.assertEqual(command[command.index("--poses") + 1], "bind:0")
+            private_cache = Path(command[command.index("--texture-cache") + 1])
+            self.assertTrue(str(private_cache).startswith(str(root / "union-one")))
+            self.assertFalse(private_cache.exists())
             before = Path(command[command.index("--before") + 1])
             after = Path(command[command.index("--after") + 1])
             self.assertTrue(str(before).startswith(str(root / "union-one")))
@@ -531,6 +581,22 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 component_manifest.filtered_source_sha256,
             )
 
+    def test_source_union_ignores_poisoned_shared_texture_cache_and_uses_fresh_private_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
+            shared = root / "shared-cache"; shared.mkdir()
+            poison = shared / "poison.png"; poison.write_bytes(b"fake cached png")
+            runner = SourceUnionRunner(fixture)
+            self._render_case(
+                root, runner, root / "union", components,
+                tools_texture_cache=shared,
+            )
+            command = runner.commands[0]
+            private_cache = Path(command[command.index("--texture-cache") + 1])
+            self.assertNotEqual(private_cache, shared)
+            self.assertFalse(private_cache.exists())
+            self.assertEqual(poison.read_bytes(), b"fake cached png")
+
     def test_source_union_adapter_rejects_wrong_base_or_candidate_before_runner(self) -> None:
         for label in ("base", "candidate"):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
@@ -548,7 +614,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     candidate_change = lambda build: replace(
                         build, spec=fixture.base_build.spec
                     )
-                with self.assertRaisesRegex(ValueError, "binding|base|candidate"):
+                with self.assertRaisesRegex(ValueError, "binding|base|candidate|seal"):
                     self._render_case(
                         root, runner, root / "union", component_manifest,
                         base_build=base_build,
@@ -702,6 +768,63 @@ class ProductionAdapterContractTests(unittest.TestCase):
                         workspace, components,
                     )
                 self.assertFalse(workspace.exists())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
+            def poison_top(command, _payload, _event):
+                (Path(command[command.index("--out") + 1]).parent / "hidden-top.bin").write_bytes(b"hidden")
+            workspace = root / "union"
+            with self.assertRaises(ValueError):
+                self._render_case(
+                    root, SourceUnionRunner(fixture, after_output=poison_top),
+                    workspace, components,
+                )
+            self.assertFalse(workspace.exists())
+
+    def test_source_union_never_deletes_preexisting_unowned_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
+            workspace = root / "union"; workspace.mkdir()
+            marker = workspace / "external.marker"; marker.write_bytes(b"preserve")
+            runner = SourceUnionRunner(fixture)
+            with self.assertRaisesRegex(ValueError, "workspace"):
+                self._render_case(root, runner, workspace, components)
+            self.assertEqual(marker.read_bytes(), b"preserve")
+            self.assertEqual(runner.commands, [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
+    def test_source_union_rejects_compiled_root_junction_and_preserves_external_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
+            junction_holder = {"path": None}
+            external = root / "external-compiled"; external.mkdir()
+            marker = external / "external.marker"; marker.write_bytes(b"preserve")
+            def junction_compile(build):
+                lexical = root / "compiled" / "models"
+                artifact = lexical / "task6.mdl"
+                (external / "task6.mdl").write_bytes(artifact.read_bytes())
+                shutil.rmtree(lexical)
+                created = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(lexical), str(external)],
+                    capture_output=True, text=True,
+                )
+                if created.returncode != 0:
+                    self.skipTest(f"junction creation unavailable: {created.stderr or created.stdout}")
+                junction_holder["path"] = lexical
+                return build
+            workspace = root / "union"; runner = SourceUnionRunner(fixture)
+            try:
+                with self.assertRaisesRegex(ValueError, "compiled|reparse"):
+                    self._render_case(
+                        root, runner, workspace, components,
+                        candidate_transform=junction_compile,
+                    )
+                self.assertEqual(runner.commands, [])
+                self.assertEqual(marker.read_bytes(), b"preserve")
+            finally:
+                junction = junction_holder["path"]
+                if junction is not None and os.path.lexists(junction):
+                    os.rmdir(junction)
 
     def test_source_union_rejects_precreated_authorized_and_reparse_output(self) -> None:
         def precreate(command, _payload, _event):

@@ -702,6 +702,27 @@ def _restore_cache_payload(
     )
 
 
+def _configured_vtfcmd(config: MaximumRunConfig) -> Path | None:
+    local = Path(os.environ.get("LOCALAPPDATA", "")) / "GmodAddonOptimizer" / "tools" / "VTFEdit" / "VTFCmd.exe"
+    candidates = (
+        Path(os.environ["VTFCMD"]).expanduser() if os.environ.get("VTFCMD") else None,
+        config.repo_root / "VTFEdit" / "VTFCmd.exe",
+        config.repo_root / "tools" / "VTFEdit" / "VTFCmd.exe",
+        local,
+    )
+    return next((path.resolve() for path in candidates if path is not None and path.is_file()), None)
+
+
+def _dependency_material_root_identities(config: MaximumRunConfig) -> tuple[str, ...]:
+    values = [config.addon_dir / "materials"]
+    values.extend(
+        Path(value).expanduser()
+        for value in os.environ.get("MAXIMUM_MATERIAL_ROOTS", "").split(os.pathsep)
+        if value.strip()
+    )
+    return tuple(dict.fromkeys(str(value.resolve()) for value in values))
+
+
 def _dependency_proof(
     config: MaximumRunConfig,
     cancel_event: threading.Event | None = None,
@@ -753,6 +774,11 @@ def _dependency_proof(
         "tool/meshopt_bridge",
         config.repo_root / "maximum_optimizer" / "native" / "bin" / "win-x64" / "meshopt_bridge.dll",
     ))
+    vtfcmd = _configured_vtfcmd(config)
+    paths.append((
+        "tool/vtfcmd",
+        vtfcmd if vtfcmd is not None else config.repo_root / "tools" / "VTFEdit" / "VTFCmd.exe",
+    ))
     files: list[dict[str, object]] = []
     for label, path in paths:
         if path.is_file() and not _is_reparse(path):
@@ -765,7 +791,10 @@ def _dependency_proof(
             })
         else:
             files.append({"label": label, "state": "missing", "size": 0, "sha256": ""})
-    payload = {"schema": 1, "files": files}
+    payload = {
+        "schema": 1, "files": files,
+        "material_roots": list(_dependency_material_root_identities(config)),
+    }
     payload["digest"] = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -4051,11 +4080,21 @@ class ProductionAdapters:
             AdaptiveDirectProductionBoundary, SourceUnionRenderTools,
         )
         kwargs.setdefault("cancel_event", self.cancel_event)
-        tools = kwargs.get("tools")
-        if not isinstance(tools, SourceUnionRenderTools):
-            raise TypeError("source-union production tools are invalid")
-        kwargs["tools"] = replace(
-            tools,
+        kwargs.pop("tools", None)
+        candidate_compile = kwargs.get("candidate_compile")
+        if candidate_compile is None or not hasattr(candidate_compile, "build"):
+            raise TypeError("source-union compile result is unavailable")
+        renderer_script = self.config.repo_root / "render_previews.py"
+        _renderer_size, renderer_sha256 = _file_proof(
+            renderer_script, self.cancel_event,
+        )
+        kwargs["tools"] = SourceUnionRenderTools(
+            blender_exe=self.config.blender_path,
+            renderer_script=renderer_script,
+            renderer_sha256=renderer_sha256,
+            materials_roots=self._materials_roots(),
+            vtfcmd=self._vtfcmd(),
+            texture_cache=None,
             dependency_digest_provider=lambda event: str(
                 _dependency_proof(self.config, event)["digest"]
             ),
@@ -4161,14 +4200,7 @@ class ProductionAdapters:
         return {"path": relative, "sha256": digest}
 
     def _vtfcmd(self) -> Path | None:
-        local = Path(os.environ.get("LOCALAPPDATA", "")) / "GmodAddonOptimizer" / "tools" / "VTFEdit" / "VTFCmd.exe"
-        candidates = (
-            Path(os.environ["VTFCMD"]).expanduser() if os.environ.get("VTFCMD") else None,
-            self.config.repo_root / "VTFEdit" / "VTFCmd.exe",
-            self.config.repo_root / "tools" / "VTFEdit" / "VTFCmd.exe",
-            local,
-        )
-        return next((path.resolve() for path in candidates if path is not None and path.is_file()), None)
+        return _configured_vtfcmd(self.config)
 
     def _materials_roots(self) -> tuple[Path, ...]:
         values = [self.config.addon_dir / "materials"]
