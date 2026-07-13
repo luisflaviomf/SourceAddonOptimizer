@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import hashlib
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import stat
 import threading
 import uuid
 from typing import Callable
@@ -328,6 +329,164 @@ def _current_compile_files(
     return result
 
 
+@dataclass
+class _PrivateSnapshotOwnership:
+    root_identity: tuple[int, int, int, int]
+    descendants: dict[str, tuple[int, int, int, int]] = field(default_factory=dict)
+    file_proofs: dict[str, tuple[int, str]] = field(default_factory=dict)
+
+
+def _snapshot_identity(
+    path: Path, *, directory: bool | None = None,
+) -> tuple[int, int, int, int]:
+    info = os.lstat(path)
+    is_reparse = bool(
+        getattr(info, "st_file_attributes", 0) & 0x0400
+    )
+    is_directory = stat.S_ISDIR(info.st_mode)
+    is_file = stat.S_ISREG(info.st_mode)
+    if (
+        is_reparse or stat.S_ISLNK(info.st_mode)
+        or not (is_directory or is_file)
+        or (directory is True and not is_directory)
+        or (directory is False and not is_file)
+    ):
+        raise ValueError("adaptive-direct private snapshot object is unsafe")
+    return (
+        int(info.st_dev), int(info.st_ino),
+        int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1e9))),
+        int(stat.S_IFMT(info.st_mode)),
+    )
+
+
+def _require_snapshot_directory(
+    root: Path, path: Path, ownership: _PrivateSnapshotOwnership,
+) -> None:
+    relative = path.relative_to(root).as_posix()
+    expected = (
+        ownership.root_identity if path == root
+        else ownership.descendants.get(relative)
+    )
+    if expected is None or _snapshot_identity(path, directory=True) != expected:
+        raise ValueError("adaptive-direct private snapshot ownership changed")
+
+
+def _ensure_snapshot_parent(
+    root: Path, parent: Path, ownership: _PrivateSnapshotOwnership,
+) -> None:
+    relative = parent.relative_to(root)
+    current = root
+    _require_snapshot_directory(root, current, ownership)
+    for part in relative.parts:
+        current = current / part
+        logical = current.relative_to(root).as_posix()
+        if os.path.lexists(current):
+            if logical not in ownership.descendants:
+                raise ValueError("adaptive-direct private snapshot contains a foreign parent")
+            _require_snapshot_directory(root, current, ownership)
+            continue
+        _require_snapshot_directory(root, current.parent, ownership)
+        current.mkdir(parents=False, exist_ok=False)
+        ownership.descendants[logical] = _snapshot_identity(
+            current, directory=True,
+        )
+        _require_snapshot_directory(root, current.parent, ownership)
+        _require_snapshot_directory(root, current, ownership)
+
+
+def _snapshot_tree_is_exact(
+    root: Path, ownership: _PrivateSnapshotOwnership,
+) -> bool:
+    try:
+        if _snapshot_identity(root, directory=True) != ownership.root_identity:
+            return False
+        actual: dict[str, tuple[int, int, int, int]] = {}
+
+        def scan(directory: Path) -> None:
+            with os.scandir(directory) as entries:
+                children = tuple(entries)
+            for entry in children:
+                path = Path(entry.path)
+                relative = path.relative_to(root).as_posix()
+                expected = ownership.descendants.get(relative)
+                if expected is None:
+                    raise ValueError(
+                        "adaptive-direct private snapshot contains a foreign descendant"
+                    )
+                identity = _snapshot_identity(path)
+                if identity != expected:
+                    raise ValueError(
+                        "adaptive-direct private snapshot descendant changed"
+                    )
+                actual[relative] = identity
+                if stat.S_ISDIR(identity[3]):
+                    scan(path)
+                else:
+                    proof = ownership.file_proofs.get(relative)
+                    if proof is None:
+                        raise ValueError(
+                            "adaptive-direct private snapshot file proof is absent"
+                        )
+                    if _hash_current_file(
+                        path, root, None, max_bytes=proof[0],
+                    ) != proof:
+                        raise ValueError(
+                            "adaptive-direct private snapshot file bytes changed"
+                        )
+
+        scan(root)
+        actual_files = {
+            relative for relative, identity in actual.items()
+            if stat.S_ISREG(identity[3])
+        }
+        return (
+            actual == ownership.descendants
+            and actual_files == set(ownership.file_proofs)
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _cleanup_private_snapshot(
+    root: Path, ownership: _PrivateSnapshotOwnership | None,
+) -> bool:
+    if not os.path.lexists(root):
+        return True
+    if ownership is None or not _snapshot_tree_is_exact(root, ownership):
+        return False
+    quarantine = root.with_name(
+        f".{root.name}.adaptive-snapshot-cleanup-{uuid.uuid4().hex}"
+    )
+    if os.path.lexists(quarantine):
+        return False
+    try:
+        os.rename(root, quarantine)
+        if not _snapshot_tree_is_exact(quarantine, ownership):
+            if not os.path.lexists(root):
+                os.rename(quarantine, root)
+            return False
+        for relative, expected in sorted(
+            ownership.descendants.items(),
+            key=lambda item: (
+                len(PurePosixPath(item[0]).parts), item[0].casefold(), item[0],
+            ),
+            reverse=True,
+        ):
+            path = quarantine.joinpath(*PurePosixPath(relative).parts)
+            if _snapshot_identity(path) != expected:
+                return False
+            if stat.S_ISDIR(expected[3]):
+                os.rmdir(path)
+            else:
+                path.unlink()
+        if _snapshot_identity(quarantine, directory=True) != ownership.root_identity:
+            return False
+        os.rmdir(quarantine)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def _size_from_compile_files(build: CandidateBuild, files) -> CompiledSizeSnapshot:
     by_kind = {}
     artifacts = []
@@ -372,12 +531,14 @@ def _snapshot_authorized_compile(
     private_root = Path(compiled.build.workspace) / (
         ".authorized-compile-" + uuid.uuid4().hex
     )
-    identity = None
+    ownership = None
     try:
         private_root.mkdir(exist_ok=False)
-        identity = _workspace_root_identity(private_root)
+        ownership = _PrivateSnapshotOwnership(
+            _snapshot_identity(private_root, directory=True)
+        )
         models_root = private_root / "models"
-        models_root.mkdir()
+        _ensure_snapshot_parent(private_root, models_root, ownership)
         for proof in compiled.compile_files:
             if event.is_set():
                 raise ProcessCancelledError(
@@ -385,9 +546,20 @@ def _snapshot_authorized_compile(
                 )
             source = source_root / Path(*proof.relative_path.split("/"))
             destination = models_root / Path(*proof.relative_path.split("/"))
-            destination.parent.mkdir(parents=True, exist_ok=True)
+            _ensure_snapshot_parent(private_root, destination.parent, ownership)
+            _require_snapshot_directory(
+                private_root, destination.parent, ownership,
+            )
             _copy_file_no_follow(
                 source, destination, event, contained_root=source_root,
+            )
+            relative = destination.relative_to(private_root).as_posix()
+            ownership.descendants[relative] = _snapshot_identity(
+                destination, directory=False,
+            )
+            ownership.file_proofs[relative] = (proof.size, proof.sha256)
+            _require_snapshot_directory(
+                private_root, destination.parent, ownership,
             )
         replacement_build = replace(
             compiled.build, compiled_models_dir=models_root,
@@ -397,7 +569,7 @@ def _snapshot_authorized_compile(
             compiled.composition_evidence_sha256,
         )
         _current_compile_files(replacement, event)
-        if _workspace_root_identity(private_root) != identity:
+        if not _snapshot_tree_is_exact(private_root, ownership):
             raise ValueError("adaptive-direct authorized compile ownership changed")
         if event.is_set():
             raise ProcessCancelledError(
@@ -405,7 +577,7 @@ def _snapshot_authorized_compile(
             )
         return replacement
     except BaseException:
-        _quarantine_cleanup_if_owned(private_root, identity)
+        _cleanup_private_snapshot(private_root, ownership)
         raise
 
 
@@ -475,6 +647,28 @@ def execute_adaptive_direct_schedule(
     require_adaptive_direct_source_count(coverage.sources)
     if type(remaining_candidates) is not int or remaining_candidates < 0:
         raise ValueError("adaptive-direct remaining candidate budget is invalid")
+    if pre_cancelled:
+        schedule = build_monaco_schedule(
+            base_spec=base_evaluation.spec,
+            coverage=coverage,
+            remaining_candidates=remaining_candidates,
+            reserve=reserve_ratio,
+            access_ratio=access_ratio,
+            cancel_event=event,
+        )
+        attempts = []
+        for outcome in schedule:
+            if not isinstance(outcome, MonacoCancelledReservation):
+                raise ValueError(
+                    "adaptive-direct pre-cancel schedule was not terminal"
+                )
+            attempts.append(AdaptiveDirectExecutionAttempt.create(
+                outcome.ratio, "cancelled", error=outcome.failure_reason,
+            ))
+        return AdaptiveDirectScheduleExecution(
+            base_evaluation, base_evaluation, tuple(attempts),
+            bool(attempts),
+        )
     root = _validate_workspace_root(Path(workspace_root), base_build)
     reservation_root = None
     reservation_identity = None
@@ -579,19 +773,25 @@ def execute_adaptive_direct_schedule(
             if event.is_set():
                 raise ProcessCancelledError("adaptive-direct cancelled before composition")
             workspace = root / outcome.spec.candidate_id
+            snapshots_by_sha256 = {
+                item.snapshot_sha256: item for item in outcome.snapshots
+            }
+
+            def require_current_composition():
+                return require_current_composed_source_tree(
+                    composed, workspace, recipe, event,
+                    base_build=base_build,
+                    snapshots_by_sha256=snapshots_by_sha256,
+                    coverage_manifest=coverage,
+                )
+
             composed = compose_candidate(outcome, workspace, event)
-            composed = require_current_composed_source_tree(
-                composed, workspace, recipe, event,
-                base_build=base_build,
-                snapshots_by_sha256={
-                    item.snapshot_sha256: item for item in outcome.snapshots
-                },
-                coverage_manifest=coverage,
-            )
+            composed = require_current_composition()
             if event.is_set():
                 raise ProcessCancelledError("adaptive-direct cancelled after composition")
             stage = "compile"
             compiled = compile_candidate(outcome, composed, event)
+            composed = require_current_composition()
             if not isinstance(compiled, AdaptiveDirectCompileResult):
                 raise TypeError("adaptive-direct compiler returned an invalid result")
             _require_compile_binding(outcome, composed, compiled, event)
@@ -600,6 +800,7 @@ def execute_adaptive_direct_schedule(
 
             stage = "structural"
             structural = authorize_structural(outcome, composed, compiled, event)
+            composed = require_current_composition()
             if not isinstance(structural, StructuralAuthorizationEvidence):
                 raise TypeError("adaptive-direct structural authorization is invalid")
             if event.is_set():
@@ -704,6 +905,7 @@ def execute_adaptive_direct_schedule(
             final_whole = authorize_final_whole(
                 outcome, composed, compiled, structural, event
             )
+            composed = require_current_composition()
             if not isinstance(final_whole, FinalWholeAuthorizationEvidence):
                 raise TypeError("adaptive-direct final-whole authorization is invalid")
             if event.is_set():
@@ -726,13 +928,21 @@ def execute_adaptive_direct_schedule(
                     "adaptive-direct cancelled after final compile validation"
                 )
             compiled = _snapshot_authorized_compile(compiled, event)
-            current_files = compiled.compile_files
+            current_files = _current_compile_files(compiled, event)
+            if event.is_set():
+                raise ProcessCancelledError(
+                    "adaptive-direct cancelled after private compile validation"
+                )
             size = _size_from_compile_files(compiled.build, current_files)
             evaluation = CandidateEvaluation(
                 outcome.spec, size, structural.validation,
                 final_whole.validation, compiled.build.compiled_models_dir,
                 final_whole.validation, {},
             )
+            if event.is_set():
+                raise ProcessCancelledError(
+                    "adaptive-direct cancelled before terminal attempt"
+                )
             attempts.append(AdaptiveDirectExecutionAttempt.create(
                 outcome.ratio, terminal, candidate_id=outcome.spec.candidate_id,
                 evaluation=evaluation if terminal == "authorized" else None,
