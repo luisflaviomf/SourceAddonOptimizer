@@ -596,9 +596,35 @@ def _validate_caps(name: str, text: str) -> bytes:
     return encoded
 
 
-def validate_remapped_topology_smd(
-    source_text: str, output_text: str, requested_ratio: float,
-) -> RemappedTopologyProof:
+@dataclass(frozen=True)
+class _RemappedAnalysis:
+    source_bytes: bytes
+    output_bytes: bytes
+    ratio: float
+    source: ParsedSmd
+    output: ParsedSmd
+    source_materials: tuple[str, ...]
+    index: _SourceIndex
+    component_count: int
+    source_counts: Counter[str]
+    output_counts: Counter[str]
+    global_target: int
+    output_components: tuple[ComponentKey, ...]
+    ordinals: tuple[int, ...]
+    retained: int
+    covered: frozenset[ComponentKey]
+    expected_components: frozenset[ComponentKey]
+    source_stats: _TopologyStats
+    output_stats: _TopologyStats
+
+
+def _validate_remapped_topology_smd_common(
+    source_text: str,
+    output_text: str,
+    requested_ratio: float,
+    *,
+    require_exact_boundary: bool,
+) -> RemappedTopologyProof | _RemappedAnalysis:
     source_bytes = _validate_caps("source", source_text)
     output_bytes = _validate_caps("output", output_text)
     if (
@@ -692,7 +718,11 @@ def validate_remapped_topology_smd(
     source_stats = _topology_stats(source.triangles, index.component_for_triangle)
     output_stats = _topology_stats(output.triangles, output_components)
     for component in sorted(expected_components):
-        if output_stats.boundaries.get(component, frozenset()) != source_stats.boundaries[component]:
+        if (
+            require_exact_boundary
+            and output_stats.boundaries.get(component, frozenset())
+            != source_stats.boundaries[component]
+        ):
             raise RuntimeError("remapped output changed exact component boundary edges")
         if output_stats.nonmanifold_excess.get(component, 0) > source_stats.nonmanifold_excess[component]:
             raise RuntimeError("remapped output increased component nonmanifold excess")
@@ -702,6 +732,28 @@ def validate_remapped_topology_smd(
             raise RuntimeError("remapped output increased component direction conflicts")
         if output_stats.orientation_conflicts.get(component, 0) > source_stats.orientation_conflicts[component]:
             raise RuntimeError("remapped output increased component orientation conflicts")
+
+    if not require_exact_boundary:
+        return _RemappedAnalysis(
+            source_bytes=source_bytes,
+            output_bytes=output_bytes,
+            ratio=ratio,
+            source=source,
+            output=output,
+            source_materials=source_materials,
+            index=index,
+            component_count=component_count,
+            source_counts=source_counts,
+            output_counts=output_counts,
+            global_target=global_target,
+            output_components=tuple(output_components),
+            ordinals=tuple(ordinals),
+            retained=retained,
+            covered=covered,
+            expected_components=expected_components,
+            source_stats=source_stats,
+            output_stats=output_stats,
+        )
 
     material_proofs = []
     for ordinal, material in enumerate(source_materials):
@@ -790,3 +842,17 @@ def validate_remapped_topology_smd(
         remapped_topology_proof_payload(provisional, include_seal=False)
     )
     return RemappedTopologyProof(**values)
+
+
+def validate_remapped_topology_smd(
+    source_text: str, output_text: str, requested_ratio: float,
+) -> RemappedTopologyProof:
+    proof = _validate_remapped_topology_smd_common(
+        source_text,
+        output_text,
+        requested_ratio,
+        require_exact_boundary=True,
+    )
+    if not isinstance(proof, RemappedTopologyProof):
+        raise RuntimeError("remapped topology validator returned invalid proof")
+    return proof

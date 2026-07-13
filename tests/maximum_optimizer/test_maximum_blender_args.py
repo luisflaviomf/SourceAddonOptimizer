@@ -73,6 +73,37 @@ class MaximumBlenderPureTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 maximum.load_candidate_payload(mutation)
 
+    def test_visual_remapped_candidate_is_separate_typed_r_and_d_contract(self) -> None:
+        payload = {
+            "candidate_id": "visual-remapped-r040",
+            "engine": "meshoptimizer",
+            "ratio": 0.4,
+            "target_error": 0.01,
+            "update_vertices": False,
+            "region_overrides": [],
+            "strategy": "meshopt-remapped-visual-v1",
+            "transfer": "visual-remapped-topology-v1",
+            "direct_degenerate_prefilter": "direct-degenerate-prefilter-v1",
+        }
+
+        candidate = maximum.load_candidate_payload(payload)
+
+        self.assertEqual(candidate.strategy, "meshopt-remapped-visual-v1")
+        self.assertEqual(candidate.transfer, "visual-remapped-topology-v1")
+        self.assertEqual(
+            maximum.direct_degenerate_prefilter(
+                candidate, self._direct_degenerate_fixture()
+            ).dropped_source_triangles,
+            (0,),
+        )
+        for mutation in (
+            {**payload, "strategy": "meshopt-remapped-topology-v1"},
+            {**payload, "transfer": "remapped-topology-v1"},
+            {**payload, "update_vertices": True},
+        ):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                maximum.load_candidate_payload(mutation)
+
     def test_direct_prefilter_is_opt_in_only_for_typed_direct_research_strategies(self) -> None:
         source = self._direct_degenerate_fixture()
         direct = maximum.CandidateConfig(

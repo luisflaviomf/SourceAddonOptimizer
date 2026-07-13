@@ -108,10 +108,12 @@ _DIRECT_SERIALIZER_STRATEGIES = frozenset({
     "meshopt-direct-v1",
     "meshopt-direct-position-v1",
     "meshopt-remapped-topology-v1",
+    "meshopt-remapped-visual-v1",
 })
 _POSITION_TOPOLOGY_STRATEGIES = frozenset({
     "meshopt-direct-position-v1",
     "meshopt-remapped-topology-v1",
+    "meshopt-remapped-visual-v1",
 })
 _ADAPTIVE_EXACT_PRESERVATION_MATRIX = frozenset({
     ("eligible-exact-v1", True, "ratio-preserved-exact-v1"),
@@ -229,6 +231,7 @@ def load_candidate_payload(payload: object) -> CandidateConfig:
         ("meshoptimizer", "meshopt-direct-v1", False, "direct-v1"),
         ("meshoptimizer", "meshopt-direct-position-v1", False, "direct-v1"),
         ("meshoptimizer", "meshopt-remapped-topology-v1", False, "remapped-topology-v1"),
+        ("meshoptimizer", "meshopt-remapped-visual-v1", False, "visual-remapped-topology-v1"),
         ("meshoptimizer", "meshopt-project-v1", True, "projection-v1"),
         ("blender", "blender-adaptive-v1", True, "blender-native-v1"),
         ("blender", "blender-importance-map-v1", True, "blender-native-v1"),
