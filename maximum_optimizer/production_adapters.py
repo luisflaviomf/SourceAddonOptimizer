@@ -847,8 +847,10 @@ class AdaptiveDirectProductionBoundary:
                     material_contract, tools.materials_roots, material_tree, event,
                     filtered_source_bytes=current_filtered,
                 )
-            except SourceUnionMaterialOwnershipConflict:
+            except SourceUnionMaterialOwnershipConflict as exc:
                 ownership_lease.preserve_unowned_descendant()
+                if exc.original_cause is not None:
+                    raise exc.original_cause from exc
                 raise
             if type(material_lease) is not PrivateSourceUnionMaterialLease:
                 raise TypeError("source-union private material lease is invalid")

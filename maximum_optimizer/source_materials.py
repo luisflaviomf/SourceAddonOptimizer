@@ -384,6 +384,12 @@ class CurrentSourceUnionMaterialAuthorization:
 class SourceUnionMaterialOwnershipConflict(ValueError):
     """A foreign filesystem object won ownership of a private material path."""
 
+    def __init__(
+        self, message: str, *, original_cause: BaseException | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.original_cause = original_cause
+
 
 @dataclass(frozen=True)
 class PrivateSourceUnionMaterialLease:
@@ -849,21 +855,37 @@ def materialize_private_source_union_material_roots(
         raise ValueError("source-union material roots are unsafe")
     roots = tuple(root.resolve(strict=True) for root in raw_roots)
     destination = Path(os.path.abspath(destination))
-    if os.path.lexists(destination) or _has_reparse_ancestor(destination.parent):
+    if _has_reparse_ancestor(destination.parent):
         raise ValueError("source-union private material destination is unsafe")
-    require_current_source_union_material_contract(
-        contract, filtered_source_bytes=filtered_source_bytes,
-        roots=roots, cancel_event=cancel_event,
-    )
-    # The filtered bytes are contract-bound but not stored; callers revalidate source
-    # separately and materialization only needs current selected material bytes.
     staging = destination.with_name(
         f".{destination.name}.source-materials-acquire-{uuid.uuid4().hex}"
     )
-    staging.mkdir(parents=False, exist_ok=False)
-    staging_identity = _workspace_root_identity(staging)
-    private = tuple(staging / f"root-{index:03d}" for index in range(len(contract.roots)))
+    staging_identity: tuple[int, int, int] | None = None
+    published_owned = False
     try:
+        if os.path.lexists(destination):
+            raise SourceUnionMaterialOwnershipConflict(
+                "source-union private material destination ownership conflict"
+            )
+        require_current_source_union_material_contract(
+            contract, filtered_source_bytes=filtered_source_bytes,
+            roots=roots, cancel_event=cancel_event,
+        )
+        # The filtered bytes are contract-bound but not stored; callers revalidate
+        # source separately and staging only needs the selected material bytes.
+        try:
+            staging.mkdir(parents=False, exist_ok=False)
+        except OSError as exc:
+            if os.path.lexists(staging):
+                raise SourceUnionMaterialOwnershipConflict(
+                    "source-union private material staging ownership conflict",
+                    original_cause=exc,
+                ) from exc
+            raise
+        staging_identity = _workspace_root_identity(staging)
+        private = tuple(
+            staging / f"root-{index:03d}" for index in range(len(contract.roots))
+        )
         for path in private:
             path.mkdir()
         expected = set()
@@ -890,11 +912,17 @@ def materialize_private_source_union_material_roots(
             _workspace_root_identity(path) for path in private
         )
         try:
-            os.rename(staging, destination)
-        except OSError as exc:
             if os.path.lexists(destination):
                 raise SourceUnionMaterialOwnershipConflict(
                     "source-union private material destination ownership conflict"
+                )
+            os.rename(staging, destination)
+            published_owned = True
+        except OSError as exc:
+            if os.path.lexists(destination):
+                raise SourceUnionMaterialOwnershipConflict(
+                    "source-union private material destination ownership conflict",
+                    original_cause=exc,
                 ) from exc
             raise
         published_roots = tuple(
@@ -914,15 +942,39 @@ def materialize_private_source_union_material_roots(
             if isinstance(exc, SourceUnionMaterialOwnershipConflict):
                 raise
             raise SourceUnionMaterialOwnershipConflict(
-                "source-union private material destination identity changed"
+                "source-union private material destination identity changed",
+                original_cause=exc,
             ) from exc
         return PrivateSourceUnionMaterialLease(
             roots=published_roots,
             destination_identity=staging_identity,
             root_identities=private_root_identities,
         )
-    except BaseException:
-        _quarantine_cleanup_if_owned(staging, staging_identity)
+    except BaseException as exc:
+        if staging_identity is not None:
+            _quarantine_cleanup_if_owned(staging, staging_identity)
+        staging_is_foreign = False
+        if os.path.lexists(staging):
+            if staging_identity is None:
+                staging_is_foreign = True
+            else:
+                try:
+                    staging_is_foreign = (
+                        _workspace_root_identity(staging) != staging_identity
+                    )
+                except (OSError, ValueError):
+                    staging_is_foreign = True
+        if (
+            not isinstance(exc, SourceUnionMaterialOwnershipConflict)
+            and (
+                (not published_owned and os.path.lexists(destination))
+                or staging_is_foreign
+            )
+        ):
+            raise SourceUnionMaterialOwnershipConflict(
+                "source-union private material ownership conflict",
+                original_cause=exc,
+            ) from exc
         raise
 
 

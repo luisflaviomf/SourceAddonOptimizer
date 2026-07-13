@@ -1197,6 +1197,101 @@ class ProductionAdapterContractTests(unittest.TestCase):
             self.assertTrue(workspace.exists())
             self.assertEqual(marker.read_bytes(), b"preserve")
 
+    def test_source_union_preserves_foreign_material_winner_on_pre_publish_cancel(self) -> None:
+        from maximum_optimizer import source_materials as material_module
+
+        real_copy = material_module._copy_file_no_follow
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            destination = workspace / "material-roots"
+            marker = destination / "external.marker"
+            event = threading.Event()
+            state = {"raced": False}
+
+            def race_then_cancel(*args, **kwargs):
+                result = real_copy(*args, **kwargs)
+                if not state["raced"]:
+                    destination.mkdir()
+                    marker.write_bytes(b"preserve")
+                    event.set()
+                    state["raced"] = True
+                return result
+
+            runner = SourceUnionRunner(fixture)
+            with mock.patch(
+                "maximum_optimizer.source_materials._copy_file_no_follow",
+                side_effect=race_then_cancel,
+            ), self.assertRaises(ProcessCancelledError):
+                self._render_case(
+                    root, runner, workspace, components, event=event,
+                )
+            self.assertEqual(runner.commands, [])
+            self.assertTrue(workspace.exists())
+            self.assertEqual(marker.read_bytes(), b"preserve")
+
+    def test_source_union_preserves_foreign_material_destination_present_at_acquire(self) -> None:
+        from maximum_optimizer import production_adapters as module
+
+        real_materialize = module.materialize_private_source_union_material_roots
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            destination = workspace / "material-roots"
+            marker = destination / "external.marker"
+
+            def precreate_destination(*args, **kwargs):
+                destination.mkdir()
+                marker.write_bytes(b"preserve")
+                return real_materialize(*args, **kwargs)
+
+            runner = SourceUnionRunner(fixture)
+            with mock.patch(
+                "maximum_optimizer.production_adapters."
+                "materialize_private_source_union_material_roots",
+                side_effect=precreate_destination,
+            ), self.assertRaises(ValueError):
+                self._render_case(root, runner, workspace, components)
+            self.assertEqual(runner.commands, [])
+            self.assertTrue(workspace.exists())
+            self.assertEqual(marker.read_bytes(), b"preserve")
+
+    def test_source_union_preserves_foreign_material_staging_collision(self) -> None:
+        from maximum_optimizer import production_adapters as module
+        from maximum_optimizer import source_materials as material_module
+
+        real_materialize = module.materialize_private_source_union_material_roots
+        fixed_uuid = "1" * 32
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            staging = workspace / (
+                f".material-roots.source-materials-acquire-{fixed_uuid}"
+            )
+            marker = staging / "external.marker"
+
+            def collide_staging(*args, **kwargs):
+                staging.mkdir()
+                marker.write_bytes(b"preserve")
+                return real_materialize(*args, **kwargs)
+
+            runner = SourceUnionRunner(fixture)
+            fake_uuid = mock.Mock(hex=fixed_uuid)
+            with mock.patch(
+                "maximum_optimizer.production_adapters."
+                "materialize_private_source_union_material_roots",
+                side_effect=collide_staging,
+            ), mock.patch.object(
+                material_module.uuid, "uuid4", return_value=fake_uuid,
+            ), self.assertRaises((ValueError, OSError)):
+                self._render_case(root, runner, workspace, components)
+            self.assertEqual(runner.commands, [])
+            self.assertTrue(workspace.exists())
+            self.assertEqual(marker.read_bytes(), b"preserve")
+
     @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
     def test_source_union_rejects_compiled_root_junction_and_preserves_external_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
