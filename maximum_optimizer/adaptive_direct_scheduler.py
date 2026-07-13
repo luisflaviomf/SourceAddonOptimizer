@@ -514,19 +514,30 @@ def _resolve_terminal_selection(
 ) -> AdaptiveDirectScheduleExecution:
     resolved = list(attempts)
     while True:
+        for index, attempt in enumerate(resolved):
+            if attempt.status != "authorized":
+                continue
+            try:
+                _require_current_authorized_attempt(attempt)
+            except (OSError, ValueError) as exc:
+                resolved[index] = AdaptiveDirectExecutionAttempt.create(
+                    attempt.ratio, "final_whole_failed",
+                    candidate_id=attempt.candidate_id, recipe=attempt.recipe,
+                    error=str(exc) or "adaptive-direct terminal compile changed",
+                )
         authorized = [
             item.evaluation for item in resolved if item.status == "authorized"
         ]
         selected = select_winner([base_evaluation, *authorized])
+        current = require_current_retained_monaco_base(base_proof, None)
+        if (
+            current.evaluation is not base_evaluation
+            or current.build is not base_proof.build
+        ):
+            raise ValueError(
+                "adaptive-direct retained authority changed at terminal selection"
+            )
         if selected is base_evaluation:
-            current = require_current_retained_monaco_base(base_proof, None)
-            if (
-                current.evaluation is not base_evaluation
-                or current.build is not base_proof.build
-            ):
-                raise ValueError(
-                    "adaptive-direct retained authority changed at terminal selection"
-                )
             return AdaptiveDirectScheduleExecution(
                 base_evaluation, base_evaluation, tuple(resolved), cancelled,
             )

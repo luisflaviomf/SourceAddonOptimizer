@@ -418,6 +418,111 @@ class AdaptiveDirectSchedulerTests(unittest.TestCase):
                     execute_adaptive_direct_schedule(**callbacks)
             self.assertIsNotNone(base)
 
+    def test_direct_winner_still_revalidates_mutated_base_before_return(self) -> None:
+        from maximum_optimizer import adaptive_direct_scheduler as module
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture_root = root / "fixture"; fixture_root.mkdir()
+            fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+            callbacks, base = self._authorized_callbacks(root, fixture)
+            base = replace(base, size=CompiledSizeSnapshot(
+                base.size.root, 100, {".mdl": 100}, {},
+                (ArtifactStat("base.mdl", ".mdl", 100),),
+            ))
+            proof = self._proof(fixture, base)
+            callbacks["base_proof"] = proof
+            result = execute_adaptive_direct_schedule(**callbacks)
+            self.assertIs(result.selected, result.attempts[0].evaluation)
+
+            retained = fixture.base_build.compiled_models_dir / "retained.mdl"
+            retained.write_bytes(b"original-retained")
+            expected = retained.read_bytes()
+
+            def current_authority(current, _event=None):
+                if retained.read_bytes() != expected:
+                    raise ValueError("base bytes changed before direct return")
+                return current
+
+            retained.write_bytes(b"mutated-retained")
+            self._authority_mock.side_effect = current_authority
+            with self.assertRaisesRegex(
+                ValueError, "base bytes changed before direct return",
+            ):
+                module._resolve_terminal_selection(
+                    base_proof=proof, base_evaluation=base,
+                    attempts=result.attempts, cancelled=False,
+                )
+
+    def test_stale_authorized_nonwinner_is_revoked_before_terminal_ranking(self) -> None:
+        from maximum_optimizer import adaptive_direct_scheduler as module
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture_root = root / "fixture"; fixture_root.mkdir()
+            fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+            callbacks, base = self._authorized_callbacks(root, fixture)
+            proof = callbacks["base_proof"]
+            result = execute_adaptive_direct_schedule(**callbacks)
+            self.assertIs(result.selected, base)
+            stale = result.attempts[0]
+            artifact = (
+                stale.build.compiled_models_dir
+                / stale.evidence.compile_files[0].relative_path
+            )
+            artifact.write_bytes(b"stale-authorized-nonwinner")
+
+            resolved = module._resolve_terminal_selection(
+                base_proof=proof, base_evaluation=base,
+                attempts=result.attempts, cancelled=False,
+            )
+            self.assertIs(resolved.selected, base)
+            self.assertEqual(resolved.attempts[0].status, "final_whole_failed")
+            self.assertIsNone(resolved.attempts[0].evaluation)
+            self.assertIsNone(resolved.attempts[0].build)
+            self.assertIsNone(resolved.attempts[0].evidence)
+
+    def test_all_stale_authorized_attempts_terminate_as_minimal_failures(self) -> None:
+        from maximum_optimizer import adaptive_direct_scheduler as module
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture_root = root / "fixture"; fixture_root.mkdir()
+            fixture = DirectCompositorFixture(fixture_root, visual_count=1)
+            callbacks, base = self._authorized_callbacks(root, fixture)
+            proof = callbacks["base_proof"]
+            first = execute_adaptive_direct_schedule(**callbacks)
+            callbacks, _other_base = self._authorized_callbacks(root / "second", fixture)
+            callbacks["base_proof"] = proof
+            second = execute_adaptive_direct_schedule(**callbacks)
+            attempts = (first.attempts[0], second.attempts[0])
+            self.assertEqual(
+                tuple(item.status for item in attempts),
+                ("authorized", "authorized"),
+            )
+            for ordinal, attempt in enumerate(attempts):
+                artifact = (
+                    attempt.build.compiled_models_dir
+                    / attempt.evidence.compile_files[0].relative_path
+                )
+                artifact.write_bytes(f"stale-{ordinal}".encode("ascii"))
+
+            resolved = module._resolve_terminal_selection(
+                base_proof=proof, base_evaluation=base,
+                attempts=attempts, cancelled=False,
+            )
+            self.assertIs(resolved.selected, base)
+            self.assertEqual(
+                tuple(item.status for item in resolved.attempts),
+                ("final_whole_failed", "final_whole_failed"),
+            )
+            self.assertTrue(all(
+                item.evaluation is None
+                and item.build is None
+                and item.evidence is None
+                for item in resolved.attempts
+            ))
+
     def test_failed_terminal_stages_never_seal_mutated_compile_build_or_evidence(self) -> None:
         for stage in ("structural", "focused", "final"):
             with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary:
