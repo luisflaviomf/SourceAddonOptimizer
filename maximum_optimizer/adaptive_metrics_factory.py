@@ -388,6 +388,7 @@ def build_production_adaptive_candidate_metrics_proof(
         payload.get("schema_version") != 1
         or payload.get("candidate_id") != spec.candidate_id
         or payload.get("engine") != "blender"
+        or payload.get("strategy") != spec.strategy
     ):
         raise ValueError("candidate metrics document identity differs")
     if _provenance_occurrence_union(payload, original_relative) != original_occurrences:

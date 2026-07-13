@@ -85,6 +85,7 @@ class FactoryFixture:
             "schema_version": 1,
             "candidate_id": self.spec.candidate_id,
             "engine": "blender",
+            "strategy": self.spec.strategy,
             "files": [
                 {
                     "source": "C:/forged/source/body.smd",
@@ -254,6 +255,15 @@ class ProductionAdaptiveMetricsFactoryTests(unittest.TestCase):
                 fixture = FactoryFixture(Path(raw), mutate=mutate)
                 with self.assertRaises(ValueError):
                     fixture.build()
+
+    def test_factory_rejects_metrics_strategy_different_from_typed_spec(self) -> None:
+        def wrong_strategy(payload):
+            payload["strategy"] = "legacy-v1"
+
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = FactoryFixture(Path(raw), mutate=wrong_strategy)
+            with self.assertRaisesRegex(ValueError, "identity"):
+                fixture.build()
 
     def test_read_only_loader_parses_a_real_superpowers_json_without_mutation(self) -> None:
         repository = Path(__file__).resolve().parents[2]
