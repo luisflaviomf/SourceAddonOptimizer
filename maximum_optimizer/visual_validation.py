@@ -708,6 +708,32 @@ def _load_source_union_manifest(
     )):
         failures.append(_failure("invalid_manifest", label, "source-union manifest binding is invalid"))
         return None
+    entry_fields = {
+        "pass", "pose", "angle", "image", "sha256", "texture_missing",
+        "missing_materials", "resolved_materials",
+    }
+    for entry in manifest["entries"]:
+        if (
+            type(entry) is not dict or set(entry) != entry_fields
+            or entry.get("missing_materials") != []
+            or entry.get("texture_missing") is not False
+            or type(entry.get("resolved_materials")) is not list
+        ):
+            failures.append(_failure("invalid_manifest", label, "source-union entry schema is invalid"))
+            return None
+    geometry_fields = {"scope", "pose", "region_missing", *GEOMETRY_METRICS}
+    geometry = manifest.get("geometry")
+    if type(geometry) is not list or any(
+        type(item) is not dict or set(item) != geometry_fields for item in geometry
+    ):
+        failures.append(_failure("invalid_manifest", label, "source-union geometry schema is invalid"))
+        return None
+    expected = manifest.get("expected")
+    if type(expected) is not dict or set(expected) != {
+        "passes", "angles", "poses", "pose_frames", "regions",
+    }:
+        failures.append(_failure("invalid_manifest", label, "source-union expected schema is invalid"))
+        return None
     return manifest
 
 

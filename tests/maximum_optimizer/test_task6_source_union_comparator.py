@@ -107,7 +107,10 @@ class SourceUnionComparatorTests(unittest.TestCase):
                 self.assertFalse(result.passed)
 
     def test_manifest_binding_extra_state_image_and_geometry_mutations_fail(self) -> None:
-        mutations = ("configuration", "side", "image", "geometry")
+        mutations = (
+            "configuration", "side", "image", "geometry",
+            "entry-extra", "geometry-extra", "missing-materials-type",
+        )
         for mutation in mutations:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary); reference = root / "reference"; candidate = root / "candidate"
@@ -121,7 +124,10 @@ class SourceUnionComparatorTests(unittest.TestCase):
                 elif mutation == "image":
                     image = candidate / payload["entries"][0]["image"]
                     data = image.read_bytes(); image.write_bytes(data[:-1] + bytes((data[-1] ^ 1,)))
-                else: payload["geometry"][0][GEOMETRY_METRICS[0]] = 2.0
+                elif mutation == "geometry": payload["geometry"][0][GEOMETRY_METRICS[0]] = 2.0
+                elif mutation == "entry-extra": payload["entries"][0]["ignored_state_selector"] = {"bodygroup": 7}
+                elif mutation == "geometry-extra": payload["geometry"][0]["ignored_contract"] = "wrong"
+                else: payload["entries"][0]["missing_materials"] = "not-a-list"
                 manifest.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
                 result = compare_source_union_render_sets(reference, candidate, _profile(), expected_contract=contract)
                 self.assertFalse(result.passed)
