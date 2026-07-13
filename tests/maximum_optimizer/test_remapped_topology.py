@@ -8,10 +8,12 @@ from unittest import mock
 from maximum_optimizer.candidates import _validate_direct_smd_output
 from maximum_optimizer import remapped_topology as remapped_module
 from maximum_optimizer.remapped_topology import (
+    _source_index,
     remapped_topology_proof_from_payload,
     remapped_topology_proof_payload,
     validate_remapped_topology_smd,
 )
+from maximum_optimizer.smd_contract import ParsedSmd, parse_smd_triangles
 
 
 POSITIONS = {
@@ -26,6 +28,10 @@ POSITIONS = {
     "i": ("3", "1", "0"),
     "j": ("3.5", "0.5", "0"),
     "k": ("2.5", "0.5", "0"),
+    "l": ("0", "0", "1"),
+    "m": ("-1", "0", "0"),
+    "n": ("0", "-1", "0"),
+    "o": ("0", "0", "-1"),
 }
 
 
@@ -122,6 +128,57 @@ def _reseal(payload: dict) -> dict:
 
 
 class RemappedTopologyContractTests(unittest.TestCase):
+    def test_rejects_semantically_distinct_duplicate_payload_fans(self) -> None:
+        source = _smd([
+            ("metal", ("a", "c", "b")),
+            ("metal", ("a", "b", "l")),
+            ("metal", ("a", "l", "c")),
+            ("metal", ("b", "c", "l")),
+            ("metal", ("a", "n", "m")),
+            ("metal", ("a", "m", "o")),
+            ("metal", ("a", "o", "n")),
+            ("metal", ("m", "n", "o")),
+        ], normal=("0", "0", "0"))
+        second_shell = _smd([
+            ("metal", ("a", "n", "m")),
+            ("metal", ("a", "m", "o")),
+            ("metal", ("a", "o", "n")),
+            ("metal", ("m", "n", "o")),
+        ], normal=("0", "0", "0"))
+
+        with self.assertRaisesRegex(RuntimeError, "ambiguous duplicate"):
+            validate_remapped_topology_smd(source, second_shell, 0.5)
+
+    def test_material_indexing_work_is_linear_not_materials_times_triangles(self) -> None:
+        source = _smd([
+            (f"material-{index}", ("a", "b", "e")) for index in range(100)
+        ])
+        parsed = parse_smd_triangles(source)
+
+        class CountingTriangles:
+            def __init__(self, values):
+                self.values = values
+                self.visits = 0
+
+            def __len__(self):
+                return len(self.values)
+
+            def __getitem__(self, index):
+                self.visits += 1
+                return self.values[index]
+
+            def __iter__(self):
+                for value in self.values:
+                    self.visits += 1
+                    yield value
+
+        triangles = CountingTriangles(parsed.triangles)
+        counted = ParsedSmd(parsed.lines, triangles)  # type: ignore[arg-type]
+
+        _source_index(counted, max_components=100)
+
+        self.assertLessEqual(triangles.visits, len(parsed.triangles) * 10)
+
     def test_equivalent_prefix_line_endings_are_accepted(self) -> None:
         source = _fan_source().replace("\n", "\r\n")
 
@@ -172,15 +229,19 @@ class RemappedTopologyContractTests(unittest.TestCase):
         )
 
         self.assertEqual((proof.triangles_before, proof.global_target_triangles), (9, 5))
+        self.assertTrue(proof.target_reached)
+        self.assertEqual(proof.achieved_ratio, 5 / 9)
         self.assertEqual(
             [(item.material, item.triangles_before, item.triangles_after) for item in proof.materials],
             [("metal", 4, 2), ("glass", 5, 3)],
         )
 
-        with self.assertRaisesRegex(ValueError, "global ratio target"):
-            validate_remapped_topology_smd(
-                _adaptive_material_source(), _adaptive_material_output(), 0.5
-            )
+        shortfall = validate_remapped_topology_smd(
+            _adaptive_material_source(), _adaptive_material_output(), 0.5
+        )
+        self.assertEqual(shortfall.global_target_triangles, 4)
+        self.assertFalse(shortfall.target_reached)
+        self.assertEqual(shortfall.achieved_ratio, 5 / 9)
 
     def test_rejects_resealed_non_deterministic_global_target(self) -> None:
         proof = validate_remapped_topology_smd(_fan_source(), _diagonal_output(), 0.5)

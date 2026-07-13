@@ -27,7 +27,7 @@ The proof binds:
 - strategy and transfer identities;
 - SHA-256 of exact source and output UTF-8 bytes;
 - source/output triangle counts and reduction ratio;
-- deterministic global triangle target and ordered per-material source/output counts;
+- deterministic global triangle target, achieved ratio, explicit `target_reached`, and ordered per-material source/output counts;
 - source connected-component count and complete output coverage;
 - retained-cycle and remapped-cycle counts;
 - exact boundary-edge counts;
@@ -40,7 +40,7 @@ The proof binds:
 
 Every output corner must equal a source corner's complete token tuple, including primary bone, position, normal, UV, link count, bone order, and weights. Matching is restricted to the same material.
 
-For a token tuple that occurs once in a material, its ordinal is direct. For duplicates, the validator groups source occurrences by a canonical semantic key containing material, exact token tuple, connected component, boundary membership, and incident source-triangle cycle multiset. A duplicate is accepted only when every occurrence has the same canonical semantic key. The lowest unused source ordinal in that equivalent group is selected deterministically; once every occurrence has been used, reuse cycles deterministically from the lowest ordinal because indexed mesh vertices may legitimately appear in multiple output triangles. If duplicate occurrences disagree semantically, validation fails as ambiguous.
+For a token tuple that occurs once in a material, its ordinal is direct. For duplicates, the validator first partitions occurrences into edge-connected vertex fans, then derives a canonical semantic key containing material, exact token tuple, connected component, boundary membership, and incident source-triangle cycle multiset. A duplicate is accepted only when every fan has the same canonical semantic key. The lowest unused source ordinal in that equivalent group is selected deterministically; once every occurrence has been used, reuse cycles deterministically from the lowest ordinal because indexed mesh vertices may legitimately appear in multiple output triangles. If duplicate fans disagree semantically, validation fails as ambiguous; it must never round-robin between distinct shells that merely touch at one identical payload.
 
 The complete output-corner ordinal stream is stored in the sealed proof, making repeated runs reproducible and allowing later tooling to reconstruct the exact accepted provenance.
 
@@ -51,7 +51,7 @@ Topology is evaluated per exact material and exact-position connected component.
 The output must:
 
 1. preserve the source prefix through the `triangles` marker modulo CRLF/LF encoding and contain no trailing data after `end`;
-2. strictly reduce triangles and not exceed `max(material count, floor(total source triangles * requested ratio))` globally;
+2. strictly reduce triangles, compute `max(material count, floor(total source triangles * requested ratio))` as the requested global target, and record whether the simplifier reached it;
 3. preserve exact material spelling and first-occurrence order;
 4. contain only nondegenerate triangles with three distinct exact corner payloads and position cross-product squared greater than `1e-30`;
 5. contain no duplicate oriented or reverse-oriented triangle cycle;
@@ -62,7 +62,7 @@ The output must:
 10. not increase same-direction manifold-edge conflicts in any component;
 11. not increase faces whose geometric normal is in the opposite hemisphere from all three retained exact corner normals.
 
-Every material must retain at least one triangle and may never exceed its own source count. The target is deliberately global: a visually sensitive or heavily locked material may retain a larger fraction when another material can safely absorb more of the reduction. The proof records this adaptive allocation instead of presenting a misleading uniform per-material target.
+Every material must retain at least one triangle and may never exceed its own source count. The target is deliberately global: a visually sensitive or heavily locked material may retain a larger fraction when another material can safely absorb more of the reduction. Failing to reach the requested target is not a structural failure: the proof seals `target_reached=false` and the achieved ratio so an aggregate scheduler can decide whether other regions compensate. The proof records this adaptive allocation instead of presenting a misleading uniform per-material target.
 
 These checks limit connectivity changes to structurally conservative remapping. They do not estimate silhouette, shading quality, UV distortion across new edges, animation quality, or compiled size.
 
@@ -78,13 +78,13 @@ The v1 validator uses fixed, non-configurable caps:
 - connected components: 100,000;
 - SMD corner tokens: 64 per corner.
 
-Exceeding a cap fails closed. Caller-specific looser values are not part of v1.
+Exceeding a cap fails closed. Material rows are indexed in one pass, position unions avoid per-position row lists, and the component cap is enforced incrementally before duplicate/topology indexes are allocated. Caller-specific looser values are not part of v1.
 
 ## Integration and isolation
 
 The initial implementation lives in a focused module and is exposed only through an explicit R&D strategy discriminator in the batch optimizer/research harness. Existing direct-position builders, snapshots, scheduler rules, production authority bundle, and WPF remain unchanged.
 
-Smoke validation uses existing real LVS outputs for wheel, Charger, and Monaco sources. Only outputs that pass the new structural contract may proceed to StudioMDL compile. Compile success and byte reduction are reported as structural/build observations only; quality remains `unverified` until render comparison.
+Smoke validation uses existing real LVS outputs for wheel, Charger, and Monaco sources. Only outputs that pass the new structural contract may proceed. Source and candidate bytes are re-hashed immediately before paired StudioMDL compiles; success requires the exact coherent `.mdl`, `.vvd`, `.dx80.vtx`, and `.dx90.vtx` set. Eight-view renderer/script/image hashes and descriptive per-angle pixel metrics are sealed into local evidence. Compile reduction and render metrics remain structural/build observations only; quality remains `unverified`.
 
 ## Test strategy
 

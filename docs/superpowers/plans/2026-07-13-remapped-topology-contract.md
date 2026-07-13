@@ -40,7 +40,7 @@ Expected: FAIL because `maximum_optimizer.remapped_topology` does not exist.
 
 - [ ] **Step 3: Implement the minimal proof and valid remap path**
 
-Implement immutable proof dataclasses, strict prefix/EOF/material checks, a deterministic global ratio target with nonempty/non-increasing per-material allocation, exact same-material full-token corner lookup, deterministic component-local ordinal selection, retained/new-cycle counts, and canonical SHA-256 payload sealing.
+Implement immutable proof dataclasses, strict prefix/EOF/material checks, a deterministic global ratio target with explicit achieved ratio/`target_reached` and nonempty/non-increasing per-material allocation, exact same-material full-token corner lookup, deterministic component-local ordinal selection, retained/new-cycle counts, and canonical SHA-256 payload sealing.
 
 - [ ] **Step 4: Run the focused test and verify GREEN**
 
@@ -50,7 +50,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Add adversarial RED tests**
 
-Add one focused test per invariant: synthesized payload, material borrowing, adaptive material allocation under the global target, component bridge/deletion, ambiguous duplicate provenance, boundary replacement, duplicate/reversed triangle, degenerate triangle, increased nonmanifold excess/max valence, increased directed manifold conflict, increased all-normal-opposite faces, global ratio excess, each fixed cap, and tampered proof payload.
+Add one focused test per invariant: synthesized payload, material borrowing, adaptive material allocation and honest target shortfall, component bridge/deletion, edge-fan ambiguous duplicate provenance, boundary replacement, duplicate/reversed triangle, degenerate triangle, increased nonmanifold excess/max valence, increased directed manifold conflict, increased all-normal-opposite faces, each fixed cap, linear indexing operation count, and tampered proof payload.
 
 - [ ] **Step 6: Run adversarial tests and verify RED**
 
@@ -115,12 +115,12 @@ Commit only batch/test changes with message `feat(maximum): discriminate remappe
 - Create only if reproducible source artifacts are available: `benchmarks/lvs_models/remapped_topology_v1_observations.json`
 
 **Interfaces:**
-- Consumes: explicit `--case NAME=SOURCE=OUTPUT` arguments and optional `--compile-command` template after validation.
-- Produces: JSON observations labeled `local_experiment`, `quality_status=unverified`, contract pass/failure reason, source/output bytes and triangles, proof seal, and optional StudioMDL return code/artifact sizes.
+- Consumes: explicit `--case NAME|RATIO|SOURCE|OUTPUT` arguments, optional paired StudioMDL settings, and optional existing eight-view render roots after validation.
+- Produces: sealed JSON observations labeled `local_experiment`, `quality_status=unverified`, contract pass/failure reason, source/output bytes and triangles, proof seal, paired coherent StudioMDL manifests/delta, and renderer/script/image hashes with descriptive metrics.
 
 - [ ] **Step 1: Write RED smoke-gating tests**
 
-Use a fake compile callback to assert it runs for an accepted proof and is never called for a structurally rejected pair. Assert output JSON cannot encode a visual winner or quality claim.
+Use a fake paired compile callback to assert it runs for an accepted proof and is never called for a structurally rejected pair. Require exact coherent Source sidecars, reject input mutation after structural validation, seal source/candidate manifests and delta, and assert output JSON cannot encode a visual winner or quality claim. Add a sealed eight-view render fixture whose renderer, script, summary, images, and descriptive metrics remain explicitly unverified.
 
 - [ ] **Step 2: Verify RED**
 
@@ -130,7 +130,7 @@ Expected: FAIL because the smoke module does not exist.
 
 - [ ] **Step 3: Implement deterministic smoke reporting**
 
-Validate before compile, capture exact hashes/counts/proof seal, run compile only after acceptance, and keep visual quality fields fixed to `unverified`/`null`.
+Validate before compile, re-hash and snapshot each side immediately before paired compile, require the exact coherent Source artifact set, capture hashes/counts/proof and compile seals, ingest the fixed eight-view render matrix, and keep visual quality fields fixed to `unverified`/`null`.
 
 - [ ] **Step 4: Verify smoke tests**
 
@@ -140,7 +140,7 @@ Expected: all pass.
 
 - [ ] **Step 5: Run real wheel/Charger/Monaco observations**
 
-Use current local LVS source/output pairs. Record every structural rejection honestly. For accepted cases, invoke the existing local StudioMDL compile flow, report triangle/byte reduction and compilation only, and do not report visual quality.
+Use current local LVS source/output pairs, including a fresh Monaco r050 attempt. Record every structural rejection honestly. For accepted cases, invoke paired local StudioMDL compiles and seal eight-view descriptive render evidence without reporting verified visual quality.
 
 - [ ] **Step 6: Run regression verification**
 

@@ -133,6 +133,8 @@ class RemappedTopologyProof:
     output_sha256: str
     triangles_before: int
     global_target_triangles: int
+    target_reached: bool
+    achieved_ratio: float
     triangles_after: int
     retained_cycles: int
     remapped_cycles: int
@@ -177,6 +179,9 @@ class RemappedTopologyProof:
             or type(self.requested_ratio) is not float
             or not math.isfinite(self.requested_ratio)
             or not 0.0 < self.requested_ratio <= 1.0
+            or type(self.target_reached) is not bool
+            or type(self.achieved_ratio) is not float
+            or not math.isfinite(self.achieved_ratio)
             or not all(_is_sha(value) for value in (
                 self.source_sha256,
                 self.output_sha256,
@@ -189,7 +194,8 @@ class RemappedTopologyProof:
             or not 0 < self.triangles_after < self.triangles_before
             or self.global_target_triangles
             != max(len(self.materials), math.floor(self.triangles_before * self.requested_ratio))
-            or self.triangles_after > self.global_target_triangles
+            or self.target_reached != (self.triangles_after <= self.global_target_triangles)
+            or self.achieved_ratio != self.triangles_after / self.triangles_before
             or self.retained_cycles + self.remapped_cycles != self.triangles_after
             or self.covered_component_count != self.source_component_count
             or self.source_boundary_edges != self.output_boundary_edges
@@ -257,7 +263,8 @@ def remapped_topology_proof_from_payload(value: object) -> RemappedTopologyProof
     expected = {
         "schema", "strategy", "transfer", "quality_status", "quality_claim",
         "requested_ratio", "source_sha256", "output_sha256", "triangles_before",
-        "global_target_triangles", "triangles_after", "retained_cycles", "remapped_cycles",
+        "global_target_triangles", "target_reached", "achieved_ratio", "triangles_after",
+        "retained_cycles", "remapped_cycles",
         "source_component_count",
         "covered_component_count", "source_boundary_edges", "output_boundary_edges",
         "source_boundary_sha256", "output_boundary_sha256",
@@ -400,28 +407,34 @@ class _SourceIndex:
     group_sha256: str
 
 
-def _source_index(source: ParsedSmd) -> _SourceIndex:
-    material_order = tuple(dict.fromkeys(triangle.material for triangle in source.triangles))
+def _source_index(source: ParsedSmd, *, max_components: int) -> _SourceIndex:
+    if type(max_components) is not int or max_components < 1:
+        raise ValueError("remapped component cap is invalid")
+    material_rows: dict[str, list[int]] = {}
+    for ordinal, triangle in enumerate(source.triangles):
+        material_rows.setdefault(triangle.material, []).append(ordinal)
+    material_order = tuple(material_rows)
     material_ordinal = {material: ordinal for ordinal, material in enumerate(material_order)}
     component_for_triangle: list[ComponentKey | None] = [None] * len(source.triangles)
     components_by_material: dict[str, tuple[ComponentKey, ...]] = {}
+    component_total = 0
     for material in material_order:
-        globals_ = [
-            ordinal for ordinal, triangle in enumerate(source.triangles)
-            if triangle.material == material
-        ]
+        globals_ = material_rows[material]
         union = _UnionFind(len(globals_))
-        position_rows: dict[Position, list[int]] = defaultdict(list)
+        first_by_position: dict[Position, int] = {}
         for local, global_ in enumerate(globals_):
             for corner in source.triangles[global_].corners:
-                position_rows[_position(corner)].append(local)
-        for rows in position_rows.values():
-            for local in rows[1:]:
-                union.union(rows[0], local)
+                position = _position(corner)
+                first = first_by_position.setdefault(position, local)
+                union.union(first, local)
         members: dict[int, list[int]] = defaultdict(list)
         for local, global_ in enumerate(globals_):
-            members[union.find(local)].append(global_)
+            root = union.find(local)
+            if root not in members and component_total + len(members) >= max_components:
+                raise ValueError("remapped source exceeds component cap")
+            members[root].append(global_)
         roots = sorted(members, key=lambda root: min(members[root]))
+        component_total += len(roots)
         components: list[ComponentKey] = []
         for root in roots:
             component = (material_ordinal[material], min(members[root]))
@@ -434,39 +447,69 @@ def _source_index(source: ParsedSmd) -> _SourceIndex:
 
     corner_components: dict[tuple[str, tuple[str, ...]], set[ComponentKey]] = defaultdict(set)
     corner_ordinals: dict[tuple[str, ComponentKey, tuple[str, ...]], list[int]] = defaultdict(list)
-    cycle_digests = tuple(
-        _canonical_digest({
+    occurrence_edges: dict[tuple[str, ComponentKey, tuple[str, ...]], dict[int, tuple[Edge, Edge]]] = defaultdict(dict)
+    component_edges: dict[ComponentKey, Counter[Edge]] = defaultdict(Counter)
+    cycle_digests: list[str] = []
+    for triangle_ordinal, triangle in enumerate(source.triangles):
+        cycle_digests.append(_canonical_digest({
             "material": triangle.material,
             "tokens": [list(corner.tokens) for corner in triangle.corners],
-        })
-        for triangle in source.triangles
-    )
-    for triangle_ordinal, triangle in enumerate(source.triangles):
+        }))
         component = component_for_triangle[triangle_ordinal]
         assert component is not None
+        positions = tuple(_position(corner) for corner in triangle.corners)
+        triangle_edges = (
+            _edge(positions[0], positions[1]),
+            _edge(positions[1], positions[2]),
+            _edge(positions[2], positions[0]),
+        )
+        component_edges[component].update(triangle_edges)
         for corner_index, corner in enumerate(triangle.corners):
             ordinal = triangle_ordinal * 3 + corner_index
             key = (triangle.material, corner.tokens)
             group = (triangle.material, component, corner.tokens)
             corner_components[key].add(component)
             corner_ordinals[group].append(ordinal)
+            occurrence_edges[group][ordinal] = (
+                triangle_edges[(corner_index - 1) % 3],
+                triangle_edges[corner_index],
+            )
     group_payload = []
     for material, component, tokens in sorted(
         corner_ordinals,
         key=lambda item: (material_ordinal[item[0]], item[1], item[2]),
     ):
         source_ordinals = tuple(sorted(corner_ordinals[(material, component, tokens)]))
-        incidents = tuple(
-            (ordinal, ordinal // 3, cycle_digests[ordinal // 3])
-            for ordinal in source_ordinals
-        )
+        fan_union = _UnionFind(len(source_ordinals))
+        first_by_edge: dict[Edge, int] = {}
+        for local, ordinal in enumerate(source_ordinals):
+            for edge in occurrence_edges[(material, component, tokens)][ordinal]:
+                first = first_by_edge.setdefault(edge, local)
+                fan_union.union(first, local)
+        fan_members: dict[int, list[int]] = defaultdict(list)
+        for local, ordinal in enumerate(source_ordinals):
+            fan_members[fan_union.find(local)].append(ordinal)
+        semantic_keys = []
+        for members in fan_members.values():
+            incident_edges = tuple(
+                edge
+                for ordinal in members
+                for edge in occurrence_edges[(material, component, tokens)][ordinal]
+            )
+            semantic_keys.append((
+                any(component_edges[component][edge] == 1 for edge in incident_edges),
+                tuple(sorted(cycle_digests[ordinal // 3] for ordinal in members)),
+            ))
+        if len(set(semantic_keys)) > 1:
+            raise RuntimeError("remapped source has ambiguous duplicate corner provenance")
         group_payload.append({
             "material": material,
             "component": list(component),
             "token_sha256": _canonical_digest(list(tokens)),
             "occurrence_count": len(source_ordinals),
             "source_ordinals_sha256": _canonical_digest(list(source_ordinals)),
-            "incident_multiset_sha256": _canonical_digest(incidents),
+            "semantic_fan_count": len(fan_members),
+            "semantic_key_sha256": _canonical_digest(semantic_keys),
         })
     return _SourceIndex(
         material_order,
@@ -585,17 +628,13 @@ def validate_remapped_topology_smd(
     if output_materials != source_materials:
         raise RuntimeError("remapped output changed material spelling or order")
 
-    index = _source_index(source)
+    index = _source_index(source, max_components=MAX_COMPONENTS)
     component_count = sum(len(value) for value in index.components_by_material.values())
-    if component_count > MAX_COMPONENTS:
-        raise ValueError("remapped source exceeds component cap")
     source_counts = Counter(triangle.material for triangle in source.triangles)
     output_counts = Counter(triangle.material for triangle in output.triangles)
     global_target = max(
         len(source_materials), math.floor(len(source.triangles) * ratio)
     )
-    if len(output.triangles) > global_target:
-        raise ValueError("remapped output exceeds deterministic global ratio target")
     if any(
         not 0 < output_counts[material] <= source_counts[material]
         for material in source_materials
@@ -721,6 +760,8 @@ def validate_remapped_topology_smd(
         output_sha256=_sha256(output_bytes),
         triangles_before=len(source.triangles),
         global_target_triangles=global_target,
+        target_reached=len(output.triangles) <= global_target,
+        achieved_ratio=len(output.triangles) / len(source.triangles),
         triangles_after=len(output.triangles),
         retained_cycles=retained,
         remapped_cycles=len(output.triangles) - retained,
