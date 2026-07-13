@@ -968,7 +968,13 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 workspace = root / "union"
                 with self.assertRaises(ValueError):
                     self._render_case(root, runner, workspace, components)
-                self.assertFalse(workspace.exists())
+                if flag == "private-extra":
+                    self.assertEqual(
+                        (workspace / "material-roots/root-000/extra.vtf").read_bytes(),
+                        b"extra",
+                    )
+                else:
+                    self.assertFalse(workspace.exists())
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
@@ -1470,6 +1476,128 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     ),
                 )
 
+    def test_source_union_preserves_unknown_staging_descendant_on_cancel(self) -> None:
+        from maximum_optimizer import source_materials as material_module
+
+        real_copy = material_module._copy_file_no_follow
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            event = threading.Event()
+            state = {"injected": False}
+
+            def inject_extra_then_cancel(*args, **kwargs):
+                result = real_copy(*args, **kwargs)
+                if not state["injected"]:
+                    target = Path(args[1])
+                    (target.parent / "foreign.marker").write_bytes(b"preserve")
+                    state["injected"] = True
+                    event.set()
+                return result
+
+            runner = SourceUnionRunner(fixture)
+            with mock.patch(
+                "maximum_optimizer.source_materials._copy_file_no_follow",
+                side_effect=inject_extra_then_cancel,
+            ), self.assertRaises(ProcessCancelledError):
+                self._render_case(
+                    root, runner, workspace, components, event=event,
+                )
+            self.assertEqual(runner.commands, [])
+            staging_roots = tuple(workspace.glob(
+                ".material-roots.source-materials-acquire-*"
+            ))
+            self.assertEqual(len(staging_roots), 1)
+            self.assertEqual(
+                (staging_roots[0] / "root-000/vehicles/foreign.marker").read_bytes(),
+                b"preserve",
+            )
+
+    def test_source_union_preserves_unknown_staging_directory_on_cancel(self) -> None:
+        from maximum_optimizer import source_materials as material_module
+
+        real_copy = material_module._copy_file_no_follow
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            event = threading.Event()
+
+            def inject_directory_then_cancel(*args, **kwargs):
+                result = real_copy(*args, **kwargs)
+                foreign = Path(args[1]).parent / "foreign-dir"
+                foreign.mkdir()
+                (foreign / "external.marker").write_bytes(b"preserve")
+                event.set()
+                return result
+
+            with mock.patch(
+                "maximum_optimizer.source_materials._copy_file_no_follow",
+                side_effect=inject_directory_then_cancel,
+            ), self.assertRaises(ProcessCancelledError):
+                self._render_case(
+                    root, SourceUnionRunner(fixture), workspace, components,
+                    event=event,
+                )
+            staging_roots = tuple(workspace.glob(
+                ".material-roots.source-materials-acquire-*"
+            ))
+            self.assertEqual(len(staging_roots), 1)
+            self.assertEqual(
+                (staging_roots[0] / "root-000/vehicles/foreign-dir/external.marker").read_bytes(),
+                b"preserve",
+            )
+
+    def test_source_union_preserves_unknown_published_file_on_cancel(self) -> None:
+        from maximum_optimizer import source_materials as material_module
+
+        real_require = material_module.require_current_private_source_union_material_lease
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            event = threading.Event()
+            marker = workspace / "material-roots/root-000/vehicles/foreign.marker"
+
+            def inject_then_validate(lease, destination, cancel_event):
+                marker.write_bytes(b"preserve")
+                event.set()
+                return real_require(lease, destination, cancel_event)
+
+            with mock.patch(
+                "maximum_optimizer.source_materials."
+                "require_current_private_source_union_material_lease",
+                side_effect=inject_then_validate,
+            ), self.assertRaises(ProcessCancelledError):
+                self._render_case(
+                    root, SourceUnionRunner(fixture), workspace, components,
+                    event=event,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve")
+
+    def test_source_union_preserves_unknown_published_file_when_blender_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            successful_runner = SourceUnionRunner(fixture)
+            workspace = root / "union"
+            marker = workspace / "material-roots/root-000/vehicles/foreign.marker"
+
+            def inject_then_fail(command, cwd, log_path, cancel_event):
+                process = successful_runner(command, cwd, log_path, cancel_event)
+                marker.write_bytes(b"preserve")
+                return ProcessResult(
+                    process.command, 1, process.elapsed, process.log_path,
+                )
+            inject_then_fail.fixture = fixture
+
+            with self.assertRaises(ValueError):
+                self._render_case(
+                    root, inject_then_fail, workspace, components,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve")
+
     def test_source_union_preserves_exact_published_file_swap_on_cancel(self) -> None:
         from maximum_optimizer import source_materials as material_module
 
@@ -1731,7 +1859,13 @@ class ProductionAdapterContractTests(unittest.TestCase):
                         root, SourceUnionRunner(fixture), workspace, components,
                         dependency_provider=lambda _event: state["digest"],
                     )
-                self.assertFalse(workspace.exists())
+                if label == "material-extra":
+                    self.assertEqual(
+                        (workspace / "material-roots/root-000/extra.vtf").read_bytes(),
+                        b"extra",
+                    )
+                else:
+                    self.assertFalse(workspace.exists())
 
     def test_source_union_preserves_exact_private_file_when_comparator_raises(self) -> None:
         from maximum_optimizer import production_adapters as module

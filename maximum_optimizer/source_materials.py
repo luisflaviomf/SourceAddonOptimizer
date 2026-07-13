@@ -896,9 +896,50 @@ def _private_material_entry_identity(
     return _regular_file_ownership_identity_no_follow(path, contained_root=root)
 
 
+def _private_material_tree_shape(root: Path) -> tuple[tuple[str, str], ...]:
+    result: list[tuple[str, str]] = []
+    try:
+        for directory, directory_names, file_names in os.walk(root, followlinks=False):
+            parent = Path(directory)
+            directory_names.sort(key=lambda value: (value.casefold(), value))
+            file_names.sort(key=lambda value: (value.casefold(), value))
+            for name in directory_names:
+                child = parent / name
+                if _is_reparse(child):
+                    raise SourceUnionMaterialOwnershipConflict(
+                        "source-union private material tree contains reparse directory"
+                    )
+                result.append((child.relative_to(root).as_posix(), "directory"))
+            for name in file_names:
+                child = parent / name
+                info = child.lstat()
+                if _is_reparse(child) or not stat.S_ISREG(info.st_mode):
+                    raise SourceUnionMaterialOwnershipConflict(
+                        "source-union private material tree contains unsafe file"
+                    )
+                result.append((child.relative_to(root).as_posix(), "file"))
+    except SourceUnionMaterialOwnershipConflict:
+        raise
+    except OSError as exc:
+        raise ValueError("source-union private material tree is unavailable") from exc
+    return tuple(sorted(result, key=lambda item: (item[0].casefold(), item[0], item[1])))
+
+
 def _require_private_material_identity_ledger(
     root: Path, ledger: tuple[PrivateSourceUnionMaterialIdentity, ...], cancel_event,
 ) -> None:
+    _cancel(cancel_event, "cancelled before private material identity validation")
+    expected_shape = tuple(
+        (entry.path, entry.kind) for entry in ledger
+    )
+    actual_shape = _private_material_tree_shape(root)
+    unknown = set(actual_shape) - set(expected_shape)
+    if unknown:
+        raise SourceUnionMaterialOwnershipConflict(
+            "source-union private material tree contains unowned descendants"
+        )
+    if actual_shape != expected_shape:
+        raise ValueError("source-union private material tree shape differs")
     for entry in ledger:
         _cancel(cancel_event, "cancelled during private material identity validation")
         path = root / Path(*entry.path.split("/"))
@@ -924,6 +965,13 @@ def _require_private_material_identity_ledger(
 def _private_material_identity_ledger_has_foreign(
     root: Path, ledger: tuple[PrivateSourceUnionMaterialIdentity, ...],
 ) -> bool:
+    expected_shape = {(entry.path, entry.kind) for entry in ledger}
+    try:
+        actual_shape = set(_private_material_tree_shape(root))
+    except (OSError, ValueError):
+        return os.path.lexists(root)
+    if actual_shape - expected_shape:
+        return True
     for entry in ledger:
         path = root / Path(*entry.path.split("/"))
         if not os.path.lexists(path):
