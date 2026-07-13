@@ -29,7 +29,8 @@ from .qc_graph import parse_qc_graph
 from .reporting import canonical_json
 from .source_union import (
     SourceUnionMaterialBinding, SourceUnionMaskObservation,
-    SourceUnionRenderOutput, _quarantine_cleanup,
+    SourceUnionRenderOutput, _quarantine_cleanup_if_owned,
+    _workspace_root_identity,
     validate_adaptive_direct_source_union,
 )
 from .source_components import (
@@ -765,14 +766,22 @@ class AdaptiveDirectProductionBoundary:
             )
             if process.returncode != 0:
                 raise ValueError("source-union Blender process failed")
-            cache_unsafe = _is_reparse(private_texture_cache) or _has_reparse_ancestor(
-                private_texture_cache
-            )
-            if os.path.lexists(private_texture_cache):
-                from .candidates import _quarantine_and_remove_owned_direct_tree
-                _quarantine_and_remove_owned_direct_tree(private_texture_cache)
-            if cache_unsafe:
-                raise ValueError("source-union private texture cache became unsafe")
+            cache_error = None
+            try:
+                _assert_safe_tree(
+                    private_texture_cache, event, expected_paths=None,
+                    max_files=4096, max_bytes=2 * 1024 ** 3,
+                )
+            except BaseException as exc:
+                cache_error = exc
+            finally:
+                if os.path.lexists(private_texture_cache):
+                    from .candidates import _quarantine_and_remove_owned_direct_tree
+                    _quarantine_and_remove_owned_direct_tree(private_texture_cache)
+            if cache_error is not None:
+                if isinstance(cache_error, ProcessCancelledError):
+                    raise cache_error
+                raise ValueError("source-union private texture cache is unsafe") from cache_error
             if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
                 raise ValueError("source-union dependency changed during Blender")
             if any(_has_reparse_ancestor(path) for path in (inputs, control, raw)):
@@ -887,7 +896,7 @@ class AdaptiveDirectProductionBoundary:
             )
             _assert_source_union_workspace_root(workspace, authorized=True)
 
-        owned_workspace = False
+        owned_identity = None
         try:
             record = validate_adaptive_direct_source_union(
                 coverage=coverage, source_proof=source_proof, snapshot=snapshot,
@@ -897,7 +906,7 @@ class AdaptiveDirectProductionBoundary:
                 renderer=render_fresh, comparator=compare_authorized,
                 cancel_event=cancel_event,
             )
-            owned_workspace = True
+            owned_identity = _workspace_root_identity(workspace)
             _final_source, final_filtered, final_candidate, final_transfer = (
                 validate_current_inputs(cancel_event)
             )
@@ -910,6 +919,5 @@ class AdaptiveDirectProductionBoundary:
             validate_render_workspace_current(cancel_event)
             return record
         except BaseException:
-            if owned_workspace and os.path.lexists(workspace):
-                _quarantine_cleanup(workspace)
+            _quarantine_cleanup_if_owned(workspace, owned_identity)
             raise

@@ -178,6 +178,45 @@ def _quarantine_cleanup(workspace: Path) -> None:
     _remove_owned_tree_no_follow(quarantine)
 
 
+def _workspace_root_identity(workspace: Path) -> tuple[int, int, int]:
+    info = os.lstat(workspace)
+    if _is_reparse(workspace) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("source-union owned workspace is not a regular directory")
+    return (
+        int(info.st_dev), int(info.st_ino),
+        int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1e9))),
+    )
+
+
+def _quarantine_cleanup_if_owned(
+    workspace: Path, identity: tuple[int, int, int] | None,
+) -> bool:
+    if identity is None or not os.path.lexists(workspace):
+        return False
+    try:
+        if _workspace_root_identity(workspace) != identity:
+            return False
+    except (OSError, ValueError):
+        return False
+    quarantine = workspace.with_name(
+        f".{workspace.name}.source-union-cleanup-{uuid.uuid4().hex}"
+    )
+    try:
+        os.replace(workspace, quarantine)
+    except FileNotFoundError:
+        return False
+    try:
+        current = _workspace_root_identity(quarantine)
+    except (OSError, ValueError):
+        current = None
+    if current != identity:
+        if not os.path.lexists(workspace):
+            os.replace(quarantine, workspace)
+        return False
+    _remove_owned_tree_no_follow(quarantine)
+    return True
+
+
 def _expected_paths(target: AdaptiveDirectSourceUnionTarget) -> tuple[str, ...]:
     return tuple(sorted(
         f"source-union/{target.union_key}/{side}/{pose}/{render_pass}/{camera}.png"
@@ -339,10 +378,10 @@ def validate_adaptive_direct_source_union(
     render_request = SourceUnionRenderRequest(
         target, reference_source, candidate_source, dependency_proof_sha256, bindings,
     )
-    owned_workspace = False
+    owned_identity = None
     try:
         workspace.mkdir(parents=False, exist_ok=False)
-        owned_workspace = True
+        owned_identity = _workspace_root_identity(workspace)
         _cancel(cancel_event, "cancelled before source-union render")
         rendered = renderer(render_request, workspace, cancel_event)
         if not isinstance(rendered, SourceUnionRenderOutput):
@@ -370,6 +409,5 @@ def validate_adaptive_direct_source_union(
             target=target, validation=validation, files=files, visibility=visibility,
         )
     except BaseException:
-        if owned_workspace and os.path.lexists(workspace):
-            _quarantine_cleanup(workspace)
+        _quarantine_cleanup_if_owned(workspace, owned_identity)
         raise

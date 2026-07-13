@@ -597,6 +597,29 @@ class ProductionAdapterContractTests(unittest.TestCase):
             self.assertFalse(private_cache.exists())
             self.assertEqual(poison.read_bytes(), b"fake cached png")
 
+    @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
+    def test_source_union_rejects_nested_private_cache_junction_and_preserves_external(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
+            external = root / "external-cache"; external.mkdir()
+            marker = external / "external.marker"; marker.write_bytes(b"preserve")
+            def nested_junction(command, _payload, _event):
+                cache = Path(command[command.index("--texture-cache") + 1])
+                created = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(cache / "nested"), str(external)],
+                    capture_output=True, text=True,
+                )
+                if created.returncode != 0:
+                    self.skipTest(f"junction creation unavailable: {created.stderr or created.stdout}")
+            workspace = root / "union"
+            with self.assertRaisesRegex(ValueError, "cache|reparse"):
+                self._render_case(
+                    root, SourceUnionRunner(fixture, after_output=nested_junction),
+                    workspace, components,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve")
+            self.assertFalse(workspace.exists())
+
     def test_source_union_adapter_rejects_wrong_base_or_candidate_before_runner(self) -> None:
         for label in ("base", "candidate"):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:

@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 import inspect
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -172,6 +173,22 @@ class SourceUnionRuntimeTests(unittest.TestCase):
                 return original_mkdir(path, *args, **kwargs)
             with mock.patch.object(Path, "mkdir", new=raced_mkdir), self.assertRaises(FileExistsError):
                 self._run(fixture, HermeticRenderer(), workspace)
+            self.assertEqual(marker.read_bytes(), b"preserve")
+
+    def test_cleanup_never_deletes_workspace_replacement_after_acquisition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); fixture = DirectCompositorFixture(root)
+            workspace = root / "union"; marker = workspace / "external.marker"
+            def replace_then_fail(_reference, _candidate, _profile):
+                shutil.rmtree(workspace)
+                workspace.mkdir()
+                marker.write_bytes(b"preserve")
+                raise ValueError("compare failed after external replacement")
+            with self.assertRaisesRegex(ValueError, "external replacement"):
+                self._run(
+                    fixture, HermeticRenderer(), workspace,
+                    comparator=replace_then_fail,
+                )
             self.assertEqual(marker.read_bytes(), b"preserve")
 
     def test_material_dependency_bindings_and_fresh_execution_are_exact(self) -> None:
