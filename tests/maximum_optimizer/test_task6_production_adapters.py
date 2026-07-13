@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -25,6 +26,7 @@ from maximum_optimizer.production_adapters import (
     AdaptiveDirectCompileResult,
     SourceUnionRenderTools,
     SourceUnionPoseBinding,
+    build_source_union_python_runtime_contract,
     validate_source_union_cli_contract,
     validate_source_union_pose_bindings,
 )
@@ -131,10 +133,11 @@ class SourceUnionRunner:
         self.fixture = fixture; self.malformed_visibility = malformed_visibility
         self.missing_image = missing_image; self.after_output = after_output
         self.visibility_mutator = visibility_mutator; self.raw_mutator = raw_mutator
-        self.commands = []; self.contracts = []
+        self.commands = []; self.contracts = []; self.cwds = []
 
     def __call__(self, command, cwd, log_path, cancel_event):
         command = tuple(str(item) for item in command); self.commands.append(command)
+        self.cwds.append(Path(cwd))
         raw = Path(command[command.index("--out") + 1])
         contract_path = Path(command[command.index("--source-union-contract") + 1])
         visibility_path = Path(command[command.index("--source-union-visibility-out") + 1])
@@ -196,6 +199,45 @@ class SourceUnionRunner:
 
 
 class ProductionAdapterContractTests(unittest.TestCase):
+    def _python_runtime_root(self, root: Path) -> Path:
+        runtime_root = root / "renderer-runtime" / "maximum_optimizer"
+        if not runtime_root.exists():
+            runtime_root.mkdir(parents=True)
+            package_root = Path(__import__("maximum_optimizer").__file__).parent
+            for relative in (
+                "__init__.py", "qc_graph.py", "regions.py", "reporting.py",
+                "smd_contract.py", "source_components.py",
+            ):
+                shutil.copy2(package_root / relative, runtime_root / relative)
+        return runtime_root
+
+    def test_source_union_private_python_runtime_contract_api_is_required(self) -> None:
+        from maximum_optimizer import production_adapters as module
+
+        self.assertTrue(callable(getattr(
+            module, "build_source_union_python_runtime_contract", None,
+        )))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            runtime_root = self._python_runtime_root(root)
+            contract = build_source_union_python_runtime_contract(
+                runtime_root, threading.Event(),
+            )
+            self.assertEqual(
+                tuple(item.path for item in contract.files),
+                (
+                    "__init__.py", "qc_graph.py", "regions.py", "reporting.py",
+                    "smd_contract.py", "source_components.py",
+                ),
+            )
+            path = runtime_root / "reporting.py"
+            data = bytearray(path.read_bytes()); data[len(data) // 2] ^= 1
+            path.write_bytes(data)
+            with self.assertRaisesRegex(ValueError, "runtime"):
+                module.require_current_source_union_python_runtime_contract(
+                    contract, threading.Event(),
+                )
+
     def _render_fixture(self, root: Path, *, missing_component: bool = False):
         source_bytes, candidate_bytes = _prefiltered_component_smds(
             missing_component=missing_component
@@ -257,7 +299,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
         self, root: Path, runner, workspace: Path, component_manifest, *,
         dependency_provider=None, base_build=None, candidate_transform=None,
         event=None, source_proof=None, snapshot=None, tools_texture_cache=None,
-        material_contract=None, material_roots=None,
+        material_contract=None, material_roots=None, python_runtime_contract=None,
     ):
         fixture = runner.fixture
         spec = CandidateSpec(
@@ -292,8 +334,15 @@ class ProductionAdapterContractTests(unittest.TestCase):
         if not renderer_script.exists(): renderer_script.write_bytes(b"# source union renderer\n")
         blender = root / "blender.exe"
         if not blender.exists(): blender.write_bytes(b"blender")
+        runtime_root = self._python_runtime_root(root)
+        python_runtime = python_runtime_contract or (
+            build_source_union_python_runtime_contract(
+                runtime_root, threading.Event(),
+            )
+        )
         tools = SourceUnionRenderTools(
             blender, renderer_script, hashlib.sha256(renderer_script.read_bytes()).hexdigest(),
+            python_runtime,
             materials_roots=material_roots or fixture.material_roots,
             texture_cache=tools_texture_cache,
             dependency_digest_provider=dependency_provider or (
@@ -357,9 +406,15 @@ class ProductionAdapterContractTests(unittest.TestCase):
             "--before", "reference.smd", "--after", "candidate.smd", "--out", "raw",
             "--passes", "textured,clay", "--poses", "bind:0",
             "--source-union-contract", "contract.json",
+            "--source-union-control-sha256", "0" * 64,
             "--source-union-visibility-out", "visibility.json",
         ])
         validate_source_union_cli_contract(args)
+        for invalid in (None, True, "0" * 63, "A" * 64):
+            with self.subTest(control_sha256=invalid), self.assertRaises(ValueError):
+                args.source_union_control_sha256 = invalid
+                validate_source_union_cli_contract(args)
+        args.source_union_control_sha256 = "0" * 64
 
     def test_real_orchestrator_wrapper_replaces_untrusted_dependency_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -369,6 +424,14 @@ class ProductionAdapterContractTests(unittest.TestCase):
             authoritative_blender = root / "real-blender.exe"; authoritative_blender.write_bytes(b"real")
             repo = root / "repo"; repo.mkdir()
             authoritative_renderer = repo / "render_previews.py"; authoritative_renderer.write_bytes(b"real renderer")
+            authoritative_runtime = repo / "maximum_optimizer"
+            authoritative_runtime.mkdir()
+            package_root = Path(__import__("maximum_optimizer").__file__).parent
+            for relative in (
+                "__init__.py", "qc_graph.py", "regions.py", "reporting.py",
+                "smd_contract.py", "source_components.py",
+            ):
+                shutil.copy2(package_root / relative, authoritative_runtime / relative)
             materials = root / "materials"; materials.mkdir()
             vtfcmd = root / "VTFCmd.exe"; vtfcmd.write_bytes(b"vtfcmd")
             texture_cache = root / "texture-cache"; texture_cache.mkdir()
@@ -376,6 +439,9 @@ class ProductionAdapterContractTests(unittest.TestCase):
             caller = mock.Mock(side_effect=AssertionError("caller provider must not run"))
             tools = SourceUnionRenderTools(
                 blender, renderer, hashlib.sha256(renderer.read_bytes()).hexdigest(),
+                build_source_union_python_runtime_contract(
+                    authoritative_runtime, threading.Event(),
+                ),
                 dependency_digest_provider=caller,
             )
             adapter = object.__new__(OrchestratorProductionAdapters)
@@ -410,6 +476,12 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 passed = boundary.call_args.kwargs["tools"]
                 self.assertEqual(passed.blender_exe, authoritative_blender)
                 self.assertEqual(passed.renderer_script, authoritative_renderer)
+                self.assertEqual(
+                    passed.python_runtime,
+                    build_source_union_python_runtime_contract(
+                        authoritative_runtime, threading.Event(),
+                    ),
+                )
                 self.assertEqual(passed.materials_roots, (materials,))
                 self.assertEqual(passed.vtfcmd, vtfcmd)
                 self.assertIsNone(passed.texture_cache)
@@ -423,9 +495,12 @@ class ProductionAdapterContractTests(unittest.TestCase):
             "render_previews.py", "--before", "reference.smd", "--after", "candidate.smd",
             "--out", "raw", "--passes", "textured,clay", "--poses", "bind:0",
             "--source-union-contract", "contract.json",
+            "--source-union-control-sha256", "0" * 64,
             "--source-union-visibility-out", "visibility.json",
         ]):
-            with self.assertRaisesRegex(SystemExit, "source-union renderer unavailable"):
+            with self.assertRaisesRegex(
+                SystemExit, "render_previews.py must be executed by Blender",
+            ):
                 render_previews.main()
         for forbidden in (
             ["--configuration-manifest", "config.json"],
@@ -437,6 +512,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     "--before", "reference.smd", "--after", "candidate.smd", "--out", "raw",
                     "--passes", "textured,clay", "--poses", "bind:0",
                     "--source-union-contract", "contract.json",
+                    "--source-union-control-sha256", "0" * 64,
                     "--source-union-visibility-out", "visibility.json", *forbidden,
                 ])
                 validate_source_union_cli_contract(changed)
@@ -445,6 +521,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 "--before", "r.smd", "--after", "c.smd", "--out", "raw",
                 "--passes", "clay,textured", "--poses", "bind:0",
                 "--source-union-contract", "contract.json",
+                "--source-union-control-sha256", "0" * 64,
                 "--source-union-visibility-out", "visibility.json",
             ]))
         for poses, angles in (
@@ -458,6 +535,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     "--before", "r.smd", "--after", "c.smd", "--out", "raw",
                     "--passes", "textured,clay", "--poses", poses, "--angles", angles,
                     "--source-union-contract", "contract.json",
+                    "--source-union-control-sha256", "0" * 64,
                     "--source-union-visibility-out", "visibility.json",
                 ]))
 
@@ -610,7 +688,28 @@ class ProductionAdapterContractTests(unittest.TestCase):
             self.assertEqual(first.evidence_sha256, second.evidence_sha256)
             self.assertEqual(len(runner.commands), 2)
             command = runner.commands[0]
+            private_inputs = root / "union-one" / "inputs"
+            private_runtime = private_inputs / "maximum_optimizer"
+            self.assertEqual(runner.cwds[0], private_inputs)
+            self.assertEqual(
+                tuple(sorted(
+                    path.relative_to(private_runtime).as_posix()
+                    for path in private_runtime.rglob("*") if path.is_file()
+                )),
+                (
+                    "__init__.py", "qc_graph.py", "regions.py", "reporting.py",
+                    "smd_contract.py", "source_components.py",
+                ),
+            )
+            self.assertFalse((private_runtime / "__pycache__").exists())
             self.assertIn("--source-union-contract", command)
+            control_path = Path(
+                command[command.index("--source-union-contract") + 1]
+            )
+            self.assertEqual(
+                command[command.index("--source-union-control-sha256") + 1],
+                hashlib.sha256(control_path.read_bytes()).hexdigest(),
+            )
             self.assertNotIn("--configuration-manifest", command)
             self.assertNotIn("--focus-region", command)
             self.assertEqual(command[1:4], ("--background", "--python", command[3]))
@@ -673,8 +772,23 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 "material_region_keys", "material_contract_sha256",
                 "material_contract", "material_render_evidence",
                 "pose_frames", "angles", "cameras", "renderer_sha256",
+                "python_runtime_contract_sha256", "python_runtime_files",
             }
             self.assertEqual(set(contract), expected_control_fields)
+            runtime_contract = build_source_union_python_runtime_contract(
+                root / "renderer-runtime/maximum_optimizer", threading.Event(),
+            )
+            self.assertEqual(
+                contract["python_runtime_contract_sha256"],
+                runtime_contract.contract_sha256,
+            )
+            self.assertEqual(
+                contract["python_runtime_files"],
+                [
+                    {"path": item.path, "size": item.size, "sha256": item.sha256}
+                    for item in runtime_contract.files
+                ],
+            )
             for raw_side in ("original", "optimized"):
                 manifest = json.loads((
                     root / "union-one" / "raw" / raw_side / "render_manifest.json"
@@ -710,6 +824,256 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 contract["comparison_contract"]["reference_source_sha256"],
                 component_manifest.filtered_source_sha256,
             )
+
+    def test_source_union_renderer_imports_only_private_python_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            renderer = root / "renderer.py"
+            renderer.write_text(
+                "import sys\n"
+                "from pathlib import Path\n"
+                "sys.dont_write_bytecode = True\n"
+                "sys.path.insert(0, str(Path(__file__).resolve().parent))\n"
+                "from maximum_optimizer.source_components import "
+                "build_source_component_manifest\n",
+                encoding="utf-8",
+            )
+            fixture, components = self._render_fixture(root)
+            base_runner = SourceUnionRunner(fixture)
+
+            def import_then_render(command, cwd, log_path, cancel_event):
+                script = Path(command[command.index("--python") + 1])
+                imported = subprocess.run(
+                    [sys.executable, "-I", str(script)],
+                    cwd=cwd, capture_output=True, text=True, check=False,
+                )
+                if imported.returncode != 0:
+                    raise ValueError(imported.stderr)
+                return base_runner(command, cwd, log_path, cancel_event)
+            import_then_render.fixture = fixture
+
+            record = self._render_case(
+                root, import_then_render, root / "union", components,
+            )
+            self.assertTrue(record.validation.passed)
+
+    def test_source_union_rejects_changed_python_runtime_before_e1(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            runtime_root = self._python_runtime_root(root)
+            runtime_contract = build_source_union_python_runtime_contract(
+                runtime_root, threading.Event(),
+            )
+            path = runtime_root / "reporting.py"
+            data = bytearray(path.read_bytes()); data[len(data) // 2] ^= 1
+            path.write_bytes(data)
+            runner = SourceUnionRunner(fixture)
+            workspace = root / "union"
+            with self.assertRaisesRegex(ValueError, "runtime"):
+                self._render_case(
+                    root, runner, workspace, components,
+                    python_runtime_contract=runtime_contract,
+                )
+            self.assertEqual(runner.commands, [])
+            self.assertFalse(workspace.exists())
+
+    def test_source_union_python_runtime_copy_races_fail_closed(self) -> None:
+        from maximum_optimizer import production_adapters as module
+
+        real_copy = module._copy_file_no_follow
+        for label in ("source", "destination"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                fixture, components = self._render_fixture(root)
+                runtime_root = self._python_runtime_root(root)
+                runtime_contract = build_source_union_python_runtime_contract(
+                    runtime_root, threading.Event(),
+                )
+                state = {"mutated": False, "identity": None}
+
+                def copy_then_race(source, destination, *args, **kwargs):
+                    identity = real_copy(source, destination, *args, **kwargs)
+                    if (
+                        not state["mutated"]
+                        and Path(source).parent == runtime_root
+                        and Path(source).name == "reporting.py"
+                    ):
+                        state["mutated"] = True
+                        if label == "source":
+                            path = Path(source)
+                            data = bytearray(path.read_bytes())
+                            data[len(data) // 2] ^= 1
+                            path.write_bytes(data)
+                        else:
+                            winner = root / "foreign-copy-reporting.py"
+                            shutil.copy2(destination, winner)
+                            Path(destination).unlink()
+                            os.rename(winner, destination)
+                            info = os.lstat(destination)
+                            state["identity"] = (
+                                int(info.st_dev), int(info.st_ino),
+                                int(getattr(
+                                    info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                                )),
+                            )
+                    return identity
+
+                runner = SourceUnionRunner(fixture)
+                workspace = root / "union"
+                with mock.patch(
+                    "maximum_optimizer.production_adapters._copy_file_no_follow",
+                    side_effect=copy_then_race,
+                ), self.assertRaises(ValueError):
+                    self._render_case(
+                        root, runner, workspace, components,
+                        python_runtime_contract=runtime_contract,
+                    )
+                self.assertEqual(runner.commands, [])
+                if label == "source":
+                    self.assertFalse(workspace.exists())
+                else:
+                    self.assertTrue(workspace.exists())
+                    info = os.lstat(
+                        workspace / "inputs/maximum_optimizer/reporting.py"
+                    )
+                    self.assertEqual(
+                        state["identity"],
+                        (
+                            int(info.st_dev), int(info.st_ino),
+                            int(getattr(
+                                info, "st_ctime_ns", int(info.st_ctime * 1e9),
+                            )),
+                        ),
+                    )
+
+    def test_source_union_revalidates_original_and_private_python_runtime_after_process(self) -> None:
+        for label in ("original", "private", "private-missing"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                fixture, components = self._render_fixture(root)
+                runtime_root = self._python_runtime_root(root)
+                runtime_contract = build_source_union_python_runtime_contract(
+                    runtime_root, threading.Event(),
+                )
+
+                def mutate_runtime(command, _payload, _event):
+                    if label == "original":
+                        path = runtime_root / "reporting.py"
+                    else:
+                        renderer = Path(command[command.index("--python") + 1])
+                        path = renderer.parent / "maximum_optimizer/reporting.py"
+                    if label == "private-missing":
+                        path.unlink()
+                        return
+                    data = bytearray(path.read_bytes()); data[len(data) // 2] ^= 1
+                    path.write_bytes(data)
+
+                workspace = root / "union"
+                with self.assertRaisesRegex(ValueError, "runtime"):
+                    self._render_case(
+                        root,
+                        SourceUnionRunner(fixture, after_output=mutate_runtime),
+                        workspace, components,
+                        python_runtime_contract=runtime_contract,
+                    )
+                self.assertFalse(workspace.exists())
+
+    def test_source_union_preserves_unowned_private_python_runtime_entries(self) -> None:
+        for label in ("extra", "cache", "symlink"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                fixture, components = self._render_fixture(root)
+
+                def add_unowned(command, _payload, _event):
+                    renderer = Path(command[command.index("--python") + 1])
+                    runtime = renderer.parent / "maximum_optimizer"
+                    if label == "extra":
+                        (runtime / "foreign.py").write_bytes(b"foreign")
+                    elif label == "cache":
+                        cache = runtime / "__pycache__"; cache.mkdir()
+                        (cache / "reporting.pyc").write_bytes(b"foreign cache")
+                    else:
+                        external = root / "external.py"
+                        external.write_bytes(b"external")
+                        try:
+                            (runtime / "foreign-link.py").symlink_to(external)
+                        except OSError as exc:
+                            self.skipTest(f"symlink creation unavailable: {exc}")
+
+                workspace = root / "union"
+                with self.assertRaisesRegex(ValueError, "runtime"):
+                    self._render_case(
+                        root, SourceUnionRunner(fixture, after_output=add_unowned),
+                        workspace, components,
+                    )
+                self.assertTrue(workspace.exists())
+                if label == "extra":
+                    self.assertEqual(
+                        (workspace / "inputs/maximum_optimizer/foreign.py").read_bytes(),
+                        b"foreign",
+                    )
+                elif label == "cache":
+                    self.assertEqual(
+                        (workspace / "inputs/maximum_optimizer/__pycache__/reporting.pyc").read_bytes(),
+                        b"foreign cache",
+                    )
+                else:
+                    self.assertTrue(
+                        (workspace / "inputs/maximum_optimizer/foreign-link.py").is_symlink()
+                    )
+
+    def test_source_union_preserves_replaced_private_python_runtime_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            state = {"identity": None}
+
+            def replace_runtime_file(command, _payload, _event):
+                renderer = Path(command[command.index("--python") + 1])
+                victim = renderer.parent / "maximum_optimizer/reporting.py"
+                winner = root / "foreign-reporting.py"
+                shutil.copy2(victim, winner)
+                victim.unlink(); os.rename(winner, victim)
+                info = os.lstat(victim)
+                state["identity"] = (
+                    int(info.st_dev), int(info.st_ino),
+                    int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1e9))),
+                )
+
+            workspace = root / "union"
+            with self.assertRaisesRegex(ValueError, "runtime"):
+                self._render_case(
+                    root,
+                    SourceUnionRunner(fixture, after_output=replace_runtime_file),
+                    workspace, components,
+                )
+            self.assertTrue(workspace.exists())
+            info = os.lstat(workspace / "inputs/maximum_optimizer/reporting.py")
+            self.assertEqual(
+                state["identity"],
+                (
+                    int(info.st_dev), int(info.st_ino),
+                    int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1e9))),
+                ),
+            )
+
+    def test_source_union_runtime_contract_rejects_symlinked_required_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            runtime_root = self._python_runtime_root(root)
+            victim = runtime_root / "reporting.py"
+            external = root / "external-reporting.py"
+            external.write_bytes(victim.read_bytes())
+            victim.unlink()
+            try:
+                victim.symlink_to(external)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            with self.assertRaises(ValueError):
+                build_source_union_python_runtime_contract(
+                    runtime_root, threading.Event(),
+                )
 
     def test_source_union_material_contract_binding_rejects_before_e1(self) -> None:
         for label in ("source", "filter", "region", "witness", "root-order"):
@@ -1772,7 +2136,8 @@ class ProductionAdapterContractTests(unittest.TestCase):
             "raw-manifest-material-hash", "raw-manifest-geometry",
             "raw-manifest-expected", "raw-manifest-entry-pass",
             "visibility", "material-original", "material-private",
-            "material-shadow", "material-extra",
+            "material-shadow", "material-extra", "python-original",
+            "python-private",
         ):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
@@ -1847,6 +2212,19 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     elif label == "material-extra":
                         path = Path(args[1]).parents[1] / "material-roots/root-000/extra.vtf"
                         path.write_bytes(b"extra")
+                    elif label == "python-original":
+                        path = root / "renderer-runtime/maximum_optimizer/reporting.py"
+                        data = bytearray(path.read_bytes())
+                        data[len(data) // 2] ^= 1
+                        path.write_bytes(data)
+                    elif label == "python-private":
+                        path = (
+                            Path(args[1]).parents[1]
+                            / "inputs/maximum_optimizer/reporting.py"
+                        )
+                        data = bytearray(path.read_bytes())
+                        data[len(data) // 2] ^= 1
+                        path.write_bytes(data)
                     else:
                         state["digest"] = "0" * 64
                     return result
@@ -1914,6 +2292,51 @@ class ProductionAdapterContractTests(unittest.TestCase):
                     int(getattr(
                         info, "st_ctime_ns", int(info.st_ctime * 1e9),
                     )),
+                ),
+            )
+
+    def test_source_union_preserves_replaced_python_runtime_when_comparator_raises(self) -> None:
+        from maximum_optimizer import production_adapters as module
+
+        real_compare = module.compare_source_union_render_sets
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, components = self._render_fixture(root)
+            workspace = root / "union"
+            state = {"identity": None}
+
+            def replace_runtime_then_raise(*args, **kwargs):
+                real_compare(*args, **kwargs)
+                victim = (
+                    Path(args[1]).parents[1]
+                    / "inputs/maximum_optimizer/reporting.py"
+                )
+                winner = root / "foreign-compare-reporting.py"
+                shutil.copy2(victim, winner)
+                victim.unlink(); os.rename(winner, victim)
+                info = os.lstat(victim)
+                state["identity"] = (
+                    int(info.st_dev), int(info.st_ino),
+                    int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1e9))),
+                )
+                raise RuntimeError("hostile runtime comparator failure")
+
+            with mock.patch(
+                "maximum_optimizer.production_adapters.compare_source_union_render_sets",
+                side_effect=replace_runtime_then_raise,
+            ), self.assertRaisesRegex(RuntimeError, "hostile runtime comparator"):
+                self._render_case(
+                    root, SourceUnionRunner(fixture), workspace, components,
+                )
+            self.assertTrue(workspace.exists())
+            info = os.lstat(
+                workspace / "inputs/maximum_optimizer/reporting.py"
+            )
+            self.assertEqual(
+                state["identity"],
+                (
+                    int(info.st_dev), int(info.st_ino),
+                    int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1e9))),
                 ),
             )
 

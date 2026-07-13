@@ -4078,6 +4078,7 @@ class ProductionAdapters:
         """Fresh source-union boundary with no focused-render cache."""
         from .production_adapters import (
             AdaptiveDirectProductionBoundary, SourceUnionRenderTools,
+            build_source_union_python_runtime_contract,
         )
         kwargs.setdefault("cancel_event", self.cancel_event)
         kwargs.pop("tools", None)
@@ -4092,6 +4093,9 @@ class ProductionAdapters:
             blender_exe=self.config.blender_path,
             renderer_script=renderer_script,
             renderer_sha256=renderer_sha256,
+            python_runtime=build_source_union_python_runtime_contract(
+                self.config.repo_root / "maximum_optimizer", self.cancel_event,
+            ),
             materials_roots=self._materials_roots(),
             vtfcmd=self._vtfcmd(),
             texture_cache=None,

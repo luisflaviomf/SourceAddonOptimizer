@@ -22,7 +22,8 @@ from .domain import (
 )
 from .focused_cache import (
     _assert_safe_tree, _copy_file_no_follow, _file_proof, _has_reparse_ancestor,
-    _is_reparse, _read_regular_no_follow, _write_json_fsync,
+    _is_reparse, _read_regular_no_follow,
+    _regular_file_ownership_identity_no_follow, _write_json_fsync,
 )
 from .processes import ProcessCancelledError, run_process
 from .qc_graph import parse_qc_graph
@@ -58,6 +59,15 @@ from .visual_validation import (
 _HASH = re.compile(r"[0-9a-f]{64}")
 _ANGLES = ("front", "back", "left", "right", "top", "bottom", "iso1", "iso2")
 _CAMERAS = tuple(f"camera-{index:02d}" for index in range(8))
+_SOURCE_UNION_PYTHON_RUNTIME_FILES = (
+    "__init__.py",
+    "qc_graph.py",
+    "regions.py",
+    "reporting.py",
+    "smd_contract.py",
+    "source_components.py",
+)
+_SOURCE_UNION_PYTHON_RUNTIME_MAX_BYTES = 16 * 1024 * 1024
 
 
 def _material_tree_cleanup_is_authorized(
@@ -72,6 +82,21 @@ def _material_tree_cleanup_is_authorized(
     except (OSError, TypeError, ValueError):
         return False
     return True
+
+
+def _python_runtime_cleanup_is_authorized(
+    contract: SourceUnionPythonRuntimeContract,
+    runtime_lease: object,
+) -> bool:
+    if (
+        type(contract) is not SourceUnionPythonRuntimeContract
+        or type(runtime_lease) is not PrivateSourceUnionPythonRuntimeLease
+    ):
+        return False
+    return not _private_python_runtime_has_foreign(
+        runtime_lease.root, runtime_lease.root_identity,
+        dict(runtime_lease.file_identities),
+    )
 
 
 def _cancel(event: threading.Event | None, message: str) -> None:
@@ -143,11 +168,19 @@ def validate_source_union_pose_bindings(
 
 def validate_source_union_cli_contract(args) -> None:
     enabled = getattr(args, "source_union_contract", None)
+    control_sha256 = getattr(args, "source_union_control_sha256", None)
     visibility = getattr(args, "source_union_visibility_out", None)
-    if bool(enabled) != bool(visibility):
-        raise ValueError("source-union contract and visibility output must be paired")
+    if not (bool(enabled) == bool(control_sha256) == bool(visibility)):
+        raise ValueError(
+            "source-union contract hash and visibility output must be paired"
+        )
     if not enabled:
         raise ValueError("source-union mode is not enabled")
+    if (
+        type(control_sha256) is not str
+        or _HASH.fullmatch(control_sha256) is None
+    ):
+        raise ValueError("source-union control hash is invalid")
     if any((
         getattr(args, "configuration_manifest", None) is not None,
         getattr(args, "focus_region", None) is not None,
@@ -237,10 +270,301 @@ class AdaptiveDirectCompileResult:
 
 
 @dataclass(frozen=True)
+class SourceUnionPythonRuntimeFile:
+    path: str
+    size: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            self.path not in _SOURCE_UNION_PYTHON_RUNTIME_FILES
+            or type(self.size) is not int or self.size < 0
+            or _HASH.fullmatch(self.sha256 or "") is None
+        ):
+            raise ValueError("source-union Python runtime file proof is invalid")
+
+
+@dataclass(frozen=True)
+class SourceUnionPythonRuntimeContract:
+    source_root: Path
+    files: tuple[SourceUnionPythonRuntimeFile, ...]
+    contract_sha256: str
+
+    def __post_init__(self) -> None:
+        root = Path(os.path.abspath(self.source_root))
+        files = tuple(self.files)
+        unsigned = {
+            "schema": 1,
+            "kind": "adaptive-direct-source-union-python-runtime-v1",
+            "files": [
+                {"path": item.path, "size": item.size, "sha256": item.sha256}
+                for item in files
+            ],
+        }
+        if (
+            files != tuple(sorted(files, key=lambda item: item.path))
+            or tuple(item.path for item in files)
+            != tuple(sorted(_SOURCE_UNION_PYTHON_RUNTIME_FILES))
+            or len({item.path.casefold() for item in files}) != len(files)
+            or sum(item.size for item in files)
+            > _SOURCE_UNION_PYTHON_RUNTIME_MAX_BYTES
+            or _HASH.fullmatch(self.contract_sha256 or "") is None
+            or hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
+            != self.contract_sha256
+        ):
+            raise ValueError("source-union Python runtime contract is invalid")
+        object.__setattr__(self, "source_root", root)
+        object.__setattr__(self, "files", files)
+
+
+def build_source_union_python_runtime_contract(
+    source_root: Path, cancel_event,
+) -> SourceUnionPythonRuntimeContract:
+    root = Path(os.path.abspath(source_root))
+    if not root.is_dir() or _has_reparse_ancestor(root):
+        raise ValueError("source-union Python runtime root is unavailable or unsafe")
+    files = []
+    for relative in sorted(_SOURCE_UNION_PYTHON_RUNTIME_FILES):
+        path = root / relative
+        size, digest = _file_proof(
+            path, cancel_event,
+            max_bytes=_SOURCE_UNION_PYTHON_RUNTIME_MAX_BYTES,
+            contained_root=root,
+        )
+        files.append(SourceUnionPythonRuntimeFile(relative, size, digest))
+    unsigned = {
+        "schema": 1,
+        "kind": "adaptive-direct-source-union-python-runtime-v1",
+        "files": [
+            {"path": item.path, "size": item.size, "sha256": item.sha256}
+            for item in files
+        ],
+    }
+    return SourceUnionPythonRuntimeContract(
+        root, tuple(files),
+        hashlib.sha256(canonical_json(unsigned).encode()).hexdigest(),
+    )
+
+
+def require_current_source_union_python_runtime_contract(
+    contract: SourceUnionPythonRuntimeContract, cancel_event,
+) -> None:
+    if type(contract) is not SourceUnionPythonRuntimeContract:
+        raise TypeError("source-union Python runtime contract is invalid")
+    try:
+        current = build_source_union_python_runtime_contract(
+            contract.source_root, cancel_event,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError("source-union current Python runtime is unavailable") from exc
+    if current != contract:
+        raise ValueError("source-union current Python runtime differs")
+
+
+class SourceUnionPythonRuntimeOwnershipConflict(ValueError):
+    def __init__(
+        self, message: str, *, original_cause: BaseException | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.original_cause = original_cause
+
+
+@dataclass(frozen=True)
+class PrivateSourceUnionPythonRuntimeLease:
+    root: Path
+    root_identity: tuple[int, int, int]
+    file_identities: tuple[tuple[str, tuple[int, int, int]], ...]
+
+    def __post_init__(self) -> None:
+        root = Path(os.path.abspath(self.root))
+        files = tuple(self.file_identities)
+        if (
+            type(self.root_identity) is not tuple
+            or len(self.root_identity) != 3
+            or any(type(value) is not int for value in self.root_identity)
+            or tuple(path for path, _identity in files)
+            != tuple(sorted(_SOURCE_UNION_PYTHON_RUNTIME_FILES))
+            or any(
+                type(identity) is not tuple or len(identity) != 3
+                or any(type(value) is not int for value in identity)
+                for _path, identity in files
+            )
+        ):
+            raise ValueError("source-union private Python runtime lease is invalid")
+        object.__setattr__(self, "root", root)
+        object.__setattr__(self, "file_identities", files)
+
+
+def _private_python_runtime_shape(root: Path) -> tuple[str, ...]:
+    try:
+        entries = tuple(os.scandir(root))
+    except OSError as exc:
+        raise ValueError("source-union private Python runtime is unavailable") from exc
+    names = []
+    for entry in entries:
+        if not entry.is_file(follow_symlinks=False) or entry.is_symlink():
+            raise SourceUnionPythonRuntimeOwnershipConflict(
+                "source-union private Python runtime contains unowned entry"
+            )
+        names.append(entry.name)
+    return tuple(sorted(names))
+
+
+def _require_current_private_python_runtime(
+    contract: SourceUnionPythonRuntimeContract,
+    lease: PrivateSourceUnionPythonRuntimeLease,
+    cancel_event,
+) -> None:
+    _require_current_private_python_runtime_ownership(contract, lease)
+    for proof in contract.files:
+        path = lease.root / proof.path
+        size, digest = _file_proof(
+            path, cancel_event,
+            max_bytes=_SOURCE_UNION_PYTHON_RUNTIME_MAX_BYTES,
+            contained_root=lease.root,
+        )
+        if (size, digest) != (proof.size, proof.sha256):
+            raise ValueError("source-union private Python runtime file bytes differ")
+
+
+def _require_current_private_python_runtime_ownership(
+    contract: SourceUnionPythonRuntimeContract,
+    lease: PrivateSourceUnionPythonRuntimeLease,
+) -> None:
+    if type(lease) is not PrivateSourceUnionPythonRuntimeLease:
+        raise TypeError("source-union private Python runtime lease is invalid")
+    try:
+        current_root_identity = _workspace_root_identity(lease.root)
+    except FileNotFoundError as exc:
+        raise ValueError("source-union private Python runtime is unavailable") from exc
+    except (OSError, ValueError) as exc:
+        if os.path.lexists(lease.root):
+            raise SourceUnionPythonRuntimeOwnershipConflict(
+                "source-union private Python runtime ownership changed",
+                original_cause=exc,
+            ) from exc
+        raise ValueError("source-union private Python runtime is unavailable") from exc
+    if current_root_identity != lease.root_identity:
+        raise SourceUnionPythonRuntimeOwnershipConflict(
+            "source-union private Python runtime ownership changed"
+        )
+    actual = _private_python_runtime_shape(lease.root)
+    expected = tuple(item.path for item in contract.files)
+    if set(actual) - set(expected):
+        raise SourceUnionPythonRuntimeOwnershipConflict(
+            "source-union private Python runtime contains unowned files"
+        )
+    if actual != expected:
+        raise ValueError("source-union private Python runtime inventory differs")
+    identities = dict(lease.file_identities)
+    for proof in contract.files:
+        path = lease.root / proof.path
+        try:
+            identity = _regular_file_ownership_identity_no_follow(
+                path, contained_root=lease.root,
+            )
+        except FileNotFoundError as exc:
+            raise ValueError("source-union private Python runtime file is unavailable") from exc
+        except (OSError, ValueError) as exc:
+            if os.path.lexists(path):
+                raise SourceUnionPythonRuntimeOwnershipConflict(
+                    "source-union private Python runtime file ownership changed",
+                    original_cause=exc,
+                ) from exc
+            raise ValueError("source-union private Python runtime file is unavailable") from exc
+        if identity != identities[proof.path]:
+            raise SourceUnionPythonRuntimeOwnershipConflict(
+                "source-union private Python runtime file ownership changed"
+            )
+
+
+def _private_python_runtime_has_foreign(
+    root: Path,
+    root_identity: tuple[int, int, int] | None,
+    file_identities: dict[str, tuple[int, int, int]],
+) -> bool:
+    if not os.path.lexists(root):
+        return False
+    if root_identity is None:
+        return True
+    try:
+        if _workspace_root_identity(root) != root_identity:
+            return True
+        actual = _private_python_runtime_shape(root)
+    except (OSError, ValueError):
+        return True
+    if set(actual) - set(file_identities):
+        return True
+    for relative, expected in file_identities.items():
+        path = root / relative
+        if not os.path.lexists(path):
+            continue
+        try:
+            current = _regular_file_ownership_identity_no_follow(
+                path, contained_root=root,
+            )
+        except (OSError, ValueError):
+            return True
+        if current != expected:
+            return True
+    return False
+
+
+def _materialize_private_python_runtime(
+    contract: SourceUnionPythonRuntimeContract,
+    destination: Path,
+    cancel_event,
+) -> PrivateSourceUnionPythonRuntimeLease:
+    destination = Path(os.path.abspath(destination))
+    root_identity: tuple[int, int, int] | None = None
+    file_identities: dict[str, tuple[int, int, int]] = {}
+    try:
+        if os.path.lexists(destination):
+            raise SourceUnionPythonRuntimeOwnershipConflict(
+                "source-union private Python runtime destination is occupied"
+            )
+        require_current_source_union_python_runtime_contract(
+            contract, cancel_event,
+        )
+        destination.mkdir()
+        root_identity = _workspace_root_identity(destination)
+        for proof in contract.files:
+            identity = _copy_file_no_follow(
+                contract.source_root / proof.path,
+                destination / proof.path,
+                cancel_event,
+                contained_root=contract.source_root,
+            )
+            file_identities[proof.path] = identity
+        require_current_source_union_python_runtime_contract(
+            contract, cancel_event,
+        )
+        lease = PrivateSourceUnionPythonRuntimeLease(
+            destination, root_identity,
+            tuple(sorted(file_identities.items())),
+        )
+        _require_current_private_python_runtime(contract, lease, cancel_event)
+        return lease
+    except BaseException as exc:
+        if (
+            not isinstance(exc, SourceUnionPythonRuntimeOwnershipConflict)
+            and _private_python_runtime_has_foreign(
+                destination, root_identity, file_identities,
+            )
+        ):
+            raise SourceUnionPythonRuntimeOwnershipConflict(
+                "source-union private Python runtime ownership changed",
+                original_cause=exc,
+            ) from exc
+        raise
+
+
+@dataclass(frozen=True)
 class SourceUnionRenderTools:
     blender_exe: Path
     renderer_script: Path
     renderer_sha256: str
+    python_runtime: SourceUnionPythonRuntimeContract
     materials_roots: tuple[Path, ...] = ()
     vtfcmd: Path | None = None
     texture_cache: Path | None = None
@@ -254,6 +578,8 @@ class SourceUnionRenderTools:
             raise ValueError("source-union Blender/renderer is unavailable or unsafe")
         if _HASH.fullmatch(self.renderer_sha256 or "") is None:
             raise ValueError("source-union renderer hash is invalid")
+        if type(self.python_runtime) is not SourceUnionPythonRuntimeContract:
+            raise TypeError("source-union Python runtime contract is required")
         if any(not root.is_dir() or _has_reparse_ancestor(root) for root in roots):
             raise ValueError("source-union materials root is unavailable or unsafe")
         if not callable(self.dependency_digest_provider):
@@ -672,6 +998,9 @@ class AdaptiveDirectProductionBoundary:
             )
             if renderer_digest != tools.renderer_sha256:
                 raise ValueError("source-union renderer script is stale")
+            require_current_source_union_python_runtime_contract(
+                tools.python_runtime, event,
+            )
             if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
                 raise ValueError("source-union runtime dependency proof is stale")
             source_bytes = _read_regular_no_follow(
@@ -750,6 +1079,7 @@ class AdaptiveDirectProductionBoundary:
         )
         holder: dict[str, object] = {}
         material_tree = workspace / "material-roots"
+        python_runtime_root = workspace / "inputs" / "maximum_optimizer"
         expected_material_paths = {
             f"root-{item.root_index:03d}/{item.path}"
             for item in material_contract.files
@@ -804,6 +1134,23 @@ class AdaptiveDirectProductionBoundary:
                 raise ValueError("source-union current material evidence changed")
             return original_evidence
 
+        def validate_current_python_runtime(event) -> None:
+            runtime_lease = holder.get("private_python_runtime_lease")
+            if type(runtime_lease) is not PrivateSourceUnionPythonRuntimeLease:
+                raise ValueError("source-union private Python runtime is unavailable")
+            try:
+                _require_current_private_python_runtime(
+                    tools.python_runtime, runtime_lease, event,
+                )
+            except SourceUnionPythonRuntimeOwnershipConflict as exc:
+                ownership_lease.preserve_unowned_descendant()
+                raise ValueError(
+                    "source-union private Python runtime ownership changed"
+                ) from exc
+            require_current_source_union_python_runtime_contract(
+                tools.python_runtime, event,
+            )
+
         def render_fresh(request, output_root: Path, event):
             inputs = output_root / "inputs"; control = output_root / "control"
             raw = output_root / "raw"; authorized = output_root / "authorized"
@@ -841,12 +1188,27 @@ class AdaptiveDirectProductionBoundary:
             holder["material_tree_identity"] = material_lease.destination_identity
             holder["private_material_roots"] = private_material_roots
             holder["private_material_root_identities"] = material_lease.root_identities
+            try:
+                python_runtime_lease = _materialize_private_python_runtime(
+                    tools.python_runtime, python_runtime_root, event,
+                )
+            except SourceUnionPythonRuntimeOwnershipConflict as exc:
+                ownership_lease.preserve_unowned_descendant()
+                if exc.original_cause is not None:
+                    raise exc.original_cause from exc
+                raise
+            holder["private_python_runtime_lease"] = python_runtime_lease
             ownership_lease.install_cleanup_guard(lambda: (
                 _material_tree_cleanup_is_authorized(
                     material_tree, holder.get("private_material_lease"),
                 )
+                and _python_runtime_cleanup_is_authorized(
+                    tools.python_runtime,
+                    holder.get("private_python_runtime_lease"),
+                )
             ))
             material_evidence = validate_current_materials(event)
+            validate_current_python_runtime(event)
             holder["material_evidence"] = material_evidence
             _write_private_bytes_fsync(reference_input, current_filtered)
             _write_private_bytes_fsync(candidate_input, current_candidate)
@@ -889,6 +1251,13 @@ class AdaptiveDirectProductionBoundary:
                 "material_render_evidence": list(material_evidence),
                 "pose_frames": {"bind": 0}, "angles": list(_ANGLES),
                 "cameras": list(_CAMERAS), "renderer_sha256": tools.renderer_sha256,
+                "python_runtime_contract_sha256": (
+                    tools.python_runtime.contract_sha256
+                ),
+                "python_runtime_files": [
+                    {"path": item.path, "size": item.size, "sha256": item.sha256}
+                    for item in tools.python_runtime.files
+                ],
             })
             contract_size, contract_digest = _file_proof(
                 contract_path, event, contained_root=control
@@ -903,6 +1272,7 @@ class AdaptiveDirectProductionBoundary:
                 "--out", str(raw), "--size", "512", "--angles", ",".join(_ANGLES),
                 "--passes", "textured,clay", "--poses", "bind:0",
                 "--source-union-contract", str(contract_path),
+                "--source-union-control-sha256", contract_digest,
                 "--source-union-visibility-out", str(visibility_path),
             ]
             for root in private_material_roots:
@@ -912,15 +1282,18 @@ class AdaptiveDirectProductionBoundary:
             if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
                 raise ValueError("source-union dependency changed before Blender")
             validate_current_materials(event)
+            validate_current_python_runtime(event)
             try:
                 process = self._process_runner(
-                    tuple(command), tools.renderer_script.parent,
+                    tuple(command), inputs,
                     output_root / "source-union-render.log", event,
                 )
             except BaseException:
                 validate_current_materials(event)
+                validate_current_python_runtime(event)
                 raise
             validate_current_materials(event)
+            validate_current_python_runtime(event)
             if process.returncode != 0:
                 raise ValueError("source-union Blender process failed")
             cache_error = None
@@ -942,6 +1315,7 @@ class AdaptiveDirectProductionBoundary:
             if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
                 raise ValueError("source-union dependency changed during Blender")
             validate_current_materials(event)
+            validate_current_python_runtime(event)
             if any(_has_reparse_ancestor(path) for path in (inputs, control, raw)):
                 raise ValueError("source-union process output has reparse ancestry")
             if os.path.lexists(authorized):
@@ -949,8 +1323,11 @@ class AdaptiveDirectProductionBoundary:
             _assert_source_union_workspace_root(output_root, authorized=False)
             _assert_safe_tree(
                 inputs, event,
-                {"reference.smd", "candidate.smd", "render_previews.py"},
-                max_files=3,
+                {"reference.smd", "candidate.smd", "render_previews.py"} | {
+                    f"maximum_optimizer/{item.path}"
+                    for item in tools.python_runtime.files
+                },
+                max_files=3 + len(tools.python_runtime.files),
             )
             _assert_safe_tree(
                 control, event,
@@ -1009,6 +1386,7 @@ class AdaptiveDirectProductionBoundary:
             )):
                 raise ValueError("source-union comparator directories differ")
             current_material_evidence = validate_current_materials(cancel_event)
+            validate_current_python_runtime(cancel_event)
             _assert_source_union_raw_material_evidence(
                 raw, current_material_evidence, cancel_event
             )
@@ -1029,6 +1407,7 @@ class AdaptiveDirectProductionBoundary:
             except BaseException:
                 try:
                     validate_current_materials(None)
+                    validate_current_python_runtime(None)
                 except BaseException:
                     pass
                 raise
@@ -1043,6 +1422,7 @@ class AdaptiveDirectProductionBoundary:
             _prove_source_union_bijection(raw, authorized, target, comparison, cancel_event)
             if validate_current_materials(cancel_event) != current_material_evidence:
                 raise ValueError("source-union materials changed during comparison")
+            validate_current_python_runtime(cancel_event)
             _assert_source_union_raw_material_evidence(
                 raw, current_material_evidence, cancel_event
             )
@@ -1062,8 +1442,11 @@ class AdaptiveDirectProductionBoundary:
             assert isinstance(contract_path, Path) and isinstance(visibility_path, Path)
             _assert_safe_tree(
                 inputs, event,
-                {"reference.smd", "candidate.smd", "render_previews.py"},
-                max_files=3,
+                {"reference.smd", "candidate.smd", "render_previews.py"} | {
+                    f"maximum_optimizer/{item.path}"
+                    for item in tools.python_runtime.files
+                },
+                max_files=3 + len(tools.python_runtime.files),
             )
             _assert_safe_tree(
                 control, event,
@@ -1100,6 +1483,7 @@ class AdaptiveDirectProductionBoundary:
             ):
                 raise ValueError("source-union final raw manifests changed")
             current_material_evidence = validate_current_materials(event)
+            validate_current_python_runtime(event)
             if current_material_evidence != holder.get("material_evidence"):
                 raise ValueError("source-union final material evidence differs")
             _assert_source_union_raw_material_evidence(
