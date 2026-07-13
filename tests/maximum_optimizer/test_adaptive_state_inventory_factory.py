@@ -32,6 +32,7 @@ from maximum_optimizer.domain import (
     adaptive_direct_state_inventory_payload,
 )
 from maximum_optimizer.qc_graph import parse_qc_graph
+from maximum_optimizer.smd_state_contracts import SmdAnimationPairInput
 
 
 H = {character: character * 64 for character in "0123456789abcdef"}
@@ -41,6 +42,13 @@ def _smd() -> bytes:
     return (
         'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
         '0 0 0 0 0 0 0\nend\ntriangles\nend\n'
+    ).encode()
+
+
+def _animation_smd() -> bytes:
+    return (
+        'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+        '0 0 0 0 0 0 0\ntime 1\n0 1 0 0 0 0 0\nend\ntriangles\nend\n'
     ).encode()
 
 
@@ -58,6 +66,8 @@ class InventoryFixture:
         for name in ("fixed.smd", "door.smd"):
             (self.original_root / name).write_bytes(_smd())
             (self.candidate_root / "output" / name.replace(".smd", "_opt.smd")).write_bytes(_smd())
+        (self.original_root / "idle.smd").write_bytes(_animation_smd())
+        (self.candidate_root / "output" / "idle_opt.smd").write_bytes(_animation_smd())
         self.original_qc = self.original_root / "main.qc"
         self.original_qc.write_text(
             '$modelname "models/state.mdl"\n$body "fixed" "fixed.smd"\n'
@@ -65,6 +75,8 @@ class InventoryFixture:
             '$texturegroup "skins"\n{\n { "paint" }\n { "paint_alt" }\n}\n',
             encoding="utf-8",
         )
+        with self.original_qc.open("a", encoding="utf-8") as handle:
+            handle.write('$sequence "idle" "idle.smd"\n')
         self.candidate_qc = self.candidate_root / "main_OPT.qc"
         self.candidate_qc.write_text(
             '$modelname "models/state.mdl"\n$body "fixed" "output/fixed_opt.smd"\n'
@@ -72,6 +84,8 @@ class InventoryFixture:
             '$texturegroup "skins"\n{\n { "paint" }\n { "paint_alt" }\n}\n',
             encoding="utf-8",
         )
+        with self.candidate_qc.open("a", encoding="utf-8") as handle:
+            handle.write('$sequence "idle" "output/idle_opt.smd"\n')
         self.original_graph = parse_qc_graph(self.original_qc, self.original_root)
         self.candidate_graph = parse_qc_graph(self.candidate_qc, self.candidate_root)
         original_manifest = build_source_tree_manifest(
@@ -156,7 +170,7 @@ class InventoryFixture:
             for identity, proof in original_files.items()
         }
 
-    def build(self, *, dependencies=None):
+    def build(self, *, dependencies=None, animation_pairs=None):
         return build_production_adaptive_direct_state_inventory(
             manifest=self.manifest, spec=self.spec,
             candidate_cache_digest=self.cache_digest,
@@ -164,11 +178,45 @@ class InventoryFixture:
             candidate_snapshot=self.candidate_snapshot,
             metrics_proof=self.metrics,
             dependencies=self.dependencies if dependencies is None else dependencies,
-            animation_pairs={}, cancel_event=threading.Event(),
+            animation_pairs={} if animation_pairs is None else animation_pairs,
+            cancel_event=threading.Event(),
+        )
+
+    def animation_pair(self) -> SmdAnimationPairInput:
+        original = next(
+            item for item in self.original_snapshot.source_manifest.files
+            if item.kind == "animation-source"
+        )
+        candidate = next(
+            item for item in self.candidate_snapshot.source_manifest.files
+            if item.kind == "animation-source"
+        )
+        return SmdAnimationPairInput(
+            self.original_root / original.relative_path, self.original_root, original,
+            self.candidate_root / candidate.relative_path, self.candidate_root, candidate,
         )
 
 
 class AdaptiveStateInventoryFactoryTests(unittest.TestCase):
+    def test_animation_pair_requires_exact_current_snapshot_members_and_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = InventoryFixture(Path(raw))
+            pair = fixture.animation_pair()
+            inventory = fixture.build(animation_pairs={"door.smd": pair})
+            self.assertIn("animation", next(
+                row.pose_keys for row in inventory.rows
+                if row.source_identity == "door.smd"
+            ))
+            external = Path(raw) / "external"; external.mkdir()
+            external_path = external / pair.original_proof.relative_path
+            external_path.write_bytes(_animation_smd())
+            forged = SmdAnimationPairInput(
+                external_path, external, pair.original_proof,
+                pair.candidate_path, pair.candidate_root, pair.candidate_proof,
+            )
+            with self.assertRaisesRegex(ValueError, "snapshot|root|member|path"):
+                fixture.build(animation_pairs={"door.smd": forged})
+
     def test_factory_rejects_candidate_skeleton_hierarchy_difference(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = InventoryFixture(Path(raw))

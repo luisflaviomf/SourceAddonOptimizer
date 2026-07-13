@@ -218,6 +218,48 @@ def _validate_dependencies(
     return copied
 
 
+def _validate_animation_pairs(
+    pairs: Mapping[str, SmdAnimationPairInput],
+    original_snapshot: RecoverySourceSnapshot,
+    candidate_snapshot: RecoverySourceSnapshot,
+) -> dict[str, SmdAnimationPairInput]:
+    if not isinstance(pairs, Mapping):
+        raise TypeError("adaptive animation pairs must be a mapping")
+    copied = dict(pairs)
+    original_members = {
+        item: item for item in original_snapshot.source_manifest.files
+        if item.kind == "animation-source"
+    }
+    candidate_members = {
+        item: item for item in candidate_snapshot.source_manifest.files
+        if item.kind == "animation-source"
+    }
+    original_root = Path(original_snapshot.source_root)
+    candidate_root = Path(candidate_snapshot.source_root)
+    for pair in copied.values():
+        if not isinstance(pair, SmdAnimationPairInput):
+            raise TypeError("adaptive animation pair is not typed")
+        if (
+            pair.original_proof not in original_members
+            or pair.candidate_proof not in candidate_members
+            or not _absolute_equal(pair.original_root, original_root)
+            or not _absolute_equal(pair.candidate_root, candidate_root)
+        ):
+            raise ValueError("adaptive animation pair is not an exact snapshot member")
+        expected_original = original_root.joinpath(
+            *PurePosixPath(pair.original_proof.relative_path).parts
+        )
+        expected_candidate = candidate_root.joinpath(
+            *PurePosixPath(pair.candidate_proof.relative_path).parts
+        )
+        if (
+            not _absolute_equal(pair.original_path, expected_original)
+            or not _absolute_equal(pair.candidate_path, expected_candidate)
+        ):
+            raise ValueError("adaptive animation pair path differs from snapshot proof")
+    return copied
+
+
 def _occurrence_key(state_key: str, active: QcActiveOccurrence) -> str:
     payload = {
         "state_key": state_key,
@@ -327,13 +369,11 @@ def build_production_adaptive_direct_state_inventory(
         metrics_proof, original_proofs, candidate_proofs, occurrences
     )
     bound_dependencies = _validate_dependencies(dependencies, original_proofs)
-    if not isinstance(animation_pairs, Mapping):
-        raise TypeError("adaptive animation pairs must be a mapping")
-    bound_pairs = dict(animation_pairs)
+    bound_pairs = _validate_animation_pairs(
+        animation_pairs, original_snapshot, candidate_snapshot,
+    )
     if not set(bound_pairs).issubset(original_proofs):
         raise ValueError("adaptive animation pair/source union differs")
-    if any(not isinstance(item, SmdAnimationPairInput) for item in bound_pairs.values()):
-        raise TypeError("adaptive animation pair is not typed")
 
     contracts = {}
     for identity in sorted(original_proofs, key=lambda item: (item.casefold(), item)):
