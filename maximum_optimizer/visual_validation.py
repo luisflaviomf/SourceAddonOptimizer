@@ -11,7 +11,7 @@ from types import MappingProxyType
 
 from PIL import Image, ImageChops, ImageFilter, UnidentifiedImageError
 
-from maximum_optimizer.domain import GateFailure, ValidationResult
+from maximum_optimizer.domain import GateFailure, ValidationResult, require_canonical_relative
 
 
 IMAGE_METRICS = ("silhouette_iou", "rgb_mae", "edge_error")
@@ -618,33 +618,168 @@ def _ratio(value: float, limit: float) -> float:
     return value / limit
 
 
-def compare_render_sets(
+@dataclass(frozen=True)
+class SourceUnionComparisonContract:
+    target_sha256: str
+    source_identity: str
+    source_coverage_sha256: str
+    reference_source_sha256: str
+    candidate_source_sha256: str
+    material_contract_sha256: str
+    pose_frames: tuple[tuple[str, int], ...]
+    union_key: str
+    contract_sha256: str
+
+    def __post_init__(self) -> None:
+        hashes = (
+            self.target_sha256, self.source_coverage_sha256,
+            self.reference_source_sha256, self.candidate_source_sha256,
+            self.material_contract_sha256,
+        )
+        if any(re.fullmatch(r"[0-9a-f]{64}", value or "") is None for value in hashes):
+            raise ValueError("source-union comparison hash is invalid")
+        if type(self.source_identity) is not str or not self.source_identity:
+            raise ValueError("source-union comparison source is invalid")
+        require_canonical_relative(self.source_identity, "source-union comparison source")
+        poses = tuple(tuple(item) for item in self.pose_frames)
+        if poses != (("bind", 0),):
+            raise ValueError("source-union comparison currently authorizes bind only")
+        if not re.fullmatch(r"source-union-[0-9a-f]{32}", self.union_key or ""):
+            raise ValueError("source-union comparison union key is invalid")
+        if self.union_key != "source-union-" + self.source_coverage_sha256[:32]:
+            raise ValueError("source-union comparison key differs from source coverage")
+        expected = hashlib.sha256(json.dumps({
+            "target_sha256": self.target_sha256,
+            "source_identity": self.source_identity,
+            "source_coverage_sha256": self.source_coverage_sha256,
+            "reference_source_sha256": self.reference_source_sha256,
+            "candidate_source_sha256": self.candidate_source_sha256,
+            "material_contract_sha256": self.material_contract_sha256,
+            "pose_frames": [list(item) for item in poses],
+            "union_key": self.union_key,
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if self.contract_sha256 != expected:
+            raise ValueError("source-union comparison contract seal mismatch")
+        object.__setattr__(self, "pose_frames", poses)
+
+    @classmethod
+    def create(cls, **values) -> "SourceUnionComparisonContract":
+        provisional = cls.__new__(cls)
+        for key, value in {**values, "contract_sha256": "0" * 64}.items():
+            object.__setattr__(provisional, key, value)
+        poses = tuple(tuple(item) for item in values["pose_frames"])
+        digest = hashlib.sha256(json.dumps({
+            **{key: values[key] for key in (
+                "target_sha256", "source_identity", "source_coverage_sha256",
+                "reference_source_sha256", "candidate_source_sha256",
+                "material_contract_sha256", "union_key",
+            )},
+            "pose_frames": [list(item) for item in poses],
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return cls(**values, contract_sha256=digest)
+
+
+def _load_source_union_manifest(
+    root: Path, label: str, contract: SourceUnionComparisonContract,
+    failures: list[GateFailure],
+) -> dict | None:
+    manifest = _load_manifest(root, label, failures)
+    fields = {
+        "schema", "kind", "side", "contract_sha256", "target_sha256",
+        "source_identity", "source_coverage_sha256", "source_sha256",
+        "material_contract_sha256", "expected", "entries", "geometry",
+        "geometry_audit", "geometry_audit_algorithm",
+    }
+    if manifest is None:
+        return None
+    expected_source = (
+        contract.reference_source_sha256 if label == "reference"
+        else contract.candidate_source_sha256
+    )
+    if set(manifest) != fields or any((
+        manifest.get("kind") != "adaptive-direct-source-union-render-v1",
+        manifest.get("side") != label,
+        manifest.get("contract_sha256") != contract.contract_sha256,
+        manifest.get("target_sha256") != contract.target_sha256,
+        manifest.get("source_identity") != contract.source_identity,
+        manifest.get("source_coverage_sha256") != contract.source_coverage_sha256,
+        manifest.get("source_sha256") != expected_source,
+        manifest.get("material_contract_sha256") != contract.material_contract_sha256,
+    )):
+        failures.append(_failure("invalid_manifest", label, "source-union manifest binding is invalid"))
+        return None
+    return manifest
+
+
+def compare_source_union_render_sets(
     reference_dir: Path,
     candidate_dir: Path,
     profile: FidelityProfile,
+    *,
+    expected_contract: SourceUnionComparisonContract,
+) -> ValidationResult:
+    if not isinstance(profile, FidelityProfile) or not isinstance(
+        expected_contract, SourceUnionComparisonContract
+    ):
+        raise TypeError("source-union comparator inputs are invalid")
+    reference_dir = Path(reference_dir); candidate_dir = Path(candidate_dir)
+    failures: list[GateFailure] = []
+    maxima = {metric: 0.0 for metric in REQUIRED_METRICS}
+    observations: list[tuple[float, str]] = []
+    reference = _load_source_union_manifest(
+        reference_dir, "reference", expected_contract, failures
+    )
+    candidate = _load_source_union_manifest(
+        candidate_dir, "candidate", expected_contract, failures
+    )
+    required_expected = {
+        "passes": list(EXPECTED_PASSES), "angles": list(EXPECTED_ANGLES),
+        "poses": [item[0] for item in expected_contract.pose_frames],
+        "pose_frames": dict(expected_contract.pose_frames),
+        "regions": [expected_contract.union_key],
+    }
+    for label, manifest in (("reference", reference), ("candidate", candidate)):
+        if manifest is None:
+            continue
+        if manifest.get("expected") != required_expected:
+            failures.append(_failure("expected_mismatch", label, "source-union expected contract differs"))
+        for entry in manifest.get("entries", ()):
+            key = _entry_key(entry)
+            if key is not None and entry.get("image") != f"{key[0]}/{key[1]}/{key[2]}.png":
+                failures.append(_failure("invalid_entry", f"{label}/{_scope(key)}", "source-union image path is not canonical"))
+    return _compare_bound_render_manifests(
+        reference_dir, candidate_dir, profile, reference, candidate, failures,
+        require_legacy_configuration=False,
+    )
+def _compare_bound_render_manifests(
+    reference_dir: Path,
+    candidate_dir: Path,
+    profile: FidelityProfile,
+    reference_manifest: dict | None,
+    candidate_manifest: dict | None,
+    failures: list[GateFailure],
+    *,
+    require_legacy_configuration: bool,
 ) -> ValidationResult:
     if not isinstance(profile, FidelityProfile):
         raise TypeError("profile must be a FidelityProfile")
     reference_dir = Path(reference_dir)
     candidate_dir = Path(candidate_dir)
-    failures: list[GateFailure] = []
     maxima = {metric: 0.0 for metric in REQUIRED_METRICS}
     observations: list[tuple[float, str]] = []
-
-    reference_manifest = _load_manifest(reference_dir, "reference", failures)
-    candidate_manifest = _load_manifest(candidate_dir, "candidate", failures)
     if reference_manifest is not None and candidate_manifest is not None:
-        reference_configuration = _validate_configuration(reference_manifest, "reference", failures)
-        candidate_configuration = _validate_configuration(candidate_manifest, "candidate", failures)
-        if (
-            reference_configuration is not None
-            and candidate_configuration is not None
-            and reference_configuration != candidate_configuration
-        ):
-            failures.append(_failure(
-                "configuration_mismatch", "manifest",
-                "reference and candidate bodygroup/LOD configurations differ",
-            ))
+        if require_legacy_configuration:
+            reference_configuration = _validate_configuration(reference_manifest, "reference", failures)
+            candidate_configuration = _validate_configuration(candidate_manifest, "candidate", failures)
+            if (
+                reference_configuration is not None
+                and candidate_configuration is not None
+                and reference_configuration != candidate_configuration
+            ):
+                failures.append(_failure(
+                    "configuration_mismatch", "manifest",
+                    "reference and candidate bodygroup/LOD configurations differ",
+                ))
         reference_expected = _validate_expected(reference_manifest, "reference", failures)
         candidate_expected = _validate_expected(candidate_manifest, "candidate", failures)
         if (
@@ -778,4 +913,21 @@ def compare_render_sets(
         failures=tuple(failures),
         metrics=metrics,
         worst_scope=worst_scope,
+    )
+
+
+def compare_render_sets(
+    reference_dir: Path,
+    candidate_dir: Path,
+    profile: FidelityProfile,
+) -> ValidationResult:
+    if not isinstance(profile, FidelityProfile):
+        raise TypeError("profile must be a FidelityProfile")
+    reference_dir = Path(reference_dir); candidate_dir = Path(candidate_dir)
+    failures: list[GateFailure] = []
+    reference = _load_manifest(reference_dir, "reference", failures)
+    candidate = _load_manifest(candidate_dir, "candidate", failures)
+    return _compare_bound_render_manifests(
+        reference_dir, candidate_dir, profile, reference, candidate, failures,
+        require_legacy_configuration=True,
     )
