@@ -410,6 +410,13 @@ class AdaptiveDirectCompositorTests(unittest.TestCase):
                     (composed / "src" / request.source_relative_path).write_bytes(
                         (snapshot.source_root / "output.smd").read_bytes()
                     )
+                (composed / "src" / relative).write_bytes(b"undeclared mutation")
+                with self.assertRaises((ValueError, UnicodeError)):
+                    validate_composition_proof(
+                        fixture.recipe, fixture.resolver, fixture.base_root,
+                        composed / "src", None, coverage_manifest=fixture.coverage,
+                        base_snapshot=fixture.base_snapshot,
+                    )
 
     def test_rejects_semantically_valid_qc_rewrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -429,13 +436,6 @@ class AdaptiveDirectCompositorTests(unittest.TestCase):
                     composed, None, coverage_manifest=fixture.coverage,
                     base_snapshot=fixture.base_snapshot,
                 )
-                (composed / "src" / relative).write_bytes(b"undeclared mutation")
-                with self.assertRaises((ValueError, UnicodeError)):
-                    validate_composition_proof(
-                        fixture.recipe, fixture.resolver, fixture.base_root,
-                        composed / "src", None, coverage_manifest=fixture.coverage,
-                        base_snapshot=fixture.base_snapshot,
-                    )
 
     def test_cancellation_during_copy_leaves_no_partial_composed_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
