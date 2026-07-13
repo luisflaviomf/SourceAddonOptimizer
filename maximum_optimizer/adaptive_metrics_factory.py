@@ -8,7 +8,6 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import threading
 
-from .candidates import _matching_qcs
 from .composite import (
     build_adaptive_candidate_metrics_proof,
     candidate_spec_sha256,
@@ -24,10 +23,11 @@ from .domain import (
     IneligibleAdaptiveSourceProof,
     RecoverySourceSnapshot,
     SourceFileProof,
+    SourceTreeManifest,
     require_canonical_relative,
 )
 from .focused_cache import _read_regular_no_follow
-from .qc_graph import QcGraph, QcReference, parse_qc_graph
+from .qc_graph import QcGraph, QcReference, _lex, parse_qc_graph
 from .reporting import canonical_json
 
 
@@ -302,16 +302,107 @@ def _closed_preservation(raw: object) -> tuple[str, str, bool, str]:
     return source_identity, discriminator[0], discriminator[1], discriminator[2]
 
 
+def _normalized_model(value: str) -> str:
+    return value.replace("\\", "/").strip().strip('"').casefold()
+
+
+def _sealed_qc_bytes(
+    root: Path, proof: SourceFileProof, cancel_event: threading.Event | None,
+) -> bytes:
+    path = Path(root).joinpath(*PurePosixPath(proof.relative_path).parts)
+    raw = _read_regular_no_follow(
+        path, cancel_event, contained_root=root, max_bytes=_QC_GRAPH_BYTE_LIMIT,
+    )
+    if (len(raw), hashlib.sha256(raw).hexdigest()) != (proof.size, proof.sha256):
+        raise ValueError("current QC bytes differ from sealed SourceFileProof")
+    return raw
+
+
+def _qc_model_name(raw: bytes) -> str:
+    try:
+        tokens = _lex(raw.decode("utf-8-sig"))
+    except UnicodeDecodeError as exc:
+        raise ValueError("sealed root QC is not UTF-8") from exc
+    found = []
+    for index, token in enumerate(tokens):
+        if token.value.casefold() != "$modelname":
+            continue
+        values = []
+        cursor = index + 1
+        while cursor < len(tokens) and tokens[cursor].kind not in {"newline", "brace"}:
+            values.append(tokens[cursor].value)
+            cursor += 1
+        if len(values) != 1:
+            raise ValueError("sealed root QC modelname is invalid")
+        found.append(values[0])
+    if len(found) != 1:
+        raise ValueError("sealed root QC modelname is missing or ambiguous")
+    return found[0]
+
+
+def _bind_graph_payload_to_manifest(
+    payload: Mapping[str, object], source_manifest: SourceTreeManifest,
+) -> None:
+    expected = {
+        item.relative_path: (item.size, item.sha256)
+        for item in source_manifest.files if item.kind == "qc"
+    }
+    files = payload.get("files")
+    if type(files) is not list:
+        raise ValueError("QC graph payload files are invalid")
+    actual = {}
+    for item in files:
+        if type(item) is not dict:
+            raise ValueError("QC graph file payload is invalid")
+        path = item.get("path")
+        if type(path) is not str or path in actual:
+            raise ValueError("QC graph file membership is not canonical")
+        actual[path] = (item.get("size"), item.get("sha256"))
+    if actual != expected or payload.get("root_qc") not in expected:
+        raise ValueError("QC graph membership or bytes differ from sealed source manifest")
+
+
 def _root_graph(
     root: Path, model_rel: str, *, optimized: bool,
+    source_manifest: SourceTreeManifest,
+    cancel_event: threading.Event | None,
 ) -> QcGraph:
-    try:
-        matches = _matching_qcs(root, model_rel, optimized=optimized)
-    except Exception as exc:
-        raise ValueError("could not inspect authoritative QC graph") from exc
-    if len(matches) != 1:
-        raise ValueError("authoritative QC graph is missing or ambiguous")
-    return parse_qc_graph(matches[0], root)
+    root = Path(root)
+    candidates = []
+    for proof in source_manifest.files:
+        relative = PurePosixPath(proof.relative_path)
+        if (
+            proof.kind != "qc" or relative.suffix.casefold() != ".qc"
+            or relative.stem.casefold().endswith("_opt") != optimized
+        ):
+            continue
+        raw = _sealed_qc_bytes(root, proof, cancel_event)
+        if _normalized_model(_qc_model_name(raw)) == _normalized_model(model_rel):
+            candidates.append(proof)
+    if len(candidates) != 1:
+        raise ValueError("authoritative sealed root QC is missing or ambiguous")
+    selected = candidates[0]
+    path = root.joinpath(*PurePosixPath(selected.relative_path).parts)
+    graph = parse_qc_graph(path, root)
+    payload = canonical_qc_graph_payload(graph, cancel_event)
+    _bind_graph_payload_to_manifest(payload, source_manifest)
+    if payload["root_qc"] != selected.relative_path:
+        raise ValueError("parsed root QC differs from sealed root proof")
+    return graph
+
+
+def _bound_graph_digest(
+    graph: QcGraph, source_manifest: SourceTreeManifest,
+    cancel_event: threading.Event | None,
+) -> str:
+    before = canonical_qc_graph_payload(graph, cancel_event)
+    _bind_graph_payload_to_manifest(before, source_manifest)
+    digest = hashlib.sha256(canonical_json(before).encode("utf-8")).hexdigest()
+    after = canonical_qc_graph_payload(graph, cancel_event)
+    _bind_graph_payload_to_manifest(after, source_manifest)
+    if after != before:
+        raise ValueError("QC graph changed while binding its digest")
+    return digest
 
 
 def build_production_adaptive_candidate_metrics_proof(
@@ -354,10 +445,20 @@ def build_production_adaptive_candidate_metrics_proof(
 
     revalidate_recovery_snapshot(original_snapshot, cancel_event)
     revalidate_recovery_snapshot(candidate_snapshot, cancel_event)
-    original_graph = _root_graph(Path(original_snapshot.source_root), manifest.model_rel, optimized=False)
-    candidate_graph = _root_graph(Path(candidate_snapshot.source_root), manifest.model_rel, optimized=True)
-    original_graph_digest = qc_graph_sha256(original_graph, cancel_event)
-    candidate_graph_digest = qc_graph_sha256(candidate_graph, cancel_event)
+    original_graph = _root_graph(
+        Path(original_snapshot.source_root), manifest.model_rel, optimized=False,
+        source_manifest=original_snapshot.source_manifest, cancel_event=cancel_event,
+    )
+    candidate_graph = _root_graph(
+        Path(candidate_snapshot.source_root), manifest.model_rel, optimized=True,
+        source_manifest=candidate_snapshot.source_manifest, cancel_event=cancel_event,
+    )
+    original_graph_digest = _bound_graph_digest(
+        original_graph, original_snapshot.source_manifest, cancel_event,
+    )
+    candidate_graph_digest = _bound_graph_digest(
+        candidate_graph, candidate_snapshot.source_manifest, cancel_event,
+    )
 
     original_visual, original_relative = _source_files(original_snapshot)
     candidate_visual, candidate_relative = _source_files(candidate_snapshot)

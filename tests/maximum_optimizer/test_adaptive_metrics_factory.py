@@ -6,7 +6,9 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
+import maximum_optimizer.adaptive_metrics_factory as metrics_factory_module
 from maximum_optimizer.adaptive_metrics_factory import (
     build_production_adaptive_candidate_metrics_proof,
     canonical_qc_graph_payload,
@@ -291,6 +293,46 @@ class ProductionAdaptiveMetricsFactoryTests(unittest.TestCase):
             fixture = FactoryFixture(Path(raw), mutate=boolean_schema)
             with self.assertRaisesRegex(ValueError, "identity"):
                 fixture.build()
+
+    def test_factory_rejects_transient_qc_bytes_restored_before_final_snapshot_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = FactoryFixture(Path(raw))
+            root_qc = fixture.original_root / "main.qc"
+            original_bytes = root_qc.read_bytes()
+            real_root_graph = metrics_factory_module._root_graph
+            real_graph_digest = metrics_factory_module.qc_graph_sha256
+            transient_active = False
+
+            def transient_root_graph(
+                root, model_rel, *, optimized, source_manifest, cancel_event,
+            ):
+                nonlocal transient_active
+                if not optimized:
+                    root_qc.write_bytes(original_bytes + b"// transient authority\n")
+                    transient_active = True
+                return real_root_graph(
+                    root, model_rel, optimized=optimized,
+                    source_manifest=source_manifest, cancel_event=cancel_event,
+                )
+
+            def restore_after_digest(graph, cancel_event=None):
+                nonlocal transient_active
+                result = real_graph_digest(graph, cancel_event)
+                if transient_active:
+                    root_qc.write_bytes(original_bytes)
+                    transient_active = False
+                return result
+
+            try:
+                with patch.object(
+                    metrics_factory_module, "_root_graph", side_effect=transient_root_graph,
+                ), patch.object(
+                    metrics_factory_module, "qc_graph_sha256", side_effect=restore_after_digest,
+                ):
+                    with self.assertRaisesRegex(ValueError, "QC|proof|manifest|bytes"):
+                        fixture.build()
+            finally:
+                root_qc.write_bytes(original_bytes)
 
     def test_read_only_loader_parses_a_real_superpowers_json_without_mutation(self) -> None:
         repository = Path(__file__).resolve().parents[2]
