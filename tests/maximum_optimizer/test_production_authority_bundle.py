@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
+import maximum_optimizer.composite as composite_module
+import maximum_optimizer.production_authority_bundle as bundle_module
 from maximum_optimizer.candidates import CandidateBuild
 from maximum_optimizer.composite import (
     build_recovery_source_snapshot,
@@ -20,6 +24,7 @@ from maximum_optimizer.domain import (
     FamilyManifest,
     FocusRegionResult,
     FocusedEvidenceRef,
+    GateFailure,
     StructuralFingerprint,
     ValidationResult,
 )
@@ -41,7 +46,11 @@ def _smd(material: str = "paint") -> bytes:
 
 
 class BundleFixture:
-    def __init__(self, root: Path, *, visual_count: int = 2) -> None:
+    def __init__(
+        self, root: Path, *, visual_count: int = 2,
+        cdmaterials: tuple[str, ...] = ("vehicles",),
+        include_animation: bool = False,
+    ) -> None:
         self.root = root
         self.original_root = root / "original"
         self.candidate_root = root / "candidate"
@@ -61,10 +70,18 @@ class BundleFixture:
 
         original_lines = [
             '$modelname "models/test.mdl"',
-            '$cdmaterials "vehicles"',
-            '$cdmaterials "vehicles/"',
+            *(f'$cdmaterials "{item}"' for item in cdmaterials),
         ]
         candidate_lines = list(original_lines)
+        if include_animation:
+            original_lines.append('$sequence "drive" "anim.smd"')
+            candidate_lines.append('$sequence "drive" "anim.smd"')
+            (self.original_root / "anim.smd").write_bytes(
+                _smd() + b"// original animation\n"
+            )
+            (self.candidate_root / "anim.smd").write_bytes(
+                _smd() + b"// divergent candidate animation\n"
+            )
         for index in range(visual_count):
             name = f"part{index:02d}.smd"
             output = f"output/part{index:02d}_opt.smd"
@@ -161,6 +178,7 @@ class BundleFixture:
     def build_bundle(self):
         return build_production_adaptive_authority_bundle(
             manifest=self.manifest, evaluation=self.evaluation, build=self.build,
+            candidate_cache_digest=self.cache_digest,
             material_roots=(self.material_root,), cancel_event=threading.Event(),
         )
 
@@ -193,12 +211,22 @@ class ProductionAuthorityBundleTests(unittest.TestCase):
                     iter(bundle.component_manifests.values())
                 )
 
-    def test_rejects_more_than_eight_eligible_sources_before_material_io(self) -> None:
+    def test_rejects_more_than_eight_eligible_sources_before_qc_smd_or_material_io(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             fixture = BundleFixture(Path(temporary), visual_count=9)
             (fixture.material_root / "vehicles" / "paint.vmt").unlink()
+            source_reads = []
+            real_hash = composite_module._hash_current_file
+
+            def recording_hash(path, *args, **kwargs):
+                if Path(path).suffix.casefold() in {".qc", ".smd"}:
+                    source_reads.append(Path(path).name)
+                return real_hash(path, *args, **kwargs)
+
             with self.assertRaisesRegex(ValueError, "eight"):
-                fixture.build_bundle()
+                with patch.object(composite_module, "_hash_current_file", recording_hash):
+                    fixture.build_bundle()
+            self.assertEqual(source_reads, [])
 
     def test_rejects_current_candidate_bytes_that_differ_from_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -218,8 +246,122 @@ class ProductionAuthorityBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "approved"):
                 build_production_adaptive_authority_bundle(
                     manifest=fixture.manifest, evaluation=failed, build=fixture.build,
+                    candidate_cache_digest=fixture.cache_digest,
                     material_roots=(fixture.material_root,),
                 )
+
+    def test_rejects_candidate_cache_digest_not_supplied_by_the_orchestrator(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BundleFixture(Path(temporary))
+            with self.assertRaisesRegex(ValueError, "cache"):
+                build_production_adaptive_authority_bundle(
+                    manifest=fixture.manifest, evaluation=fixture.evaluation,
+                    build=fixture.build, candidate_cache_digest=H["9"],
+                    material_roots=(fixture.material_root,),
+                )
+
+    def test_rejects_incoherent_validation_results_for_every_ordinary_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BundleFixture(Path(temporary))
+            incoherent = ValidationResult(True, (
+                GateFailure("visual", "whole", 1.0, 0.0, "failed but marked passed"),
+            ))
+            target = next(iter(fixture.evaluation.focused_by_region.values())).target
+            focused = FocusRegionResult(target, incoherent, H["d"], False)
+            variants = {
+                "structural": replace(fixture.evaluation, structural=incoherent),
+                "visual": replace(fixture.evaluation, visual=incoherent),
+                "whole": replace(fixture.evaluation, whole_visual=incoherent),
+                "focused": replace(
+                    fixture.evaluation,
+                    focused_by_region={target.region_key: focused},
+                ),
+            }
+            for label, evaluation in variants.items():
+                with self.subTest(label=label), self.assertRaisesRegex(
+                    ValueError, "incoherent"
+                ):
+                    build_production_adaptive_authority_bundle(
+                        manifest=fixture.manifest, evaluation=evaluation,
+                        build=fixture.build,
+                        candidate_cache_digest=fixture.cache_digest,
+                        material_roots=(fixture.material_root,),
+                    )
+
+    def test_rejects_original_qc_change_between_graph_parse_and_manifest_seal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BundleFixture(Path(temporary))
+            (fixture.material_root / "other").mkdir()
+            (fixture.material_root / "other" / "paint.vmt").write_text(
+                'VertexLitGeneric { "$basetexture" "textures/paint" }',
+                encoding="utf-8",
+            )
+            real_builder = bundle_module.build_source_tree_manifest
+
+            def mutate_then_build(root, graph, identity, event):
+                if identity == "original-source-v1":
+                    fixture.original_qc.write_text(
+                        fixture.original_qc.read_text(encoding="utf-8").replace(
+                            '$cdmaterials "vehicles"', '$cdmaterials "other"'
+                        ),
+                        encoding="utf-8",
+                    )
+                return real_builder(root, graph, identity, event)
+
+            with patch.object(
+                bundle_module, "build_source_tree_manifest", mutate_then_build
+            ), self.assertRaisesRegex(ValueError, "QC graph.*changed|same window"):
+                fixture.build_bundle()
+
+    def test_revalidates_material_dependencies_after_final_snapshot_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BundleFixture(Path(temporary))
+            real_revalidate = bundle_module.revalidate_recovery_snapshot
+            calls = 0
+
+            def mutate_after_final_snapshot(snapshot, event):
+                nonlocal calls
+                result = real_revalidate(snapshot, event)
+                calls += 1
+                if calls == 4:
+                    (fixture.material_root / "vehicles" / "paint.vmt").write_text(
+                        'VertexLitGeneric { "$basetexture" "textures/changed" }',
+                        encoding="utf-8",
+                    )
+                return result
+
+            with patch.object(
+                bundle_module, "revalidate_recovery_snapshot",
+                mutate_after_final_snapshot,
+            ), self.assertRaisesRegex(ValueError, "material contract"):
+                fixture.build_bundle()
+
+    def test_rejects_duplicate_resolved_material_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BundleFixture(Path(temporary))
+            with self.assertRaisesRegex(ValueError, "roots.*duplicated|canonical unique"):
+                build_production_adaptive_authority_bundle(
+                    manifest=fixture.manifest, evaluation=fixture.evaluation,
+                    build=fixture.build,
+                    candidate_cache_digest=fixture.cache_digest,
+                    material_roots=(fixture.material_root, fixture.material_root),
+                )
+
+    def test_rejects_cdmaterials_duplicated_after_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BundleFixture(
+                Path(temporary), cdmaterials=("vehicles", "VeHiClEs/"),
+            )
+            with self.assertRaisesRegex(ValueError, "cdmaterials.*duplicated"):
+                fixture.build_bundle()
+
+    def test_rejects_animation_sources_until_paired_authority_is_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BundleFixture(Path(temporary), include_animation=True)
+            with self.assertRaisesRegex(
+                ValueError, "unsupported-until-paired-animation-authority"
+            ):
+                fixture.build_bundle()
 
 
 if __name__ == "__main__":

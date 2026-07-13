@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import threading
 from types import MappingProxyType
 
 from .adaptive_metrics_factory import (
+    _bound_graph_digest,
     _normalized_model,
     _qc_model_name,
     _root_graph,
@@ -34,6 +36,7 @@ from .domain import (
     FamilyManifest,
     RecoverySourceSnapshot,
     SourceFileProof,
+    validation_result_payload,
 )
 from .focused_cache import _read_regular_no_follow
 from .monaco_selection import (
@@ -54,6 +57,7 @@ from .source_materials import (
 
 
 _SOURCE_BYTE_LIMIT = 2 * 1024 ** 3
+_CANDIDATE_METRICS_BYTE_LIMIT = 64 * 1024 * 1024
 
 
 def _absolute(value: Path) -> Path:
@@ -89,6 +93,49 @@ def _original_root_graph(
     return graph
 
 
+def _preflight_eligible_count(
+    snapshot: RecoverySourceSnapshot,
+    cancel_event: threading.Event | None,
+) -> int:
+    """Read only the sealed metrics member; this count can reject, never authorize."""
+    matches = tuple(
+        item for item in snapshot.source_manifest.files
+        if item.relative_path == "candidate_metrics.json"
+    )
+    if (
+        len(matches) != 1
+        or matches[0].kind != "auxiliary"
+        or matches[0].file_identity != "auxiliary/candidate_metrics.json"
+    ):
+        raise ValueError("candidate metrics preflight has no sealed canonical member")
+    proof = matches[0]
+    path = Path(snapshot.source_root) / "candidate_metrics.json"
+    raw = _read_regular_no_follow(
+        path, cancel_event, contained_root=snapshot.source_root,
+        max_bytes=_CANDIDATE_METRICS_BYTE_LIMIT,
+    )
+    if (len(raw), hashlib.sha256(raw).hexdigest()) != (proof.size, proof.sha256):
+        raise ValueError("candidate metrics preflight bytes differ from sealed member")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("candidate metrics preflight document is invalid") from exc
+    files = payload.get("files") if type(payload) is dict else None
+    if type(files) is not list:
+        return 0
+    return sum(
+        type(item) is dict
+        and type(item.get("adaptive_exact_preservation")) is dict
+        and item["adaptive_exact_preservation"].get("schema") == 1
+        and item["adaptive_exact_preservation"].get("kind") == "eligible-exact-v1"
+        and item["adaptive_exact_preservation"].get("preserved_exact") is True
+        and item["adaptive_exact_preservation"].get("reason") in {
+            "ratio-preserved-exact-v1", "approved-exact-source-fallback-v1",
+        }
+        for item in files
+    )
+
+
 def _canonical_cdmaterials(graph: QcGraph) -> tuple[str, ...]:
     values: list[str] = []
     folded: set[str] = set()
@@ -111,9 +158,10 @@ def _canonical_cdmaterials(graph: QcGraph) -> tuple[str, ...]:
                     raise ValueError("$cdmaterials path is unsafe")
                 canonical = posix.as_posix()
                 key = canonical.casefold()
-                if key not in folded:
-                    folded.add(key)
-                    values.append(canonical)
+                if key in folded:
+                    raise ValueError("$cdmaterials normalized path is duplicated")
+                folded.add(key)
+                values.append(canonical)
             index = max(next_index, index + 1)
     return tuple(values)
 
@@ -250,6 +298,7 @@ def build_production_adaptive_authority_bundle(
     manifest: FamilyManifest,
     evaluation: CandidateEvaluation,
     build: CandidateBuild,
+    candidate_cache_digest: str,
     material_roots: Sequence[Path],
     cancel_event: threading.Event | None = None,
 ) -> ProductionAdaptiveAuthorityBundle:
@@ -275,11 +324,23 @@ def build_production_adaptive_authority_bundle(
     ):
         raise ValueError("production adaptive base is not an approved ordinary candidate")
     cache_digest = snapshot.candidate_cache_digest
-    if cache_digest is None:
-        raise ValueError("production adaptive candidate cache authority is missing")
+    if cache_digest is None or candidate_cache_digest != cache_digest:
+        raise ValueError("production adaptive candidate cache authority differs")
+    for result in (
+        evaluation.structural, evaluation.visual, evaluation.whole_visual,
+        *(item.validation for item in evaluation.focused_by_region.values()),
+    ):
+        validation_result_payload(result)
+
+    if _preflight_eligible_count(snapshot, cancel_event) > 8:
+        raise ValueError("production adaptive exact fallback exceeds eight eligible sources")
+
     if type(material_roots) not in (tuple, list) or not material_roots:
         raise ValueError("production adaptive material roots are invalid")
     roots = tuple(_absolute(Path(item)).resolve(strict=True) for item in material_roots)
+    root_keys = tuple(os.path.normcase(str(item)) for item in roots)
+    if len(set(root_keys)) != len(root_keys):
+        raise ValueError("production adaptive material roots are not canonical unique; resolved roots are duplicated")
 
     revalidate_recovery_snapshot(snapshot, cancel_event)
     candidate_graph = _root_graph(
@@ -294,6 +355,23 @@ def build_production_adaptive_authority_bundle(
     original_manifest = build_source_tree_manifest(
         original_root, original_graph, "original-source-v1", cancel_event,
     )
+    try:
+        parsed_graph_digest = _bound_graph_digest(
+            original_graph, original_manifest, cancel_event,
+        )
+        sealed_original_graph = _root_graph(
+            original_root, manifest.model_rel, optimized=False,
+            source_manifest=original_manifest, cancel_event=cancel_event,
+        )
+        if _bound_graph_digest(
+            sealed_original_graph, original_manifest, cancel_event,
+        ) != parsed_graph_digest:
+            raise ValueError("original QC graph digest differs")
+    except (OSError, UnicodeError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "original QC graph changed outside the source-manifest same window"
+        ) from exc
+    original_graph = sealed_original_graph
     original_snapshot = build_recovery_source_snapshot(
         kind="original", family_id=manifest.family_id,
         family_input_sha256=manifest.input_hash,
@@ -306,6 +384,14 @@ def build_production_adaptive_authority_bundle(
         focused_evidence=(),
     )
     revalidate_recovery_snapshot(original_snapshot, cancel_event)
+
+    if (
+        any(item.kind == "animation-source" for item in snapshot.source_manifest.files)
+        or any(item.kind == "animation-source" for item in original_manifest.files)
+        or any(item.role == "animation" for item in candidate_graph.references)
+        or any(item.role == "animation" for item in original_graph.references)
+    ):
+        raise ValueError("unsupported-until-paired-animation-authority")
 
     metrics = build_production_adaptive_candidate_metrics_proof(
         manifest=manifest, spec=spec, candidate_cache_digest=cache_digest,
@@ -339,9 +425,9 @@ def build_production_adaptive_authority_bundle(
         cancel_event=cancel_event,
     )
 
-    _revalidate_dependencies(original_snapshot, dependencies, roots, cancel_event)
     revalidate_recovery_snapshot(original_snapshot, cancel_event)
     revalidate_recovery_snapshot(snapshot, cancel_event)
+    _revalidate_dependencies(original_snapshot, dependencies, roots, cancel_event)
     ordered_dependencies = {
         identity: dependencies[identity]
         for identity in (item.source_identity for item in metrics.sources)
