@@ -317,6 +317,11 @@ class CoverageContracts(unittest.TestCase):
         payload = adaptive_direct_state_inventory_payload(inventory)
         self.assertEqual(adaptive_direct_state_inventory_from_payload(payload), inventory)
         assert_every_field_rejected(self, adaptive_direct_state_inventory_from_payload, payload)
+        for field in tuple(payload["metric_occurrences"][0]):
+            changed = adaptive_direct_state_inventory_payload(inventory)
+            changed["metric_occurrences"][0][field] = None
+            with self.subTest(classification_field=field), self.assertRaises((TypeError, ValueError)):
+                adaptive_direct_state_inventory_from_payload(changed)
         mismatched_metrics = build_adaptive_candidate_metrics_proof(
             family_id=H["f"], family_input_sha256=H["1"], candidate_id="base",
             candidate_cache_digest=H["3"], base_spec_sha256=H["2"],

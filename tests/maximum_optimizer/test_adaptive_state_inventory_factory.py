@@ -16,6 +16,8 @@ from maximum_optimizer.adaptive_state_inventory import (
 from maximum_optimizer.adaptive_metrics_factory import qc_graph_sha256
 from maximum_optimizer.composite import (
     build_adaptive_candidate_metrics_proof,
+    build_adaptive_direct_coverage_manifest,
+    build_adaptive_direct_state_inventory,
     build_recovery_source_snapshot,
     build_source_tree_manifest,
     candidate_spec_sha256,
@@ -88,7 +90,10 @@ class InventoryFixture:
             encoding="utf-8",
         )
         with self.original_qc.open("a", encoding="utf-8") as handle:
-            handle.write('$sequence "idle" "idle.smd"\n')
+            handle.write(
+                '$sequence "idle" "idle.smd"\n'
+                '$lod 10\n{\n replacemodel "fixed.smd" "door.smd"\n}\n'
+            )
         self.candidate_qc = self.candidate_root / "main_OPT.qc"
         self.candidate_qc.write_text(
             '$modelname "models/state.mdl"\n$body "fixed" "output/fixed_opt.smd"\n'
@@ -97,7 +102,11 @@ class InventoryFixture:
             encoding="utf-8",
         )
         with self.candidate_qc.open("a", encoding="utf-8") as handle:
-            handle.write('$sequence "idle" "output/idle_opt.smd"\n')
+            handle.write(
+                '$sequence "idle" "output/idle_opt.smd"\n'
+                '$lod 10\n{\n replacemodel "output/fixed_opt.smd" '
+                '"output/door_opt.smd"\n}\n'
+            )
         self.original_graph = parse_qc_graph(self.original_qc, self.original_root)
         self.candidate_graph = parse_qc_graph(self.candidate_qc, self.candidate_root)
         original_manifest = build_source_tree_manifest(
@@ -220,6 +229,69 @@ class InventoryFixture:
 
 
 class AdaptiveStateInventoryFactoryTests(unittest.TestCase):
+    def test_real_lod_fixture_classifies_complete_metrics_and_builds_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = InventoryFixture(Path(raw))
+            inventory = fixture.build()
+            self.assertEqual(len(inventory.metric_occurrences), 4)
+            self.assertEqual(
+                tuple(item.classification for item in inventory.metric_occurrences).count(
+                    "lod-original-selector-nonrenderable-v1"
+                ),
+                1,
+            )
+            active = tuple(
+                item for item in inventory.metric_occurrences
+                if item.classification == "active-renderable-v1"
+            )
+            self.assertEqual(
+                {key for item in active for key in item.active_row_occurrence_keys},
+                {row.occurrence_key for row in inventory.rows},
+            )
+            coverage = build_adaptive_direct_coverage_manifest(
+                family_id=inventory.family_id,
+                family_input_sha256=inventory.family_input_sha256,
+                base_candidate_id=inventory.base_candidate_id,
+                base_spec_sha256=inventory.base_spec_sha256,
+                base_cache_digest=inventory.base_cache_digest,
+                base_source_manifest_sha256=inventory.base_source_manifest_sha256,
+                base_source_snapshot_sha256=inventory.base_source_snapshot_sha256,
+                metrics_proof=fixture.metrics, state_inventory=inventory,
+            )
+            self.assertEqual(coverage.occurrence_count, len(inventory.rows))
+            self.assertEqual(
+                adaptive_direct_state_inventory_from_payload(
+                    adaptive_direct_state_inventory_payload(inventory)
+                ),
+                inventory,
+            )
+            omitted = build_adaptive_direct_state_inventory(
+                family_id=inventory.family_id,
+                family_input_sha256=inventory.family_input_sha256,
+                base_candidate_id=inventory.base_candidate_id,
+                base_spec_sha256=inventory.base_spec_sha256,
+                base_cache_digest=inventory.base_cache_digest,
+                base_source_manifest_sha256=inventory.base_source_manifest_sha256,
+                base_source_snapshot_sha256=inventory.base_source_snapshot_sha256,
+                complete_source_identities=inventory.complete_source_identities,
+                rows=inventory.rows,
+                metric_occurrences=tuple(
+                    item for item in inventory.metric_occurrences
+                    if item.classification == "active-renderable-v1"
+                ),
+            )
+            with self.assertRaisesRegex(ValueError, "classification|occurrence|metrics"):
+                build_adaptive_direct_coverage_manifest(
+                    family_id=omitted.family_id,
+                    family_input_sha256=omitted.family_input_sha256,
+                    base_candidate_id=omitted.base_candidate_id,
+                    base_spec_sha256=omitted.base_spec_sha256,
+                    base_cache_digest=omitted.base_cache_digest,
+                    base_source_manifest_sha256=omitted.base_source_manifest_sha256,
+                    base_source_snapshot_sha256=omitted.base_source_snapshot_sha256,
+                    metrics_proof=fixture.metrics, state_inventory=omitted,
+                )
+
     def test_animation_pair_requires_exact_current_snapshot_members_and_roots(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = InventoryFixture(Path(raw))
@@ -324,12 +396,12 @@ class AdaptiveStateInventoryFactoryTests(unittest.TestCase):
                 adaptive_direct_state_inventory_payload(inventory)
             ), inventory)
             self.assertEqual(inventory.complete_source_identities, ("door.smd", "fixed.smd"))
-            self.assertEqual(len(inventory.rows), 6)
-            self.assertEqual(len({item.state_key for item in inventory.rows}), 4)
+            self.assertEqual(len(inventory.rows), 12)
+            self.assertEqual(len({item.state_key for item in inventory.rows}), 8)
             self.assertEqual(len({item.skin_key for item in inventory.rows}), 2)
             self.assertEqual(sum(item.source_identity == "fixed.smd" for item in inventory.rows), 4)
-            self.assertEqual(sum(item.source_identity == "door.smd" for item in inventory.rows), 2)
-            self.assertEqual(len({item.occurrence_key for item in inventory.rows}), 6)
+            self.assertEqual(sum(item.source_identity == "door.smd" for item in inventory.rows), 8)
+            self.assertEqual(len({item.occurrence_key for item in inventory.rows}), 12)
             source_proofs = {
                 item.file_identity: item for item in fixture.original_snapshot.source_manifest.files
                 if item.kind == "visual-source"

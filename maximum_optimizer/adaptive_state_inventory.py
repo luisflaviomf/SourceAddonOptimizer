@@ -11,6 +11,7 @@ from typing import Mapping
 from .adaptive_metrics_factory import _bound_graph_digest, _root_graph
 from .composite import (
     build_adaptive_direct_state_inventory,
+    build_adaptive_direct_metric_occurrence_classification,
     build_adaptive_direct_state_inventory_row,
     candidate_spec_sha256,
     optimizer_contract_sha256,
@@ -23,6 +24,7 @@ from .domain import (
     FamilyManifest,
     RecoverySourceSnapshot,
     SourceFileProof,
+    adaptive_metric_occurrence_key,
     require_canonical_relative,
 )
 from .qc_graph import QcGraph
@@ -474,6 +476,74 @@ def build_production_adaptive_direct_state_inventory(
     if {item.source_identity for item in rows} != set(original_proofs):
         raise ValueError("active QC state/source union differs from complete metric union")
     rows.sort(key=lambda item: (item.occurrence_key.casefold(), item.occurrence_key))
+    row_keys_by_provenance: dict[tuple[str, str, int, str], list[str]] = {}
+    for row in rows:
+        provenance = (
+            row.graph_relative_path, row.directive, row.line, row.source_identity,
+        )
+        row_keys_by_provenance.setdefault(provenance, []).append(row.occurrence_key)
+    active_ordinals = {
+        active.occurrence_ordinal for state in states for active in state.active
+    }
+    visual_references = tuple(
+        (ordinal, reference) for ordinal, reference in enumerate(original_graph.references)
+        if reference.role == "visual"
+    )
+    metric_occurrences = []
+    for visual_index, (ordinal, reference) in enumerate(visual_references):
+        relative = _relative(
+            original_graph.family_root, reference.source_path, "classified visual source",
+        )
+        proof = next(
+            (item for item in original_proofs.values() if item.relative_path == relative),
+            None,
+        )
+        if proof is None:
+            raise ValueError("classified metric occurrence has no sealed source proof")
+        provenance = (
+            _relative(
+                original_graph.family_root, reference.graph_file,
+                "classified visual graph",
+            ),
+            reference.directive, reference.line, proof.file_identity,
+        )
+        row_keys = tuple(sorted(
+            row_keys_by_provenance.get(provenance, ()),
+            key=lambda item: (item.casefold(), item),
+        ))
+        if ordinal in active_ordinals:
+            classification = "active-renderable-v1"
+            if not row_keys:
+                raise ValueError("active QC occurrence has no state-expanded row mapping")
+        else:
+            classification = "lod-original-selector-nonrenderable-v1"
+            next_reference = (
+                visual_references[visual_index + 1]
+                if visual_index + 1 < len(visual_references) else None
+            )
+            if (
+                row_keys or reference.directive != "$lod/replacemodel"
+                or next_reference is None or next_reference[0] != ordinal + 1
+                or next_reference[0] not in active_ordinals
+                or next_reference[1].directive != reference.directive
+                or next_reference[1].line != reference.line
+                or next_reference[1].graph_file != reference.graph_file
+                or next_reference[1].group != reference.group
+            ):
+                raise ValueError("nonrenderable QC metric occurrence is not an exact LOD original selector")
+        metric_occurrences.append(
+            build_adaptive_direct_metric_occurrence_classification(
+                metric_occurrence_key=adaptive_metric_occurrence_key(*provenance),
+                source_identity=proof.file_identity,
+                graph_relative_path=provenance[0], directive=provenance[1],
+                line=provenance[2], logical_path=provenance[3],
+                classification=classification,
+                active_row_occurrence_keys=row_keys,
+            )
+        )
+    metric_occurrences.sort(
+        key=lambda item: (item.metric_occurrence_key.casefold(), item.metric_occurrence_key)
+    )
     inventory = build_adaptive_direct_state_inventory(
         family_id=manifest.family_id,
         family_input_sha256=manifest.input_hash,
@@ -486,6 +556,7 @@ def build_production_adaptive_direct_state_inventory(
             original_proofs, key=lambda item: (item.casefold(), item)
         )),
         rows=tuple(rows),
+        metric_occurrences=tuple(metric_occurrences),
     )
     revalidate_recovery_snapshot(original_snapshot, cancel_event)
     revalidate_recovery_snapshot(candidate_snapshot, cancel_event)

@@ -17,6 +17,7 @@ from .domain import (
     AdaptiveDirectCoverageSourceProof,
     AdaptiveDirectStateInventory,
     AdaptiveDirectStateInventoryRow,
+    AdaptiveDirectMetricOccurrenceClassification,
     CandidateEvaluation,
     ChangedSourceProof,
     CandidateSpec,
@@ -40,6 +41,8 @@ from .domain import (
     adaptive_direct_coverage_manifest_payload,
     adaptive_direct_state_inventory_payload,
     adaptive_direct_state_inventory_row_payload,
+    adaptive_direct_metric_occurrence_payload,
+    adaptive_metric_occurrence_key,
     direct_prefilter_payload,
     direct_candidate_id,
     direct_cache_digest,
@@ -107,12 +110,29 @@ def build_adaptive_direct_coverage_manifest(**values) -> AdaptiveDirectCoverageM
     if tuple(item.source_identity for item in metrics.sources) != identities: raise ValueError("coverage metrics/inventory source union mismatch")
     rows_by_source = {identity: [] for identity in identities}
     for row in inventory.rows: rows_by_source[row.source_identity].append(row)
+    classified_by_source = {identity: [] for identity in identities}
+    for item in inventory.metric_occurrences:
+        classified_by_source[item.source_identity].append(item)
     sources = []
     for metric in metrics.sources:
         rows = tuple(rows_by_source[metric.source_identity])
+        classified = tuple(classified_by_source[metric.source_identity])
         metric_occurrences = tuple((item.graph_relative_path, item.directive, item.line, item.logical_path) for item in metric.occurrences)
-        row_occurrences = tuple((item.graph_relative_path, item.directive, item.line, item.source_identity) for item in rows)
-        if metric_occurrences != row_occurrences: raise ValueError("coverage state inventory differs from complete metric occurrences")
+        classified_occurrences = tuple(
+            (
+                item.graph_relative_path, item.directive, item.line, item.logical_path
+            ) for item in classified
+        )
+        if len(metric_occurrences) != len(classified_occurrences) or set(metric_occurrences) != set(classified_occurrences): raise ValueError("coverage state inventory classification differs from complete metric occurrences")
+        active_provenance = {
+            (item.graph_relative_path, item.directive, item.line, item.logical_path)
+            for item in classified if item.classification == "active-renderable-v1"
+        }
+        if any(
+            (row.graph_relative_path, row.directive, row.line, row.source_identity)
+            not in active_provenance for row in rows
+        ):
+            raise ValueError("coverage active rows are outside classified metric occurrences")
         if any(row.source_size != metric.source_size or row.source_sha256 != metric.source_sha256 for row in rows): raise ValueError("coverage state inventory source bytes mismatch")
         witnesses = tuple(AdaptiveDirectCoverageOccurrenceProof.create(
             occurrence_key=row.occurrence_key, source_identity=row.source_identity,
@@ -164,8 +184,45 @@ def build_adaptive_direct_state_inventory_row(**values) -> AdaptiveDirectStateIn
     provisional = _unsealed(AdaptiveDirectStateInventoryRow, **raw); raw["row_sha256"] = _pure_seal(adaptive_direct_state_inventory_row_payload(provisional, include_seal=False)); return AdaptiveDirectStateInventoryRow(**raw)
 
 
-def build_adaptive_direct_state_inventory(*, rows, complete_source_identities, **values) -> AdaptiveDirectStateInventory:
-    raw = dict(schema=1, rows=tuple(rows), complete_source_identities=tuple(complete_source_identities), state_inventory_sha256=_ZERO_HASH, **values)
+def build_adaptive_direct_metric_occurrence_classification(**values) -> AdaptiveDirectMetricOccurrenceClassification:
+    raw = dict(role="visual", classification_sha256=_ZERO_HASH, **values)
+    provisional = _unsealed(AdaptiveDirectMetricOccurrenceClassification, **raw)
+    raw["classification_sha256"] = _pure_seal(
+        adaptive_direct_metric_occurrence_payload(provisional, include_seal=False)
+    )
+    return AdaptiveDirectMetricOccurrenceClassification(**raw)
+
+
+def build_adaptive_direct_state_inventory(
+    *, rows, complete_source_identities, metric_occurrences=None, **values,
+) -> AdaptiveDirectStateInventory:
+    rows = tuple(rows)
+    if metric_occurrences is None:
+        grouped = {}
+        for row in rows:
+            provenance = (
+                row.graph_relative_path, row.directive, row.line, row.source_identity,
+            )
+            grouped.setdefault(provenance, []).append(row.occurrence_key)
+        metric_occurrences = tuple(
+            build_adaptive_direct_metric_occurrence_classification(
+                metric_occurrence_key=adaptive_metric_occurrence_key(*provenance),
+                source_identity=provenance[3], graph_relative_path=provenance[0],
+                directive=provenance[1], line=provenance[2], logical_path=provenance[3],
+                classification="active-renderable-v1",
+                active_row_occurrence_keys=tuple(sorted(
+                    row_keys, key=lambda item: (item.casefold(), item)
+                )),
+            )
+            for provenance, row_keys in sorted(
+                grouped.items(),
+                key=lambda item: (
+                    adaptive_metric_occurrence_key(*item[0]).casefold(),
+                    adaptive_metric_occurrence_key(*item[0]),
+                ),
+            )
+        )
+    raw = dict(schema=1, rows=rows, metric_occurrences=tuple(metric_occurrences), complete_source_identities=tuple(complete_source_identities), state_inventory_sha256=_ZERO_HASH, **values)
     provisional = _unsealed(AdaptiveDirectStateInventory, **raw); raw["state_inventory_sha256"] = _pure_seal(adaptive_direct_state_inventory_payload(provisional, include_seal=False)); return AdaptiveDirectStateInventory(**raw)
 
 

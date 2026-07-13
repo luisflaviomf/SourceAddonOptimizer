@@ -712,6 +712,84 @@ def adaptive_candidate_metrics_from_payload(value: object) -> AdaptiveCandidateM
     return AdaptiveCandidateMetricsProof(**copied)
 
 
+def adaptive_metric_occurrence_key(
+    graph_relative_path: str, directive: str, line: int, logical_path: str,
+) -> str:
+    payload = {
+        "graph_relative_path": graph_relative_path,
+        "directive": directive, "line": line, "logical_path": logical_path,
+        "role": "visual",
+    }
+    return "metric-occ-" + _seal(payload)
+
+
+@dataclass(frozen=True)
+class AdaptiveDirectMetricOccurrenceClassification:
+    metric_occurrence_key: str
+    source_identity: str
+    graph_relative_path: str
+    directive: str
+    line: int
+    logical_path: str
+    role: Literal["visual"]
+    classification: Literal[
+        "active-renderable-v1", "lod-original-selector-nonrenderable-v1"
+    ]
+    active_row_occurrence_keys: tuple[str, ...]
+    classification_sha256: str
+
+    def __post_init__(self) -> None:
+        _require_relative(self.source_identity, "classified metric source identity")
+        _require_relative(self.graph_relative_path, "classified metric graph path")
+        _require_relative(self.logical_path, "classified metric logical path")
+        _require_text(self.directive, "classified metric directive")
+        if type(self.line) is not int or self.line < 1 or self.role != "visual":
+            raise ValueError("classified metric occurrence provenance is invalid")
+        expected_key = adaptive_metric_occurrence_key(
+            self.graph_relative_path, self.directive, self.line, self.logical_path,
+        )
+        if self.metric_occurrence_key != expected_key:
+            raise ValueError("classified metric occurrence key differs from provenance")
+        active_keys = tuple(self.active_row_occurrence_keys)
+        if (
+            len(active_keys) > _ADAPTIVE_OCCURRENCE_LIMIT
+            or any(type(item) is not str or not item for item in active_keys)
+            or active_keys != tuple(sorted(active_keys, key=lambda item: (item.casefold(), item)))
+            or len({item.casefold() for item in active_keys}) != len(active_keys)
+        ):
+            raise ValueError("classified metric active row mapping is invalid")
+        if self.classification == "active-renderable-v1":
+            if not active_keys:
+                raise ValueError("active metric occurrence has no rendered state rows")
+        elif self.classification == "lod-original-selector-nonrenderable-v1":
+            if active_keys or self.directive != "$lod/replacemodel":
+                raise ValueError("LOD selector classification is renderable or has wrong directive")
+        else:
+            raise ValueError("metric occurrence classification is invalid")
+        if _require_sha256(
+            self.classification_sha256, "metric occurrence classification seal"
+        ) != _seal(adaptive_direct_metric_occurrence_payload(self, include_seal=False)):
+            raise ValueError("metric occurrence classification seal mismatch")
+        object.__setattr__(self, "active_row_occurrence_keys", active_keys)
+
+
+def adaptive_direct_metric_occurrence_payload(
+    value: AdaptiveDirectMetricOccurrenceClassification, *, include_seal: bool = True,
+) -> dict[str, object]:
+    payload = {
+        "metric_occurrence_key": value.metric_occurrence_key,
+        "source_identity": value.source_identity,
+        "graph_relative_path": value.graph_relative_path,
+        "directive": value.directive, "line": value.line,
+        "logical_path": value.logical_path, "role": value.role,
+        "classification": value.classification,
+        "active_row_occurrence_keys": list(value.active_row_occurrence_keys),
+    }
+    if include_seal:
+        payload["classification_sha256"] = value.classification_sha256
+    return payload
+
+
 @dataclass(frozen=True)
 class AdaptiveDirectStateInventoryRow:
     occurrence_key: str
@@ -771,6 +849,7 @@ class AdaptiveDirectStateInventory:
     base_source_snapshot_sha256: str
     complete_source_identities: tuple[str, ...]
     rows: tuple[AdaptiveDirectStateInventoryRow, ...]
+    metric_occurrences: tuple[AdaptiveDirectMetricOccurrenceClassification, ...]
     state_inventory_sha256: str
 
     def __post_init__(self) -> None:
@@ -779,15 +858,44 @@ class AdaptiveDirectStateInventory:
         _require_text(self.base_candidate_id, "inventory base candidate")
         identities = _canonical_text_tuple(self.complete_source_identities, "inventory source identities")
         rows = tuple(self.rows)
+        metric_occurrences = tuple(self.metric_occurrences)
         keys = [(item.occurrence_key.casefold(), item.occurrence_key) for item in rows if isinstance(item, AdaptiveDirectStateInventoryRow)]
         if not rows or len(rows) > _ADAPTIVE_OCCURRENCE_LIMIT or len(keys) != len(rows) or keys != sorted(keys) or len({key[0] for key in keys}) != len(keys): raise ValueError("state inventory rows are not canonical or exceed bound")
-        if {item.source_identity for item in rows} != set(identities): raise ValueError("state inventory source coverage mismatch")
+        metric_keys = tuple(
+            (item.metric_occurrence_key.casefold(), item.metric_occurrence_key)
+            for item in metric_occurrences
+            if isinstance(item, AdaptiveDirectMetricOccurrenceClassification)
+        )
+        if (
+            not metric_occurrences or len(metric_occurrences) > _ADAPTIVE_OCCURRENCE_LIMIT
+            or len(metric_keys) != len(metric_occurrences)
+            or metric_keys != tuple(sorted(metric_keys))
+            or len({item[0] for item in metric_keys}) != len(metric_keys)
+        ):
+            raise ValueError("state inventory metric classifications are not canonical")
+        if {item.source_identity for item in metric_occurrences} != set(identities):
+            raise ValueError("state inventory classified metric source coverage mismatch")
+        rows_by_key = {item.occurrence_key: item for item in rows}
+        mapped = tuple(
+            key for item in metric_occurrences for key in item.active_row_occurrence_keys
+        )
+        if len(mapped) != len(set(mapped)) or set(mapped) != set(rows_by_key):
+            raise ValueError("state inventory active row/classification mapping is incomplete")
+        for item in metric_occurrences:
+            for row_key in item.active_row_occurrence_keys:
+                row = rows_by_key[row_key]
+                if (
+                    row.source_identity != item.source_identity
+                    or row.graph_relative_path != item.graph_relative_path
+                    or row.directive != item.directive or row.line != item.line
+                ):
+                    raise ValueError("state inventory row differs from classified metric provenance")
         if _require_sha256(self.state_inventory_sha256, "state inventory hash") != _seal(adaptive_direct_state_inventory_payload(self, include_seal=False)): raise ValueError("state inventory seal mismatch")
-        object.__setattr__(self, "complete_source_identities", identities); object.__setattr__(self, "rows", rows)
+        object.__setattr__(self, "complete_source_identities", identities); object.__setattr__(self, "rows", rows); object.__setattr__(self, "metric_occurrences", metric_occurrences)
 
 
 def adaptive_direct_state_inventory_payload(value: AdaptiveDirectStateInventory, *, include_seal: bool = True) -> dict[str, object]:
-    payload = {"schema": value.schema, "family_id": value.family_id, "family_input_sha256": value.family_input_sha256, "base_candidate_id": value.base_candidate_id, "base_spec_sha256": value.base_spec_sha256, "base_cache_digest": value.base_cache_digest, "base_source_manifest_sha256": value.base_source_manifest_sha256, "base_source_snapshot_sha256": value.base_source_snapshot_sha256, "complete_source_identities": list(value.complete_source_identities), "rows": [adaptive_direct_state_inventory_row_payload(item) for item in value.rows]}
+    payload = {"schema": value.schema, "family_id": value.family_id, "family_input_sha256": value.family_input_sha256, "base_candidate_id": value.base_candidate_id, "base_spec_sha256": value.base_spec_sha256, "base_cache_digest": value.base_cache_digest, "base_source_manifest_sha256": value.base_source_manifest_sha256, "base_source_snapshot_sha256": value.base_source_snapshot_sha256, "complete_source_identities": list(value.complete_source_identities), "rows": [adaptive_direct_state_inventory_row_payload(item) for item in value.rows], "metric_occurrences": [adaptive_direct_metric_occurrence_payload(item) for item in value.metric_occurrences]}
     if include_seal: payload["state_inventory_sha256"] = value.state_inventory_sha256
     return payload
 
@@ -800,10 +908,28 @@ def adaptive_direct_state_inventory_row_from_payload(value: object) -> AdaptiveD
     return AdaptiveDirectStateInventoryRow(**copied)
 
 
+def adaptive_direct_metric_occurrence_from_payload(
+    value: object,
+) -> AdaptiveDirectMetricOccurrenceClassification:
+    fields = {
+        "metric_occurrence_key", "source_identity", "graph_relative_path",
+        "directive", "line", "logical_path", "role", "classification",
+        "active_row_occurrence_keys", "classification_sha256",
+    }
+    if (
+        type(value) is not dict or set(value) != fields
+        or type(value["active_row_occurrence_keys"]) is not list
+    ):
+        raise ValueError("metric occurrence classification payload fields are invalid")
+    copied = dict(value)
+    copied["active_row_occurrence_keys"] = tuple(copied["active_row_occurrence_keys"])
+    return AdaptiveDirectMetricOccurrenceClassification(**copied)
+
+
 def adaptive_direct_state_inventory_from_payload(value: object) -> AdaptiveDirectStateInventory:
-    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "complete_source_identities", "rows", "state_inventory_sha256"}
-    if type(value) is not dict or set(value) != fields or type(value["complete_source_identities"]) is not list or type(value["rows"]) is not list: raise ValueError("state inventory payload fields are invalid")
-    copied = dict(value); copied["complete_source_identities"] = tuple(copied["complete_source_identities"]); copied["rows"] = tuple(adaptive_direct_state_inventory_row_from_payload(item) for item in copied["rows"])
+    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "complete_source_identities", "rows", "metric_occurrences", "state_inventory_sha256"}
+    if type(value) is not dict or set(value) != fields or type(value["complete_source_identities"]) is not list or type(value["rows"]) is not list or type(value["metric_occurrences"]) is not list: raise ValueError("state inventory payload fields are invalid")
+    copied = dict(value); copied["complete_source_identities"] = tuple(copied["complete_source_identities"]); copied["rows"] = tuple(adaptive_direct_state_inventory_row_from_payload(item) for item in copied["rows"]); copied["metric_occurrences"] = tuple(adaptive_direct_metric_occurrence_from_payload(item) for item in copied["metric_occurrences"])
     return AdaptiveDirectStateInventory(**copied)
 
 
@@ -986,6 +1112,9 @@ class AdaptiveDirectCoverageManifest:
         if any(item.state_inventory_sha256 != self.state_inventory_sha256 for item in sources):
             raise ValueError("coverage source state inventory binding mismatch")
         metrics_by_source = {item.source_identity: item for item in self.metrics_proof.sources}
+        classifications_by_source = {identity: [] for identity in identities}
+        for item in self.state_inventory.metric_occurrences:
+            classifications_by_source[item.source_identity].append(item)
         rows_by_source = {identity: [] for identity in identities}
         for row in self.state_inventory.rows: rows_by_source[row.source_identity].append(row)
         for source in sources:
@@ -993,6 +1122,21 @@ class AdaptiveDirectCoverageManifest:
             rows = tuple(rows_by_source.get(source.source_identity, ()))
             if metric is None or source.metrics_sha256 != metric.metrics_sha256 or source.eligibility_kind != metric.kind or source.source_size != metric.source_size or source.source_sha256 != metric.source_sha256:
                 raise ValueError("coverage source differs from typed metrics")
+            metric_occurrences = {
+                (item.graph_relative_path, item.directive, item.line, item.logical_path)
+                for item in metric.occurrences
+            }
+            classified_occurrences = {
+                (item.graph_relative_path, item.directive, item.line, item.logical_path)
+                for item in classifications_by_source[source.source_identity]
+            }
+            if (
+                len(metric_occurrences) != len(metric.occurrences)
+                or len(classified_occurrences)
+                != len(classifications_by_source[source.source_identity])
+                or metric_occurrences != classified_occurrences
+            ):
+                raise ValueError("coverage classified occurrences differ from typed metrics")
             witness_rows = tuple((item.occurrence_key, item.source_identity, item.graph_relative_path, item.directive, item.line, item.state_key, item.bodygroup_key, item.lod_key, item.skin_key, item.source_size, item.source_sha256, item.component_manifest_sha256, item.material_contract_sha256, item.skeleton_contract_sha256, item.pose_contract_sha256, item.equivalence_class_sha256) for item in source.witnesses)
             inventory_rows = tuple((item.occurrence_key, item.source_identity, item.graph_relative_path, item.directive, item.line, item.state_key, item.bodygroup_key, item.lod_key, item.skin_key, item.source_size, item.source_sha256, item.component_manifest_sha256, item.material_contract_sha256, item.skeleton_contract_sha256, item.pose_contract_sha256, item.equivalence_class_sha256) for item in rows)
             if witness_rows != inventory_rows:
