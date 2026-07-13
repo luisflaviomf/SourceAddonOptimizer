@@ -7,415 +7,460 @@ import unittest
 
 
 def _sha(marker: str) -> str:
-    return hashlib.sha256(marker.encode("utf-8")).hexdigest()
+    return hashlib.sha256(marker.encode()).hexdigest()
 
 
-def _canonical_hash(value: object) -> str:
+def _hash(value: object) -> str:
     return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
 
 
 FAMILY_ID = "dodge_charger"
 REGION_KEY = "body:31"
 FAMILY_INPUT = _sha("family-input")
-SOURCE_SNAPSHOT = _sha("source-snapshot")
-CONTROL_SNAPSHOT = _sha("control-snapshot")
+SOURCE = _sha("source")
+CONTROL = _sha("control")
 REGION_MANIFEST = _sha("region-manifest")
+TOOLCHAIN = _sha("toolchain")
 
 
-def _contracts() -> dict[str, object]:
-    return {
+def _contracts() -> dict:
+    value = {
         "contract_kind": "exact-region-pose-contracts-v1",
         "renderer_contract_sha256": _sha("renderer-contract"),
         "action_contract_sha256": _sha("action-contract"),
-        "pixel_gate_contract_sha256": _sha("pixel-gate-contract"),
-        "toolchain_sha256": _sha("toolchain"),
+        "pixel_gate_contract_sha256": _sha("pixel-contract"),
+        "toolchain_sha256": TOOLCHAIN,
     }
+    return {**value, "contracts_sha256": _hash(value)}
+
+
+def _caps() -> dict:
+    value = {
+        "max_regions_per_family": 64,
+        "required_view_count": 8,
+        "required_width": 512,
+        "required_height": 512,
+        "max_total_pixels": 8 * 512 * 512,
+        "minimum_changed_fraction": 0.0001,
+    }
+    return {**value, "caps_sha256": _hash(value)}
 
 
 def _selector(
     mode: str = "bind-animation", *, region_manifest: str = REGION_MANIFEST,
-) -> dict[str, object]:
-    value = {
+) -> dict:
+    animation_inventory = [
+        {
+            "animation_relative_path": "anims/door.smd",
+            "animation_sha256": _sha("door-animation"),
+            "reference_relative_path": "anims/door_ref.smd",
+            "reference_sha256": _sha("door-reference"),
+        }
+    ]
+    geometry_inventory = [
+        {"relative_path": "parts/body31.smd", "sha256": _sha("body31-geometry")}
+    ]
+    candidate = {
+        "pose_key": "door-open:17",
+        "animation_sha256": _sha("door-animation"),
+        "reference_sha256": _sha("door-reference"),
+        "frame_ordinal": 17,
+        "source_time": 17,
+        "bone_index": 4,
+        "bone_name": "door_l",
+        "displacement": 28.5,
+        "action_name": "door_open",
+        "action_source_sha256": _sha("door-animation"),
+    }
+    common = {
+        "decision_kind": "exact-region-pose-decision-v1",
         "mode": mode,
-        "pose_key": "door-open:17" if mode == "bind-animation" else "bind",
+        "algorithm": "exact-region-lineage-displacement-v2",
+        "candidate_inputs_consulted": False,
         "family_input_sha256": FAMILY_INPUT,
         "region_manifest_sha256": region_manifest,
-        "selector_input_sha256": _sha("selector-input"),
-        "selection_sha256": _sha("selection"),
-        "action_name": "door_open" if mode == "bind-animation" else None,
-        "action_source_sha256": _sha("action-source") if mode == "bind-animation" else None,
-        "frame_ordinal": 17 if mode == "bind-animation" else None,
-        "source_time": 17 if mode == "bind-animation" else None,
-        "source_proof_sha256": None,
+        "contracts_sha256": _contracts()["contracts_sha256"],
+        "toolchain_sha256": TOOLCHAIN,
+        "animation_inventory": animation_inventory,
+        "geometry_inventory": geometry_inventory,
     }
-    if mode == "bind-only/no-visible-displacement":
-        value["source_proof_sha256"] = _sha("no-visible-source-proof")
-    return value
+    selector_input = _hash(common)
+    selected = candidate if mode == "bind-animation" else None
+    attempted = candidate if mode == "bind-only/no-visible-displacement" else None
+    reason_source = _sha("decoded-no-visible-proof") if attempted else None
+    unsigned = {
+        **common,
+        "selector_input_sha256": selector_input,
+        "selected": selected,
+        "attempted": attempted,
+        "reason_source_proof_sha256": reason_source,
+    }
+    return {**unsigned, "selection_sha256": _hash(unsigned)}
 
 
-def _action(*, region_manifest: str = REGION_MANIFEST) -> dict[str, object]:
+def _action(*, region_manifest: str = REGION_MANIFEST) -> dict:
+    selected = _selector(region_manifest=region_manifest)["selected"]
     unsigned = {
         "proof_kind": "blender-action-proof-v1",
         "family_input_sha256": FAMILY_INPUT,
         "region_manifest_sha256": region_manifest,
-        "selection_sha256": _sha("selection"),
-        "action_name": "door_open",
-        "action_source_sha256": _sha("action-source"),
-        "frame_ordinal": 17,
-        "source_time": 17,
+        "contracts_sha256": _contracts()["contracts_sha256"],
+        "toolchain_sha256": TOOLCHAIN,
+        "selection_sha256": _selector(region_manifest=region_manifest)["selection_sha256"],
+        "action_name": selected["action_name"],
+        "action_source_sha256": selected["action_source_sha256"],
+        "frame_ordinal": selected["frame_ordinal"],
+        "source_time": selected["source_time"],
+        "slot_index": 0,
+        "slot_sha256": _sha("action-slot"),
+        "fcurve_inventory_sha256": _sha("fcurves"),
+        "evaluated_pose_sha256": _sha("evaluated-pose"),
         "scene_sha256": _sha("scene"),
     }
-    return {**unsigned, "proof_sha256": _canonical_hash(unsigned)}
+    return {**unsigned, "proof_sha256": _hash(unsigned)}
 
 
-def _pixel_gate(*, region_manifest: str = REGION_MANIFEST) -> dict[str, object]:
+DIRECTIONS = {
+    "front": [0.0, -1.0, 0.0], "back": [0.0, 1.0, 0.0],
+    "left": [-1.0, 0.0, 0.0], "right": [1.0, 0.0, 0.0],
+    "top": [0.0, 0.0, 1.0], "bottom": [0.0, 0.0, -1.0],
+    "front_left": [-0.7071067811865476, -0.7071067811865476, 0.0],
+    "rear_right": [0.7071067811865476, 0.7071067811865476, 0.0],
+}
+
+
+def _pixel(*, region_manifest: str = REGION_MANIFEST) -> dict:
+    views = []
+    for key, direction in DIRECTIONS.items():
+        views.append({
+            "view_key": key, "direction": direction, "width": 512, "height": 512,
+            "bind_rgba_sha256": _sha(f"bind-{key}"),
+            "posed_first_rgba_sha256": _sha(f"posed-{key}"),
+            "posed_repeat_rgba_sha256": _sha(f"posed-{key}"),
+            "foreground_pixels": 100_000,
+            "changed_pixels_first": 10_000,
+            "changed_pixels_repeat": 10_000,
+            "changed_fraction_first": 0.1,
+            "changed_fraction_repeat": 0.1,
+            "mean_absolute_error_first": 2.5,
+            "mean_absolute_error_repeat": 2.5,
+        })
+    bind_bundle = _hash([
+        {"view_key": item["view_key"], "rgba_sha256": item["bind_rgba_sha256"]}
+        for item in views
+    ])
+    first_bundle = _hash([
+        {"view_key": item["view_key"], "rgba_sha256": item["posed_first_rgba_sha256"]}
+        for item in views
+    ])
+    repeat_bundle = _hash([
+        {"view_key": item["view_key"], "rgba_sha256": item["posed_repeat_rgba_sha256"]}
+        for item in views
+    ])
     unsigned = {
         "proof_kind": "decoded-rgba-pixel-gate-v1",
         "family_input_sha256": FAMILY_INPUT,
         "region_manifest_sha256": region_manifest,
-        "selection_sha256": _sha("selection"),
+        "contracts_sha256": _contracts()["contracts_sha256"],
+        "toolchain_sha256": TOOLCHAIN,
+        "caps_sha256": _caps()["caps_sha256"],
+        "selection_sha256": _selector(region_manifest=region_manifest)["selection_sha256"],
         "scene_sha256": _sha("scene"),
-        "bind_pixel_bundle_sha256": _sha("bind-pixels"),
-        "posed_pixel_bundle_sha256": _sha("posed-pixels"),
-        "image_count": 8,
-        "total_pixels": 8 * 256 * 256,
-        "foreground_pixels": 200_000,
-        "changed_pixels": 20_000,
-        "changed_fraction": 0.1,
-        "mean_absolute_error": 2.5,
-        "minimum_changed_fraction": 0.0001,
+        "bind_decoded_bundle_sha256": bind_bundle,
+        "first_decoded_bundle_sha256": first_bundle,
+        "repeat_decoded_bundle_sha256": repeat_bundle,
+        "qualifying_orthogonal_pair": ["front", "right"],
+        "views": views,
     }
-    return {**unsigned, "proof_sha256": _canonical_hash(unsigned)}
+    return {**unsigned, "proof_sha256": _hash(unsigned)}
 
 
-def _caps() -> dict[str, object]:
-    return {
-        "max_images": 64,
-        "max_total_pixels": 67_108_864,
-        "minimum_changed_fraction": 0.0001,
-    }
-
-
-def _build(*, region_key: str = REGION_KEY, mode: str = "bind-animation"):
+def _build(*, region_key: str = REGION_KEY, mode: str = "bind-animation", **family_overrides):
     from maximum_optimizer.region_pose_evidence import build_region_pose_evidence
 
-    bind_only = mode != "bind-animation"
-    region_manifest = REGION_MANIFEST if region_key == REGION_KEY else _sha(region_key)
+    manifest = REGION_MANIFEST if region_key == REGION_KEY else _sha(region_key)
+    bind = mode != "bind-animation"
     return build_region_pose_evidence(
-        family_id=FAMILY_ID,
-        family_input_sha256=FAMILY_INPUT,
-        source_snapshot_sha256=SOURCE_SNAPSHOT,
-        control_snapshot_sha256=CONTROL_SNAPSHOT,
-        region_key=region_key,
-        region_manifest_sha256=region_manifest,
-        contracts=_contracts(),
-        selector=_selector(mode, region_manifest=region_manifest),
-        blender_action_proof=None if bind_only else _action(region_manifest=region_manifest),
-        pixel_gate=None if bind_only else _pixel_gate(region_manifest=region_manifest),
-        caps=_caps(),
+        family_id=family_overrides.get("family_id", FAMILY_ID),
+        family_input_sha256=family_overrides.get("family_input_sha256", FAMILY_INPUT),
+        source_snapshot_sha256=family_overrides.get("source_snapshot_sha256", SOURCE),
+        control_snapshot_sha256=family_overrides.get("control_snapshot_sha256", CONTROL),
+        region_key=region_key, region_manifest_sha256=manifest,
+        contracts=_contracts(), selector=_selector(mode, region_manifest=manifest),
+        blender_action_proof=None if bind else _action(region_manifest=manifest),
+        pixel_gate=None if bind else _pixel(region_manifest=manifest), caps=_caps(),
     )
 
 
-def _parse(payload: object, *, region_key: str = REGION_KEY, region_manifest: str = REGION_MANIFEST):
+def _expected(proof):
+    from maximum_optimizer.region_pose_evidence import RegionPoseExpectedBindings
+
+    payload = proof.to_payload()
+    return RegionPoseExpectedBindings(
+        evidence_sha256=payload["evidence_sha256"], family_id=payload["family"]["family_id"],
+        family_input_sha256=payload["family"]["family_input_sha256"],
+        source_snapshot_sha256=payload["family"]["source_snapshot_sha256"],
+        control_snapshot_sha256=payload["family"]["control_snapshot_sha256"],
+        region_key=payload["region"]["region_key"],
+        region_manifest_sha256=payload["region"]["region_manifest_sha256"],
+        contracts_sha256=payload["contracts"]["contracts_sha256"],
+        toolchain_sha256=payload["contracts"]["toolchain_sha256"],
+        caps_sha256=payload["caps"]["caps_sha256"],
+    )
+
+
+def _parse(payload):
     from maximum_optimizer.region_pose_evidence import parse_region_pose_evidence
 
+    binding = _expected(type("Proof", (), {"to_payload": lambda _self: payload})())
     return parse_region_pose_evidence(
-        payload,
-        expected_evidence_sha256=payload["evidence_sha256"],
-        expected_family_id=FAMILY_ID,
-        expected_family_input_sha256=FAMILY_INPUT,
-        expected_source_snapshot_sha256=SOURCE_SNAPSHOT,
-        expected_control_snapshot_sha256=CONTROL_SNAPSHOT,
-        expected_region_key=region_key,
-        expected_region_manifest_sha256=region_manifest,
+        payload, expected_evidence_sha256=binding.evidence_sha256,
+        expected_family_id=binding.family_id,
+        expected_family_input_sha256=binding.family_input_sha256,
+        expected_source_snapshot_sha256=binding.source_snapshot_sha256,
+        expected_control_snapshot_sha256=binding.control_snapshot_sha256,
+        expected_region_key=binding.region_key,
+        expected_region_manifest_sha256=binding.region_manifest_sha256,
+        expected_contracts_sha256=binding.contracts_sha256,
+        expected_toolchain_sha256=binding.toolchain_sha256,
+        expected_caps_sha256=binding.caps_sha256,
     )
 
 
 class RegionPoseEvidenceTests(unittest.TestCase):
-    def test_builder_emits_exact_sealed_schema_and_parser_returns_dataclass(self) -> None:
-        from maximum_optimizer.region_pose_evidence import RegionPoseEvidence
-
-        evidence = _build()
-        payload = evidence.to_payload()
-        self.assertEqual(
-            set(payload),
-            {
-                "schema_version", "kind", "status", "family", "region",
-                "contracts", "selector", "blender_action_proof", "pixel_gate",
-                "caps", "evidence_sha256",
-            },
-        )
-        self.assertEqual(payload["schema_version"], 1)
-        self.assertEqual(payload["kind"], "region-pose-evidence-v1")
-        self.assertEqual(payload["status"], "proven")
-        self.assertEqual(
-            payload["evidence_sha256"],
-            _canonical_hash({k: v for k, v in payload.items() if k != "evidence_sha256"}),
-        )
+    def test_schema_seals_derived_selection_and_returns_deeply_immutable_data(self):
+        payload = _build().to_payload()
         parsed = _parse(payload)
-        self.assertIsInstance(parsed, RegionPoseEvidence)
+        selector = payload["selector"]
+        self.assertEqual(
+            selector["selection_sha256"],
+            _hash({k: v for k, v in selector.items() if k != "selection_sha256"}),
+        )
         self.assertEqual(parsed.to_payload(), payload)
+        with self.assertRaises(TypeError):
+            parsed.family["family_id"] = "transplant"
+        with self.assertRaises(TypeError):
+            parsed.selector["selected"]["frame_ordinal"] = 18
+        with self.assertRaises(TypeError):
+            parsed.pixel_gate["views"][0]["width"] = 1
 
-    def test_parser_rejects_missing_extra_and_bad_component_schema(self) -> None:
+    def test_selector_rejects_lossy_schema_inventory_and_underived_selection(self):
+        from maximum_optimizer.region_pose_evidence import build_region_pose_evidence
+
         base = _build().to_payload()
         mutations = []
-        missing = copy.deepcopy(base)
-        missing.pop("caps")
-        mutations.append(missing)
-        extra = copy.deepcopy(base)
-        extra["ignored"] = True
-        mutations.append(extra)
-        nested = copy.deepcopy(base)
-        nested["contracts"]["ignored"] = _sha("ignored")
-        mutations.append(nested)
-        bad_caps = copy.deepcopy(base)
-        bad_caps["caps"]["max_images"] = 0
-        mutations.append(bad_caps)
+        for mutation in ("missing", "extra", "selection", "inventory-order", "duplicate"):
+            changed = copy.deepcopy(base)
+            selector = changed["selector"]
+            if mutation == "missing": selector.pop("geometry_inventory")
+            elif mutation == "extra": selector["lossy"] = True
+            elif mutation == "selection": selector["selected"]["frame_ordinal"] = 18
+            elif mutation == "inventory-order":
+                selector["geometry_inventory"] += [{"relative_path": "a.smd", "sha256": _sha("a") }]
+            else: selector["animation_inventory"] *= 2
+            mutations.append(changed)
         for changed in mutations:
-            changed["evidence_sha256"] = _canonical_hash(
-                {k: v for k, v in changed.items() if k != "evidence_sha256"}
-            )
-            with self.subTest(changed=changed):
+            with self.subTest(selector=changed["selector"]):
                 with self.assertRaises(ValueError):
-                    _parse(changed)
+                    build_region_pose_evidence(
+                        family_id=FAMILY_ID, family_input_sha256=FAMILY_INPUT,
+                        source_snapshot_sha256=SOURCE, control_snapshot_sha256=CONTROL,
+                        region_key=REGION_KEY, region_manifest_sha256=REGION_MANIFEST,
+                        contracts=changed["contracts"], selector=changed["selector"],
+                        blender_action_proof=changed["blender_action_proof"],
+                        pixel_gate=changed["pixel_gate"], caps=changed["caps"],
+                    )
 
-    def test_external_bindings_reject_transplant_even_after_self_reseal(self) -> None:
-        payload = _build().to_payload()
-        mutations = [
-            ("family", "family_id", "toyota_supra"),
-            ("family", "family_input_sha256", _sha("other-family-input")),
-            ("family", "source_snapshot_sha256", _sha("other-source")),
-            ("family", "control_snapshot_sha256", _sha("other-control")),
-            ("region", "region_key", "body:30"),
-            ("region", "region_manifest_sha256", _sha("other-region-manifest")),
-        ]
-        for component, field, value in mutations:
-            changed = copy.deepcopy(payload)
-            changed[component][field] = value
-            changed["evidence_sha256"] = _canonical_hash(
-                {k: v for k, v in changed.items() if k != "evidence_sha256"}
+    def test_bind_only_is_subsealed_and_no_visible_preserves_attempted_selection(self):
+        for mode in (
+            "bind-only/no-eligible-animation", "bind-only/no-influenced-bone-delta",
+            "bind-only/rigid-region", "bind-only/no-visible-displacement",
+        ):
+            parsed = _parse(_build(mode=mode).to_payload())
+            self.assertEqual(parsed.selector["mode"], mode)
+            if mode == "bind-only/no-visible-displacement":
+                self.assertIsNotNone(parsed.selector["attempted"])
+                self.assertIsNotNone(parsed.selector["reason_source_proof_sha256"])
+            else:
+                self.assertIsNone(parsed.selector["attempted"])
+        changed = _selector("bind-only/no-visible-displacement")
+        changed["attempted"] = None
+        unsigned = {k: v for k, v in changed.items() if k != "selection_sha256"}
+        changed["selection_sha256"] = _hash(unsigned)
+        base = _build(mode="bind-only/no-visible-displacement").to_payload()
+        from maximum_optimizer.region_pose_evidence import build_region_pose_evidence
+        with self.assertRaises(ValueError):
+            build_region_pose_evidence(
+                family_id=FAMILY_ID, family_input_sha256=FAMILY_INPUT,
+                source_snapshot_sha256=SOURCE, control_snapshot_sha256=CONTROL,
+                region_key=REGION_KEY, region_manifest_sha256=REGION_MANIFEST,
+                contracts=base["contracts"], selector=changed,
+                blender_action_proof=None, pixel_gate=None, caps=base["caps"],
             )
-            with self.subTest(field=field):
-                with self.assertRaises(ValueError):
-                    _parse(changed)
 
-    def test_external_expected_evidence_sha_is_mandatory_and_not_self_trusting(self) -> None:
+    def test_action_requires_slot_fcurve_evaluated_and_matches_selected_action(self):
+        from maximum_optimizer.region_pose_evidence import build_region_pose_evidence
+
+        base = _build().to_payload()
+        for field in ("slot_sha256", "fcurve_inventory_sha256", "evaluated_pose_sha256"):
+            changed = copy.deepcopy(base)
+            changed["blender_action_proof"].pop(field)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                build_region_pose_evidence(
+                    family_id=FAMILY_ID, family_input_sha256=FAMILY_INPUT,
+                    source_snapshot_sha256=SOURCE, control_snapshot_sha256=CONTROL,
+                    region_key=REGION_KEY, region_manifest_sha256=REGION_MANIFEST,
+                    contracts=changed["contracts"], selector=changed["selector"],
+                    blender_action_proof=changed["blender_action_proof"],
+                    pixel_gate=changed["pixel_gate"], caps=changed["caps"],
+                )
+        changed = copy.deepcopy(base)
+        changed["blender_action_proof"]["action_name"] = "wrong_action"
+        action = changed["blender_action_proof"]
+        action["proof_sha256"] = _hash({k: v for k, v in action.items() if k != "proof_sha256"})
+        with self.assertRaises(ValueError):
+            _parse({**changed, "evidence_sha256": _hash({k: v for k, v in changed.items() if k != "evidence_sha256"})})
+
+    def test_pixel_gate_requires_eight_512_views_orthogonal_pair_and_exact_repeat(self):
+        from maximum_optimizer.region_pose_evidence import build_region_pose_evidence
+
+        base = _build().to_payload()
+        mutations = []
+        one = copy.deepcopy(base); one["pixel_gate"]["views"] = one["pixel_gate"]["views"][:1]; mutations.append(one)
+        tiny = copy.deepcopy(base); tiny["pixel_gate"]["views"][0]["width"] = 1; mutations.append(tiny)
+        diagonal = copy.deepcopy(base); diagonal["pixel_gate"]["qualifying_orthogonal_pair"] = ["front", "back"]; mutations.append(diagonal)
+        nochange = copy.deepcopy(base); nochange["pixel_gate"]["views"][0]["changed_pixels_repeat"] = 0; mutations.append(nochange)
+        repeat = copy.deepcopy(base); repeat["pixel_gate"]["views"][0]["posed_repeat_rgba_sha256"] = _sha("different-repeat"); mutations.append(repeat)
+        for changed in mutations:
+            gate = changed["pixel_gate"]
+            gate["proof_sha256"] = _hash({k: v for k, v in gate.items() if k != "proof_sha256"})
+            with self.subTest(gate=gate), self.assertRaises(ValueError):
+                build_region_pose_evidence(
+                    family_id=FAMILY_ID, family_input_sha256=FAMILY_INPUT,
+                    source_snapshot_sha256=SOURCE, control_snapshot_sha256=CONTROL,
+                    region_key=REGION_KEY, region_manifest_sha256=REGION_MANIFEST,
+                    contracts=changed["contracts"], selector=changed["selector"],
+                    blender_action_proof=changed["blender_action_proof"],
+                    pixel_gate=gate, caps=changed["caps"],
+                )
+
+    def test_external_contract_toolchain_and_caps_bindings_reject_self_reseal(self):
         from maximum_optimizer.region_pose_evidence import parse_region_pose_evidence
 
         payload = _build().to_payload()
-        with self.assertRaises(ValueError):
-            parse_region_pose_evidence(
-                payload,
-                expected_evidence_sha256=_sha("different-evidence"),
-                expected_family_id=FAMILY_ID,
-                expected_family_input_sha256=FAMILY_INPUT,
-                expected_source_snapshot_sha256=SOURCE_SNAPSHOT,
-                expected_control_snapshot_sha256=CONTROL_SNAPSHOT,
-                expected_region_key=REGION_KEY,
-                expected_region_manifest_sha256=REGION_MANIFEST,
-            )
-
-    def test_animation_requires_bound_action_and_pixel_proofs(self) -> None:
-        from maximum_optimizer.region_pose_evidence import build_region_pose_evidence
-
-        arguments = {
-            "family_id": FAMILY_ID,
-            "family_input_sha256": FAMILY_INPUT,
-            "source_snapshot_sha256": SOURCE_SNAPSHOT,
-            "control_snapshot_sha256": CONTROL_SNAPSHOT,
-            "region_key": REGION_KEY,
-            "region_manifest_sha256": REGION_MANIFEST,
-            "contracts": _contracts(),
-            "selector": _selector(),
-            "blender_action_proof": _action(),
-            "pixel_gate": _pixel_gate(),
-            "caps": _caps(),
-        }
-        for missing in ("blender_action_proof", "pixel_gate"):
-            changed = dict(arguments)
-            changed[missing] = None
-            with self.subTest(missing=missing):
-                with self.assertRaises(ValueError):
-                    build_region_pose_evidence(**changed)
-        changed = dict(arguments)
-        changed["blender_action_proof"] = {**_action(), "frame_ordinal": 18}
-        with self.assertRaises(ValueError):
-            build_region_pose_evidence(**changed)
-
-    def test_bind_only_reasons_are_typed_and_cannot_carry_pose_proofs(self) -> None:
-        accepted = {
-            "bind-only/no-eligible-animation",
-            "bind-only/no-influenced-bone-delta",
-            "bind-only/rigid-region",
-            "bind-only/no-visible-displacement",
-        }
-        for mode in accepted:
-            with self.subTest(mode=mode):
-                parsed = _parse(_build(mode=mode).to_payload())
-                self.assertEqual(parsed.selector["mode"], mode)
-        with self.assertRaises(ValueError):
-            _build(mode="bind-only/unknown")
-        from maximum_optimizer.region_pose_evidence import build_region_pose_evidence
-
-        with self.assertRaises(ValueError):
-            build_region_pose_evidence(
-                family_id=FAMILY_ID,
-                family_input_sha256=FAMILY_INPUT,
-                source_snapshot_sha256=SOURCE_SNAPSHOT,
-                control_snapshot_sha256=CONTROL_SNAPSHOT,
-                region_key=REGION_KEY,
-                region_manifest_sha256=REGION_MANIFEST,
-                contracts=_contracts(), selector=_selector("bind-only/rigid-region"),
-                blender_action_proof=_action(), pixel_gate=None, caps=_caps(),
-            )
-
-    def test_no_visible_displacement_requires_source_proof(self) -> None:
-        from maximum_optimizer.region_pose_evidence import build_region_pose_evidence
-
-        selector = _selector("bind-only/no-visible-displacement")
-        selector["source_proof_sha256"] = None
-        with self.assertRaisesRegex(ValueError, "source proof"):
-            build_region_pose_evidence(
-                family_id=FAMILY_ID,
-                family_input_sha256=FAMILY_INPUT,
-                source_snapshot_sha256=SOURCE_SNAPSHOT,
-                control_snapshot_sha256=CONTROL_SNAPSHOT,
-                region_key=REGION_KEY,
-                region_manifest_sha256=REGION_MANIFEST,
-                contracts=_contracts(), selector=selector,
-                blender_action_proof=None, pixel_gate=None, caps=_caps(),
-            )
-
-    def test_pixel_gate_must_match_caps_and_be_nontrivial(self) -> None:
-        from maximum_optimizer.region_pose_evidence import build_region_pose_evidence
-
-        base = {
-            "family_id": FAMILY_ID, "family_input_sha256": FAMILY_INPUT,
-            "source_snapshot_sha256": SOURCE_SNAPSHOT,
-            "control_snapshot_sha256": CONTROL_SNAPSHOT,
-            "region_key": REGION_KEY, "region_manifest_sha256": REGION_MANIFEST,
-            "contracts": _contracts(), "selector": _selector(),
-            "blender_action_proof": _action(), "pixel_gate": _pixel_gate(),
-            "caps": _caps(),
-        }
-        for field, value in (
-            ("changed_pixels", 0),
-            ("changed_fraction", 0.0),
-            ("posed_pixel_bundle_sha256", _pixel_gate()["bind_pixel_bundle_sha256"]),
-            ("image_count", 65),
-        ):
-            changed = copy.deepcopy(base)
-            changed["pixel_gate"][field] = value
-            unsigned = {k: v for k, v in changed["pixel_gate"].items() if k != "proof_sha256"}
-            changed["pixel_gate"]["proof_sha256"] = _canonical_hash(unsigned)
-            with self.subTest(field=field):
-                with self.assertRaises(ValueError):
-                    build_region_pose_evidence(**changed)
+        binding = _expected(_build())
+        common = dict(
+            expected_evidence_sha256=payload["evidence_sha256"],
+            expected_family_id=FAMILY_ID, expected_family_input_sha256=FAMILY_INPUT,
+            expected_source_snapshot_sha256=SOURCE, expected_control_snapshot_sha256=CONTROL,
+            expected_region_key=REGION_KEY, expected_region_manifest_sha256=REGION_MANIFEST,
+            expected_contracts_sha256=binding.contracts_sha256,
+            expected_toolchain_sha256=binding.toolchain_sha256,
+            expected_caps_sha256=binding.caps_sha256,
+        )
+        for field in ("expected_contracts_sha256", "expected_toolchain_sha256", "expected_caps_sha256"):
+            args = {**common, field: _sha("wrong-" + field)}
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                parse_region_pose_evidence(payload, **args)
 
 
 class RegionPoseFamilyBundleTests(unittest.TestCase):
-    def _expected(self, proofs):
-        from maximum_optimizer.region_pose_evidence import RegionPoseExpectedBindings
+    def _proofs(self, count=2):
+        return [_build(region_key=f"body:{index:02d}") for index in range(count)]
 
-        result = {}
-        for proof in proofs:
-            payload = proof.to_payload()
-            key = payload["region"]["region_key"]
-            result[key] = RegionPoseExpectedBindings(
-                evidence_sha256=payload["evidence_sha256"],
-                family_id=FAMILY_ID,
-                family_input_sha256=FAMILY_INPUT,
-                source_snapshot_sha256=SOURCE_SNAPSHOT,
-                control_snapshot_sha256=CONTROL_SNAPSHOT,
-                region_key=key,
-                region_manifest_sha256=payload["region"]["region_manifest_sha256"],
-            )
-        return result
+    def _bindings(self, proofs):
+        return {proof.region["region_key"]: _expected(proof) for proof in proofs}
 
-    def test_family_bundle_is_canonical_and_has_one_proof_per_external_region(self) -> None:
+    def test_bundle_has_common_tuple_canonical_order_and_external_parity(self):
         from maximum_optimizer.region_pose_evidence import (
             build_region_pose_family_bundle, parse_region_pose_family_bundle,
         )
-
-        proofs = [_build(region_key="wheel:2"), _build(region_key="body:1")]
-        expected_keys = ("body:1", "wheel:2")
+        proofs = self._proofs()
+        keys = tuple(sorted(proof.region["region_key"] for proof in proofs))
         bundle = build_region_pose_family_bundle(
-            family_id=FAMILY_ID, expected_region_keys=expected_keys,
-            entries=reversed(proofs),
+            family_id=FAMILY_ID, expected_region_keys=keys, entries=reversed(proofs),
         )
         payload = bundle.to_payload()
         self.assertEqual(payload["kind"], "region-pose-family-bundle-v1")
-        self.assertEqual(
-            [item["region"]["region_key"] for item in payload["entries"]],
-            list(expected_keys),
-        )
+        self.assertEqual(payload["family_common"]["family_input_sha256"], FAMILY_INPUT)
         parsed = parse_region_pose_family_bundle(
-            payload,
-            expected_bundle_sha256=payload["bundle_sha256"],
-            expected_family_id=FAMILY_ID,
-            expected_region_keys=expected_keys,
-            expected_bindings=self._expected(proofs),
+            payload, expected_bundle_sha256=payload["bundle_sha256"],
+            expected_family_id=FAMILY_ID, expected_region_keys=keys,
+            expected_bindings=self._bindings(proofs),
         )
         self.assertEqual(parsed.to_payload(), payload)
 
-    def test_bundle_rejects_missing_extra_duplicate_and_wrong_family(self) -> None:
+    def test_bundle_rejects_missing_extra_duplicate_hybrid_and_cross_family_binding(self):
         from maximum_optimizer.region_pose_evidence import build_region_pose_family_bundle
 
-        first = _build(region_key="body:1")
-        second = _build(region_key="wheel:2")
-        cases = (
-            (("body:1", "wheel:2"), [first]),
-            (("body:1",), [first, second]),
-            (("body:1", "wheel:2"), [first, first]),
-        )
+        proofs = self._proofs()
+        keys = tuple(sorted(proof.region["region_key"] for proof in proofs))
+        cases = [
+            (keys, proofs[:1]), (keys[:1], proofs), (keys, [proofs[0], proofs[0]]),
+            (keys, [proofs[0], _build(region_key=keys[1], source_snapshot_sha256=_sha("hybrid"))]),
+            (keys, [proofs[0], _build(region_key=keys[1], family_id="toyota_supra")]),
+        ]
         for expected_keys, entries in cases:
-            with self.subTest(expected_keys=expected_keys, count=len(entries)):
-                with self.assertRaises(ValueError):
-                    build_region_pose_family_bundle(
-                        family_id=FAMILY_ID,
-                        expected_region_keys=expected_keys,
-                        entries=entries,
-                    )
-        transplanted = copy.deepcopy(first.to_payload())
-        transplanted["family"]["family_id"] = "toyota_supra"
-        transplanted["evidence_sha256"] = _canonical_hash(
-            {k: v for k, v in transplanted.items() if k != "evidence_sha256"}
-        )
-        with self.assertRaises(ValueError):
-            build_region_pose_family_bundle(
-                family_id=FAMILY_ID, expected_region_keys=("body:1",),
-                entries=[transplanted],
-            )
+            with self.subTest(expected_keys=expected_keys), self.assertRaises(ValueError):
+                build_region_pose_family_bundle(
+                    family_id=FAMILY_ID, expected_region_keys=expected_keys, entries=entries,
+                )
 
-    def test_bundle_parser_rejects_resealed_entry_transplant_against_external_bindings(self) -> None:
+    def test_builder_and_parser_both_reject_sixty_five_regions(self):
         from maximum_optimizer.region_pose_evidence import (
             build_region_pose_family_bundle, parse_region_pose_family_bundle,
         )
 
-        proof = _build(region_key="body:1")
+        proofs = self._proofs(65)
+        keys = tuple(sorted(proof.region["region_key"] for proof in proofs))
+        with self.assertRaises(ValueError):
+            build_region_pose_family_bundle(
+                family_id=FAMILY_ID, expected_region_keys=keys, entries=proofs,
+            )
+        valid = self._proofs(2)
+        valid_keys = tuple(sorted(item.region["region_key"] for item in valid))
         payload = build_region_pose_family_bundle(
-            family_id=FAMILY_ID, expected_region_keys=("body:1",), entries=[proof],
+            family_id=FAMILY_ID, expected_region_keys=valid_keys, entries=valid,
         ).to_payload()
-        bindings = self._expected([proof])
         changed = copy.deepcopy(payload)
-        entry = changed["entries"][0]
-        entry["family"]["control_snapshot_sha256"] = _sha("transplanted-control")
-        entry["evidence_sha256"] = _canonical_hash(
-            {k: v for k, v in entry.items() if k != "evidence_sha256"}
-        )
-        changed["bundle_sha256"] = _canonical_hash(
-            {k: v for k, v in changed.items() if k != "bundle_sha256"}
-        )
+        changed["expected_region_keys"] = list(keys)
+        changed["bundle_sha256"] = _hash({k: v for k, v in changed.items() if k != "bundle_sha256"})
         with self.assertRaises(ValueError):
             parse_region_pose_family_bundle(
-                changed,
-                expected_bundle_sha256=changed["bundle_sha256"],
-                expected_family_id=FAMILY_ID,
-                expected_region_keys=("body:1",),
-                expected_bindings=bindings,
+                changed, expected_bundle_sha256=changed["bundle_sha256"],
+                expected_family_id=FAMILY_ID, expected_region_keys=keys,
+                expected_bindings=self._bindings(proofs),
             )
+
+    def test_bundle_parser_rejects_cross_family_and_hybrid_external_bindings(self):
+        from maximum_optimizer.region_pose_evidence import (
+            RegionPoseExpectedBindings, build_region_pose_family_bundle,
+            parse_region_pose_family_bundle,
+        )
+
+        proofs = self._proofs()
+        keys = tuple(sorted(item.region["region_key"] for item in proofs))
+        payload = build_region_pose_family_bundle(
+            family_id=FAMILY_ID, expected_region_keys=keys, entries=proofs,
+        ).to_payload()
+        for field, value in (
+            ("family_id", "toyota_supra"),
+            ("source_snapshot_sha256", _sha("hybrid-external-source")),
+            ("contracts_sha256", _sha("hybrid-external-contracts")),
+        ):
+            bindings = self._bindings(proofs)
+            original = bindings[keys[1]]
+            bindings[keys[1]] = RegionPoseExpectedBindings(
+                **{**original.__dict__, field: value}
+            )
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                parse_region_pose_family_bundle(
+                    payload, expected_bundle_sha256=payload["bundle_sha256"],
+                    expected_family_id=FAMILY_ID, expected_region_keys=keys,
+                    expected_bindings=bindings,
+                )
 
 
 if __name__ == "__main__":
