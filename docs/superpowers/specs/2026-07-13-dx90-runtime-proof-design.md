@@ -25,16 +25,18 @@ The server creates each family as a physics prop and records:
 - `physics`: valid movable physics object with finite positive mass and observed movement after an applied velocity;
 - `damage`: an `EntityTakeDamage` observation for the exact entity and exact injected damage.
 
-The client creates a separate clientside model for each family and records:
+The client creates a separate clientside model for the static rendering checks and records:
 
-- `rendering`: a baseline PNG with the model hidden and a paired PNG from the same camera with the model explicitly drawn under a built-in debug material;
+- `rendering`: a baseline PNG with the model hidden and a paired PNG from the same camera with the model explicitly drawn under a built-in debug material. Both captures come from a deterministic 800 x 600 offscreen render target, so HUD, world movement, and frame timing cannot manufacture a pixel delta;
 - `bodygroups_skins`: every declared bodygroup value and every skin can be set and read back; zero-variant models are recorded as not applicable, never invented as coverage;
-- `animation`: at least one representative non-static sequence advances to a distinct cycle and produces a changed bone transform or paired rendered image.
+- `animation`: for LVS vehicle models, exercise a non-degenerate runtime pose parameter (for example steering, door, pedal, or gauge) at its declared minimum and maximum on a networked `prop_dynamic_override`. The server owns both state changes and acknowledges each state; the client waits for that acknowledgement, captures local-space bone matrices and the same offscreen render target, and requires identical bone coverage plus a real transform delta. The paired pixel delta must be non-trivial but localized (no more than 25% of the frame), which rejects both identical captures and unrelated whole-frame churn. If a model has no usable pose parameter, the only fallback is a sequence whose `lastframe > 0`: the runtime must accept distinct cycles and its paired renders must differ. Merely enumerating sequence names/durations, accepting a one-frame reference sequence, or setting a cycle without visual change does not pass.
 
-The Python verifier independently hashes all reports and PNGs, parses PNG dimensions, computes paired pixel deltas, scans the complete console log for model/VTX/VVD load errors, and requires capability coverage exactly equal to the six-item contract. A timeout, crash, black/identical capture, absent sequence, missing realm report, hash drift, extra sidecar, or any evidence inconsistency leaves the experiment `pending` with the exact failure reason.
+The Python verifier independently hashes all reports and PNGs, parses PNG dimensions, computes paired pixel deltas, scans the complete console log for model/VTX/VVD load errors, and requires capability coverage exactly equal to the six-item contract. While the process is live, the runner also scans new console output and terminates immediately when the generated runtime Lua raises an error. A timeout, crash, black/identical capture, absent sequence, missing realm report, hash drift, extra sidecar, or any evidence inconsistency leaves the experiment `pending` with the exact failure reason.
 
 ## Evidence boundary
 
-Local evidence binds the candidate-manifest digest, launcher/Lua hashes, `gmod.exe` hash, Steam app-manifest hash and build ID, exact launch arguments, per-artifact runtime hashes, per-family capability observations, screenshot hashes and pixel metrics, and complete console-log hash. Only the strict verifier may convert this bundle into the smaller `RuntimeEvidence` consumed by `dx90_optional.py`.
+Local evidence binds the candidate-manifest digest, launcher/Lua hashes, `gmod.exe` hash, Steam build ID, installed depot manifests, beta branch keys, exact launch arguments, per-artifact runtime hashes, per-family capability observations, screenshot hashes and pixel metrics, and complete console-log hash. Steam may update mutable app-manifest fields such as `LastPlayed` during the run; therefore the verifier records the whole-file hashes before and after but seals compatibility against a stable fingerprint of build/depot/branch identity. Only the strict verifier may convert this bundle into the smaller `RuntimeEvidence` consumed by `dx90_optional.py`.
 
 This test establishes runtime compatibility only. It does not classify DX80 removal as geometry compression and does not authorize static-prop/VRAD use.
+
+The Ford Fairlane participates only as an orthogonal DX90 compatibility family. Its runtime result did not tune any visual threshold or compression profile. The frozen visual holdout remained unconsulted throughout this proof.
