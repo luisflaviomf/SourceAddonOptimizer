@@ -202,6 +202,95 @@ class QcGraphDigestTests(unittest.TestCase):
 
 
 class ProductionAdaptiveMetricsFactoryTests(unittest.TestCase):
+    def test_root_selection_accepts_included_qc_without_modelname(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = FactoryFixture(Path(raw))
+            original_include = fixture.original_root / "parts.qci"
+            candidate_include = fixture.candidate_root / "parts_OPT.qci"
+            original_include.rename(fixture.original_root / "parts.qc")
+            candidate_include.rename(fixture.candidate_root / "parts_OPT.qc")
+            (fixture.original_root / "main.qc").write_text(
+                (fixture.original_root / "main.qc").read_text(encoding="utf-8")
+                .replace('parts.qci', 'parts.qc'),
+                encoding="utf-8",
+            )
+            (fixture.candidate_root / "main_OPT.qc").write_text(
+                (fixture.candidate_root / "main_OPT.qc").read_text(encoding="utf-8")
+                .replace('parts_OPT.qci', 'parts_OPT.qc'),
+                encoding="utf-8",
+            )
+            payload = json.loads(fixture.metrics_path.read_text(encoding="utf-8"))
+            payload["provenance"][1]["graph_file"] = "parts.qc"
+            fixture.metrics_path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8",
+            )
+            original_graph = parse_qc_graph(
+                fixture.original_root / "main.qc", fixture.original_root,
+            )
+            candidate_graph = parse_qc_graph(
+                fixture.candidate_root / "main_OPT.qc", fixture.candidate_root,
+            )
+            fixture.original_snapshot = build_recovery_source_snapshot(
+                kind="original", candidate_id=None, candidate_cache_digest=None,
+                source_root=fixture.original_root,
+                source_manifest=build_source_tree_manifest(
+                    fixture.original_root, original_graph, "original-source-v1", None,
+                ),
+                family_id=fixture.manifest.family_id,
+                family_input_sha256=fixture.manifest.input_hash,
+                optimizer_contract_sha256=optimizer_contract_sha256(fixture.spec),
+                whole_profile_sha256=H["2"], focused_profile_sha256=H["3"],
+                dependency_proof_sha256=H["4"], focused_evidence=(),
+            )
+            fixture.candidate_snapshot = build_recovery_source_snapshot(
+                kind="candidate", candidate_id=fixture.spec.candidate_id,
+                candidate_cache_digest=fixture.cache_digest,
+                source_root=fixture.candidate_root,
+                source_manifest=build_source_tree_manifest(
+                    fixture.candidate_root, candidate_graph, "candidate-source-v1", None,
+                ),
+                family_id=fixture.manifest.family_id,
+                family_input_sha256=fixture.manifest.input_hash,
+                optimizer_contract_sha256=optimizer_contract_sha256(fixture.spec),
+                whole_profile_sha256=H["2"], focused_profile_sha256=H["3"],
+                dependency_proof_sha256=H["4"], focused_evidence=(),
+            )
+            self.assertEqual(len(fixture.build().sources), 2)
+
+    def test_root_selection_rejects_multiple_modelnames_in_included_qc(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = FactoryFixture(Path(raw))
+            include = fixture.original_root / "parts.qci"
+            include.rename(fixture.original_root / "parts.qc")
+            include = fixture.original_root / "parts.qc"
+            (fixture.original_root / "main.qc").write_text(
+                (fixture.original_root / "main.qc").read_text(encoding="utf-8")
+                .replace('parts.qci', 'parts.qc'),
+                encoding="utf-8",
+            )
+            include.write_text(
+                '$modelname "models/other.mdl"\n$modelname "models/again.mdl"\n'
+                + include.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            original_graph = parse_qc_graph(
+                fixture.original_root / "main.qc", fixture.original_root,
+            )
+            fixture.original_snapshot = build_recovery_source_snapshot(
+                kind="original", candidate_id=None, candidate_cache_digest=None,
+                source_root=fixture.original_root,
+                source_manifest=build_source_tree_manifest(
+                    fixture.original_root, original_graph, "original-source-v1", None,
+                ),
+                family_id=fixture.manifest.family_id,
+                family_input_sha256=fixture.manifest.input_hash,
+                optimizer_contract_sha256=optimizer_contract_sha256(fixture.spec),
+                whole_profile_sha256=H["2"], focused_profile_sha256=H["3"],
+                dependency_proof_sha256=H["4"], focused_evidence=(),
+            )
+            with self.assertRaisesRegex(ValueError, "modelname|ambiguous"):
+                fixture.build()
+
     def test_factory_builds_complete_proof_from_typed_current_source_proofs(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = FactoryFixture(Path(raw))

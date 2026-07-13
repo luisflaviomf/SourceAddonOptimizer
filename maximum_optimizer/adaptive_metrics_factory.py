@@ -318,7 +318,7 @@ def _sealed_qc_bytes(
     return raw
 
 
-def _qc_model_name(raw: bytes) -> str:
+def _qc_model_name(raw: bytes) -> str | None:
     try:
         tokens = _lex(raw.decode("utf-8-sig"))
     except UnicodeDecodeError as exc:
@@ -335,9 +335,9 @@ def _qc_model_name(raw: bytes) -> str:
         if len(values) != 1:
             raise ValueError("sealed root QC modelname is invalid")
         found.append(values[0])
-    if len(found) != 1:
-        raise ValueError("sealed root QC modelname is missing or ambiguous")
-    return found[0]
+    if len(found) > 1:
+        raise ValueError("sealed root QC modelname is ambiguous")
+    return found[0] if found else None
 
 
 def _bind_graph_payload_to_manifest(
@@ -377,7 +377,11 @@ def _root_graph(
         ):
             continue
         raw = _sealed_qc_bytes(root, proof, cancel_event)
-        if _normalized_model(_qc_model_name(raw)) == _normalized_model(model_rel):
+        model_name = _qc_model_name(raw)
+        if (
+            model_name is not None
+            and _normalized_model(model_name) == _normalized_model(model_rel)
+        ):
             candidates.append(proof)
     if len(candidates) != 1:
         raise ValueError("authoritative sealed root QC is missing or ambiguous")
