@@ -5,6 +5,7 @@ import threading
 import unittest
 import inspect
 import shutil
+import os
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -164,14 +165,15 @@ class SourceUnionRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve(); fixture = DirectCompositorFixture(root)
             workspace = root / "union"; marker = workspace / "external.marker"
-            original_mkdir = Path.mkdir
-            def raced_mkdir(path, *args, **kwargs):
-                if Path(path) == workspace:
-                    original_mkdir(path, parents=False, exist_ok=False)
+            original_rename = os.rename
+            def raced_publish(source, destination):
+                if Path(destination) == workspace:
+                    workspace.mkdir()
                     marker.write_bytes(b"preserve")
-                    raise FileExistsError("external winner")
-                return original_mkdir(path, *args, **kwargs)
-            with mock.patch.object(Path, "mkdir", new=raced_mkdir), self.assertRaises(FileExistsError):
+                return original_rename(source, destination)
+            with mock.patch(
+                "maximum_optimizer.source_union.os.rename", side_effect=raced_publish,
+            ), self.assertRaises((FileExistsError, OSError)):
                 self._run(fixture, HermeticRenderer(), workspace)
             self.assertEqual(marker.read_bytes(), b"preserve")
 

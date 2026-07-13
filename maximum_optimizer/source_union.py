@@ -227,6 +227,23 @@ def _quarantine_cleanup_if_owned(
     return True
 
 
+def _acquire_workspace_no_replace(workspace: Path) -> tuple[int, int, int]:
+    staging = workspace.with_name(
+        f".{workspace.name}.source-union-acquire-{uuid.uuid4().hex}"
+    )
+    staging_identity = None
+    try:
+        staging.mkdir(parents=False, exist_ok=False)
+        staging_identity = _workspace_root_identity(staging)
+        os.rename(staging, workspace)
+    except BaseException:
+        _quarantine_cleanup_if_owned(staging, staging_identity)
+        raise
+    if _workspace_root_identity(workspace) != staging_identity:
+        raise ValueError("source-union workspace identity changed during publication")
+    return staging_identity
+
+
 def _expected_paths(target: AdaptiveDirectSourceUnionTarget) -> tuple[str, ...]:
     return tuple(sorted(
         f"source-union/{target.union_key}/{side}/{pose}/{render_pass}/{camera}.png"
@@ -395,8 +412,7 @@ def validate_adaptive_direct_source_union(
     )
     owned_identity = None
     try:
-        workspace.mkdir(parents=False, exist_ok=False)
-        owned_identity = _workspace_root_identity(workspace)
+        owned_identity = _acquire_workspace_no_replace(workspace)
         if ownership_lease is not None:
             ownership_lease.acquire(owned_identity)
         _cancel(cancel_event, "cancelled before source-union render")
