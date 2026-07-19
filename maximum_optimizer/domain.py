@@ -1390,6 +1390,7 @@ class DirectSourceBuildRequest:
     source_size: int
     source_sha256: str
     direct_ratio: float
+    target_error: float
     strategy: Literal["meshopt-direct-position-v1"]
     transfer: Literal["direct-position-v1"]
     prefilter_version: Literal["direct-degenerate-prefilter-v1"]
@@ -1402,6 +1403,8 @@ class DirectSourceBuildRequest:
         for label, value in (("family id", self.family_id), ("family input", self.family_input_sha256), ("base spec", self.base_spec_sha256), ("base cache", self.base_cache_digest), ("base source manifest", self.base_source_manifest_sha256), ("base source snapshot", self.base_source_snapshot_sha256), ("coverage manifest", self.coverage_manifest_sha256), ("source coverage", self.source_coverage_sha256), ("optimizer contract", self.optimizer_contract_sha256), ("whole profile", self.whole_profile_sha256), ("focused profile", self.focused_profile_sha256), ("dependency proof", self.dependency_proof_sha256), ("source hash", self.source_sha256)): _require_sha256(value, label)
         _require_text(self.base_candidate_id, "direct base candidate")
         _require_relative(self.source_identity, "direct source identity"); _require_relative(self.source_relative_path, "direct source path"); _require_size(self.source_size, "direct source size"); _require_ratio(self.direct_ratio, "direct ratio")
+        if type(self.target_error) is not float or not 0.0 <= self.target_error <= 1.0:
+            raise ValueError("direct target error is invalid")
         if not isinstance(self.expected_prefilter, DirectPrefilterProof): raise TypeError("direct expected prefilter is invalid")
         materials = tuple(self.expected_materials)
         post_prefilter_count = self.expected_prefilter.source_triangle_count - self.expected_prefilter.dropped_count
@@ -1418,7 +1421,7 @@ class DirectSourceBuildRequest:
 
 
 def direct_source_request_payload(value: DirectSourceBuildRequest, *, include_seal: bool = True) -> dict[str, object]:
-    payload = {name: getattr(value, name) for name in ("schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "base_strategy", "coverage_manifest_sha256", "source_coverage_sha256", "optimizer_contract_sha256", "whole_profile_sha256", "focused_profile_sha256", "dependency_proof_sha256", "source_identity", "source_relative_path", "source_size", "source_sha256", "direct_ratio", "strategy", "transfer", "prefilter_version")}
+    payload = {name: getattr(value, name) for name in ("schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "base_strategy", "coverage_manifest_sha256", "source_coverage_sha256", "optimizer_contract_sha256", "whole_profile_sha256", "focused_profile_sha256", "dependency_proof_sha256", "source_identity", "source_relative_path", "source_size", "source_sha256", "direct_ratio", "target_error", "strategy", "transfer", "prefilter_version")}
     payload["expected_prefilter"] = direct_prefilter_payload(value.expected_prefilter)
     payload["expected_materials"] = [direct_input_material_payload(item) for item in value.expected_materials]
     if include_seal: payload["request_sha256"] = value.request_sha256
@@ -1426,7 +1429,7 @@ def direct_source_request_payload(value: DirectSourceBuildRequest, *, include_se
 
 
 def direct_source_request_from_payload(value: object) -> DirectSourceBuildRequest:
-    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "base_strategy", "coverage_manifest_sha256", "source_coverage_sha256", "optimizer_contract_sha256", "whole_profile_sha256", "focused_profile_sha256", "dependency_proof_sha256", "source_identity", "source_relative_path", "source_size", "source_sha256", "direct_ratio", "strategy", "transfer", "prefilter_version", "expected_prefilter", "expected_materials", "request_sha256"}
+    fields = {"schema", "family_id", "family_input_sha256", "base_candidate_id", "base_spec_sha256", "base_cache_digest", "base_source_manifest_sha256", "base_source_snapshot_sha256", "base_strategy", "coverage_manifest_sha256", "source_coverage_sha256", "optimizer_contract_sha256", "whole_profile_sha256", "focused_profile_sha256", "dependency_proof_sha256", "source_identity", "source_relative_path", "source_size", "source_sha256", "direct_ratio", "target_error", "strategy", "transfer", "prefilter_version", "expected_prefilter", "expected_materials", "request_sha256"}
     if type(value) is not dict or set(value) != fields or type(value["expected_materials"]) is not list: raise ValueError("direct request payload fields are invalid")
     material_fields = {"ordinal", "material", "triangles_before", "source_sha256"}
     materials = []

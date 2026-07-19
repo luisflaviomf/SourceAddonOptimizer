@@ -273,7 +273,8 @@ GEOMETRY_AUDIT_ALGORITHM = {
     "name": "relative-cross-area-squared-v1",
     "relative_area_squared_epsilon": 1e-24,
     "max_filtered_fraction": 0.05,
-    "surface_correspondence": "material-dominant-bone-partitioned-nearest-surface-v3",
+    "surface_correspondence": "material-bone-multinormal-near-coincident-surface-v6",
+    "uv_distance": "periodic-unit-torus-v1",
     "skinning_correspondence": "dominant-bone-partitioned-stable-topology-v2",
 }
 
@@ -3398,7 +3399,7 @@ def _direct_topology_metrics(
         candidate_values = tuple(candidate_normal)
         if reference_values == candidate_values:
             normal_angles.append(0.0)
-            uv_errors.append(math.dist(reference_uv, candidate_uv))
+            uv_errors.append(_periodic_uv_distance(reference_uv, candidate_uv))
             continue
         reference_length = math.sqrt(sum(value * value for value in reference_values))
         candidate_length = math.sqrt(sum(value * value for value in candidate_values))
@@ -3410,7 +3411,7 @@ def _direct_topology_metrics(
                 for component in range(3)
             ) / (reference_length * candidate_length)
             normal_angles.append(math.degrees(math.acos(max(-1.0, min(1.0, dot)))))
-        uv_errors.append(math.dist(reference_uv, candidate_uv))
+        uv_errors.append(_periodic_uv_distance(reference_uv, candidate_uv))
     return {
         "surface_bidirectional_p95": 0.0,
         "surface_max": 0.0,
@@ -3419,6 +3420,49 @@ def _direct_topology_metrics(
         "skinning_error_p95": 0.0,
         "region_missing": False,
     }
+
+
+def _normal_bucket(normal) -> tuple[int, int] | None:
+    values = tuple(float(value) for value in normal)
+    if len(values) != 3 or not all(math.isfinite(value) for value in values):
+        raise ValueError("normal bucket input is invalid")
+    axis = max(range(3), key=lambda index: abs(values[index]))
+    if values[axis] == 0.0:
+        return None
+    return axis, 1 if values[axis] > 0.0 else -1
+
+
+def _periodic_uv_distance(reference_uv, candidate_uv) -> float:
+    if len(reference_uv) != 2 or len(candidate_uv) != 2:
+        raise ValueError("UV distance requires two coordinates")
+    wrapped = []
+    for reference, candidate in zip(reference_uv, candidate_uv):
+        delta = float(reference) - float(candidate)
+        if not math.isfinite(delta):
+            raise ValueError("UV distance requires finite coordinates")
+        wrapped.append(delta - round(delta))
+    return math.hypot(*wrapped)
+
+
+def _nearest_surface_matches(position, base_partition, oriented_partitions, diagonal: float):
+    if base_partition is None:
+        return None, ()
+    base_match = base_partition[0].find_nearest(position)
+    if base_match is None:
+        return None, ()
+    base_distance = float(base_match[3])
+    tolerance = max(diagonal * 1e-6, base_distance * 0.01)
+    matches = [(base_match, base_partition[1])]
+    for partition in oriented_partitions:
+        if partition is None:
+            continue
+        oriented_match = partition[0].find_nearest(position)
+        if (
+            oriented_match is not None
+            and float(oriented_match[3]) <= base_distance + tolerance
+        ):
+            matches.append((oriented_match, partition[1]))
+    return base_match, tuple(matches)
 
 
 def _geometry_metrics_for_region(
@@ -3453,8 +3497,13 @@ def _geometry_metrics_for_region(
             skin = triangle.get("skin", ((), (), ()))
             if len(skin) != 3:
                 raise ValueError("triangle skin signature cardinality is invalid")
-            for bone in set(_dominant_skin_bone(signature) for signature in skin):
-                grouped.setdefault((material, bone), []).append(triangle)
+            bones = set(_dominant_skin_bone(signature) for signature in skin)
+            buckets = set(_normal_bucket(normal) for normal in triangle["normals"])
+            for bone in bones:
+                grouped.setdefault((material, bone, None), []).append(triangle)
+                for bucket in buckets:
+                    if bucket is not None:
+                        grouped.setdefault((material, bone, bucket), []).append(triangle)
         partitions = {}
         for partition_key, triangles in grouped.items():
             positions = [
@@ -3481,6 +3530,7 @@ def _geometry_metrics_for_region(
                     _dominant_skin_bone(
                         triangle.get("skin", ((), (), ()))[loop]
                     ),
+                    _normal_bucket(triangle["normals"][loop]),
                 ),
                 position,
                 triangle["normals"][loop], triangle["uvs"][loop],
@@ -3490,32 +3540,48 @@ def _geometry_metrics_for_region(
         ]
         for index in range(0, len(source_samples), stride):
             partition_key, source_position, source_normal, source_uv = source_samples[index]
-            partition = target_partitions.get(partition_key)
-            if partition is None:
+            base_partition = target_partitions.get(
+                (partition_key[0], partition_key[1], None)
+            )
+            oriented_partitions = tuple(
+                target_partitions.get((partition_key[0], partition_key[1], (axis, sign)))
+                for axis in range(3)
+                for sign in (-1, 1)
+            )
+            if base_partition is None:
                 distances.append(1.0)
                 normal_angles.append(180.0)
                 uv_errors.append(1.0)
                 continue
-            target_bvh, target_triangles = partition
-            nearest = target_bvh.find_nearest(source_position)
+            nearest, attribute_matches = _nearest_surface_matches(
+                source_position, base_partition, oriented_partitions, diagonal,
+            )
             if nearest is None:
                 distances.append(diagonal)
                 normal_angles.append(180.0)
                 uv_errors.append(1.0)
                 continue
-            location, _, polygon_index, distance = nearest
+            _, _, _, distance = nearest
             distances.append(float(distance) / diagonal)
-            target_triangle = target_triangles[polygon_index]
-            weights = _barycentric_weights(
-                tuple(location), *(tuple(value) for value in target_triangle["positions"])
-            )
-            target_normal = vector_factory(
-                _interpolate_attribute(target_triangle["normals"], weights, normalize=True)
-            )
-            dot = max(-1.0, min(1.0, source_normal.dot(target_normal)))
-            normal_angles.append(math.degrees(math.acos(dot)))
-            target_uv = _interpolate_attribute(target_triangle["uvs"], weights)
-            uv_errors.append(math.dist(source_uv, target_uv))
+            attribute_values = []
+            for attribute_match, target_triangles in attribute_matches:
+                location, _, polygon_index, attribute_distance = attribute_match
+                target_triangle = target_triangles[polygon_index]
+                weights = _barycentric_weights(
+                    tuple(location),
+                    *(tuple(value) for value in target_triangle["positions"]),
+                )
+                target_normal = vector_factory(_interpolate_attribute(
+                    target_triangle["normals"], weights, normalize=True,
+                ))
+                dot = max(-1.0, min(1.0, source_normal.dot(target_normal)))
+                angle = math.degrees(math.acos(dot))
+                target_uv = _interpolate_attribute(target_triangle["uvs"], weights)
+                uv_error = _periodic_uv_distance(source_uv, target_uv)
+                attribute_values.append((angle, uv_error, float(attribute_distance)))
+            angle, uv_error, _ = min(attribute_values)
+            normal_angles.append(angle)
+            uv_errors.append(uv_error)
         return distances, normal_angles, uv_errors
 
     forward_distance, forward_normal, forward_uv = sample(

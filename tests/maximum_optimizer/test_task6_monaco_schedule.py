@@ -28,6 +28,7 @@ from maximum_optimizer.domain import (
 from maximum_optimizer.focused_cache import build_final_whole_authorization_evidence
 from maximum_optimizer.monaco_schedule import (
     MONACO_DIRECT_RATIOS,
+    MONACO_DIRECT_TARGET_ERRORS,
     MonacoCancelledReservation,
     MonacoFailedReservation,
     MonacoScheduleResult,
@@ -118,6 +119,9 @@ class MonacoScheduleTests(unittest.TestCase):
                 dependency_proof_sha256=H["9"], source_identity=source.source_identity,
                 source_relative_path=source.source_identity, source_size=source.source_size,
                 source_sha256=source.source_sha256, direct_ratio=ratio,
+                target_error=MONACO_DIRECT_TARGET_ERRORS[
+                    MONACO_DIRECT_RATIOS.index(ratio)
+                ],
                 expected_prefilter=prefilter,
                 expected_materials=_direct_input_material_proofs(filtered),
             )
@@ -151,6 +155,7 @@ class MonacoScheduleTests(unittest.TestCase):
 
     def test_fixed_ratios_and_reserves_complete_remaining_prefix_before_access(self) -> None:
         self.assertEqual(MONACO_DIRECT_RATIOS, (0.50, 0.45, 0.40, 0.35))
+        self.assertEqual(MONACO_DIRECT_TARGET_ERRORS, (0.01, 0.015, 0.02, 0.025))
         events = []
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -161,6 +166,9 @@ class MonacoScheduleTests(unittest.TestCase):
                 access_ratio=lambda ratio: events.append(("access", ratio)) or payloads[ratio],
             )
         self.assertEqual([item.ratio for item in result], [0.50, 0.45])
+        self.assertEqual(
+            [item.requests[0].target_error for item in result], [0.01, 0.015]
+        )
         self.assertEqual(events, [
             ("reserve", 0, 0.50), ("reserve", 1, 0.45),
             ("access", 0.50), ("access", 0.45),

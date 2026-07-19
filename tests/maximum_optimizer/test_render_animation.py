@@ -605,7 +605,7 @@ def test_vertex_skin_signature_is_named_normalized_and_canonical():
 
 def test_geometry_metrics_match_overlapping_surfaces_by_material():
     assert render_previews.GEOMETRY_AUDIT_ALGORITHM["surface_correspondence"] == (
-        "material-dominant-bone-partitioned-nearest-surface-v3"
+        "material-bone-multinormal-near-coincident-surface-v6"
     )
     assert render_previews.GEOMETRY_AUDIT_ALGORITHM["skinning_correspondence"] == (
         "dominant-bone-partitioned-stable-topology-v2"
@@ -662,6 +662,83 @@ def test_geometry_metrics_match_overlapping_surfaces_by_material():
     assert exact["normal_angle_p95"] == 0.0
     assert exact["uv_error_p95"] == 0.0
     assert wrong["uv_error_p95"] > 0.0
+
+
+def test_geometry_metrics_disambiguate_two_sided_surfaces_and_wrapped_uvs():
+    class Vector(tuple):
+        def __new__(cls, values):
+            return tuple.__new__(cls, values)
+
+        def dot(self, other):
+            return sum(a * b for a, b in zip(self, other))
+
+    class FirstTriangleBvh:
+        def __init__(self, positions, polygons):
+            self.positions = positions
+
+        def find_nearest(self, point):
+            return Vector(point), None, 0, 0.0
+
+    def triangle(normal, uv):
+        skin = (("root", 1.0),)
+        return {
+            "material": "two-sided",
+            "positions": (
+                Vector((0.0, 0.0, 0.0)),
+                Vector((1.0, 0.0, 0.0)),
+                Vector((0.0, 1.0, 0.0)),
+            ),
+            "normals": (Vector(normal),) * 3,
+            "uvs": (uv,) * 3,
+            "skin": (skin,) * 3,
+        }
+
+    reference = {"triangles": [
+        triangle((0.0, 0.0, 1.0), (0.1, 0.2)),
+        triangle((0.0, 0.0, -1.0), (0.4, 0.3)),
+        triangle((0.0, 0.0, 1.0), (0.1, 0.2)),
+    ]}
+    candidate = {"triangles": [
+        triangle((0.0, 0.0, -1.0), (2.4, -0.7)),
+        triangle((0.0, 0.0, 1.0), (2.1, -0.8)),
+    ]}
+
+    metrics = render_previews._geometry_metrics_for_region(
+        reference, candidate, diagonal=1.0, stride=1,
+        vector_factory=Vector,
+        bvh_factory=lambda positions, polygons: FirstTriangleBvh(positions, polygons),
+    )
+
+    assert metrics["normal_angle_p95"] == 0.0
+    assert metrics["uv_error_p95"] == pytest.approx(0.0, abs=1e-12)
+    assert render_previews._periodic_uv_distance((0.1, 0.2), (0.6, 0.7)) == pytest.approx(
+        2 ** -0.5
+    )
+
+
+def test_oriented_surface_match_never_replaces_nearest_geometry_with_far_surface():
+    class Bvh:
+        def __init__(self, distance, polygon):
+            self.distance = distance
+            self.polygon = polygon
+
+        def find_nearest(self, point):
+            return point, None, self.polygon, self.distance
+
+    base = (Bvh(0.001, 3), ["base"] * 4)
+    far_oriented = (Bvh(0.1, 0), ["oriented"])
+    close_oriented = (Bvh(0.0010001, 0), ["oriented"])
+
+    nearest, attributes = render_previews._nearest_surface_matches(
+        (0.0, 0.0, 0.0), base, (far_oriented,), diagonal=1.0,
+    )
+    assert nearest[2] == 3
+    assert [item[0][2] for item in attributes] == [3]
+    nearest, attributes = render_previews._nearest_surface_matches(
+        (0.0, 0.0, 0.0), base, (close_oriented,), diagonal=1.0,
+    )
+    assert nearest[2] == 3
+    assert [item[0][2] for item in attributes] == [3, 0]
 
 
 def test_source_pose_producer_payload_cross_binds_request_action_evaluated_and_pixels():

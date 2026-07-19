@@ -503,7 +503,9 @@ class DirectContracts(unittest.TestCase):
         triangle = DirectDroppedTriangleProof(0, "paint", ("root",), "cross-squared-at-most-1e-30", H["1"])
         return build_direct_prefilter_proof(source_triangle_count=10, triangles=(triangle,))
 
-    def request(self, coverage=H["a"], source_coverage=H["b"]):
+    def request(
+        self, coverage=H["a"], source_coverage=H["b"], target_error=0.01,
+    ):
         return build_direct_source_request(
             family_id=H["0"], family_input_sha256=H["1"], base_candidate_id="base",
             base_spec_sha256=H["2"], base_cache_digest=H["3"],
@@ -512,12 +514,19 @@ class DirectContracts(unittest.TestCase):
             optimizer_contract_sha256=H["6"], whole_profile_sha256=H["7"],
             focused_profile_sha256=H["8"], dependency_proof_sha256=H["9"],
             source_identity="body.smd", source_relative_path="body.smd", source_size=100,
-            source_sha256=H["1"], direct_ratio=0.5, expected_prefilter=self.prefilter(),
+            source_sha256=H["1"], direct_ratio=0.5, target_error=target_error,
+            expected_prefilter=self.prefilter(),
             expected_materials=(DirectInputMaterialProof(0, "paint", 9, H["c"]),),
         )
 
     def test_prefilter_request_and_snapshot_round_trip_with_exact_bindings(self) -> None:
         request = self.request()
+        higher_error = self.request(target_error=0.02)
+        self.assertNotEqual(request.request_sha256, higher_error.request_sha256)
+        self.assertNotEqual(
+            direct_source_request_payload(request),
+            direct_source_request_payload(higher_error),
+        )
         self.assertEqual(direct_source_request_from_payload(direct_source_request_payload(request)), request)
         assert_every_field_rejected(self, direct_source_request_from_payload, direct_source_request_payload(request))
         for field in direct_source_request_payload(request)["expected_prefilter"]:

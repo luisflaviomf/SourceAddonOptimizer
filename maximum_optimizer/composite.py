@@ -230,6 +230,7 @@ def build_direct_source_request(**values) -> DirectSourceBuildRequest:
         prefilter_version="direct-degenerate-prefilter-v1", request_sha256=_ZERO_HASH,
         **values,
     )
+    raw.setdefault("target_error", 0.01)
     provisional = _unsealed(DirectSourceBuildRequest, **raw); raw["request_sha256"] = _pure_seal(direct_source_request_payload(provisional, include_seal=False)); return DirectSourceBuildRequest(**raw)
 
 

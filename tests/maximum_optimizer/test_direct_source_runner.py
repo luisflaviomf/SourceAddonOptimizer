@@ -162,7 +162,7 @@ class DirectSourceRunnerTests(unittest.TestCase):
         candidate = json.loads((result.run_root / "candidate.json").read_text(encoding="utf-8"))
         self.assertEqual(candidate["strategy"], "meshopt-direct-position-v1")
         self.assertEqual(candidate["transfer"], "direct-v1")
-        self.assertEqual(candidate["target_error"], 0.01)
+        self.assertEqual(candidate["target_error"], self.request.target_error)
         self.assertEqual(
             candidate["direct_degenerate_prefilter"],
             "direct-degenerate-prefilter-v1",

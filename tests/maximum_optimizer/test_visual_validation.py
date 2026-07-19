@@ -105,8 +105,9 @@ def _write_manifest(
             "relative_area_squared_epsilon": 1e-24,
             "max_filtered_fraction": 0.05,
             "surface_correspondence": (
-                "material-dominant-bone-partitioned-nearest-surface-v3"
+                "material-bone-multinormal-near-coincident-surface-v6"
             ),
+            "uv_distance": "periodic-unit-torus-v1",
             "skinning_correspondence": (
                 "dominant-bone-partitioned-stable-topology-v2"
             ),

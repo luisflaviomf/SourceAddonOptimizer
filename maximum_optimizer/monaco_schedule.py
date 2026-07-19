@@ -24,6 +24,7 @@ from .processes import ProcessCancelledError
 
 
 MONACO_DIRECT_RATIOS = (0.50, 0.45, 0.40, 0.35)
+MONACO_DIRECT_TARGET_ERRORS = (0.01, 0.015, 0.02, 0.025)
 _HASH = re.compile(r"[0-9a-f]{64}")
 _RATIO_BYTE_LIMIT = 2 * 1024 ** 3
 
@@ -67,8 +68,13 @@ class MonacoScheduledCandidate:
             raise ValueError("Monaco scheduled requests are not canonical")
         if len(snapshot_ids) != len(snapshots) or snapshot_ids != request_ids or any(snapshot.request != request for request, snapshot in zip(requests, snapshots)):
             raise ValueError("Monaco scheduled snapshots differ from requests")
-        if not requests or any(request.direct_ratio != self.ratio for request in requests):
-            raise ValueError("Monaco scheduled request ratios differ")
+        expected_error = MONACO_DIRECT_TARGET_ERRORS[self.reservation.ordinal]
+        if not requests or any(
+            request.direct_ratio != self.ratio
+            or request.target_error != expected_error
+            for request in requests
+        ):
+            raise ValueError("Monaco scheduled request simplification settings differ")
         coverage = requests[0].coverage_manifest_sha256
         if any(request.coverage_manifest_sha256 != coverage for request in requests):
             raise ValueError("Monaco scheduled coverage differs")
@@ -195,6 +201,9 @@ def _canonical_ratio_inputs(
             request.focused_profile_sha256 != first.focused_profile_sha256,
             request.dependency_proof_sha256 != first.dependency_proof_sha256,
             request.direct_ratio != ratio,
+            request.target_error != MONACO_DIRECT_TARGET_ERRORS[
+                MONACO_DIRECT_RATIOS.index(ratio)
+            ],
             snapshot.request != request,
         )):
             raise ValueError("Monaco ratio request/snapshot binding mismatch")

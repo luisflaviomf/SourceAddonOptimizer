@@ -470,7 +470,7 @@ class BlenderDirectSourceRunner:
                 "candidate_id": direct_candidate_id(request),
                 "engine": "meshoptimizer",
                 "ratio": request.direct_ratio,
-                "target_error": 0.01,
+                "target_error": request.target_error,
                 "update_vertices": False,
                 "region_overrides": [],
                 "strategy": "meshopt-direct-position-v1",
