@@ -62,6 +62,7 @@ namespace GmodAddonCompressor
         private string? _modelsOutputPath = null;
         private string? _modelsWorkDir = null;
         private string? _modelsLastErrorLine = null;
+        private string? _maximumReportPath = null;
         private int _modelsStepIndex = 0;
         private int _modelsStepTotal = 0;
         private string _modelsPhase = string.Empty;
@@ -120,6 +121,7 @@ namespace GmodAddonCompressor
         private const int PresetAggressiveIndex = 1;
         private const int PresetCustomIndex = 2;
         private const int OptimizerModeFidelityIndex = 1;
+        private const int OptimizerModeMaximumIndex = 2;
 
         private enum PipelineStage
         {
@@ -2286,6 +2288,7 @@ namespace GmodAddonCompressor
 
             _modelsOutputPath = null;
             _modelsLastErrorLine = null;
+            _maximumReportPath = null;
             _modelsSizeAfter = null;
             _modelsStepIndex = 0;
             _modelsStepTotal = 0;
@@ -2301,6 +2304,8 @@ namespace GmodAddonCompressor
 
             _context.ModelsStatusText = "Phase: Starting";
             _context.ModelsProgressText = string.Empty;
+            _context.MaximumProgressText = string.Empty;
+            _context.MaximumBestText = string.Empty;
             _context.ModelsProgressMinValue = 0;
             _context.ModelsProgressMaxValue = 100;
             _context.ModelsProgressValue = 0;
@@ -2437,6 +2442,9 @@ namespace GmodAddonCompressor
             _pipelineCompressExitCode = null;
             _modelsLastErrorLine = null;
             _modelsOutputPath = null;
+            _maximumReportPath = null;
+            _context.MaximumProgressText = string.Empty;
+            _context.MaximumBestText = string.Empty;
             _modelsStepIndex = 0;
             _modelsStepTotal = 0;
             _modelsPhase = string.Empty;
@@ -2677,6 +2685,9 @@ namespace GmodAddonCompressor
                 if (!string.IsNullOrWhiteSpace(update.WorkDirPath))
                     _modelsWorkDir = update.WorkDirPath;
 
+                if (HandleMaximumProgressUpdate(update))
+                    return;
+
                 if (update.BatchAddonIndex.HasValue && update.BatchAddonTotal.HasValue)
                 {
                     _modelsBatchAddonIndex = update.BatchAddonIndex.Value;
@@ -2758,6 +2769,91 @@ namespace GmodAddonCompressor
                     }
                 }
             });
+        }
+
+        private bool HandleMaximumProgressUpdate(SourceAddonOptimizerProgressUpdate update)
+        {
+            if (string.IsNullOrWhiteSpace(update.MaximumKind))
+                return false;
+
+            if (!string.IsNullOrWhiteSpace(update.ReportPath))
+                _maximumReportPath = ResolveMaximumReportPath(update.ReportPath);
+
+            var progressParts = new List<string>();
+            if (update.FamilyIndex.HasValue && update.FamilyTotal.HasValue)
+                progressParts.Add($"Family {Math.Min(update.FamilyIndex.Value + 1, update.FamilyTotal.Value)}/{update.FamilyTotal.Value}");
+            if (!string.IsNullOrWhiteSpace(update.FamilyId))
+                progressParts.Add(update.FamilyId!);
+            if (update.CandidateIndex.HasValue && update.CandidateTotal.HasValue)
+                progressParts.Add($"Candidate {Math.Min(update.CandidateIndex.Value + 1, update.CandidateTotal.Value)}/{update.CandidateTotal.Value}");
+            if (!string.IsNullOrWhiteSpace(update.CandidateId))
+                progressParts.Add(update.CandidateId!);
+            if (!string.IsNullOrWhiteSpace(update.Stage))
+                progressParts.Add(update.Stage!);
+            if (!string.IsNullOrWhiteSpace(update.GateStatus))
+                progressParts.Add($"Gate: {update.GateStatus}");
+
+            _context.MaximumProgressText = progressParts.Count > 0
+                ? string.Join(" | ", progressParts)
+                : update.MaximumKind!;
+
+            var bestParts = new List<string>();
+            if (update.BestBytes.HasValue)
+                bestParts.Add($"Best: {FormatBytes(update.BestBytes.Value)}");
+            if (update.ReductionPercent.HasValue)
+                bestParts.Add($"Reduction: {update.ReductionPercent.Value:0.00}%");
+            if (!string.IsNullOrWhiteSpace(update.GateStatus))
+                bestParts.Add(update.GateStatus!);
+            if (bestParts.Count > 0)
+                _context.MaximumBestText = string.Join(" | ", bestParts);
+
+            _context.ModelsStatusText = $"Maximum: {update.MaximumKind}";
+            if (update.CandidateIndex.HasValue && update.CandidateTotal.HasValue)
+            {
+                _context.ModelsProgressMinValue = 0;
+                _context.ModelsProgressMaxValue = Math.Max(update.CandidateTotal.Value, 1);
+                _context.ModelsProgressValue = Math.Min(update.CandidateIndex.Value + 1, _context.ModelsProgressMaxValue);
+            }
+            else if (update.FamilyIndex.HasValue && update.FamilyTotal.HasValue)
+            {
+                _context.ModelsProgressMinValue = 0;
+                _context.ModelsProgressMaxValue = Math.Max(update.FamilyTotal.Value, 1);
+                _context.ModelsProgressValue = Math.Min(update.FamilyIndex.Value + 1, _context.ModelsProgressMaxValue);
+            }
+
+            if (_pipelineRunning && _pipelineStage == PipelineStage.Models)
+            {
+                _context.PipelineStatusText = _context.ModelsStatusText;
+                _context.PipelineProgressText = _context.MaximumProgressText;
+                _context.PipelineProgressMinValue = _context.ModelsProgressMinValue;
+                _context.PipelineProgressMaxValue = _context.ModelsProgressMaxValue;
+                _context.PipelineProgressValue = _context.ModelsProgressValue;
+            }
+
+            return true;
+        }
+
+        private string? ResolveMaximumReportPath(string reportPath)
+        {
+            if (string.IsNullOrWhiteSpace(_modelsWorkDir) || string.IsNullOrWhiteSpace(reportPath))
+                return null;
+
+            try
+            {
+                string workRoot = Path.GetFullPath(_modelsWorkDir);
+                string candidate = Path.IsPathRooted(reportPath)
+                    ? Path.GetFullPath(reportPath)
+                    : Path.GetFullPath(Path.Combine(workRoot, reportPath.Replace('/', Path.DirectorySeparatorChar)));
+                string containedPrefix = workRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                    + Path.DirectorySeparatorChar;
+                return candidate.StartsWith(containedPrefix, StringComparison.OrdinalIgnoreCase)
+                    ? candidate
+                    : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
         }
 
         private void OptimizerOutputPathFound(string path)
@@ -2868,11 +2964,73 @@ namespace GmodAddonCompressor
 
         private string BuildModelsSizeReportText()
         {
+            if (_context.OptimizerModeIsMaximum
+                && !string.IsNullOrWhiteSpace(_maximumReportPath)
+                && File.Exists(_maximumReportPath))
+                return BuildMaximumReportText(_maximumReportPath);
+
             var batchSummaryPath = GetModelsBatchSummaryPath();
             if (!string.IsNullOrWhiteSpace(batchSummaryPath))
                 return BuildModelsBatchSummaryText(batchSummaryPath);
 
             return AppendSteerTurnBasisSummary(AppendRoundPartsPolicySummary(AppendPolicySummary(BuildSizeReportText(_modelsSizeBefore, _modelsSizeAfter))));
+        }
+
+        private static string BuildMaximumReportText(string reportPath)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
+                JsonElement root = document.RootElement;
+                long originalBytes = root.TryGetProperty("original_size", out var original)
+                    ? GetJsonLong(original, "total_bytes")
+                    : 0;
+                long finalBytes = root.TryGetProperty("final_size", out var final)
+                    ? GetJsonLong(final, "total_bytes")
+                    : 0;
+                double reduction = originalBytes > 0
+                    ? (originalBytes - finalBytes) * 100.0 / originalBytes
+                    : 0.0;
+                string status = root.TryGetProperty("status", out var statusElement)
+                    && statusElement.ValueKind == JsonValueKind.String
+                    ? statusElement.GetString() ?? "unknown"
+                    : "unknown";
+
+                int optimized = 0;
+                int preserved = 0;
+                int failed = 0;
+                int familyCount = 0;
+                if (root.TryGetProperty("families", out var families)
+                    && families.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var family in families.EnumerateArray())
+                    {
+                        familyCount++;
+                        string familyStatus = family.TryGetProperty("status", out var familyStatusElement)
+                            && familyStatusElement.ValueKind == JsonValueKind.String
+                            ? familyStatusElement.GetString() ?? string.Empty
+                            : string.Empty;
+                        if (string.Equals(familyStatus, "optimized", StringComparison.OrdinalIgnoreCase))
+                            optimized++;
+                        else if (string.Equals(familyStatus, "preserved", StringComparison.OrdinalIgnoreCase))
+                            preserved++;
+                        else if (string.Equals(familyStatus, "failed", StringComparison.OrdinalIgnoreCase))
+                            failed++;
+                    }
+                }
+
+                return string.Join(Environment.NewLine, new[]
+                {
+                    $"Maximum report: {status}",
+                    $"Compiled models: {FormatBytes(originalBytes)} -> {FormatBytes(finalBytes)} (-{reduction:0.00}%)",
+                    $"Families: {familyCount} | optimized {optimized} | preserved {preserved} | failed {failed}",
+                    $"Evidence: {reportPath}",
+                });
+            }
+            catch (Exception ex)
+            {
+                return $"Maximum report could not be read: {ex.Message}";
+            }
         }
 
         private string BuildModelsBatchSummaryText(string summaryPath)
@@ -3401,12 +3559,18 @@ namespace GmodAddonCompressor
             _context.OptimizerFormatIndex = 0;
         }
 
-        private string GetOptimizerModeArgument()
+        internal static string GetOptimizerModeArgument(int optimizerModeIndex)
         {
-            return _context.OptimizerModeIndex == OptimizerModeFidelityIndex
-                ? "fidelity"
-                : "normal";
+            return optimizerModeIndex switch
+            {
+                OptimizerModeFidelityIndex => "fidelity",
+                OptimizerModeMaximumIndex => "maximum",
+                _ => "normal",
+            };
         }
+
+        private string GetOptimizerModeArgument() =>
+            GetOptimizerModeArgument(_context.OptimizerModeIndex);
 
         private void ApplyCustomParams(OptimizerCustomParams custom)
         {

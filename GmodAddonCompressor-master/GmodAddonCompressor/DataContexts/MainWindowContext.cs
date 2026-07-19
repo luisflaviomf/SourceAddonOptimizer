@@ -23,6 +23,8 @@ namespace GmodAddonCompressor.DataContexts
         private string _compressSizeReportText = string.Empty;
         private string _modelsStatusText = string.Empty;
         private string _modelsProgressText = string.Empty;
+        private string _maximumProgressText = string.Empty;
+        private string _maximumBestText = string.Empty;
         private int _modelsProgressMinValue = 0;
         private int _modelsProgressMaxValue = 100;
         private int _modelsProgressValue = 0;
@@ -166,7 +168,8 @@ namespace GmodAddonCompressor.DataContexts
         private string[] _optimizerModeList = new string[]
         {
             "Normal",
-            "Fidelity"
+            "Fidelity",
+            "Maximum (experimental)"
         };
         private string[] _compressModeList = new string[]
         {
@@ -238,6 +241,10 @@ namespace GmodAddonCompressor.DataContexts
 
         public bool OptimizerModeIsNormal => _optimizerModeIndex == 0;
         public bool OptimizerModeIsFidelity => _optimizerModeIndex == 1;
+        public bool OptimizerModeIsMaximum => _optimizerModeIndex == 2;
+        public bool OptimizerManualTuningEnabled => !OptimizerModeIsMaximum;
+        public Visibility OptimizerMaximumVisibility =>
+            OptimizerModeIsMaximum ? Visibility.Visible : Visibility.Collapsed;
         public bool OptimizerModeNormalChecked
         {
             get { return _optimizerModeIndex == 0; }
@@ -270,8 +277,26 @@ namespace GmodAddonCompressor.DataContexts
             }
         }
 
+        public bool OptimizerModeMaximumChecked
+        {
+            get { return _optimizerModeIndex == 2; }
+            set
+            {
+                if (value)
+                {
+                    OptimizerModeIndex = 2;
+                    return;
+                }
+
+                if (_optimizerModeIndex == 2)
+                    OnPropertyChanged();
+            }
+        }
+
         public string OptimizerModeDescriptionText =>
-            OptimizerModeIsFidelity
+            OptimizerModeIsMaximum
+                ? "Maximum (experimental) automatically searches compiled Source bytes for the smallest candidate that passes structural and worst-view visual fidelity gates. Manual ratio, merge, smoothing, and experimental tuning are ignored while this mode is selected."
+                : OptimizerModeIsFidelity
                 ? "Fidelity mode keeps the current outer run settings such as ratio/jobs, but routes optimization through the validated sandbox stack: selective ground policy, round-parts wheel handling, and the steer turn-basis fix."
                 : "Normal mode keeps the current Models pipeline exactly as it works today. The existing presets, tuning fields, and opt-in experimental toggles behave the same as before.";
 
@@ -1048,6 +1073,26 @@ namespace GmodAddonCompressor.DataContexts
             }
         }
 
+        public string MaximumProgressText
+        {
+            get { return _maximumProgressText; }
+            set
+            {
+                _maximumProgressText = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public string MaximumBestText
+        {
+            get { return _maximumBestText; }
+            set
+            {
+                _maximumBestText = value;
+                OnPropertyChanged();
+            }
+        }
+
         public string ModelsSizeReportText
         {
             get { return _modelsSizeReportText; }
@@ -1174,8 +1219,12 @@ namespace GmodAddonCompressor.DataContexts
         {
             OnPropertyChanged(nameof(OptimizerModeIsNormal));
             OnPropertyChanged(nameof(OptimizerModeIsFidelity));
+            OnPropertyChanged(nameof(OptimizerModeIsMaximum));
             OnPropertyChanged(nameof(OptimizerModeNormalChecked));
             OnPropertyChanged(nameof(OptimizerModeFidelityChecked));
+            OnPropertyChanged(nameof(OptimizerModeMaximumChecked));
+            OnPropertyChanged(nameof(OptimizerManualTuningEnabled));
+            OnPropertyChanged(nameof(OptimizerMaximumVisibility));
             OnPropertyChanged(nameof(OptimizerModeDescriptionText));
         }
 
