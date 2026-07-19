@@ -7,6 +7,7 @@ import hashlib
 import itertools
 import json
 import math
+from pathlib import PurePosixPath
 import re
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
@@ -14,7 +15,7 @@ from typing import Any, Iterable, Mapping
 
 _MAX_REGIONS = 64
 _MAX_TEXT = 4096
-_MAX_ANIMATIONS = 256
+_MAX_ANIMATIONS = 64
 _MAX_BONES = 4096
 _MAX_CURVES = 100_000
 _MAX_FRAMES = 4096
@@ -101,6 +102,7 @@ _PIXEL_PUBLIC_KEYS = {
     "minimum_silhouette_pixels", "posed_pixel_bundle_sha256", "total_pixels",
     "views", "camera_directions", "qualified_silhouette_views",
 }
+_PIXEL_MEASUREMENT_KEYS = _PIXEL_PUBLIC_KEYS | {"kind"}
 _PIXEL_VIEW_KEYS = {
     "changed_fraction", "changed_pixels", "foreground_pixels", "height",
     "key", "mean_absolute_error", "width",
@@ -277,6 +279,18 @@ def _validate_animation_selection(value: object, name: str) -> Mapping[str, Any]
     )
     for field in ("animation_relative_path", "bone_name", "pose_name", "reference_relative_path"):
         _text(result[field], f"{name}.{field}")
+    for field in ("animation_relative_path", "reference_relative_path"):
+        path = PurePosixPath(result[field])
+        _require(
+            not path.is_absolute() and "\\" not in result[field]
+            and all(part not in {"", ".", ".."} for part in path.parts),
+            f"{name}.{field} is not a canonical relative path",
+        )
+    _require(
+        result["pose_name"]
+        == PurePosixPath(result["animation_relative_path"]).stem.casefold(),
+        f"{name} pose name differs from animation path",
+    )
     for field in (
         "animation_sha256", "reference_sha256", "geometry_inventory_sha256",
         "selector_input_sha256", "selection_sha256",
@@ -289,7 +303,11 @@ def _validate_animation_selection(value: object, name: str) -> Mapping[str, Any]
     maximum = _number(result["raw_render_max_displacement"], f"{name}.raw max", positive=True)
     rms = _number(result["rms_displacement"], f"{name}.rms", positive=True)
     raw_rms = _number(result["raw_render_rms_displacement"], f"{name}.raw rms", positive=True)
-    _require(displacement == maximum and rms == raw_rms and rms <= maximum, f"{name} displacement fields differ")
+    _require(
+        displacement == maximum and rms == raw_rms and rms <= maximum
+        and displacement > 1e-12 and rms > 1e-12,
+        f"{name} displacement fields differ or are below threshold",
+    )
     _require(isinstance(result["displacement_squared"], str), f"{name} squared displacement is invalid")
     try:
         squared = float(result["displacement_squared"])
@@ -389,7 +407,11 @@ def _validate_toolchain(value: object) -> Mapping[str, Any]:
         paths.append(_text(item["path"], "tool path"))
         _integer(item["size"], "tool size", 1, 1024 * 1024 * 1024)
         _sha(item["sha256"], "tool file hash")
-    _require(len(paths) == len(set(paths)), "action tool file inventory duplicates")
+    _require(
+        len(paths) == len(set(paths))
+        and paths == sorted(paths, key=lambda path: (path.casefold(), path)),
+        "action tool file inventory is not canonical unique",
+    )
     _sha(result["toolchain_sha256"], "action toolchain seal")
     unsigned = {key: item for key, item in result.items() if key != "toolchain_sha256"}
     _require(result["toolchain_sha256"] == _hash(unsigned), "action toolchain seal differs")
@@ -401,6 +423,10 @@ def _validate_action(value: object, *, selection: Mapping[str, Any], contracts: 
     _sha(result["animation_input_sha256"], "action animation input")
     _sha(result["action_sha256"], "action seal")
     _text(result["slot_name"], "action slot name")
+    _require(
+        result["slot_name"].casefold() == selection["pose_name"],
+        "action slot stem differs from selected pose",
+    )
     toolchain = _validate_toolchain(result["toolchain"])
     _require(toolchain["toolchain_sha256"] == contracts["toolchain_sha256"], "action/contracts toolchain differs")
     bones = _sequence(result["bone_lineage"], "action bone lineage", maximum=_MAX_BONES, minimum=1)
@@ -422,6 +448,7 @@ def _validate_action(value: object, *, selection: Mapping[str, Any], contracts: 
     source_times = _sequence(result["source_times"], "action source times", maximum=_MAX_FRAMES, minimum=1)
     for item in source_times:
         _signed_integer(item, "action source time")
+    _require(len(source_times) == len(set(source_times)), "action source times duplicate")
     curves = _sequence(result["curves"], "action curves", maximum=_MAX_CURVES, minimum=1)
     curve_order = []
     keyed_frames = set()
@@ -431,6 +458,8 @@ def _validate_action(value: object, *, selection: Mapping[str, Any], contracts: 
         array = _integer(curve["array_index"], "curve array index", 0, 3)
         match = re.fullmatch(r'pose\.bones\["([^"]+)"\]\.(location|rotation_euler|rotation_quaternion|scale)', path)
         _require(match is not None and match.group(1) in bone_names, "action curve bone path differs")
+        maximum_index = 3 if match.group(2) == "rotation_quaternion" else 2
+        _require(array <= maximum_index, "action curve array index differs from channel")
         curve_order.append((path, array))
         points = _sequence(curve["keyframes"], "action keyframes", maximum=_MAX_FRAMES, minimum=1)
         frames = []
@@ -450,6 +479,11 @@ def _validate_action(value: object, *, selection: Mapping[str, Any], contracts: 
         "action/selection source frame binding differs",
     )
     _require(selection["frame"] in keyed_frames, "selected action frame is not keyed")
+    lineage_by_id = {item["id"]: item["name"] for item in bones}
+    _require(
+        lineage_by_id.get(selection["bone_index"]) == selection["bone_name"],
+        "selected bone id/name differs from action lineage",
+    )
     unsigned = {key: item for key, item in result.items() if key != "action_sha256"}
     _require(result["action_sha256"] == _hash(unsigned), "public action seal differs")
     return result
@@ -479,7 +513,11 @@ def _validate_evaluated(
     moved = _integer(result["moved_vertex_count"], "evaluated moved vertex count", 1, vertex_count)
     maximum = _number(result["maximum_displacement"], "evaluated maximum", positive=True)
     rms = _number(result["rms_displacement"], "evaluated RMS", positive=True)
-    _require(rms <= maximum and moved <= vertex_count, "evaluated counts/displacement differ")
+    _require(
+        rms <= maximum and moved <= vertex_count
+        and maximum > 1e-12 and rms > 1e-12,
+        "evaluated counts/displacement differ or are below threshold",
+    )
     influenced = _sequence(result["influenced_bones"], "evaluated influenced bones", maximum=_MAX_BONES, minimum=1)
     _require(all(isinstance(item, str) and item for item in influenced), "evaluated influenced bone invalid")
     _require(tuple(influenced) == tuple(sorted(set(influenced), key=lambda name: (name.casefold(), name))), "evaluated influenced bones are not canonical")
@@ -487,6 +525,23 @@ def _validate_evaluated(
     _require(set(influenced) <= action_bones, "evaluated influenced bone is absent from action lineage")
     selected_bone = _text(result["selected_bone"], "evaluated selected bone")
     _require(selected_bone in influenced and selected_bone == selection["bone_name"], "evaluated selected/influenced bone differs")
+    ids_by_name = {item["name"]: item["id"] for item in action["bone_lineage"]}
+    parents = {item["id"]: item["parent"] for item in action["bone_lineage"]}
+    selected_id = ids_by_name[selected_bone]
+    descendants = set()
+    for name, identity in ids_by_name.items():
+        cursor = identity
+        visited = set()
+        while cursor != -1 and cursor not in visited:
+            if cursor == selected_id:
+                descendants.add(name)
+                break
+            visited.add(cursor)
+            cursor = parents.get(cursor, -1)
+    _require(
+        set(influenced) <= descendants,
+        "evaluated influenced bone is not selected or descendant",
+    )
     _require(
         result["action_sha256"] == action["action_sha256"]
         and result["animation_input_sha256"] == selection["animation_sha256"]
@@ -499,8 +554,15 @@ def _validate_evaluated(
     return result
 
 
-def _validate_pixel_public(value: object, *, caps: Mapping[str, Any], name: str) -> tuple[Mapping[str, Any], dict[str, tuple[float, float, float]]]:
-    result = _mapping(value, _PIXEL_PUBLIC_KEYS, name)
+def _validate_pixel_public(
+    value: object, *, caps: Mapping[str, Any], name: str,
+    measurement: bool = False,
+) -> tuple[Mapping[str, Any], dict[str, tuple[float, float, float]]]:
+    result = _mapping(
+        value, _PIXEL_MEASUREMENT_KEYS if measurement else _PIXEL_PUBLIC_KEYS, name,
+    )
+    if measurement:
+        _require(result["kind"] == "pose-pixel-measurement-v1", f"{name} kind differs")
     for field in ("bind_pixel_bundle_sha256", "posed_pixel_bundle_sha256", "evidence_sha256"):
         _sha(result[field], f"{name}.{field}")
     _require(result["bind_pixel_bundle_sha256"] != result["posed_pixel_bundle_sha256"], f"{name} bind/posed bundle is equal")
@@ -522,8 +584,8 @@ def _validate_pixel_public(value: object, *, caps: Mapping[str, Any], name: str)
         mae = _number(view["mean_absolute_error"], "pixel view MAE")
         _require(math.isclose(fraction, changed / foreground, rel_tol=1e-12, abs_tol=1e-15), f"{name} view fraction differs")
         qualifies = changed >= caps["minimum_silhouette_pixels"] and fraction >= caps["minimum_changed_fraction"]
-        if qualifies: computed_qualified.append(key)
-        else: _require(changed == 0 and fraction == 0.0, f"{name} nonqualifying view changed")
+        if qualifies:
+            computed_qualified.append(key)
         foreground_total += foreground; changed_total += changed; error_weight += mae * foreground
     _require(view_keys == sorted(set(view_keys)), f"{name} view keys are not canonical unique")
     directions = {}
@@ -549,9 +611,15 @@ def _validate_pixel_public(value: object, *, caps: Mapping[str, Any], name: str)
 
 def _validate_pixel_evidence(value: object, *, caps: Mapping[str, Any]) -> Mapping[str, Any]:
     result = _mapping(value, _PIXEL_EVIDENCE_KEYS, "pixel evidence")
-    _require(result["kind"] == "pose-pixel-family-evidence-v1" and result["deterministic"] is True, "pixel family evidence contract differs")
-    first, directions = _validate_pixel_public(result["first"], caps=caps, name="pixel first")
-    repeat, repeat_directions = _validate_pixel_public(result["repeat"], caps=caps, name="pixel repeat")
+    positive = result["kind"] == "pose-pixel-family-evidence-v1"
+    no_visible = result["kind"] == "pose-pixel-no-visible-evidence-v1"
+    _require((positive or no_visible) and result["deterministic"] is True, "pixel family evidence contract differs")
+    first, directions = _validate_pixel_public(
+        result["first"], caps=caps, name="pixel first", measurement=no_visible,
+    )
+    repeat, repeat_directions = _validate_pixel_public(
+        result["repeat"], caps=caps, name="pixel repeat", measurement=no_visible,
+    )
     _require(first == repeat and directions == repeat_directions, "pixel first/repeat evidence differs")
     qualified = tuple(first["qualified_silhouette_views"])
     candidates = sorted(
@@ -560,9 +628,18 @@ def _validate_pixel_evidence(value: object, *, caps: Mapping[str, Any]) -> Mappi
         for right in qualified[index + 1:]
         if abs(sum(a * b for a, b in zip(directions[left], directions[right]))) <= 0.25
     )
-    _require(bool(candidates), "pixel evidence lacks orthogonal qualifying pair")
-    pair = _sequence(result["canonical_orthogonal_pair"], "canonical orthogonal pair", maximum=2, minimum=2)
-    _require(tuple(pair) == candidates[0], "pixel orthogonal pair is not dynamically canonical")
+    if positive:
+        _require(bool(candidates), "pixel evidence lacks orthogonal qualifying pair")
+        pair = _sequence(
+            result["canonical_orthogonal_pair"], "canonical orthogonal pair",
+            maximum=2, minimum=2,
+        )
+        _require(tuple(pair) == candidates[0], "pixel orthogonal pair is not dynamically canonical")
+    else:
+        _require(
+            not candidates and result["canonical_orthogonal_pair"] is None,
+            "no-visible pixel evidence contains an orthogonal qualifying pair",
+        )
     for field in (
         "selection_sha256", "action_sha256", "evaluated_region_proof_sha256",
         "region_manifest_sha256", "toolchain_sha256", "caps_sha256",
@@ -603,6 +680,14 @@ def _validate_decision(
     _require(result["decision_sha256"] == _hash(unsigned), "selector decision seal differs")
     if mode in {"bind-animation", "bind-only/no-visible-displacement"}:
         _require(action is not None and evaluated is not None and pixels is not None, "animated decision lacks source proofs")
+        expected_pixel_kind = (
+            "pose-pixel-family-evidence-v1" if mode == "bind-animation"
+            else "pose-pixel-no-visible-evidence-v1"
+        )
+        _require(
+            pixels["kind"] == expected_pixel_kind,
+            "pixel evidence kind differs from selector decision",
+        )
         action = _validate_action(action, selection=selection, contracts=contracts)
         evaluated = _validate_evaluated(
             evaluated, selection=selection, action=action, contracts=contracts,

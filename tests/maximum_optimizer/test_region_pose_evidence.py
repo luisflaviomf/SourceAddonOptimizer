@@ -177,6 +177,32 @@ def _pixel_evidence(pair=("front", "right"), *, region_manifest=REGION_MANIFEST)
     return {**unsigned, "evidence_sha256": _hash(unsigned)}
 
 
+def _no_visible_pixel_evidence(*, region_manifest=REGION_MANIFEST):
+    public = _pixel_public()
+    public["kind"] = "pose-pixel-measurement-v1"
+    for view in public["views"]:
+        view["changed_pixels"] = 10
+        view["changed_fraction"] = 10 / view["foreground_pixels"]
+        view["mean_absolute_error"] = 0.25
+    public["qualified_silhouette_views"] = []
+    public["changed_pixels"] = 80
+    public["changed_fraction"] = 80 / public["foreground_pixels"]
+    public["mean_absolute_error"] = 0.25
+    public["evidence_sha256"] = _hash({k: v for k, v in public.items() if k != "evidence_sha256"})
+    unsigned = {
+        "kind": "pose-pixel-no-visible-evidence-v1",
+        "first": public, "repeat": copy.deepcopy(public), "deterministic": True,
+        "canonical_orthogonal_pair": None,
+        "selection_sha256": _animation_selection()["selection_sha256"],
+        "action_sha256": _action()["action_sha256"],
+        "evaluated_region_proof_sha256": _evaluated()["proof_sha256"],
+        "region_manifest_sha256": region_manifest,
+        "toolchain_sha256": _toolchain()["toolchain_sha256"],
+        "caps_sha256": _caps()["caps_sha256"],
+    }
+    return {**unsigned, "evidence_sha256": _hash(unsigned)}
+
+
 def _reason_proof(mode: str, *, evaluated=None, pixel=None):
     inventory = [] if mode in {"bind-only/no-eligible-animation", "bind-only/rigid-region"} else [{
         "animation_relative_path": "anims/door.smd",
@@ -216,7 +242,11 @@ def _build(*, mode="bind-animation", region_key=REGION, family_overrides=None):
 
     evaluated = _evaluated()
     manifest = REGION_MANIFEST if region_key == REGION else _sha(region_key)
-    pixels = _pixel_evidence(region_manifest=manifest)
+    pixels = (
+        _no_visible_pixel_evidence(region_manifest=manifest)
+        if mode == "bind-only/no-visible-displacement"
+        else _pixel_evidence(region_manifest=manifest)
+    )
     animated = mode in {"bind-animation", "bind-only/no-visible-displacement"}
     decision = _decision(mode, evaluated=evaluated, pixel=pixels)
     if manifest != REGION_MANIFEST:
@@ -237,6 +267,38 @@ def _build(*, mode="bind-animation", region_key=REGION, family_overrides=None):
         evaluated_region_proof=evaluated if animated else None,
         pixel_evidence=pixels if animated else None, caps=_caps(),
     )
+
+
+def _reseal_cross(raw):
+    decision = raw["selector_decision"]
+    for key in ("selection_payload", "attempted_selection_payload"):
+        selection = decision.get(key)
+        if selection is not None:
+            selection["selection_sha256"] = _hash({k: v for k, v in selection.items() if k != "selection_sha256"})
+    active = decision["attempted_selection_payload"] or decision["selection_payload"]
+    action = raw.get("action_proof")
+    if action is not None:
+        action["action_sha256"] = _hash({k: v for k, v in action.items() if k != "action_sha256"})
+    evaluated = raw.get("evaluated_region_proof")
+    if evaluated is not None:
+        evaluated["action_sha256"] = action["action_sha256"]
+        evaluated["animation_input_sha256"] = active["animation_sha256"]
+        evaluated["proof_sha256"] = _hash({k: v for k, v in evaluated.items() if k != "proof_sha256"})
+    pixels = raw.get("pixel_evidence")
+    if pixels is not None:
+        pixels["selection_sha256"] = active["selection_sha256"]
+        pixels["action_sha256"] = action["action_sha256"]
+        pixels["evaluated_region_proof_sha256"] = evaluated["proof_sha256"]
+        pixels["evidence_sha256"] = _hash({k: v for k, v in pixels.items() if k != "evidence_sha256"})
+    reason = decision.get("decision_proof")
+    if reason is not None and decision["mode"] == "bind-only/no-visible-displacement":
+        reason["attempted_selection_sha256"] = active["selection_sha256"]
+        reason["evaluated_region_proof_sha256"] = evaluated["proof_sha256"]
+        reason["pixel_evidence_sha256"] = pixels["evidence_sha256"]
+        reason["proof_sha256"] = _hash({k: v for k, v in reason.items() if k != "proof_sha256"})
+    decision["decision_sha256"] = _hash({k: v for k, v in decision.items() if k != "decision_sha256"})
+    raw["evidence_sha256"] = _hash({k: v for k, v in raw.items() if k != "evidence_sha256"})
+    return raw
 
 
 def _binding(proof):
@@ -386,12 +448,24 @@ class EvidenceTests(unittest.TestCase):
         empty = copy.deepcopy(base); empty["pixel_evidence"]["first"]["views"][0]["foreground_pixels"] = 0; mutations.append(empty)
         repeat = copy.deepcopy(base); repeat["pixel_evidence"]["repeat"]["posed_pixel_bundle_sha256"] = _sha("repeat-drift"); mutations.append(repeat)
         pair = copy.deepcopy(base); pair["pixel_evidence"]["canonical_orthogonal_pair"] = ["front", "back"]; mutations.append(pair)
-        nonqual = copy.deepcopy(base)
-        item = next(x for x in nonqual["pixel_evidence"]["first"]["views"] if x["key"] == "left")
-        item["changed_pixels"] = 1; item["changed_fraction"] = 0.00001; mutations.append(nonqual)
         for changed in mutations:
             with self.subTest(pixel=changed["pixel_evidence"]), self.assertRaises(ValueError):
                 _parse({**changed, "evidence_sha256": _hash({k: v for k, v in changed.items() if k != "evidence_sha256"})})
+
+    def test_nonqualifying_views_may_have_bounded_subthreshold_silhouette_changes(self):
+        raw = _build().to_payload()
+        first = raw["pixel_evidence"]["first"]
+        left = next(item for item in first["views"] if item["key"] == "left")
+        left["changed_pixels"] = 26
+        left["changed_fraction"] = 26 / left["foreground_pixels"]
+        left["mean_absolute_error"] = 0.5
+        first["changed_pixels"] += 26
+        first["changed_fraction"] = first["changed_pixels"] / first["foreground_pixels"]
+        first["mean_absolute_error"] = 0.3125
+        first["evidence_sha256"] = _hash({k: v for k, v in first.items() if k != "evidence_sha256"})
+        raw["pixel_evidence"]["repeat"] = copy.deepcopy(first)
+        _reseal_cross(raw)
+        self.assertNotIn("left", _parse(raw).pixel_evidence["first"]["qualified_silhouette_views"])
 
     def test_dynamic_pair_uses_camera_directions_not_fixed_names(self):
         evidence = _pixel_evidence(pair=("front", "right"))
@@ -437,6 +511,75 @@ class EvidenceTests(unittest.TestCase):
         for field in ("attempted_selection_payload",):
             changed = copy.deepcopy(base); changed["selector_decision"][field] = None
             with self.assertRaises(ValueError): _parse({**changed, "evidence_sha256": _hash({k: v for k, v in changed.items() if k != "evidence_sha256"})})
+
+    def test_no_visible_requires_deterministic_measurement_without_orthogonal_qualified_pair(self):
+        raw = _build(mode="bind-only/no-visible-displacement").to_payload()
+        self.assertIsNone(_parse(raw).pixel_evidence["canonical_orthogonal_pair"])
+        one = _build(mode="bind-only/no-visible-displacement").to_payload()
+        first = one["pixel_evidence"]["first"]
+        front = next(item for item in first["views"] if item["key"] == "front")
+        delta = 100 - front["changed_pixels"]
+        front["changed_pixels"] = 100
+        front["changed_fraction"] = 100 / front["foreground_pixels"]
+        first["changed_pixels"] += delta
+        first["changed_fraction"] = first["changed_pixels"] / first["foreground_pixels"]
+        first["qualified_silhouette_views"] = ["front"]
+        first["evidence_sha256"] = _hash({k: v for k, v in first.items() if k != "evidence_sha256"})
+        one["pixel_evidence"]["repeat"] = copy.deepcopy(first)
+        _reseal_cross(one)
+        self.assertEqual(_parse(one).pixel_evidence["first"]["qualified_silhouette_views"], ("front",))
+        positive = _pixel_evidence()
+        raw["pixel_evidence"] = positive
+        _reseal_cross(raw)
+        with self.assertRaises(ValueError):
+            _parse(raw)
+
+    def test_mirrors_producer_selection_action_lineage_and_tool_inventory_invariants(self):
+        mutations = []
+
+        def case(mutator):
+            raw = _build().to_payload(); mutator(raw); mutations.append(_reseal_cross(raw))
+
+        case(lambda raw: raw["action_proof"].__setitem__("slot_name", "wrong-slot"))
+        case(lambda raw: raw["action_proof"]["curves"][0].__setitem__("array_index", 3))
+        case(lambda raw: raw["action_proof"].__setitem__("source_times", [17, 17]))
+        case(lambda raw: raw["selector_decision"]["selection_payload"].__setitem__("bone_index", 2))
+        case(lambda raw: raw["selector_decision"]["selection_payload"].__setitem__("pose_name", "wrong"))
+        case(lambda raw: raw["selector_decision"]["selection_payload"].__setitem__("animation_relative_path", "../door.smd"))
+        def tiny_selection(raw):
+            selected = raw["selector_decision"]["selection_payload"]
+            selected["displacement"] = selected["raw_render_max_displacement"] = 1e-13
+            selected["rms_displacement"] = selected["raw_render_rms_displacement"] = 1e-13
+            selected["displacement_squared"] = "1e-26"
+        case(tiny_selection)
+        def tiny_evaluated(raw):
+            evaluated = raw["evaluated_region_proof"]
+            evaluated["maximum_displacement"] = evaluated["rms_displacement"] = 1e-13
+        case(tiny_evaluated)
+        case(lambda raw: raw["action_proof"]["toolchain"]["files"].reverse())
+        def sibling(raw):
+            raw["action_proof"]["bone_lineage"].append({"id": 3, "name": "Door", "parent": 0})
+            raw["evaluated_region_proof"]["influenced_bones"] = ["Door", "Hood", "Latch"]
+        case(sibling)
+        for index, raw in enumerate(mutations):
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                _parse(raw)
+
+    def test_bind_reason_animation_inventory_is_capped_at_sixty_four(self):
+        raw = _build(mode="bind-only/no-influenced-bone-delta").to_payload()
+        item = raw["selector_decision"]["decision_proof"]["animation_inventory"][0]
+        raw["selector_decision"]["decision_proof"]["animation_inventory"] = [
+            {**item, "animation_relative_path": f"anims/{index:02d}.smd"}
+            for index in range(65)
+        ]
+        proof = raw["selector_decision"]["decision_proof"]
+        proof["proof_sha256"] = _hash({k: v for k, v in proof.items() if k != "proof_sha256"})
+        raw["selector_decision"]["decision_sha256"] = _hash({
+            k: v for k, v in raw["selector_decision"].items() if k != "decision_sha256"
+        })
+        raw["evidence_sha256"] = _hash({k: v for k, v in raw.items() if k != "evidence_sha256"})
+        with self.assertRaises(ValueError):
+            _parse(raw)
 
     def test_external_family_region_contract_toolchain_caps_reject_reseal(self):
         proof = _build(); raw = proof.to_payload(); expected = _binding(proof)

@@ -240,6 +240,68 @@ class AnimationPoseSelectorTests(unittest.TestCase):
         from maximum_optimizer.animation_pose_selector import _canonical_hash
         self.assertEqual(_canonical_hash(payload), seal)
 
+    def test_pixel_measurement_preserves_subthreshold_source_evidence(self) -> None:
+        from maximum_optimizer.animation_pose_selector import (
+            measure_pose_pixels,
+            verify_no_visible_pose_pixel_measurement,
+            verify_pose_pixel_gate,
+        )
+
+        bind_images = {}
+        posed_images = {}
+        directions = {"front": (1.0, 0.0, 0.0), "right": (0.0, 1.0, 0.0)}
+        for key in directions:
+            bind = self.root / f"measure-{key}-bind.png"
+            posed = self.root / f"measure-{key}-posed.png"
+            Image.new("RGBA", (10, 10), (10, 20, 30, 255)).save(bind)
+            Image.new("RGBA", (10, 10), (11, 20, 30, 255)).save(posed)
+            bind_images[key] = bind
+            posed_images[key] = posed
+
+        measurement = measure_pose_pixels(
+            bind_images, posed_images, camera_directions=directions,
+            minimum_changed_fraction=0.005, minimum_silhouette_pixels=1,
+            required_view_count=2, required_size=(10, 10),
+        )
+        payload = measurement.to_payload()
+        assert payload["kind"] == "pose-pixel-measurement-v1"
+        assert payload["changed_pixels"] == 0
+        assert payload["qualified_silhouette_views"] == []
+        assert payload["mean_absolute_error"] > 0.0
+        assert verify_no_visible_pose_pixel_measurement(measurement) == measurement
+        with self.assertRaisesRegex(ValueError, "orthogonal"):
+            verify_pose_pixel_gate(
+                bind_images, posed_images, camera_directions=directions,
+                minimum_changed_fraction=0.005, minimum_silhouette_pixels=1,
+                required_view_count=2, required_size=(10, 10),
+            )
+
+    def test_no_visible_measurement_rejects_qualifying_orthogonal_pair(self) -> None:
+        from maximum_optimizer.animation_pose_selector import (
+            measure_pose_pixels,
+            verify_no_visible_pose_pixel_measurement,
+        )
+
+        bind_images = {}
+        posed_images = {}
+        directions = {"front": (1.0, 0.0, 0.0), "right": (0.0, 1.0, 0.0)}
+        for key in directions:
+            bind = self.root / f"visible-{key}-bind.png"
+            posed = self.root / f"visible-{key}-posed.png"
+            Image.new("RGBA", (10, 10), (0, 0, 0, 0)).save(bind)
+            changed = Image.new("RGBA", (10, 10), (0, 0, 0, 0))
+            changed.putpixel((4, 5), (255, 0, 0, 255))
+            changed.save(posed)
+            bind_images[key] = bind
+            posed_images[key] = posed
+        measurement = measure_pose_pixels(
+            bind_images, posed_images, camera_directions=directions,
+            minimum_changed_fraction=0.005, minimum_silhouette_pixels=1,
+            required_view_count=2, required_size=(10, 10),
+        )
+        with self.assertRaisesRegex(ValueError, "orthogonal"):
+            verify_no_visible_pose_pixel_measurement(measurement)
+
     def test_pixel_gate_ignores_invisible_rgb_and_requires_every_view(self) -> None:
         from maximum_optimizer.animation_pose_selector import verify_pose_pixel_gate
 

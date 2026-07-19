@@ -269,6 +269,14 @@ class PosePixelGateProof:
         }
 
 
+@dataclass(frozen=True)
+class PosePixelMeasurement(PosePixelGateProof):
+    """Decoded source pose pixels before visible/not-visible authorization."""
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "pose-pixel-measurement-v1", **super().to_payload()}
+
+
 def _paeth(left: int, above: int, upper_left: int) -> int:
     estimate = left + above - upper_left
     left_distance = abs(estimate - left)
@@ -412,16 +420,17 @@ def _visible_rgba(payload: bytes) -> bytes:
     return bytes(visible)
 
 
-def verify_pose_pixel_gate(
+def measure_pose_pixels(
     bind_images: Mapping[str, str | Path],
     posed_images: Mapping[str, str | Path],
     *,
     camera_directions: Mapping[str, tuple[float, float, float]],
     minimum_changed_fraction: float = 0.0001,
     minimum_silhouette_pixels: int = 27,
+    required_view_count: int | None = None,
     required_size: tuple[int, int] | None = None,
-) -> PosePixelGateProof:
-    """Require silhouette motion in at least two orthogonal decoded views."""
+) -> PosePixelMeasurement:
+    """Measure decoded RGBA pixels without deciding whether motion is visible."""
 
     if (
         not isinstance(minimum_changed_fraction, (int, float))
@@ -433,6 +442,11 @@ def verify_pose_pixel_gate(
     if (
         type(minimum_silhouette_pixels) is not int
         or not 1 <= minimum_silhouette_pixels <= _MAX_TOTAL_PIXELS
+        or required_view_count is not None
+        and (
+            type(required_view_count) is not int
+            or not 1 <= required_view_count <= _MAX_IMAGES
+        )
         or required_size is not None
         and (
             type(required_size) is not tuple or len(required_size) != 2
@@ -453,6 +467,8 @@ def verify_pose_pixel_gate(
         raise ValueError("pose pixel gate image keys differ")
     if bind_keys != tuple(sorted(camera_directions)):
         raise ValueError("pose pixel gate camera direction keys differ")
+    if required_view_count is not None and len(bind_keys) != required_view_count:
+        raise ValueError("pose pixel gate required view count differs")
     directions = {}
     for key in bind_keys:
         raw_direction = camera_directions[key]
@@ -540,21 +556,13 @@ def verify_pose_pixel_gate(
         if view["changed_pixels"] >= minimum_silhouette_pixels
         and view["changed_fraction"] >= float(minimum_changed_fraction)
     )
-    orthogonal = any(
-        abs(sum(a * b for a, b in zip(directions[left], directions[right]))) <= 0.25
-        for index, left in enumerate(qualified)
-        for right in qualified[index + 1:]
-    )
-    if not orthogonal:
-        raise ValueError(
-            "selected animation decoded pixels lack qualifying orthogonal silhouette views"
-        )
     bind_bundle = _canonical_hash(bind_inventory)
     posed_bundle = _canonical_hash(posed_inventory)
     camera_payload = [
         {"key": key, "direction": list(directions[key])} for key in bind_keys
     ]
     unsigned = {
+        "kind": "pose-pixel-measurement-v1",
         "bind_pixel_bundle_sha256": bind_bundle,
         "changed_fraction": changed_fraction,
         "changed_pixels": changed_pixels,
@@ -569,7 +577,7 @@ def verify_pose_pixel_gate(
         "total_pixels": total_pixels,
         "views": views,
     }
-    return PosePixelGateProof(
+    return PosePixelMeasurement(
         image_count=len(bind_keys), total_pixels=total_pixels,
         foreground_pixels=foreground_pixels,
         changed_pixels=changed_pixels, changed_fraction=changed_fraction,
@@ -583,6 +591,95 @@ def verify_pose_pixel_gate(
         qualified_silhouette_views=qualified,
         evidence_sha256=_canonical_hash(unsigned),
     )
+
+
+def _measurement_has_orthogonal_pair(measurement: PosePixelMeasurement) -> bool:
+    directions = {
+        str(item["key"]): tuple(float(value) for value in item["direction"])
+        for item in measurement.camera_directions
+    }
+    qualified = measurement.qualified_silhouette_views
+    return any(
+        abs(sum(a * b for a, b in zip(directions[left], directions[right]))) <= 0.25
+        for index, left in enumerate(qualified)
+        for right in qualified[index + 1:]
+    )
+
+
+def _validate_pixel_measurement(measurement: PosePixelMeasurement) -> None:
+    if not isinstance(measurement, PosePixelMeasurement):
+        raise TypeError("pose pixel measurement type differs")
+    payload = measurement.to_payload()
+    evidence = payload.pop("evidence_sha256")
+    if evidence != _canonical_hash(payload):
+        raise ValueError("pose pixel measurement seal differs")
+
+
+def verify_no_visible_pose_pixel_measurement(
+    measurement: PosePixelMeasurement,
+) -> PosePixelMeasurement:
+    """Authorize a measured source pose only as not visibly displaced."""
+
+    _validate_pixel_measurement(measurement)
+    if _measurement_has_orthogonal_pair(measurement):
+        raise ValueError(
+            "no-visible pose pixels contain a qualifying orthogonal silhouette pair"
+        )
+    return measurement
+
+
+def verify_pose_pixel_measurement(
+    measurement: PosePixelMeasurement,
+) -> PosePixelGateProof:
+    """Authorize a measurement with silhouette motion in orthogonal views."""
+
+    _validate_pixel_measurement(measurement)
+    if not _measurement_has_orthogonal_pair(measurement):
+        raise ValueError(
+            "selected animation decoded pixels lack qualifying orthogonal silhouette views"
+        )
+    public = measurement.to_payload()
+    public.pop("kind")
+    public.pop("evidence_sha256")
+    return PosePixelGateProof(
+        image_count=measurement.image_count,
+        total_pixels=measurement.total_pixels,
+        foreground_pixels=measurement.foreground_pixels,
+        changed_pixels=measurement.changed_pixels,
+        changed_fraction=measurement.changed_fraction,
+        mean_absolute_error=measurement.mean_absolute_error,
+        minimum_changed_fraction=measurement.minimum_changed_fraction,
+        minimum_silhouette_pixels=measurement.minimum_silhouette_pixels,
+        bind_pixel_bundle_sha256=measurement.bind_pixel_bundle_sha256,
+        posed_pixel_bundle_sha256=measurement.posed_pixel_bundle_sha256,
+        views=measurement.views,
+        camera_directions=measurement.camera_directions,
+        qualified_silhouette_views=measurement.qualified_silhouette_views,
+        evidence_sha256=_canonical_hash(public),
+    )
+
+
+def verify_pose_pixel_gate(
+    bind_images: Mapping[str, str | Path],
+    posed_images: Mapping[str, str | Path],
+    *,
+    camera_directions: Mapping[str, tuple[float, float, float]],
+    minimum_changed_fraction: float = 0.0001,
+    minimum_silhouette_pixels: int = 27,
+    required_view_count: int | None = None,
+    required_size: tuple[int, int] | None = None,
+) -> PosePixelGateProof:
+    """Backward-compatible positive visible-motion gate."""
+
+    measurement = measure_pose_pixels(
+        bind_images, posed_images,
+        camera_directions=camera_directions,
+        minimum_changed_fraction=minimum_changed_fraction,
+        minimum_silhouette_pixels=minimum_silhouette_pixels,
+        required_view_count=required_view_count,
+        required_size=required_size,
+    )
+    return verify_pose_pixel_measurement(measurement)
 
 
 def _geometry_extents(
