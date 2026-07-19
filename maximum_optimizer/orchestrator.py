@@ -130,6 +130,7 @@ EVENT_KINDS = frozenset(
     }
 )
 _RATIOS = (0.75, 0.50, 0.35, 0.25, 0.15, 0.10, 0.05)
+_POSITION_DIRECT_TARGET_ERRORS = (0.005, 0.0075, 0.009, 0.01, 0.015, 0.02)
 _ENGINE_NAMES = frozenset({"fidelity", "blender", "meshoptimizer"})
 _IO_CHUNK_SIZE = 1024 * 1024
 
@@ -518,11 +519,13 @@ def _default_schedule() -> tuple[CandidateSpec, ...]:
     )
     meshopt = tuple(
         CandidateSpec(
-            f"meshopt-direct-r{str(ratio).replace('.', '')}",
-            "meshoptimizer", ratio, 0.01, "meshopt-direct-v1",
-            strategy="meshopt-direct-v1", update_vertices=False, transfer="direct-v1",
+            f"meshopt-position-e{str(target_error).replace('.', '')}",
+            "meshoptimizer", 0.20, target_error, "meshopt-direct-position-v1",
+            strategy="meshopt-direct-position-v1",
+            update_vertices=False,
+            transfer="direct-v1",
         )
-        for ratio in (0.85, 0.70, 0.55, 0.40, 0.25)
+        for target_error in _POSITION_DIRECT_TARGET_ERRORS
     )
     if os.environ.get("MAXIMUM_RND_BLENDER_ADAPTIVE") == "1":
         return (fidelity, *blender_adaptive_candidates(), *meshopt)

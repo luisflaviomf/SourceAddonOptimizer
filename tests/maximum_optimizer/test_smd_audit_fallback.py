@@ -37,6 +37,24 @@ class SmdAuditFallbackTests(unittest.TestCase):
         ))
         self.assertFalse(maximum.allows_exact_fallback(RuntimeError("Blender import exploded")))
 
+    def test_direct_position_fallback_is_limited_to_known_per_source_failures(self) -> None:
+        strategy = "meshopt-direct-position-v1"
+        for error in (
+            maximum.SmdAuditValidationError("export lost SMD material-bone influence pairs"),
+            RuntimeError("meshoptimizer did not reduce this mesh"),
+            ValueError("corner normal is invalid"),
+            ValueError("normal must be non-zero"),
+            ValueError("direct SMD triangle is degenerate"),
+        ):
+            with self.subTest(error=str(error)):
+                self.assertTrue(maximum.allows_strategy_exact_fallback(
+                    error, strategy=strategy,
+                ))
+        self.assertFalse(maximum.allows_strategy_exact_fallback(
+            RuntimeError("meshoptimizer internal state corrupted"),
+            strategy=strategy,
+        ))
+
     def test_preexisting_incomplete_normals_are_allowed_but_new_loss_is_rejected(self) -> None:
         incomplete = maximum.SmdAudit(
             2, ("mat",), (0,), ((0, "root", -1),), (0,), None, 3,

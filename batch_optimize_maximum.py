@@ -115,6 +115,7 @@ _POSITION_TOPOLOGY_STRATEGIES = frozenset({
     "meshopt-remapped-topology-v1",
     "meshopt-remapped-visual-v1",
 })
+_EXACT_SOURCE_FALLBACK_STRATEGIES = _BLENDER_STRATEGIES | _DIRECT_SERIALIZER_STRATEGIES
 _ADAPTIVE_EXACT_PRESERVATION_MATRIX = frozenset({
     ("eligible-exact-v1", True, "ratio-preserved-exact-v1"),
     ("eligible-exact-v1", True, "approved-exact-source-fallback-v1"),
@@ -182,6 +183,7 @@ class SmdAudit:
     uv_seam_positions: int = 0
     hard_normal_positions: int = 0
     position_normal_keys: int = 0
+    material_influence_pairs: tuple[tuple[str, int], ...] = ()
 
 
 def _strict_number(name: str, value: object, *, minimum: float, maximum: float) -> float:
@@ -1115,6 +1117,53 @@ def derive_simplification_policy(
     return SimplificationPolicy(tuple(flags), options, geometry)
 
 
+def protect_rare_material_bone_pairs(
+    *,
+    base_flags: Sequence[int],
+    material_ids: Sequence[int],
+    indices: Sequence[int],
+    bone_indices: Sequence[Sequence[int]],
+    weights: Sequence[Sequence[float]],
+    max_triangles: int = 32,
+) -> tuple[tuple[int, ...], int, int]:
+    """Lock small functional material/bone regions while leaving broad surfaces reducible."""
+    if type(max_triangles) is not int or max_triangles < 1:
+        raise ValueError("rare material/bone triangle limit is invalid")
+    if len(indices) % 3 or len(material_ids) != len(indices) // 3:
+        raise ValueError("rare material/bone topology counts do not match")
+    if len(base_flags) != len(weights) or len(bone_indices) != len(weights):
+        raise ValueError("rare material/bone vertex counts do not match")
+    triangle_bones: list[tuple[int, ...]] = []
+    counts: Counter[tuple[int, int]] = Counter()
+    for triangle, material in enumerate(material_ids):
+        bones: set[int] = set()
+        for vertex in indices[triangle * 3 : triangle * 3 + 3]:
+            if type(vertex) is not int or vertex < 0 or vertex >= len(weights):
+                raise ValueError("rare material/bone vertex is invalid")
+            if len(bone_indices[vertex]) != len(weights[vertex]):
+                raise ValueError("rare material/bone influence row is invalid")
+            for bone, weight in zip(bone_indices[vertex], weights[vertex]):
+                if type(bone) is not int or bone < 0 or not math.isfinite(float(weight)):
+                    raise ValueError("rare material/bone influence is invalid")
+                if float(weight) > 0.0:
+                    bones.add(bone)
+        if not bones:
+            raise ValueError("rare material/bone triangle has no positive influence")
+        signature = tuple(sorted(bones))
+        triangle_bones.append(signature)
+        counts.update((int(material), bone) for bone in signature)
+    rare_pairs = {pair for pair, count in counts.items() if count <= max_triangles}
+    flags = list(base_flags)
+    protected_triangles = 0
+    for triangle, (material, bones) in enumerate(zip(material_ids, triangle_bones)):
+        if not any((int(material), bone) in rare_pairs for bone in bones):
+            continue
+        protected_triangles += 1
+        for vertex in indices[triangle * 3 : triangle * 3 + 3]:
+            flags[vertex] |= LOCK | PROTECT
+    return tuple(flags), len(rare_pairs), protected_triangles
+
+
 def repair_weights(weights: Sequence[float]) -> tuple[float, float, float, float]:
     if len(weights) != 4 or not all(math.isfinite(float(value)) for value in weights):
         raise ValueError("weights must be finite float4")
@@ -1135,6 +1184,9 @@ def audit_smd_text(text: str) -> SmdAudit:
     v_values: list[float] = []
     finite_normal_count = 0
     influence_sets: set[tuple[int, ...]] = set()
+    material_influence_pairs: list[tuple[str, int]] = []
+    seen_material_influence_pairs: set[tuple[str, int]] = set()
+    current_material = ""
     uvs_by_position: dict[tuple[float, float, float], set[tuple[float, float]]] = defaultdict(set)
     normals_by_position: dict[tuple[float, float, float], set[tuple[float, float, float]]] = defaultdict(set)
     for raw in text.splitlines():
@@ -1182,10 +1234,16 @@ def audit_smd_text(text: str) -> SmdAudit:
                         influence_bones.add(bone)
                         current_influences.add(bone)
                 influence_sets.add(tuple(sorted(current_influences)))
+                for bone in sorted(current_influences):
+                    pair = (current_material, bone)
+                    if pair not in seen_material_influence_pairs:
+                        seen_material_influence_pairs.add(pair)
+                        material_influence_pairs.append(pair)
                 position_key = tuple(round(value, 6) for value in position)
                 uvs_by_position[position_key].add(tuple(round(value, 6) for value in uv))
                 normals_by_position[position_key].add(tuple(round(value, 6) for value in normal))
             else:
+                current_material = line
                 if line not in materials:
                     materials.append(line)
     uv_bounds = (
@@ -1203,6 +1261,7 @@ def audit_smd_text(text: str) -> SmdAudit:
         sum(1 for values in uvs_by_position.values() if len(values) > 1),
         sum(1 for values in normals_by_position.values() if len(values) > 1),
         sum(len(values) for values in normals_by_position.values()),
+        tuple(material_influence_pairs),
     )
 
 
@@ -1223,6 +1282,8 @@ def validate_smd_audits(before: SmdAudit, after: SmdAudit) -> None:
         raise SmdAuditValidationError("export lost SMD bone influence identities")
     if not set(before.influence_sets).issubset(after.influence_sets):
         raise SmdAuditValidationError("export lost SMD bone influence sets")
+    if not set(before.material_influence_pairs).issubset(after.material_influence_pairs):
+        raise SmdAuditValidationError("export lost SMD material-bone influence pairs")
     if before.uv_seam_positions and not after.uv_seam_positions:
         raise SmdAuditValidationError("export lost all UV seam evidence")
     if before.hard_normal_positions and not after.hard_normal_positions:
@@ -1536,6 +1597,8 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         skin_weights=wedges.weights if skinned else None,
     )
     position_topology = None
+    rare_material_bone_pairs = 0
+    rare_material_bone_triangles = 0
     if candidate.strategy in _POSITION_TOPOLOGY_STRATEGIES:
         position_topology = classify_position_topology(
             wedges.positions, wedges.normals, wedges.uvs, wedges.indices, material_ids,
@@ -1559,6 +1622,19 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
             if signature != dominant:
                 flags[index] |= LOCK | PROTECT
         policy = SimplificationPolicy(tuple(flags), policy.meshopt_options, policy.geometry)
+    if candidate.strategy in _DIRECT_SERIALIZER_STRATEGIES:
+        hardened_flags, rare_material_bone_pairs, rare_material_bone_triangles = (
+            protect_rare_material_bone_pairs(
+                base_flags=policy.vertex_flags,
+                material_ids=material_ids,
+                indices=wedges.indices,
+                bone_indices=wedges.bone_indices,
+                weights=wedges.weights,
+            )
+        )
+        policy = SimplificationPolicy(
+            hardened_flags, policy.meshopt_options, policy.geometry,
+        )
     source = MeshInput(
         positions=wedges.positions,
         normals=wedges.normals,
@@ -1575,6 +1651,7 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
 
     if candidate.strategy in _DIRECT_SERIALIZER_STRATEGIES:
         direct = compact_direct_result(source, result)
+        output_material_ids = direct.material_ids
         compact_positions = list(direct.positions)
         compact_normals = list(direct.normals)
         compact_uvs = list(direct.uvs)
@@ -1591,12 +1668,13 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
             "uvs": tuple(compact_uvs),
             "influences": tuple(compact_influences),
             "indices": tuple(output_indices),
-            "materials": tuple(str(mesh.materials[index].name) for index in result.material_ids),
+            "materials": tuple(str(mesh.materials[index].name) for index in output_material_ids),
             "source_corner_ordinals": tuple(
                 wedges.source_loop_indices[index] for index in direct.source_vertex_indices
             ),
         }
     else:
+        output_material_ids = result.material_ids
         from mathutils import Vector
         from mathutils.bvhtree import BVHTree
         from mathutils.geometry import closest_point_on_tri
@@ -1668,7 +1746,7 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
     for material in preserved_materials:
         if material.name not in mesh.materials:
             mesh.materials.append(material)
-    for polygon, material_id in zip(mesh.polygons, result.material_ids):
+    for polygon, material_id in zip(mesh.polygons, output_material_ids):
         if material_id < 0 or material_id >= len(mesh.materials):
             raise RuntimeError("export material mapping is out of range")
         polygon.material_index = int(material_id)
@@ -1723,6 +1801,8 @@ def _optimize_mesh_object(obj: object, candidate: CandidateConfig, ratio: float)
         "normal_seam_vertices": position_topology.normal_seam_vertices if position_topology else None,
         "material_seam_vertices": position_topology.material_seam_vertices if position_topology else None,
         "skin_transition_vertices": position_topology.skin_transition_vertices if position_topology else None,
+        "rare_material_bone_pairs": rare_material_bone_pairs,
+        "rare_material_bone_triangles": rare_material_bone_triangles,
         "_direct_corner_ordinals": direct_corner_ordinals,
         "_direct_smd_payload": direct_smd_payload,
     }
@@ -1961,29 +2041,37 @@ def _process_source_file(
     approved_exact_fallback = False
     fallback_reason: str | None = None
     if candidate.strategy in _DIRECT_SERIALIZER_STRATEGIES:
-        dropped_source_triangles = frozenset(
-            direct_prefilter.dropped_source_triangles
-            if direct_prefilter is not None else ()
-        )
-        used_source_triangles: set[int] = set(dropped_source_triangles)
-        for obj in mesh_objects:
-            positions, triangles, loop_normals, loop_uvs, material_ids, vertex_influences = _vertex_source_attributes(obj)
-            datablock_names = tuple(str(material.name) if material else "none" for material in obj.data.materials)
-            slot_identities = source_material_slot_identities(
-                source_identity, before_audit.materials, datablock_names
+        try:
+            dropped_source_triangles = frozenset(
+                direct_prefilter.dropped_source_triangles
+                if direct_prefilter is not None else ()
             )
-            material_names = tuple(
-                before_audit.materials[int(identity.split(":", 2)[1])]
-                for identity in slot_identities
-            )
-            mapping = map_imported_corners_to_smd(
-                original_text, positions, triangles, loop_normals, loop_uvs, material_ids,
-                material_names, vertex_influences,
-                excluded_source_triangles=frozenset(used_source_triangles),
-                dropped_source_triangles=dropped_source_triangles,
-            )
-            _DIRECT_SOURCE_CORNER_MAP[id(obj)] = mapping
-            used_source_triangles.update(ordinal // 3 for ordinal in mapping)
+            used_source_triangles: set[int] = set(dropped_source_triangles)
+            for obj in mesh_objects:
+                positions, triangles, loop_normals, loop_uvs, material_ids, vertex_influences = _vertex_source_attributes(obj)
+                datablock_names = tuple(str(material.name) if material else "none" for material in obj.data.materials)
+                slot_identities = source_material_slot_identities(
+                    source_identity, before_audit.materials, datablock_names
+                )
+                material_names = tuple(
+                    before_audit.materials[int(identity.split(":", 2)[1])]
+                    for identity in slot_identities
+                )
+                mapping = map_imported_corners_to_smd(
+                    original_text, positions, triangles, loop_normals, loop_uvs, material_ids,
+                    material_names, vertex_influences,
+                    excluded_source_triangles=frozenset(used_source_triangles),
+                    dropped_source_triangles=dropped_source_triangles,
+                )
+                _DIRECT_SOURCE_CORNER_MAP[id(obj)] = mapping
+                used_source_triangles.update(ordinal // 3 for ordinal in mapping)
+        except (ValueError, RuntimeError) as exc:
+            if not allows_strategy_exact_fallback(exc, strategy=candidate.strategy):
+                raise
+            preserve_exact = True
+            ratio_preserved_exact = False
+            approved_exact_fallback = True
+            fallback_reason = str(exc)
     try:
         if preserve_exact:
             object_metrics = []
@@ -2007,7 +2095,7 @@ def _process_source_file(
                 source_identity, mesh_objects, candidate, region_manifest, before_audit.materials,
             )
     except (ValueError, RuntimeError) as exc:
-        if candidate.strategy not in _BLENDER_STRATEGIES or not allows_strategy_exact_fallback(
+        if candidate.strategy not in _EXACT_SOURCE_FALLBACK_STRATEGIES or not allows_strategy_exact_fallback(
             exc, strategy=candidate.strategy
         ):
             raise
@@ -2050,23 +2138,40 @@ def _process_source_file(
     if preserve_exact:
         atomic_write_bytes(source.parent, destination, exact_source_payload(source.read_bytes()))
     elif direct_payloads:
-        combined = {"positions": [], "normals": [], "uvs": [], "influences": [], "indices": [], "materials": [], "source_corner_ordinals": []}
-        for payload in direct_payloads:
-            offset = len(combined["positions"])
-            for name in ("positions", "normals", "uvs", "influences", "materials", "source_corner_ordinals"):
-                combined[name].extend(payload[name])
-            combined["indices"].extend(offset + index for index in payload["indices"])
-        payload = combined
-        serialized = serialize_direct_smd(
-            original_text, payload["positions"], payload["normals"], payload["uvs"],
-            payload["influences"], payload["indices"], payload["materials"],
-            source_corner_ordinals=payload["source_corner_ordinals"],
-            dropped_source_triangles=(
-                frozenset(direct_prefilter.dropped_source_triangles)
-                if direct_prefilter is not None else frozenset()
-            ),
-        )
-        atomic_write_bytes(source.parent, destination, serialized.encode("utf-8"))
+        try:
+            combined = {"positions": [], "normals": [], "uvs": [], "influences": [], "indices": [], "materials": [], "source_corner_ordinals": []}
+            for payload in direct_payloads:
+                offset = len(combined["positions"])
+                for name in ("positions", "normals", "uvs", "influences", "materials", "source_corner_ordinals"):
+                    combined[name].extend(payload[name])
+                combined["indices"].extend(offset + index for index in payload["indices"])
+            payload = combined
+            serialized = serialize_direct_smd(
+                original_text, payload["positions"], payload["normals"], payload["uvs"],
+                payload["influences"], payload["indices"], payload["materials"],
+                source_corner_ordinals=payload["source_corner_ordinals"],
+                dropped_source_triangles=(
+                    frozenset(direct_prefilter.dropped_source_triangles)
+                    if direct_prefilter is not None else frozenset()
+                ),
+            )
+            atomic_write_bytes(source.parent, destination, serialized.encode("utf-8"))
+        except (ValueError, RuntimeError) as exc:
+            if not allows_strategy_exact_fallback(exc, strategy=candidate.strategy):
+                raise
+            preserve_exact = True
+            ratio_preserved_exact = False
+            approved_exact_fallback = True
+            fallback_reason = str(exc)
+            atomic_write_bytes(
+                source.parent, destination, exact_source_payload(source.read_bytes())
+            )
+            for item in object_metrics:
+                item["attempted_achieved_ratio"] = item.get("achieved_ratio")
+                item["achieved_ratio"] = 1.0
+                item["preserved_exact"] = True
+                item["fallback_reason"] = fallback_reason
+                item["transfer"] = "exact-source-fallback-v1"
     else:
         try:
             staging_dir = Path(tempfile.mkdtemp(prefix=".maximum-export-", dir=destination.parent))
@@ -2112,7 +2217,7 @@ def _process_source_file(
         after_audit = audit_exported_smd_text(audit_text)
         validate_smd_audits(before_audit, after_audit)
     except RuntimeError as exc:
-        if candidate.strategy not in _BLENDER_STRATEGIES or not allows_strategy_exact_fallback(
+        if candidate.strategy not in _EXACT_SOURCE_FALLBACK_STRATEGIES or not allows_strategy_exact_fallback(
             exc, strategy=candidate.strategy
         ):
             raise
@@ -2164,6 +2269,8 @@ def _process_source_file(
         "hard_normal_seams_after": after_audit.hard_normal_positions,
         "influence_sets_before": before_audit.influence_sets,
         "influence_sets_after": after_audit.influence_sets,
+        "material_influence_pairs_before": before_audit.material_influence_pairs,
+        "material_influence_pairs_after": after_audit.material_influence_pairs,
         "objects": object_metrics,
         "regions": [item["region_key"] for item in object_metrics],
         "fallback_reason": fallback_reason,

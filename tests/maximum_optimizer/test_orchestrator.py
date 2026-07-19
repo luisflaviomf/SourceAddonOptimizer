@@ -3120,6 +3120,19 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(tuple(item.target_ratio for item in adaptive), (0.45, 0.4, 0.35, 0.3, 0.25))
         self.assertTrue(all(item.engine == "blender" for item in adaptive))
 
+    def test_default_schedule_searches_position_direct_error_ladder(self):
+        schedule = orchestrator_module._default_schedule()
+        direct = [
+            item for item in schedule
+            if item.strategy == "meshopt-direct-position-v1"
+        ]
+        self.assertEqual(
+            tuple(item.target_error for item in direct),
+            (0.005, 0.0075, 0.009, 0.01, 0.015, 0.02),
+        )
+        self.assertTrue(all(item.target_ratio == 0.20 for item in direct))
+        self.assertTrue(all(item.update_vertices is False for item in direct))
+
     def test_uncalibrated_production_profile_fails_closed_before_promotion(self):
         self.config = MaximumRunConfig(
             **{**self.config.to_kwargs(), "profile_path": Path(__file__).parents[2] / "maximum_optimizer" / "profiles" / "maximum-experimental-v1.json"}

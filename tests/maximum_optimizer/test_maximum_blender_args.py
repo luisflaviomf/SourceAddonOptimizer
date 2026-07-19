@@ -1487,6 +1487,25 @@ class MaximumBlenderPureTests(unittest.TestCase):
                 skin_weights=None,
             )
 
+    def test_rare_material_bone_triangles_are_locked_without_locking_common_surface(self) -> None:
+        flags, pair_count, triangle_count = maximum.protect_rare_material_bone_pairs(
+            base_flags=(0,) * 9,
+            material_ids=(3, 3, 3),
+            indices=(0, 1, 2, 3, 4, 5, 6, 7, 8),
+            bone_indices=(
+                (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0),
+                (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0),
+                (7, 0, 0, 0), (7, 0, 0, 0), (7, 0, 0, 0),
+            ),
+            weights=((1.0, 0.0, 0.0, 0.0),) * 9,
+            max_triangles=1,
+        )
+        self.assertEqual(pair_count, 1)
+        self.assertEqual(triangle_count, 1)
+        self.assertTrue(all(flag == 0 for flag in flags[:6]))
+        self.assertTrue(all(flag & maximum.LOCK for flag in flags[6:]))
+        self.assertTrue(all(flag & maximum.PROTECT for flag in flags[6:]))
+
     def test_smd_audit_counts_triangles_materials_and_bones(self) -> None:
         smd = """version 1
 nodes
@@ -1521,6 +1540,46 @@ end
             with self.subTest(message=message):
                 with self.assertRaisesRegex(RuntimeError, message):
                     maximum.validate_smd_audits(base, changed)
+
+    def test_smd_audit_rejects_lost_material_bone_pair(self) -> None:
+        source = """version 1
+nodes
+0 \"root\" -1
+7 \"needle\" 0
+end
+skeleton
+time 0
+0 0 0 0 0 0 0
+7 0 0 0 0 0 0
+end
+triangles
+gauges
+0 0 0 0 0 0 1 0 0
+0 1 0 0 0 0 1 1 0
+0 0 1 0 0 0 1 0 1
+gauges
+7 0 0 0 0 0 1 0 0
+7 1 0 0 0 0 1 1 0
+7 0 1 0 0 0 1 0 1
+interior
+7 0 0 0 0 0 1 0 0
+7 1 0 0 0 0 1 1 0
+7 0 1 0 0 0 1 0 1
+end
+"""
+        candidate = source.replace(
+            "gauges\n7 0 0 0 0 0 1 0 0\n7 1 0 0 0 0 1 1 0\n"
+            "7 0 1 0 0 0 1 0 1\n",
+            "",
+        )
+        before = maximum.audit_smd_text(source)
+        after = maximum.audit_smd_text(candidate)
+        self.assertEqual(
+            before.material_influence_pairs,
+            (("gauges", 0), ("gauges", 7), ("interior", 7)),
+        )
+        with self.assertRaisesRegex(RuntimeError, "material-bone"):
+            maximum.validate_smd_audits(before, after)
 
     def test_smd_bone_restore_recovers_original_ids_order_and_links(self) -> None:
         original = 'version 1\nnodes\n0 "root" -1\n1 "tip" 0\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\n1 0 0 0 0 0 0\nend\n'

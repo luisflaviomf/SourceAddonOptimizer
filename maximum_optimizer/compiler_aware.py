@@ -69,6 +69,17 @@ def allows_strategy_exact_fallback(error: object, *, strategy: str) -> bool:
         error, (RuntimeError, ValueError, OSError)
     ):
         return True
+    if strategy in {
+        "meshopt-direct-v1",
+        "meshopt-direct-position-v1",
+        "meshopt-remapped-topology-v1",
+        "meshopt-remapped-visual-v1",
+    }:
+        return allows_exact_fallback(error) or str(error) in {
+            "corner normal is invalid",
+            "direct SMD triangle is degenerate",
+            "meshoptimizer did not reduce this mesh",
+        }
     return allows_exact_fallback(error)
 
 
