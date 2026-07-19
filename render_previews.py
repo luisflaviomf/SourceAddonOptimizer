@@ -3004,6 +3004,42 @@ def _region_triangle_vertex_snapshot(
     return ((f"{region_key}::{source_object}", tuple(points)),)
 
 
+def _capture_evaluated_mesh_vertex_snapshot(
+    objs, frame: int, region_key: str,
+) -> tuple[tuple[str, tuple[tuple[float, float, float], ...]], ...]:
+    """Capture the stable evaluated vertex inventory before render-only filtering."""
+
+    if type(frame) is not int or frame < 0 or not is_region_key(region_key):
+        raise ValueError("evaluated mesh vertex snapshot request is invalid")
+    bpy.context.scene.frame_set(frame)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    snapshots = []
+    for obj in sorted(objs, key=lambda item: (item.name.casefold(), item.name)):
+        evaluated = obj.evaluated_get(depsgraph)
+        mesh = evaluated.to_mesh()
+        if mesh is None:
+            raise ValueError("evaluated mesh vertex snapshot is unavailable")
+        try:
+            points = []
+            for vertex in tuple(mesh.vertices):
+                transformed = evaluated.matrix_world @ vertex.co
+                try:
+                    point = tuple(float(component) for component in transformed)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("evaluated mesh vertex snapshot is invalid") from exc
+                if len(point) != 3 or any(not math.isfinite(component) for component in point):
+                    raise ValueError("evaluated mesh vertex snapshot is invalid")
+                points.append(point)
+            if not points:
+                raise ValueError("evaluated mesh vertex snapshot is empty")
+            snapshots.append((f"{region_key}::{obj.name}", tuple(points)))
+        finally:
+            evaluated.to_mesh_clear()
+    if not snapshots:
+        raise ValueError("evaluated mesh vertex snapshot has no objects")
+    return tuple(snapshots)
+
+
 def _build_source_pose_producer_payload(
     request, *, action_proof: dict, evaluated_region_proof: dict,
     pixel_evidence: dict,
@@ -4191,20 +4227,26 @@ def _render_extended_set(
         influenced_bones = _region_pose_influenced_bones(
             render_objs, animation_binding[0], selection["bone_name"],
         )
-        repeat_snapshots = _capture_pose_snapshots(
+        evaluated_snapshots = _capture_pose_snapshots(
             render_objs,
             poses,
-            capture=lambda captured_objects, frame: _capture_regions(
-                captured_objects, frame, capture_manifest, source_material_evidence,
-                aggregate=False,
+            capture=lambda captured_objects, frame: _capture_evaluated_mesh_vertex_snapshot(
+                captured_objects, frame, focus_region,
+            ),
+            animation_binding=animation_binding,
+        )
+        repeat_evaluated_snapshots = _capture_pose_snapshots(
+            render_objs,
+            poses,
+            capture=lambda captured_objects, frame: _capture_evaluated_mesh_vertex_snapshot(
+                captured_objects, frame, focus_region,
             ),
             animation_binding=animation_binding,
         )
         evaluated = _build_evaluated_region_pose_proof(
-            _region_triangle_vertex_snapshot(snapshots["bind"], focus_region),
-            _region_triangle_vertex_snapshot(snapshots["animation"], focus_region),
-            _region_triangle_vertex_snapshot(repeat_snapshots["bind"], focus_region),
-            _region_triangle_vertex_snapshot(repeat_snapshots["animation"], focus_region),
+            evaluated_snapshots["bind"], evaluated_snapshots["animation"],
+            repeat_evaluated_snapshots["bind"],
+            repeat_evaluated_snapshots["animation"],
             action_proof=action_proof,
             frame=selection["frame"], source_time=selection["source_time"],
             selected_bone=selection["bone_name"], influenced_bones=influenced_bones,

@@ -120,3 +120,19 @@ def test_source_producer_rejects_extra_fields_resealed_tamper_and_wrong_external
                 contracts=contracts,
                 caps=caps,
             )
+
+
+def test_default_caps_and_contracts_are_canonical_and_toolchain_bound():
+    from maximum_optimizer.region_pose_producer import (
+        build_region_pose_caps, build_region_pose_contracts,
+    )
+
+    caps = build_region_pose_caps()
+    first = build_region_pose_contracts("a" * 64)
+    repeat = build_region_pose_contracts("a" * 64)
+    changed = build_region_pose_contracts("b" * 64)
+
+    assert caps["caps_sha256"] == "c3a04a53e1c9e605dfba49ce8695e396348312619e99ebab6e873a7c024d96a5"
+    assert first == repeat
+    assert first["contracts_sha256"] != changed["contracts_sha256"]
+    assert first["toolchain_sha256"] == "a" * 64

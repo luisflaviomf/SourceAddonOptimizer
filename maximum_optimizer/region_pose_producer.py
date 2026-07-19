@@ -19,6 +19,34 @@ _PRODUCER_KEYS = {
     "evidence_sha256",
 }
 
+_RENDERER_CONTRACT = {
+    "kind": "source-only-region-pose-render-contract-v1",
+    "candidate_inputs_consulted": False,
+    "passes": ["clay"],
+    "poses": ["bind", "animation"],
+    "angles": ["front", "back", "left", "right", "top", "bottom", "iso1", "iso2"],
+    "width": 512,
+    "height": 512,
+    "repeat_count": 2,
+    "framing": "shared-evaluated-bind-animation-bounds-v1",
+}
+_ACTION_CONTRACT = {
+    "kind": "blender5-source-tools-action-contract-v1",
+    "candidate_inputs_consulted": False,
+    "baseline": "armature-rest",
+    "frame_semantics": "zero-based-action-ordinal-bound-to-source-time-v1",
+    "geometry_proof": "exact-evaluated-region-vertices-first-repeat-v1",
+}
+_PIXEL_GATE_CONTRACT = {
+    "kind": "decoded-pose-pixel-gate-contract-v1",
+    "candidate_inputs_consulted": False,
+    "decoded_mode": "rgba8",
+    "minimum_changed_fraction": 0.0001,
+    "minimum_silhouette_pixels": 27,
+    "required_orthogonal_pair_max_abs_dot": 0.25,
+    "repeat": "byte-identical-measurement-v1",
+}
+
 
 def _copy(value: object) -> Any:
     try:
@@ -32,6 +60,36 @@ def _copy(value: object) -> Any:
 
 def _sealed(unsigned: Mapping[str, object], field: str) -> dict[str, object]:
     return {**_copy(unsigned), field: _hash(unsigned)}
+
+
+def build_region_pose_caps() -> dict[str, object]:
+    """Return the bounded decoded-pixel inventory used by the v1 producer."""
+
+    unsigned = {
+        "max_regions_per_family": 64,
+        "required_view_count": 8,
+        "required_width": 512,
+        "required_height": 512,
+        "max_total_pixels": 8 * 512 * 512,
+        "minimum_changed_fraction": 0.0001,
+        "minimum_silhouette_pixels": 27,
+    }
+    return _sealed(unsigned, "caps_sha256")
+
+
+def build_region_pose_contracts(toolchain_sha256: str) -> dict[str, object]:
+    """Bind semantic renderer/action/pixel contracts to one exact Blender runtime."""
+
+    if type(toolchain_sha256) is not str or _SHA.fullmatch(toolchain_sha256) is None:
+        raise ValueError("region pose toolchain seal is invalid")
+    unsigned = {
+        "contract_kind": "exact-region-pose-contracts-v1",
+        "renderer_contract_sha256": _hash(_RENDERER_CONTRACT),
+        "action_contract_sha256": _hash(_ACTION_CONTRACT),
+        "pixel_gate_contract_sha256": _hash(_PIXEL_GATE_CONTRACT),
+        "toolchain_sha256": toolchain_sha256,
+    }
+    return _sealed(unsigned, "contracts_sha256")
 
 
 def _validated_producer(
@@ -166,4 +224,7 @@ def finalize_region_pose_producer(
     )
 
 
-__all__ = ["finalize_region_pose_producer"]
+__all__ = [
+    "build_region_pose_caps", "build_region_pose_contracts",
+    "finalize_region_pose_producer",
+]

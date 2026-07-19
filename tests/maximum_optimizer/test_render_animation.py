@@ -477,6 +477,50 @@ def test_region_triangle_snapshot_accepts_blender_vector_protocol():
     assert snapshot[0][1][1] == (1.0, 0.0, 0.0)
 
 
+def test_evaluated_mesh_vertex_snapshot_uses_stable_vertex_inventory_before_triangle_audit(monkeypatch):
+    class IdentityMatrix:
+        def __matmul__(self, value):
+            return value
+
+    class Evaluated:
+        def __init__(self):
+            self.name = "supra_part"
+            self.matrix_world = IdentityMatrix()
+            self.cleared = False
+
+        def to_mesh(self):
+            return SimpleNamespace(vertices=(
+                SimpleNamespace(co=(0.0, 0.0, 0.0)),
+                SimpleNamespace(co=(1.0, 2.0, 3.0)),
+            ))
+
+        def to_mesh_clear(self):
+            self.cleared = True
+
+    evaluated = Evaluated()
+    depsgraph = object()
+    frames = []
+    monkeypatch.setattr(render_previews, "bpy", SimpleNamespace(
+        context=SimpleNamespace(
+            scene=SimpleNamespace(frame_set=frames.append),
+            evaluated_depsgraph_get=lambda: depsgraph,
+        ),
+    ))
+    source = SimpleNamespace(
+        name="supra_part",
+        evaluated_get=lambda received: evaluated if received is depsgraph else None,
+    )
+    key = "r-" + "3" * 64
+
+    snapshot = render_previews._capture_evaluated_mesh_vertex_snapshot(
+        (source,), 7, key,
+    )
+
+    assert frames == [7]
+    assert snapshot == ((f"{key}::supra_part", ((0.0, 0.0, 0.0), (1.0, 2.0, 3.0))),)
+    assert evaluated.cleared is True
+
+
 def test_source_pose_producer_payload_cross_binds_request_action_evaluated_and_pixels():
     from tests.maximum_optimizer.test_region_pose_render_request import _build
 
