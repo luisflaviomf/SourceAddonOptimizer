@@ -104,6 +104,12 @@ def _write_manifest(
             "name": "relative-cross-area-squared-v1",
             "relative_area_squared_epsilon": 1e-24,
             "max_filtered_fraction": 0.05,
+            "surface_correspondence": (
+                "material-dominant-bone-partitioned-nearest-surface-v3"
+            ),
+            "skinning_correspondence": (
+                "dominant-bone-partitioned-stable-topology-v2"
+            ),
         },
     }
     (root / "render_manifest.json").write_text(

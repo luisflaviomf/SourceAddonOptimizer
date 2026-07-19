@@ -273,6 +273,8 @@ GEOMETRY_AUDIT_ALGORITHM = {
     "name": "relative-cross-area-squared-v1",
     "relative_area_squared_epsilon": 1e-24,
     "max_filtered_fraction": 0.05,
+    "surface_correspondence": "material-dominant-bone-partitioned-nearest-surface-v3",
+    "skinning_correspondence": "dominant-bone-partitioned-stable-topology-v2",
 }
 
 
@@ -2617,6 +2619,29 @@ def _capture_regions(
     return regions
 
 
+def _vertex_skin_signature(vertex, group_names: dict[int, str]) -> tuple[tuple[str, float], ...]:
+    weighted = []
+    for item in getattr(vertex, "groups", ()):
+        weight = float(item.weight)
+        if not math.isfinite(weight) or weight < 0.0:
+            raise ValueError("evaluated vertex group weight is invalid")
+        if weight == 0.0:
+            continue
+        name = group_names.get(int(item.group))
+        if name is None:
+            raise ValueError("evaluated vertex references an unknown vertex group")
+        weighted.append((name, weight))
+    if not weighted:
+        return ()
+    total = sum(weight for _name, weight in weighted)
+    if not math.isfinite(total) or total <= 0.0:
+        raise ValueError("evaluated vertex group weights have no positive total")
+    return tuple(sorted(
+        ((name, weight / total) for name, weight in weighted),
+        key=lambda item: (item[0].casefold(), item[0]),
+    ))
+
+
 def _capture_object_region(
     obj, region_key: str, depsgraph, *, audited: bool = True
 ) -> dict | None:
@@ -2629,25 +2654,41 @@ def _capture_object_region(
         matrix = evaluated.matrix_world.copy()
         normal_matrix = matrix.to_3x3().inverted().transposed()
         uv_layer = mesh.uv_layers.active
+        group_names = {
+            int(getattr(group, "index", index)): str(group.name)
+            for index, group in enumerate(getattr(evaluated, "vertex_groups", obj.vertex_groups))
+        }
         triangles = []
-        for triangle in mesh.loop_triangles:
+        for topology_id, triangle in enumerate(mesh.loop_triangles):
+            polygon = mesh.polygons[triangle.polygon_index]
+            material_index = int(polygon.material_index)
+            material = (
+                mesh.materials[material_index]
+                if 0 <= material_index < len(mesh.materials) else None
+            )
+            material_key = str(material.name).casefold() if material is not None else "none"
             positions = []
             normals = []
             uvs = []
+            skin = []
             for loop_index in triangle.loops:
                 loop = mesh.loops[loop_index]
                 vertex = mesh.vertices[loop.vertex_index]
                 positions.append(matrix @ vertex.co.copy())
                 normals.append((normal_matrix @ loop.normal).normalized())
+                skin.append(_vertex_skin_signature(vertex, group_names))
                 if uv_layer is None:
                     uvs.append((0.0, 0.0))
                 else:
                     uv = uv_layer.data[loop_index].uv
                     uvs.append((float(uv.x), float(uv.y)))
             triangles.append({
+                "topology_id": topology_id,
+                "material": material_key,
                 "positions": tuple(positions),
                 "normals": tuple(normals),
                 "uvs": tuple(uvs),
+                "skin": tuple(skin),
             })
         region = {
             "scope": region_key,
@@ -3268,6 +3309,15 @@ def _flatten_region(region: dict):
     return positions, polygons
 
 
+def _dominant_skin_bone(signature) -> str:
+    if not signature:
+        return ""
+    return min(
+        signature,
+        key=lambda item: (-float(item[1]), str(item[0]).casefold(), str(item[0])),
+    )[0]
+
+
 def _audited_nondegenerate_region(region: dict) -> dict:
     kept = []
     filtered_indices = []
@@ -3317,8 +3367,19 @@ def _direct_topology_metrics(
     for reference_triangle, candidate_triangle in zip(
         reference["triangles"], candidate["triangles"]
     ):
-        if tuple(map(tuple, reference_triangle["positions"])) != tuple(
-            map(tuple, candidate_triangle["positions"])
+        if (
+            reference_triangle.get("material", "")
+            != candidate_triangle.get("material", "")
+            or tuple(
+                _dominant_skin_bone(signature)
+                for signature in reference_triangle.get("skin", ((), (), ()))
+            ) != tuple(
+                _dominant_skin_bone(signature)
+                for signature in candidate_triangle.get("skin", ((), (), ()))
+            )
+            or tuple(map(tuple, reference_triangle["positions"])) != tuple(
+                map(tuple, candidate_triangle["positions"])
+            )
         ):
             return None
         paired_loops.extend(
@@ -3360,7 +3421,10 @@ def _direct_topology_metrics(
     }
 
 
-def _geometry_metrics_for_region(reference: dict, candidate: dict, diagonal: float, stride: int) -> dict:
+def _geometry_metrics_for_region(
+    reference: dict, candidate: dict, diagonal: float, stride: int,
+    *, vector_factory=None, bvh_factory=None,
+) -> dict:
     if not reference["triangles"] or not candidate["triangles"]:
         return {
             "surface_bidirectional_p95": 1.0,
@@ -3373,23 +3437,66 @@ def _geometry_metrics_for_region(reference: dict, candidate: dict, diagonal: flo
     direct = _direct_topology_metrics(reference, candidate, diagonal, stride)
     if direct is not None:
         return direct
-    from mathutils.bvhtree import BVHTree
-    reference_positions, reference_polygons = _flatten_region(reference)
-    candidate_positions, candidate_polygons = _flatten_region(candidate)
-    ref_bvh = BVHTree.FromPolygons(reference_positions, reference_polygons, all_triangles=True)
-    candidate_bvh = BVHTree.FromPolygons(candidate_positions, candidate_polygons, all_triangles=True)
+    if vector_factory is None:
+        from mathutils import Vector as vector_factory
+    if bvh_factory is None:
+        from mathutils.bvhtree import BVHTree
 
-    def sample(source: dict, target: dict, target_bvh):
+        bvh_factory = lambda vertices, polygons: BVHTree.FromPolygons(
+            vertices, polygons, all_triangles=True,
+        )
+
+    def build_partitions(region: dict):
+        grouped = {}
+        for triangle in region["triangles"]:
+            material = str(triangle.get("material", ""))
+            skin = triangle.get("skin", ((), (), ()))
+            if len(skin) != 3:
+                raise ValueError("triangle skin signature cardinality is invalid")
+            for bone in set(_dominant_skin_bone(signature) for signature in skin):
+                grouped.setdefault((material, bone), []).append(triangle)
+        partitions = {}
+        for partition_key, triangles in grouped.items():
+            positions = [
+                position for triangle in triangles for position in triangle["positions"]
+            ]
+            polygons = [
+                (index * 3, index * 3 + 1, index * 3 + 2)
+                for index in range(len(triangles))
+            ]
+            partitions[partition_key] = (bvh_factory(positions, polygons), triangles)
+        return partitions
+
+    reference_partitions = build_partitions(reference)
+    candidate_partitions = build_partitions(candidate)
+
+    def sample(source: dict, target_partitions):
         distances: list[float] = []
         normal_angles: list[float] = []
         uv_errors: list[float] = []
         source_samples = [
-            (position, triangle["normals"][loop], triangle["uvs"][loop])
+            (
+                (
+                    str(triangle.get("material", "")),
+                    _dominant_skin_bone(
+                        triangle.get("skin", ((), (), ()))[loop]
+                    ),
+                ),
+                position,
+                triangle["normals"][loop], triangle["uvs"][loop],
+            )
             for triangle in source["triangles"]
             for loop, position in enumerate(triangle["positions"])
         ]
         for index in range(0, len(source_samples), stride):
-            source_position, source_normal, source_uv = source_samples[index]
+            partition_key, source_position, source_normal, source_uv = source_samples[index]
+            partition = target_partitions.get(partition_key)
+            if partition is None:
+                distances.append(1.0)
+                normal_angles.append(180.0)
+                uv_errors.append(1.0)
+                continue
+            target_bvh, target_triangles = partition
             nearest = target_bvh.find_nearest(source_position)
             if nearest is None:
                 distances.append(diagonal)
@@ -3398,11 +3505,11 @@ def _geometry_metrics_for_region(reference: dict, candidate: dict, diagonal: flo
                 continue
             location, _, polygon_index, distance = nearest
             distances.append(float(distance) / diagonal)
-            target_triangle = target["triangles"][polygon_index]
+            target_triangle = target_triangles[polygon_index]
             weights = _barycentric_weights(
                 tuple(location), *(tuple(value) for value in target_triangle["positions"])
             )
-            target_normal = Vector(
+            target_normal = vector_factory(
                 _interpolate_attribute(target_triangle["normals"], weights, normalize=True)
             )
             dot = max(-1.0, min(1.0, source_normal.dot(target_normal)))
@@ -3411,8 +3518,12 @@ def _geometry_metrics_for_region(reference: dict, candidate: dict, diagonal: flo
             uv_errors.append(math.dist(source_uv, target_uv))
         return distances, normal_angles, uv_errors
 
-    forward_distance, forward_normal, forward_uv = sample(candidate, reference, ref_bvh)
-    reverse_distance, reverse_normal, reverse_uv = sample(reference, candidate, candidate_bvh)
+    forward_distance, forward_normal, forward_uv = sample(
+        candidate, reference_partitions,
+    )
+    reverse_distance, reverse_normal, reverse_uv = sample(
+        reference, candidate_partitions,
+    )
     return {
         "surface_bidirectional_p95": _directional_p95_max(
             forward_distance, reverse_distance
@@ -3432,59 +3543,119 @@ def _skinning_error(
     candidate_pose: dict,
     diagonal: float,
     stride: int,
+    *,
+    vector_factory=None,
+    bvh_factory=None,
 ) -> float:
-    from mathutils.bvhtree import BVHTree
+    if vector_factory is None:
+        from mathutils import Vector as vector_factory
+    if bvh_factory is None:
+        from mathutils.bvhtree import BVHTree
+
+        bvh_factory = lambda vertices, polygons: BVHTree.FromPolygons(
+            vertices, polygons, all_triangles=True,
+        )
 
     if not reference_bind["triangles"] or not candidate_bind["triangles"]:
         return 1.0
-    reference_positions, reference_polygons = _flatten_region(reference_bind)
-    candidate_positions, candidate_polygons = _flatten_region(candidate_bind)
-    reference_bvh = BVHTree.FromPolygons(
-        reference_positions, reference_polygons, all_triangles=True
-    )
-    candidate_bvh = BVHTree.FromPolygons(
-        candidate_positions, candidate_polygons, all_triangles=True
-    )
 
-    def sample(source_bind: dict, source_pose: dict, target_bind: dict, target_pose: dict, target_bvh):
+    def pose_by_topology(region: dict) -> dict[int, dict]:
+        result = {}
+        for index, triangle in enumerate(region["triangles"]):
+            topology_id = int(triangle.get("topology_id", index))
+            if topology_id in result:
+                raise ValueError("pose region has duplicate topology identity")
+            result[topology_id] = triangle
+        return result
+
+    def build_partitions(region: dict):
+        grouped = {}
+        for index, triangle in enumerate(region["triangles"]):
+            topology_id = int(triangle.get("topology_id", index))
+            skin = triangle.get("skin", ((), (), ()))
+            if len(skin) != 3:
+                raise ValueError("triangle skin signature cardinality is invalid")
+            for bone in set(_dominant_skin_bone(signature) for signature in skin):
+                grouped.setdefault(bone, []).append((topology_id, triangle))
+        partitions = {}
+        for bone, records in grouped.items():
+            positions = [
+                position for _topology_id, triangle in records
+                for position in triangle["positions"]
+            ]
+            polygons = [
+                (index * 3, index * 3 + 1, index * 3 + 2)
+                for index in range(len(records))
+            ]
+            partitions[bone] = (bvh_factory(positions, polygons), records)
+        return partitions
+
+    reference_partitions = build_partitions(reference_bind)
+    candidate_partitions = build_partitions(candidate_bind)
+
+    def sample(
+        source_bind: dict, source_pose: dict,
+        target_bind: dict, target_pose: dict, target_partitions,
+    ):
         errors = []
-        source_bind_positions, _ = _flatten_region(source_bind)
-        source_pose_positions, _ = _flatten_region(source_pose)
-        for index in range(0, len(source_bind_positions), stride):
-            if index >= len(source_pose_positions):
-                errors.append(1.0)
-                continue
-            nearest = target_bvh.find_nearest(source_bind_positions[index])
-            if nearest is None:
-                errors.append(1.0)
-                continue
-            location, _, polygon_index, _ = nearest
-            target_bind_triangle = target_bind["triangles"][polygon_index]
-            if polygon_index >= len(target_pose["triangles"]):
-                errors.append(1.0)
-                continue
-            weights = _barycentric_weights(
-                tuple(location),
-                *(tuple(value) for value in target_bind_triangle["positions"]),
-            )
-            target_bind_position = Vector(
-                _interpolate_attribute(target_bind_triangle["positions"], weights)
-            )
-            target_pose_position = Vector(
-                _interpolate_attribute(
-                    target_pose["triangles"][polygon_index]["positions"], weights
+        source_pose_triangles = pose_by_topology(source_pose)
+        target_pose_triangles = pose_by_topology(target_pose)
+        ordinal = 0
+        for source_index, source_bind_triangle in enumerate(source_bind["triangles"]):
+            topology_id = int(source_bind_triangle.get("topology_id", source_index))
+            source_pose_triangle = source_pose_triangles.get(topology_id)
+            skin = source_bind_triangle.get("skin", ((), (), ()))
+            if len(skin) != 3:
+                raise ValueError("triangle skin signature cardinality is invalid")
+            for loop_index, source_bind_position in enumerate(source_bind_triangle["positions"]):
+                take_sample = ordinal % stride == 0
+                ordinal += 1
+                if not take_sample:
+                    continue
+                bone = _dominant_skin_bone(skin[loop_index])
+                partition = target_partitions.get(bone)
+                if source_pose_triangle is None or partition is None:
+                    errors.append(1.0)
+                    continue
+                target_bvh, target_records = partition
+                nearest = target_bvh.find_nearest(source_bind_position)
+                if nearest is None:
+                    errors.append(1.0)
+                    continue
+                location, _, polygon_index, _ = nearest
+                if polygon_index < 0 or polygon_index >= len(target_records):
+                    errors.append(1.0)
+                    continue
+                target_topology_id, target_bind_triangle = target_records[polygon_index]
+                target_pose_triangle = target_pose_triangles.get(target_topology_id)
+                if target_pose_triangle is None:
+                    errors.append(1.0)
+                    continue
+                weights = _barycentric_weights(
+                    tuple(location),
+                    *(tuple(value) for value in target_bind_triangle["positions"]),
                 )
-            )
-            source_displacement = source_pose_positions[index] - source_bind_positions[index]
-            target_displacement = target_pose_position - target_bind_position
-            errors.append((source_displacement - target_displacement).length / diagonal)
+                target_bind_position = vector_factory(
+                    _interpolate_attribute(target_bind_triangle["positions"], weights)
+                )
+                target_pose_position = vector_factory(
+                    _interpolate_attribute(target_pose_triangle["positions"], weights)
+                )
+                source_displacement = (
+                    vector_factory(source_pose_triangle["positions"][loop_index])
+                    - vector_factory(source_bind_position)
+                )
+                target_displacement = target_pose_position - target_bind_position
+                errors.append((source_displacement - target_displacement).length / diagonal)
         return errors
 
     forward = sample(
-        candidate_bind, candidate_pose, reference_bind, reference_pose, reference_bvh
+        candidate_bind, candidate_pose, reference_bind, reference_pose,
+        reference_partitions,
     )
     reverse = sample(
-        reference_bind, reference_pose, candidate_bind, candidate_pose, candidate_bvh
+        reference_bind, reference_pose, candidate_bind, candidate_pose,
+        candidate_partitions,
     )
     return _directional_p95_max(forward, reverse)
 

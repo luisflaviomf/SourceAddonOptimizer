@@ -521,6 +521,149 @@ def test_evaluated_mesh_vertex_snapshot_uses_stable_vertex_inventory_before_tria
     assert evaluated.cleared is True
 
 
+def test_skinning_error_matches_overlapping_surfaces_by_dominant_bone():
+    class Vector(tuple):
+        def __new__(cls, values):
+            return tuple.__new__(cls, values)
+
+        def __sub__(self, other):
+            return Vector(a - b for a, b in zip(self, other))
+
+        @property
+        def length(self):
+            return sum(value * value for value in self) ** 0.5
+
+    class FirstTriangleBvh:
+        def __init__(self, positions, polygons):
+            self.positions = positions
+            self.polygons = polygons
+
+        def find_nearest(self, point):
+            return Vector(point), None, 0, 0.0
+
+    def triangle(bone, topology_id, offset):
+        points = (
+            Vector((offset, 0.0, 0.0)),
+            Vector((offset + 1.0, 0.0, 0.0)),
+            Vector((offset, 1.0, 0.0)),
+        )
+        signature = ((bone, 1.0),)
+        return {
+            "topology_id": topology_id,
+            "positions": points,
+            "skin": (signature, signature, signature),
+        }
+
+    def region(root_offset, moving_offset, *, reverse=False):
+        triangles = [
+            triangle("root", 0, root_offset),
+            triangle("moving", 1, moving_offset),
+        ]
+        if reverse:
+            triangles.reverse()
+        return {"triangles": triangles}
+
+    reference_bind = region(0.0, 0.0)
+    reference_pose = region(0.0, 10.0)
+    candidate_bind = region(0.0, 0.0, reverse=True)
+    candidate_pose = region(0.0, 10.0, reverse=True)
+
+    exact = render_previews._skinning_error(
+        reference_bind, candidate_bind, reference_pose, candidate_pose,
+        diagonal=10.0, stride=1,
+        vector_factory=Vector,
+        bvh_factory=lambda positions, polygons: FirstTriangleBvh(positions, polygons),
+    )
+    wrong_pose = region(0.0, 8.0, reverse=True)
+    wrong = render_previews._skinning_error(
+        reference_bind, candidate_bind, reference_pose, wrong_pose,
+        diagonal=10.0, stride=1,
+        vector_factory=Vector,
+        bvh_factory=lambda positions, polygons: FirstTriangleBvh(positions, polygons),
+    )
+
+    assert exact == 0.0
+    assert wrong == pytest.approx(0.2)
+
+
+def test_vertex_skin_signature_is_named_normalized_and_canonical():
+    vertex = SimpleNamespace(groups=(
+        SimpleNamespace(group=2, weight=0.25),
+        SimpleNamespace(group=0, weight=0.75),
+        SimpleNamespace(group=1, weight=0.0),
+    ))
+
+    assert render_previews._vertex_skin_signature(
+        vertex, {0: "root", 1: "unused", 2: "moving"},
+    ) == (("moving", 0.25), ("root", 0.75))
+    assert render_previews._vertex_skin_signature(
+        SimpleNamespace(groups=()), {0: "root"},
+    ) == ()
+    with pytest.raises(ValueError, match="unknown vertex group"):
+        render_previews._vertex_skin_signature(vertex, {0: "root"})
+
+
+def test_geometry_metrics_match_overlapping_surfaces_by_material():
+    assert render_previews.GEOMETRY_AUDIT_ALGORITHM["surface_correspondence"] == (
+        "material-dominant-bone-partitioned-nearest-surface-v3"
+    )
+    assert render_previews.GEOMETRY_AUDIT_ALGORITHM["skinning_correspondence"] == (
+        "dominant-bone-partitioned-stable-topology-v2"
+    )
+
+    class Vector(tuple):
+        def __new__(cls, values):
+            return tuple.__new__(cls, values)
+
+        def dot(self, other):
+            return sum(a * b for a, b in zip(self, other))
+
+    class FirstTriangleBvh:
+        def __init__(self, positions, polygons):
+            self.positions = positions
+            self.polygons = polygons
+
+        def find_nearest(self, point):
+            return Vector(point), None, 0, 0.0
+
+    def triangle(material, bone, normal, uv):
+        signature = ((bone, 1.0),)
+        return {
+            "material": material,
+            "positions": (
+                Vector((0.0, 0.0, 0.0)),
+                Vector((1.0, 0.0, 0.0)),
+                Vector((0.0, 1.0, 0.0)),
+            ),
+            "normals": (Vector(normal), Vector(normal), Vector(normal)),
+            "uvs": (uv, uv, uv),
+            "skin": (signature, signature, signature),
+        }
+
+    reference = {"triangles": [
+        triangle("interior", "root", (1.0, 0.0, 0.0), (0.0, 0.0)),
+        triangle("interior", "moving", (0.0, 1.0, 0.0), (1.0, 1.0)),
+    ]}
+    candidate = {"triangles": list(reversed(reference["triangles"]))}
+
+    exact = render_previews._geometry_metrics_for_region(
+        reference, candidate, diagonal=1.0, stride=1,
+        vector_factory=Vector,
+        bvh_factory=lambda positions, polygons: FirstTriangleBvh(positions, polygons),
+    )
+    changed = copy.deepcopy(candidate)
+    changed["triangles"][0]["uvs"] = ((0.5, 0.5),) * 3
+    wrong = render_previews._geometry_metrics_for_region(
+        reference, changed, diagonal=1.0, stride=1,
+        vector_factory=Vector,
+        bvh_factory=lambda positions, polygons: FirstTriangleBvh(positions, polygons),
+    )
+
+    assert exact["normal_angle_p95"] == 0.0
+    assert exact["uv_error_p95"] == 0.0
+    assert wrong["uv_error_p95"] > 0.0
+
+
 def test_source_pose_producer_payload_cross_binds_request_action_evaluated_and_pixels():
     from tests.maximum_optimizer.test_region_pose_render_request import _build
 
