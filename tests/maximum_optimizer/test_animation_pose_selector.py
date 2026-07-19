@@ -302,6 +302,55 @@ class AnimationPoseSelectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "orthogonal"):
             verify_no_visible_pose_pixel_measurement(measurement)
 
+    def test_pixel_family_evidence_types_repeatable_source_measurement(self) -> None:
+        from maximum_optimizer.animation_pose_selector import (
+            _canonical_hash,
+            build_pose_pixel_family_evidence,
+            measure_pose_pixels,
+        )
+
+        bind_images = {}
+        posed_images = {}
+        directions = {"front": (1.0, 0.0, 0.0), "right": (0.0, 1.0, 0.0)}
+        for key in directions:
+            bind = self.root / f"family-{key}-bind.png"
+            posed = self.root / f"family-{key}-posed.png"
+            Image.new("RGBA", (10, 10), (20, 30, 40, 255)).save(bind)
+            Image.new("RGBA", (10, 10), (21, 30, 40, 255)).save(posed)
+            bind_images[key] = bind
+            posed_images[key] = posed
+        measurement = measure_pose_pixels(
+            bind_images, posed_images, camera_directions=directions,
+            minimum_changed_fraction=0.005, minimum_silhouette_pixels=1,
+            required_view_count=2, required_size=(10, 10),
+        )
+        hashes = dict(
+            selection_sha256="1" * 64, action_sha256="2" * 64,
+            evaluated_region_proof_sha256="3" * 64,
+            region_manifest_sha256="4" * 64,
+            toolchain_sha256="5" * 64, caps_sha256="6" * 64,
+        )
+        evidence = build_pose_pixel_family_evidence(
+            measurement, measurement, **hashes,
+        )
+        assert evidence["kind"] == "pose-pixel-no-visible-evidence-v1"
+        assert evidence["canonical_orthogonal_pair"] is None
+        assert evidence["first"]["kind"] == "pose-pixel-measurement-v1"
+        assert evidence["first"] == evidence["repeat"]
+        assert evidence["deterministic"] is True
+        unsigned = {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+        assert evidence["evidence_sha256"] == _canonical_hash(unsigned)
+
+        changed = measure_pose_pixels(
+            bind_images,
+            {**posed_images, "front": bind_images["front"]},
+            camera_directions=directions,
+            minimum_changed_fraction=0.005, minimum_silhouette_pixels=1,
+            required_view_count=2, required_size=(10, 10),
+        )
+        with self.assertRaisesRegex(ValueError, "repeat"):
+            build_pose_pixel_family_evidence(measurement, changed, **hashes)
+
     def test_pixel_gate_ignores_invisible_rgb_and_requires_every_view(self) -> None:
         from maximum_optimizer.animation_pose_selector import verify_pose_pixel_gate
 

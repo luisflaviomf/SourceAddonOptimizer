@@ -1,5 +1,7 @@
 from pathlib import Path
+import copy
 import hashlib
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,6 +17,69 @@ def test_parser_accepts_paired_real_animation_sources():
     ])
     assert args.animation_before == "idle.smd"
     assert args.animation_after == "idle_OPT.smd"
+
+
+def test_parser_accepts_sealed_source_only_region_pose_request():
+    args = render_previews._parse_args([
+        "--before", "mesh.smd", "--after", "mesh_OPT.smd", "--out", "renders",
+        "--source-pose-request", "request.json",
+        "--source-pose-request-sha256", "a" * 64,
+        "--source-pose-evidence-out", "source-pose.json",
+    ])
+    assert args.source_pose_request == "request.json"
+    assert args.source_pose_request_sha256 == "a" * 64
+    assert args.source_pose_evidence_out == "source-pose.json"
+
+
+def test_source_pose_request_loader_requires_complete_trio_and_external_anchor(tmp_path):
+    from tests.maximum_optimizer.test_region_pose_render_request import _build
+
+    payload = _build().to_payload()
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8",
+    )
+    output = tmp_path / "evidence.json"
+    args = SimpleNamespace(
+        source_pose_request=str(request_path),
+        source_pose_request_sha256=payload["request_sha256"],
+        source_pose_evidence_out=str(output),
+    )
+    request, selected_output = render_previews._validated_source_pose_request(args)
+    assert request.to_payload() == payload
+    assert selected_output == output.resolve()
+    incomplete = SimpleNamespace(
+        source_pose_request=str(request_path),
+        source_pose_request_sha256=None,
+        source_pose_evidence_out=str(output),
+    )
+    with pytest.raises(ValueError, match="paired|complete"):
+        render_previews._validated_source_pose_request(incomplete)
+    changed = copy.deepcopy(args)
+    changed.source_pose_request_sha256 = "f" * 64
+    with pytest.raises(ValueError, match="binding"):
+        render_previews._validated_source_pose_request(changed)
+
+
+def test_source_pose_request_loader_allows_fresh_nested_output_root(tmp_path):
+    from tests.maximum_optimizer.test_region_pose_render_request import _build
+
+    payload = _build().to_payload()
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8",
+    )
+    output = tmp_path / "fresh-render-root" / "source-pose-evidence.json"
+    args = SimpleNamespace(
+        source_pose_request=str(request_path),
+        source_pose_request_sha256=payload["request_sha256"],
+        source_pose_evidence_out=str(output),
+    )
+
+    _request, selected_output = render_previews._validated_source_pose_request(args)
+
+    assert selected_output == output.resolve()
+    assert not output.parent.exists()
 
 
 def _animation_smd() -> str:
@@ -347,6 +412,9 @@ def test_region_pose_requires_vertex_weight_on_selected_bone_or_descendant():
         vertex_groups=groups,
         data=SimpleNamespace(vertices=[SimpleNamespace(groups=[SimpleNamespace(group=0, weight=1.0)])]),
     )
+    assert render_previews._region_pose_influenced_bones(
+        (influenced,), armature, "Hood",
+    ) == ("Hood", "Latch")
     render_previews._validate_region_pose_influence((influenced,), armature, "Hood")
     uninfluenced = SimpleNamespace(
         vertex_groups=[SimpleNamespace(name="Door")],
@@ -354,6 +422,113 @@ def test_region_pose_requires_vertex_weight_on_selected_bone_or_descendant():
     )
     with pytest.raises(ValueError, match="not influenced"):
         render_previews._validate_region_pose_influence((uninfluenced,), armature, "Hood")
+
+
+def test_region_triangle_snapshot_is_canonical_and_pose_sensitive():
+    regions = {
+        "r-" + "1" * 64: {
+            "scope": "r-" + "1" * 64,
+            "source_object": "hood",
+            "triangles": [
+                {"positions": ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))},
+                {"positions": ((0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0))},
+            ],
+        }
+    }
+    snapshot = render_previews._region_triangle_vertex_snapshot(
+        regions, "r-" + "1" * 64,
+    )
+    assert snapshot[0][0] == ("r-" + "1" * 64) + "::hood"
+    assert len(snapshot[0][1]) == 6
+    moved = copy.deepcopy(regions)
+    moved["r-" + "1" * 64]["triangles"][1]["positions"] = (
+        (0.0, 0.0, 2.0), (1.0, 0.0, 2.0), (0.0, 1.0, 2.0),
+    )
+    assert render_previews._region_triangle_vertex_snapshot(
+        moved, "r-" + "1" * 64,
+    ) != snapshot
+
+
+def test_region_triangle_snapshot_accepts_blender_vector_protocol():
+    class VectorLike:
+        def __init__(self, *values):
+            self._values = values
+
+        def __iter__(self):
+            return iter(self._values)
+
+    key = "r-" + "2" * 64
+    regions = {
+        key: {
+            "scope": key,
+            "source_object": "trunk",
+            "triangles": [{
+                "positions": (
+                    VectorLike(0.0, 0.0, 0.0),
+                    VectorLike(1.0, 0.0, 0.0),
+                    VectorLike(0.0, 1.0, 0.0),
+                ),
+            }],
+        },
+    }
+
+    snapshot = render_previews._region_triangle_vertex_snapshot(regions, key)
+
+    assert snapshot[0][1][1] == (1.0, 0.0, 0.0)
+
+
+def test_source_pose_producer_payload_cross_binds_request_action_evaluated_and_pixels():
+    from tests.maximum_optimizer.test_region_pose_render_request import _build
+
+    request = _build()
+    selection = request.to_payload()["selection_payload"]
+    action = {
+        "animation_input_sha256": selection["animation_sha256"],
+        "bone_lineage": [
+            {"id": 0, "name": "root", "parent": -1},
+            {"id": 1, "name": "Hood", "parent": 0},
+        ],
+        "source_times": [0, 17],
+        "toolchain": {"toolchain_sha256": "a" * 64},
+        "action_sha256": "b" * 64,
+    }
+    evaluated = {
+        "action_sha256": action["action_sha256"],
+        "animation_input_sha256": selection["animation_sha256"],
+        "frame": selection["frame"],
+        "source_time": selection["source_time"],
+        "selected_bone": selection["bone_name"],
+        "toolchain_sha256": action["toolchain"]["toolchain_sha256"],
+        "proof_sha256": "c" * 64,
+    }
+    pixels = {
+        "kind": "pose-pixel-family-evidence-v1",
+        "selection_sha256": selection["selection_sha256"],
+        "action_sha256": action["action_sha256"],
+        "evaluated_region_proof_sha256": evaluated["proof_sha256"],
+        "region_manifest_sha256": request.to_payload()["region_manifest_sha256"],
+        "toolchain_sha256": action["toolchain"]["toolchain_sha256"],
+        "caps_sha256": request.to_payload()["caps_sha256"],
+        "evidence_sha256": "d" * 64,
+    }
+    result = render_previews._build_source_pose_producer_payload(
+        request, action_proof=action,
+        evaluated_region_proof=evaluated, pixel_evidence=pixels,
+    )
+    assert result["candidate_inputs_consulted"] is False
+    assert result["request_sha256"] == request.to_payload()["request_sha256"]
+    assert result["selection_sha256"] == selection["selection_sha256"]
+    unsigned = {key: value for key, value in result.items() if key != "evidence_sha256"}
+    assert result["evidence_sha256"] == hashlib.sha256(
+        render_previews._canonical_json(unsigned).encode("utf-8")
+    ).hexdigest()
+    changed = copy.deepcopy(pixels)
+    changed["selection_sha256"] = "e" * 64
+    with pytest.raises(ValueError, match="binding"):
+        render_previews._build_source_pose_producer_payload(
+            request, action_proof=action,
+            evaluated_region_proof=evaluated, pixel_evidence=changed,
+        )
 
 
 def test_evaluated_region_pose_proof_uses_rest_to_raw_action_vertices():

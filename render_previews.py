@@ -1301,6 +1301,18 @@ def _parse_args(argv: list[str]):
         "--source-union-control-sha256", default=None,
         help="Parent-owned SHA-256 anchor for the private source-union control bytes",
     )
+    ap.add_argument(
+        "--source-pose-request", default=None,
+        help="Sealed candidate-free regional pose request JSON",
+    )
+    ap.add_argument(
+        "--source-pose-request-sha256", default=None,
+        help="Parent-owned SHA-256 anchor for the regional pose request",
+    )
+    ap.add_argument(
+        "--source-pose-evidence-out", default=None,
+        help="Source-only regional pose producer evidence JSON",
+    )
     return ap.parse_args(argv)
 
 
@@ -1342,6 +1354,41 @@ def _validate_source_union_cli_args(args) -> None:
         raise ValueError("source-union pose command lacks exact paired animation")
     if parsed == [("bind", 0)] and (args.animation_before or args.animation_after):
         raise ValueError("source-union bind-only command cannot carry animation")
+
+
+def _validated_source_pose_request(args):
+    values = (
+        getattr(args, "source_pose_request", None),
+        getattr(args, "source_pose_request_sha256", None),
+        getattr(args, "source_pose_evidence_out", None),
+    )
+    if not any(values):
+        return None, None
+    if not all(values):
+        raise ValueError("source pose request, hash, and evidence output must be paired and complete")
+    request_path = Path(values[0]).expanduser().resolve(strict=True)
+    try:
+        payload = json.loads(
+            _bootstrap_read_regular(request_path, max_bytes=4 * 1024 * 1024).decode("utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("source pose request is unreadable") from exc
+    from maximum_optimizer.region_pose_render_request import (
+        parse_region_pose_render_request,
+    )
+    request = parse_region_pose_render_request(
+        payload,
+        expected_request_sha256=values[1],
+        expected_catalog_sha256=payload.get("catalog_sha256"),
+        expected_region_key=payload.get("region_key"),
+        expected_region_manifest_sha256=payload.get("region_manifest_sha256"),
+        expected_contracts_sha256=payload.get("contracts_sha256"),
+        expected_caps_sha256=payload.get("caps_sha256"),
+    )
+    output = Path(values[2]).expanduser().absolute()
+    if output.exists() or not _bootstrap_safe_ancestry(output.parent):
+        raise ValueError("source pose evidence output is unsafe or already exists")
+    return request, output.resolve(strict=False)
 
 
 def _load_region_manifest(path: Path) -> RegionManifest:
@@ -2887,7 +2934,9 @@ def _set_pose_state(
     view_layer.update()
 
 
-def _validate_region_pose_influence(render_objs, armature, selected_bone: str) -> None:
+def _region_pose_influenced_bones(
+    render_objs, armature, selected_bone: str,
+) -> tuple[str, ...]:
     bones = tuple(getattr(armature.data, "bones", ()))
     selected = next((bone for bone in bones if bone.name == selected_bone), None)
     if selected is None:
@@ -2902,6 +2951,7 @@ def _validate_region_pose_influence(render_objs, armature, selected_bone: str) -
                 break
             visited.add(id(cursor))
             cursor = getattr(cursor, "parent", None)
+    weighted_names = set()
     for obj in render_objs:
         groups = {index: group.name for index, group in enumerate(tuple(obj.vertex_groups))}
         for vertex in tuple(obj.data.vertices):
@@ -2910,8 +2960,130 @@ def _validate_region_pose_influence(render_objs, armature, selected_bone: str) -
                     math.isfinite(float(link.weight)) and float(link.weight) > 0.0
                     and groups.get(int(link.group)) in influenced_names
                 ):
-                    return
-    raise ValueError("focused region is not influenced by selected bone or descendants")
+                    weighted_names.add(groups[int(link.group)])
+    if not weighted_names:
+        raise ValueError("focused region is not influenced by selected bone or descendants")
+    return tuple(sorted(
+        {selected_bone, *weighted_names}, key=lambda name: (name.casefold(), name),
+    ))
+
+
+def _validate_region_pose_influence(render_objs, armature, selected_bone: str) -> None:
+    _region_pose_influenced_bones(render_objs, armature, selected_bone)
+
+
+def _region_triangle_vertex_snapshot(
+    regions: dict, region_key: str,
+) -> tuple[tuple[str, tuple[tuple[float, float, float], ...]], ...]:
+    if type(regions) is not dict or set(regions) != {region_key}:
+        raise ValueError("evaluated region snapshot scope differs")
+    region = regions[region_key]
+    if type(region) is not dict or region.get("scope") != region_key:
+        raise ValueError("evaluated region snapshot payload differs")
+    source_object = region.get("source_object")
+    triangles = region.get("triangles")
+    if type(source_object) is not str or not source_object or type(triangles) is not list or not triangles:
+        raise ValueError("evaluated region snapshot inventory is invalid")
+    points = []
+    for triangle in triangles:
+        positions = triangle.get("positions") if type(triangle) is dict else None
+        if not isinstance(positions, (tuple, list)) or len(positions) != 3:
+            raise ValueError("evaluated region snapshot triangle is invalid")
+        for point in positions:
+            if isinstance(point, (str, bytes)):
+                raise ValueError("evaluated region snapshot vertex is invalid")
+            try:
+                values = tuple(float(component) for component in point)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("evaluated region snapshot vertex is invalid") from exc
+            if len(values) != 3:
+                raise ValueError("evaluated region snapshot vertex is invalid")
+            if any(not math.isfinite(component) for component in values):
+                raise ValueError("evaluated region snapshot vertex is non-finite")
+            points.append(values)
+    return ((f"{region_key}::{source_object}", tuple(points)),)
+
+
+def _build_source_pose_producer_payload(
+    request, *, action_proof: dict, evaluated_region_proof: dict,
+    pixel_evidence: dict,
+) -> dict:
+    if not hasattr(request, "to_payload") or not callable(request.to_payload):
+        raise TypeError("source pose producer request type differs")
+    request_payload = request.to_payload()
+    selection = request_payload.get("selection_payload")
+    if not all(type(value) is dict for value in (selection, action_proof, evaluated_region_proof, pixel_evidence)):
+        raise ValueError("source pose producer payload type differs")
+    lineage = action_proof.get("bone_lineage")
+    source_times = action_proof.get("source_times")
+    toolchain = action_proof.get("toolchain")
+    if (
+        type(lineage) is not list or type(source_times) is not list
+        or type(toolchain) is not dict
+        or type(selection.get("frame")) is not int
+        or not 0 <= selection["frame"] < len(source_times)
+        or source_times[selection["frame"]] != selection.get("source_time")
+        or not any(
+            type(item) is dict
+            and item.get("id") == selection.get("bone_index")
+            and item.get("name") == selection.get("bone_name")
+            for item in lineage
+        )
+        or action_proof.get("animation_input_sha256") != selection.get("animation_sha256")
+    ):
+        raise ValueError("source pose action/selection binding differs")
+    action_sha = action_proof.get("action_sha256")
+    evaluated_sha = evaluated_region_proof.get("proof_sha256")
+    toolchain_sha = toolchain.get("toolchain_sha256")
+    if (
+        evaluated_region_proof.get("action_sha256") != action_sha
+        or evaluated_region_proof.get("animation_input_sha256") != selection.get("animation_sha256")
+        or evaluated_region_proof.get("frame") != selection.get("frame")
+        or evaluated_region_proof.get("source_time") != selection.get("source_time")
+        or evaluated_region_proof.get("selected_bone") != selection.get("bone_name")
+        or evaluated_region_proof.get("toolchain_sha256") != toolchain_sha
+    ):
+        raise ValueError("source pose evaluated/selection/action binding differs")
+    if (
+        pixel_evidence.get("kind") not in {
+            "pose-pixel-family-evidence-v1", "pose-pixel-no-visible-evidence-v1",
+        }
+        or pixel_evidence.get("selection_sha256") != selection.get("selection_sha256")
+        or pixel_evidence.get("action_sha256") != action_sha
+        or pixel_evidence.get("evaluated_region_proof_sha256") != evaluated_sha
+        or pixel_evidence.get("region_manifest_sha256") != request_payload.get("region_manifest_sha256")
+        or pixel_evidence.get("toolchain_sha256") != toolchain_sha
+        or pixel_evidence.get("caps_sha256") != request_payload.get("caps_sha256")
+    ):
+        raise ValueError("source pose pixel authority binding differs")
+    for label, value in (
+        ("request", request_payload.get("request_sha256")),
+        ("selection", selection.get("selection_sha256")),
+        ("action", action_sha), ("evaluated", evaluated_sha),
+        ("pixel", pixel_evidence.get("evidence_sha256")),
+        ("toolchain", toolchain_sha),
+    ):
+        if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValueError(f"source pose producer {label} seal is invalid")
+    unsigned = {
+        "schema": 1,
+        "kind": "blender-source-only-region-pose-producer-v1",
+        "candidate_inputs_consulted": False,
+        "request_sha256": request_payload["request_sha256"],
+        "catalog_sha256": request_payload["catalog_sha256"],
+        "region_key": request_payload["region_key"],
+        "source_identity": request_payload["source_identity"],
+        "selection_sha256": selection["selection_sha256"],
+        "action_proof": json.loads(_canonical_json(action_proof)),
+        "evaluated_region_proof": json.loads(_canonical_json(evaluated_region_proof)),
+        "pixel_evidence": json.loads(_canonical_json(pixel_evidence)),
+    }
+    return {
+        **unsigned,
+        "evidence_sha256": hashlib.sha256(
+            _canonical_json(unsigned).encode("utf-8")
+        ).hexdigest(),
+    }
 
 
 def _normalized_evaluated_vertex_snapshot(snapshot, *, label: str):
@@ -3945,6 +4117,9 @@ def _render_extended_set(
     source_search_paths: dict[str, tuple[str, ...]] | None = None,
     aggregate_regions: bool = False,
     focus_region: str | None = None,
+    source_pose_request=None,
+    source_pose_evidence_root: Path | None = None,
+    source_pose_sink: dict | None = None,
 ) -> tuple[list[dict], dict[str, dict[str, dict]], tuple, dict]:
     _clear_scene()
     _setup_scene(size, transparent=True)
@@ -3998,6 +4173,43 @@ def _render_extended_set(
         ),
         animation_binding=animation_binding,
     )
+    source_pose_runtime = None
+    if source_pose_request is not None:
+        if (
+            source_pose_evidence_root is None or type(source_pose_sink) is not dict
+            or source_pose_sink or focus_region is None or animation_binding is None
+            or size != 512 or passes != ("textured", "clay")
+            or angles != tuple(ANGLE_DIRS)
+        ):
+            raise ValueError("source pose producer render contract differs")
+        request_payload = source_pose_request.to_payload()
+        selection = request_payload["selection_payload"]
+        expected_poses = (("bind", 0), ("animation", selection["frame"]))
+        if poses != expected_poses or request_payload["region_key"] != focus_region:
+            raise ValueError("source pose producer pose/region differs")
+        action_proof = animation_binding[3]
+        influenced_bones = _region_pose_influenced_bones(
+            render_objs, animation_binding[0], selection["bone_name"],
+        )
+        repeat_snapshots = _capture_pose_snapshots(
+            render_objs,
+            poses,
+            capture=lambda captured_objects, frame: _capture_regions(
+                captured_objects, frame, capture_manifest, source_material_evidence,
+                aggregate=False,
+            ),
+            animation_binding=animation_binding,
+        )
+        evaluated = _build_evaluated_region_pose_proof(
+            _region_triangle_vertex_snapshot(snapshots["bind"], focus_region),
+            _region_triangle_vertex_snapshot(snapshots["animation"], focus_region),
+            _region_triangle_vertex_snapshot(repeat_snapshots["bind"], focus_region),
+            _region_triangle_vertex_snapshot(repeat_snapshots["animation"], focus_region),
+            action_proof=action_proof,
+            frame=selection["frame"], source_time=selection["source_time"],
+            selected_bone=selection["bone_name"], influenced_bones=influenced_bones,
+        )
+        source_pose_runtime = (request_payload, action_proof, evaluated)
     bbox, evaluated_fit = _framing_from_snapshots(snapshots)
     center, ortho_scale, dist = fit or evaluated_fit
     cam_obj.data.ortho_scale = ortho_scale
@@ -4038,6 +4250,57 @@ def _render_extended_set(
                         resolved_materials=material_audit["resolved"],
                     )
                 )
+    if source_pose_runtime is not None:
+        evidence_root = Path(source_pose_evidence_root)
+        if evidence_root.exists():
+            raise ValueError("source pose repeat render root already exists")
+        evidence_root.mkdir(parents=True)
+        repeat_images: dict[str, dict[str, Path]] = {"bind": {}, "animation": {}}
+        for pose_name, frame in poses:
+            _set_pose_state(animation_binding, pose_name, frame)
+            for angle in angles:
+                direction = ANGLE_DIRS[angle]
+                _set_camera_pose(cam_obj, center, direction, dist)
+                image_path = evidence_root / pose_name / f"{angle}.png"
+                image_path.parent.mkdir(parents=True, exist_ok=True)
+                bpy.context.scene.render.filepath = str(image_path)
+                bpy.ops.render.render(write_still=True)
+                repeat_images[pose_name][angle] = image_path
+        directions = {}
+        for angle in angles:
+            vector = tuple(float(value) for value in ANGLE_DIRS[angle])
+            length = math.sqrt(sum(value * value for value in vector))
+            directions[angle] = tuple(value / length for value in vector)
+        from maximum_optimizer.animation_pose_selector import (
+            build_pose_pixel_family_evidence, measure_pose_pixels,
+        )
+        first = measure_pose_pixels(
+            {angle: root / "clay" / "bind" / f"{angle}.png" for angle in angles},
+            {angle: root / "clay" / "animation" / f"{angle}.png" for angle in angles},
+            camera_directions=directions,
+            minimum_changed_fraction=0.0001, minimum_silhouette_pixels=27,
+            required_view_count=8, required_size=(512, 512),
+        )
+        repeat = measure_pose_pixels(
+            repeat_images["bind"], repeat_images["animation"],
+            camera_directions=directions,
+            minimum_changed_fraction=0.0001, minimum_silhouette_pixels=27,
+            required_view_count=8, required_size=(512, 512),
+        )
+        request_payload, action_proof, evaluated = source_pose_runtime
+        pixel_evidence = build_pose_pixel_family_evidence(
+            first, repeat,
+            selection_sha256=request_payload["selection_payload"]["selection_sha256"],
+            action_sha256=action_proof["action_sha256"],
+            evaluated_region_proof_sha256=evaluated["proof_sha256"],
+            region_manifest_sha256=request_payload["region_manifest_sha256"],
+            toolchain_sha256=action_proof["toolchain"]["toolchain_sha256"],
+            caps_sha256=request_payload["caps_sha256"],
+        )
+        source_pose_sink.update(_build_source_pose_producer_payload(
+            source_pose_request, action_proof=action_proof,
+            evaluated_region_proof=evaluated, pixel_evidence=pixel_evidence,
+        ))
     return entries, snapshots, (center, ortho_scale, dist), bbox
 
 
@@ -4056,6 +4319,7 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
     source_root = _required_source_root(args)
     configuration = _required_configuration_manifest(args)
     region_manifest = _load_region_manifest(region_manifest_path)
+    source_pose_request, source_pose_output = _validated_source_pose_request(args)
     if len(before) != len(after):
         raise ValueError("extended Maximum validation requires paired before/after sources")
     if bool(args.animation_before) != bool(args.animation_after):
@@ -4076,8 +4340,32 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         source_identities_tuple, source_materials, source_search_paths = _extended_source_context(
             region_manifest, source_root, before
         )
+    if source_pose_request is not None:
+        request_payload = source_pose_request.to_payload()
+        selection = request_payload["selection_payload"]
+        expected_poses = (("bind", 0), ("animation", selection["frame"]))
+        if (
+            focus_region != request_payload["region_key"]
+            or poses != expected_poses or args.size != 512
+            or passes != ("textured", "clay") or validated_angles != tuple(ANGLE_DIRS)
+            or source_identities_tuple != (request_payload["source_identity"],)
+            or animation_before is None or animation_after is None
+        ):
+            raise ValueError("source pose request differs from focused render inputs")
+        manifest_sha = hashlib.sha256(region_manifest_path.read_bytes()).hexdigest()
+        animation_before_sha = hashlib.sha256(animation_before.read_bytes()).hexdigest()
+        animation_after_sha = hashlib.sha256(animation_after.read_bytes()).hexdigest()
+        if (
+            manifest_sha != request_payload["region_manifest_sha256"]
+            or animation_before_sha != selection["animation_sha256"]
+            or animation_after_sha != selection["animation_sha256"]
+            or animation_before.stem.casefold() != selection["pose_name"]
+            or animation_after.stem.casefold() != selection["pose_name"]
+        ):
+            raise ValueError("source pose request source bytes/path binding differs")
     original_dir = out_dir / "original"
     candidate_dir = out_dir / "optimized"
+    source_pose_sink = {} if source_pose_request is not None else None
     reference_entries, reference_snapshots, fit, bbox = _render_extended_set(
         "before",
         before,
@@ -4096,7 +4384,16 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
         source_search_paths=source_search_paths,
         aggregate_regions=args.aggregate_regions,
         focus_region=focus_region,
+        source_pose_request=source_pose_request,
+        source_pose_evidence_root=(
+            out_dir / "source-pose-repeat" if source_pose_request is not None else None
+        ),
+        source_pose_sink=source_pose_sink,
     )
+    if source_pose_request is not None:
+        if not source_pose_sink or source_pose_output is None:
+            raise ValueError("source pose producer emitted no evidence")
+        _source_union_write_json(source_pose_output, source_pose_sink)
     candidate_entries, candidate_snapshots, _, candidate_bbox = _render_extended_set(
         "after",
         after,

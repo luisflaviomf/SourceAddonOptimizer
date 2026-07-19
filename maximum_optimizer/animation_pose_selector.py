@@ -593,17 +593,24 @@ def measure_pose_pixels(
     )
 
 
-def _measurement_has_orthogonal_pair(measurement: PosePixelMeasurement) -> bool:
+def _measurement_orthogonal_pairs(
+    measurement: PosePixelMeasurement,
+) -> tuple[tuple[str, str], ...]:
     directions = {
         str(item["key"]): tuple(float(value) for value in item["direction"])
         for item in measurement.camera_directions
     }
     qualified = measurement.qualified_silhouette_views
-    return any(
-        abs(sum(a * b for a, b in zip(directions[left], directions[right]))) <= 0.25
+    return tuple(sorted(
+        (left, right)
         for index, left in enumerate(qualified)
         for right in qualified[index + 1:]
-    )
+        if abs(sum(a * b for a, b in zip(directions[left], directions[right]))) <= 0.25
+    ))
+
+
+def _measurement_has_orthogonal_pair(measurement: PosePixelMeasurement) -> bool:
+    return bool(_measurement_orthogonal_pairs(measurement))
 
 
 def _validate_pixel_measurement(measurement: PosePixelMeasurement) -> None:
@@ -657,6 +664,61 @@ def verify_pose_pixel_measurement(
         qualified_silhouette_views=measurement.qualified_silhouette_views,
         evidence_sha256=_canonical_hash(public),
     )
+
+
+def build_pose_pixel_family_evidence(
+    first: PosePixelMeasurement,
+    repeat: PosePixelMeasurement,
+    *,
+    selection_sha256: str,
+    action_sha256: str,
+    evaluated_region_proof_sha256: str,
+    region_manifest_sha256: str,
+    toolchain_sha256: str,
+    caps_sha256: str,
+) -> dict[str, object]:
+    """Bind repeatable source-only pixel measurements to their pose authority."""
+
+    _validate_pixel_measurement(first)
+    _validate_pixel_measurement(repeat)
+    if first.to_payload() != repeat.to_payload():
+        raise ValueError("pose pixel first/repeat measurement differs")
+    if first.bind_pixel_bundle_sha256 == first.posed_pixel_bundle_sha256:
+        raise ValueError("pose pixel measurement has identical bind/posed pixels")
+    for label, value in (
+        ("selection", selection_sha256), ("action", action_sha256),
+        ("evaluated region", evaluated_region_proof_sha256),
+        ("region manifest", region_manifest_sha256),
+        ("toolchain", toolchain_sha256), ("caps", caps_sha256),
+    ):
+        if (
+            type(value) is not str or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError(f"pose pixel {label} binding is invalid")
+    pairs = _measurement_orthogonal_pairs(first)
+    if pairs:
+        public = verify_pose_pixel_measurement(first).to_payload()
+        kind = "pose-pixel-family-evidence-v1"
+        pair: list[str] | None = list(pairs[0])
+    else:
+        public = verify_no_visible_pose_pixel_measurement(first).to_payload()
+        kind = "pose-pixel-no-visible-evidence-v1"
+        pair = None
+    unsigned = {
+        "kind": kind,
+        "first": public,
+        "repeat": json.loads(json.dumps(public, sort_keys=True)),
+        "deterministic": True,
+        "canonical_orthogonal_pair": pair,
+        "selection_sha256": selection_sha256,
+        "action_sha256": action_sha256,
+        "evaluated_region_proof_sha256": evaluated_region_proof_sha256,
+        "region_manifest_sha256": region_manifest_sha256,
+        "toolchain_sha256": toolchain_sha256,
+        "caps_sha256": caps_sha256,
+    }
+    return {**unsigned, "evidence_sha256": _canonical_hash(unsigned)}
 
 
 def verify_pose_pixel_gate(
