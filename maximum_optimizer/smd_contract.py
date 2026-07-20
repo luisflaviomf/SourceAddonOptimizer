@@ -484,7 +484,34 @@ def map_imported_corners_to_smd(
                 for source, order in matches
             }
             if len(token_rows) != 1:
-                raise RuntimeError(f"imported triangle {triangle_index} source-corner mapping is ambiguous")
+                normal_rank = tuple(sorted(
+                    (
+                        max(
+                            math.sqrt(sum(
+                                (a - b) ** 2
+                                for a, b in zip(
+                                    imported[i][1],
+                                    source_identities[source][order[i]][1],  # type: ignore[index]
+                                )
+                            ))
+                            for i in range(3)
+                        ),
+                        source,
+                        order,
+                    )
+                    for source, order in matches
+                ))
+                if (
+                    normal_rank[0][0] <= IMPORT_NORMAL_DISAMBIGUATION_CEILING
+                    and normal_rank[1][0] - normal_rank[0][0]
+                    > IMPORT_NORMAL_DISAMBIGUATION_MARGIN
+                ):
+                    matches = [(normal_rank[0][1], normal_rank[0][2])]
+                else:
+                    raise RuntimeError(
+                        f"imported triangle {triangle_index} source-corner mapping is ambiguous; "
+                        f"normal_rank={normal_rank[:8]}"
+                    )
         matched_source, order = min(matches)
         used.add(matched_source)
         result.extend(matched_source * 3 + order[i] for i in range(3))

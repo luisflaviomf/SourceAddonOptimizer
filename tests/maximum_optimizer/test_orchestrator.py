@@ -3265,6 +3265,13 @@ class OrchestratorTests(unittest.TestCase):
                 self.assertTrue(
                     render[render.index("--source-root") + 1].startswith("\\\\?\\")
                 )
+                blender_output = Path(render[render.index("--out") + 1])
+                self.assertFalse(str(blender_output).startswith("\\\\?\\"))
+                self.assertNotEqual(blender_output, workspace / "renders")
+                self.assertLess(
+                    len(str(blender_output / "optimized/textured/representative/front.png")),
+                    260,
+                )
         self.assertNotEqual(
             renders[0][renders[0].index("--region-manifest") + 1],
             renders[1][renders[1].index("--region-manifest") + 1],

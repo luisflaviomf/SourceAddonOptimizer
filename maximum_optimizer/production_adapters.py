@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import threading
+import tempfile
 from types import MappingProxyType
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -113,6 +114,36 @@ def _python_runtime_cleanup_is_authorized(
 def _cancel(event: threading.Event | None, message: str) -> None:
     if event is not None and event.is_set():
         raise ProcessCancelledError(message)
+
+
+def _copy_validated_source_union_render_tree(
+    source: Path,
+    destination: Path,
+    event: threading.Event | None,
+) -> None:
+    _cancel(event, "cancelled before source-union render publication")
+    if _is_reparse(source) or not source.is_dir():
+        raise ValueError("source-union staged render root is unsafe")
+    if os.path.lexists(destination):
+        raise ValueError("source-union render destination already exists")
+    destination.mkdir()
+    for directory, directory_names, file_names in os.walk(source, followlinks=False):
+        _cancel(event, "cancelled during source-union render publication")
+        parent = Path(directory)
+        target_parent = destination / parent.relative_to(source)
+        for name in sorted(directory_names):
+            child = parent / name
+            if _is_reparse(child):
+                raise ValueError("source-union staged render contains a reparse directory")
+            (target_parent / name).mkdir()
+        for name in sorted(file_names):
+            _copy_file_no_follow(
+                parent / name,
+                target_parent / name,
+                event,
+                contained_root=source,
+            )
+    _cancel(event, "cancelled after source-union render publication")
 
 
 @dataclass(frozen=True)
@@ -1469,54 +1500,75 @@ class AdaptiveDirectProductionBoundary:
                     path, force_extended=use_extended_blender_paths
                 )
 
-            command = [str(tools.blender_exe)]
-            if tools.blender_threads > 0:
-                command.extend(("--threads", str(tools.blender_threads)))
-            command.extend((
-                "--background", "--python", blender_workspace_path(renderer_input), "--",
-                "--before", blender_workspace_path(reference_input),
-                "--after", blender_workspace_path(candidate_input),
-                "--out", blender_workspace_path(raw),
-                "--size", "512", "--angles", ",".join(_ANGLES),
-                "--passes", "textured,clay", "--poses", ",".join(
-                    f"{key}:{frame}" for key, frame in pose_frames
-                ),
-                "--source-union-contract", blender_workspace_path(contract_path),
-                "--source-union-control-sha256", contract_digest,
-                "--source-union-visibility-out", blender_workspace_path(visibility_path),
-            ))
-            if len(pose_bindings) == 2:
-                command.extend((
-                    "--animation-before", blender_workspace_path(private_animation_before),
-                    "--animation-after", blender_workspace_path(private_animation_after),
-                ))
-            for root in private_material_roots:
-                command.extend(("--materials-root", blender_workspace_path(root)))
-            if tools.vtfcmd is not None: command.extend(("--vtfcmd", str(tools.vtfcmd)))
-            command.extend(("--texture-cache", blender_workspace_path(private_texture_cache)))
-            if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
-                raise ValueError("source-union dependency changed before Blender")
-            validate_current_materials(event)
-            validate_current_python_runtime(event)
-            validate_source_union_pose_bindings(
-                pose_bindings, target.pose_keys, pose_contract, event,
-            )
-            try:
-                process = self._process_runner(
-                    tuple(command), inputs,
-                    output_root / "source-union-render.log", event,
-                )
-            except BaseException:
-                validate_current_materials(event)
-                validate_current_python_runtime(event)
-                raise
-            validate_current_materials(event)
-            validate_current_python_runtime(event)
-            validate_source_union_pose_bindings(
-                pose_bindings, target.pose_keys, pose_contract, event,
-            )
-            if process.returncode != 0:
-                raise ValueError("source-union Blender process failed")
+            def render_into_private_staging():
+                with tempfile.TemporaryDirectory(
+                    prefix="maximum-source-union-render-"
+                ) as temporary:
+                    staged_raw = Path(temporary).resolve(strict=True) / "raw"
+                    command = [str(tools.blender_exe)]
+                    if tools.blender_threads > 0:
+                        command.extend(("--threads", str(tools.blender_threads)))
+                    command.extend((
+                        "--background", "--python", blender_workspace_path(renderer_input), "--",
+                        "--before", blender_workspace_path(reference_input),
+                        "--after", blender_workspace_path(candidate_input),
+                        "--out", str(staged_raw),
+                        "--size", "512", "--angles", ",".join(_ANGLES),
+                        "--passes", "textured,clay", "--poses", ",".join(
+                            f"{key}:{frame}" for key, frame in pose_frames
+                        ),
+                        "--source-union-contract", blender_workspace_path(contract_path),
+                        "--source-union-control-sha256", contract_digest,
+                        "--source-union-visibility-out", blender_workspace_path(visibility_path),
+                    ))
+                    if len(pose_bindings) == 2:
+                        command.extend((
+                            "--animation-before", blender_workspace_path(private_animation_before),
+                            "--animation-after", blender_workspace_path(private_animation_after),
+                        ))
+                    for root in private_material_roots:
+                        command.extend(("--materials-root", blender_workspace_path(root)))
+                    if tools.vtfcmd is not None:
+                        command.extend(("--vtfcmd", str(tools.vtfcmd)))
+                    command.extend((
+                        "--texture-cache", blender_workspace_path(private_texture_cache)
+                    ))
+                    if (
+                        tools.dependency_digest_provider(event)
+                        != snapshot.request.dependency_proof_sha256
+                    ):
+                        raise ValueError("source-union dependency changed before Blender")
+                    validate_current_materials(event)
+                    validate_current_python_runtime(event)
+                    validate_source_union_pose_bindings(
+                        pose_bindings, target.pose_keys, pose_contract, event,
+                    )
+                    try:
+                        process = self._process_runner(
+                            tuple(command), inputs,
+                            output_root / "source-union-render.log", event,
+                        )
+                    except BaseException:
+                        validate_current_materials(event)
+                        validate_current_python_runtime(event)
+                        raise
+                    validate_current_materials(event)
+                    validate_current_python_runtime(event)
+                    validate_source_union_pose_bindings(
+                        pose_bindings, target.pose_keys, pose_contract, event,
+                    )
+                    if process.returncode != 0:
+                        raise ValueError("source-union Blender process failed")
+                    _assert_exact_source_union_raw(staged_raw, target, event)
+                    _assert_source_union_raw_material_evidence(
+                        staged_raw, material_evidence, target, event
+                    )
+                    _copy_validated_source_union_render_tree(
+                        staged_raw, raw, event
+                    )
+                    return process
+
+            process = render_into_private_staging()
             cache_error = None
             try:
                 _assert_safe_tree(

@@ -122,6 +122,11 @@ def _animation_pose_contract(root: Path, pair: SmdAnimationPairInput):
     )
 
 
+def _source_union_workspace_from_command(command) -> Path:
+    contract = Path(command[command.index("--source-union-contract") + 1])
+    return contract.parent.parent
+
+
 class CompileRunner:
     def __init__(
         self, model_rel: str, *, extra=False, missing=None, set_event=None,
@@ -852,6 +857,17 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 "front,back,left,right,top,bottom,iso1,iso2",
             )
             self.assertEqual(command[command.index("--poses") + 1], "bind:0")
+            blender_output = Path(command[command.index("--out") + 1])
+            self.assertNotEqual(blender_output, root / "union-one" / "raw")
+            if os.name == "nt":
+                self.assertLess(
+                    len(str(
+                        blender_output
+                        / "source-union/region/reference/representative/textured/camera-00.png"
+                    )),
+                    260,
+                )
+            self.assertTrue((root / "union-one" / "raw").is_dir())
             material_args = tuple(
                 Path(command[index + 1]) for index, item in enumerate(command)
                 if item == "--materials-root"
@@ -1516,8 +1532,10 @@ class ProductionAdapterContractTests(unittest.TestCase):
             with self.subTest(location=location), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
                 def poison(command, _payload, _event, location=location):
-                    output_root = Path(command[command.index("--out") + 1]).parent
-                    (output_root / location / "hidden.bin").write_bytes(b"hidden")
+                    output_root = _source_union_workspace_from_command(command)
+                    poisoned_root = output_root / location
+                    poisoned_root.mkdir(exist_ok=True)
+                    (poisoned_root / "hidden.bin").write_bytes(b"hidden")
                 workspace = root / "union"
                 with self.assertRaises(ValueError):
                     self._render_case(
@@ -1529,7 +1547,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
             def poison_top(command, _payload, _event):
-                (Path(command[command.index("--out") + 1]).parent / "hidden-top.bin").write_bytes(b"hidden")
+                (_source_union_workspace_from_command(command) / "hidden-top.bin").write_bytes(b"hidden")
             workspace = root / "union"
             with self.assertRaises(ValueError):
                 self._render_case(
@@ -1556,7 +1574,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
             state = {"winner_identity": None}
 
             def replace_material_root(command, _payload, _event):
-                output_root = Path(command[command.index("--out") + 1]).parent
+                output_root = _source_union_workspace_from_command(command)
                 material_tree = output_root / "material-roots"
                 winner = root / "external-material-winner"
                 shutil.copytree(material_tree, winner)
@@ -1631,7 +1649,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
             fixture, components = self._render_fixture(root)
 
             def replace_material_child(command, _payload, _event):
-                output_root = Path(command[command.index("--out") + 1]).parent
+                output_root = _source_union_workspace_from_command(command)
                 child = output_root / "material-roots/root-000"
                 winner = root / "external-root-000"
                 shutil.copytree(child, winner)
@@ -1664,7 +1682,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
 
             def replace_child_and_fail(command, cwd, log_path, cancel_event):
                 process = successful_runner(command, cwd, log_path, cancel_event)
-                output_root = Path(command[command.index("--out") + 1]).parent
+                output_root = _source_union_workspace_from_command(command)
                 child = output_root / "material-roots/root-000"
                 winner = root / "external-failed-root"
                 shutil.copytree(child, winner)
@@ -1698,7 +1716,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
 
                 def replace_descendant_and_fail(command, cwd, log_path, cancel_event):
                     process = successful_runner(command, cwd, log_path, cancel_event)
-                    output_root = Path(command[command.index("--out") + 1]).parent
+                    output_root = _source_union_workspace_from_command(command)
                     victim = output_root / "material-roots" / relative
                     winner = root / f"external-failed-{label}"
                     if victim.is_dir():
@@ -2195,7 +2213,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
 
     def test_source_union_rejects_precreated_authorized_and_reparse_output(self) -> None:
         def precreate(command, _payload, _event):
-            (Path(command[command.index("--out") + 1]).parent / "authorized").mkdir()
+            (_source_union_workspace_from_command(command) / "authorized").mkdir()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve(); fixture, components = self._render_fixture(root)
             workspace = root / "union"

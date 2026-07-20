@@ -5011,50 +5011,72 @@ class ProductionAdapters:
                     f"state region manifest is invalid for {state_name}: {exc}",
                     stage="render",
                 ) from exc
-            command: list[str] = list(self._blender_command(
-                "--background", "--python",
-                str(self.config.repo_root / "render_previews.py"), "--",
-            ))
-            for path in before:
-                command.extend(("--before", blender_workspace_path(path)))
-            for path in after:
-                command.extend(("--after", blender_workspace_path(path)))
-            command.extend((
-                "--out", blender_workspace_path(state_root), "--size", "512",
-                "--passes", "textured,clay", "--poses", pose_arg,
-                "--render-side", (
-                    "candidate" if reference_bundle is not None else "both"
-                ),
-                "--region-manifest", blender_workspace_path(state_region_manifest),
-                "--source-root", blender_workspace_path(copied_source_root),
-                "--configuration-manifest", blender_workspace_path(configuration_manifest),
-                "--texture-cache", str(self._texture_cache_root(candidate)),
-            ))
-            for materials_root in self._materials_roots():
-                command.extend(("--materials-root", str(materials_root)))
-            if animation is not None:
-                original_animation = source_root / animation[0].relative_to(
-                    manifest.source_dir.resolve(strict=True)
-                )
-                command.extend((
-                    "--animation-before", blender_workspace_path(original_animation),
-                    "--animation-after", blender_workspace_path(animation[1]),
-                ))
-            if vtfcmd is not None:
-                command.extend(("--vtfcmd", str(vtfcmd)))
             render_log = candidate.workspace / "logs" / f"render-{state_name}.log"
-            process = run_process(
-                command,
-                cwd=self.config.repo_root,
-                log_path=render_log,
-                cancel_event=self.cancel_event,
-            )
-            if process.returncode != 0:
-                raise CandidateBuildError(
-                    f"render validation exited with code {process.returncode}",
-                    stage="render",
+            with tempfile.TemporaryDirectory(prefix="maximum-render-") as temporary:
+                blender_render_root = Path(temporary).resolve(strict=True)
+                command: list[str] = list(self._blender_command(
+                    "--background", "--python",
+                    str(self.config.repo_root / "render_previews.py"), "--",
+                ))
+                for path in before:
+                    command.extend(("--before", blender_workspace_path(path)))
+                for path in after:
+                    command.extend(("--after", blender_workspace_path(path)))
+                command.extend((
+                    "--out", str(blender_render_root), "--size", "512",
+                    "--passes", "textured,clay", "--poses", pose_arg,
+                    "--render-side", (
+                        "candidate" if reference_bundle is not None else "both"
+                    ),
+                    "--region-manifest", blender_workspace_path(state_region_manifest),
+                    "--source-root", blender_workspace_path(copied_source_root),
+                    "--configuration-manifest", blender_workspace_path(configuration_manifest),
+                    "--texture-cache", str(self._texture_cache_root(candidate)),
+                ))
+                for materials_root in self._materials_roots():
+                    command.extend(("--materials-root", str(materials_root)))
+                if animation is not None:
+                    original_animation = source_root / animation[0].relative_to(
+                        manifest.source_dir.resolve(strict=True)
+                    )
+                    command.extend((
+                        "--animation-before", blender_workspace_path(original_animation),
+                        "--animation-after", blender_workspace_path(animation[1]),
+                    ))
+                if vtfcmd is not None:
+                    command.extend(("--vtfcmd", str(vtfcmd)))
+                process = run_process(
+                    command,
+                    cwd=self.config.repo_root,
                     log_path=render_log,
+                    cancel_event=self.cancel_event,
                 )
+                if process.returncode != 0:
+                    raise CandidateBuildError(
+                        f"render validation exited with code {process.returncode}",
+                        stage="render",
+                        log_path=render_log,
+                    )
+                rendered_sides = (
+                    ("optimized",)
+                    if reference_bundle is not None
+                    else ("original", "optimized")
+                )
+                if any(
+                    not (blender_render_root / side / "render_manifest.json").is_file()
+                    for side in rendered_sides
+                ):
+                    raise CandidateBuildError(
+                        "render validation produced no fresh manifest in staging",
+                        stage="render",
+                        log_path=render_log,
+                    )
+                for side in rendered_sides:
+                    _copytree_cancellable(
+                        blender_render_root / side,
+                        state_root / side,
+                        self.cancel_event,
+                    )
             required = (
                 state_root / "original" / "render_manifest.json",
                 state_root / "optimized" / "render_manifest.json",
@@ -5501,49 +5523,68 @@ class ProductionAdapters:
                         path, force_extended=use_extended_focus_paths
                     )
 
-                command: list[str] = list(self._blender_command(
-                    "--background", "--python",
-                    focused_blender_path(inputs["renderer"]), "--",
-                ))
-                for source in inputs["before"]:
-                    command.extend(("--before", focused_blender_path(source)))
-                for source in inputs["after"]:
-                    command.extend(("--after", focused_blender_path(source)))
-                pose_arg = ",".join(
-                    "bind:0" if pose == "bind" else f"{pose}:{state_proof.selected_frame}"
-                    for pose in poses
-                )
-                command.extend((
-                    "--out", focused_blender_path(target_root), "--size", "512",
-                    "--passes", "textured,clay", "--poses", pose_arg,
-                    "--region-manifest", focused_blender_path(inputs["region"]),
-                    "--source-root", focused_blender_path(input_root / "reference"),
-                    "--configuration-manifest", focused_blender_path(
-                        inputs["configuration"]
-                    ),
-                    "--texture-cache", focused_blender_path(
-                        self._texture_cache_root(candidate)
-                    ),
-                    "--focus-region", target.region_key,
-                ))
-                for root in self._materials_roots():
-                    command.extend(("--materials-root", str(root)))
-                if inputs["animation_before"] is not None:
-                    command.extend((
-                        "--animation-before", focused_blender_path(
-                            inputs["animation_before"]
-                        ),
-                        "--animation-after", focused_blender_path(
-                            inputs["animation_after"]
-                        ),
+                with tempfile.TemporaryDirectory(
+                    prefix="maximum-focused-render-"
+                ) as temporary:
+                    blender_render_root = Path(temporary).resolve(strict=True)
+                    command: list[str] = list(self._blender_command(
+                        "--background", "--python",
+                        focused_blender_path(inputs["renderer"]), "--",
                     ))
-                process = run_process(
-                    command, cwd=self.config.repo_root,
-                    log_path=workspace / "logs" / f"focused-render-{target.rank:03d}.log",
-                    cancel_event=self.cancel_event,
-                )
-                if process.returncode != 0:
-                    raise CandidateBuildError("focused render failed", stage="focused-render")
+                    for source in inputs["before"]:
+                        command.extend(("--before", focused_blender_path(source)))
+                    for source in inputs["after"]:
+                        command.extend(("--after", focused_blender_path(source)))
+                    pose_arg = ",".join(
+                        "bind:0" if pose == "bind" else f"{pose}:{state_proof.selected_frame}"
+                        for pose in poses
+                    )
+                    command.extend((
+                        "--out", str(blender_render_root), "--size", "512",
+                        "--passes", "textured,clay", "--poses", pose_arg,
+                        "--region-manifest", focused_blender_path(inputs["region"]),
+                        "--source-root", focused_blender_path(input_root / "reference"),
+                        "--configuration-manifest", focused_blender_path(
+                            inputs["configuration"]
+                        ),
+                        "--texture-cache", focused_blender_path(
+                            self._texture_cache_root(candidate)
+                        ),
+                        "--focus-region", target.region_key,
+                    ))
+                    for root in self._materials_roots():
+                        command.extend(("--materials-root", str(root)))
+                    if inputs["animation_before"] is not None:
+                        command.extend((
+                            "--animation-before", focused_blender_path(
+                                inputs["animation_before"]
+                            ),
+                            "--animation-after", focused_blender_path(
+                                inputs["animation_after"]
+                            ),
+                        ))
+                    process = run_process(
+                        command, cwd=self.config.repo_root,
+                        log_path=workspace / "logs" / f"focused-render-{target.rank:03d}.log",
+                        cancel_event=self.cancel_event,
+                    )
+                    if process.returncode != 0:
+                        raise CandidateBuildError(
+                            "focused render failed", stage="focused-render"
+                        )
+                    for side in ("original", "optimized"):
+                        if not (
+                            blender_render_root / side / "render_manifest.json"
+                        ).is_file():
+                            raise CandidateBuildError(
+                                "focused render produced no fresh manifest in staging",
+                                stage="focused-render",
+                            )
+                        _copytree_cancellable(
+                            blender_render_root / side,
+                            target_root / side,
+                            self.cancel_event,
+                        )
                 directories = FocusRenderDirectories(
                     target_root / "original", target_root / "optimized"
                 )

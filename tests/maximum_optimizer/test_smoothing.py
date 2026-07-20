@@ -115,6 +115,28 @@ class SmoothingReconstructionTests(unittest.TestCase):
                 (0,), ("paint",), ((('root', 1.0),),) * 3,
             )
 
+    def test_direct_corner_mapping_uses_unique_nearest_normal_within_equivalence_window(self):
+        original = (
+            'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+            '0 0 0 0 0 0 0\nend\ntriangles\n'
+            'paint\n0 0 0 0 0.0001 0 1 0 0\n0 1 0 0 0.0001 0 1 1 0\n'
+            '0 0 1 0 0.0001 0 1 0 1\n'
+            'paint\n0 0 0 0 0.004 0 0.999992 0 0\n'
+            '0 1 0 0 0.004 0 0.999992 1 0\n'
+            '0 0 1 0 0.004 0 0.999992 0 1\nend\n'
+        )
+        mapping = smd_contract.map_imported_corners_to_smd(
+            original,
+            ((0, 0, 0), (1, 0, 0), (0, 1, 0)),
+            ((0, 1, 2),),
+            ((0, 0, 1),) * 3,
+            ((0, 0), (1, 0), (0, 1)),
+            (0,),
+            ("paint",),
+            ((('root', 1.0),),) * 3,
+        )
+        self.assertEqual(mapping, (0, 1, 2))
+
     @staticmethod
     def _two_triangle_smd() -> str:
         return """version 1
