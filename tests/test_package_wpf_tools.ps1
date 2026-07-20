@@ -18,6 +18,19 @@ try {
     . $packageScript
     Remove-Item Env:SOURCE_ADDON_OPTIMIZER_PACKAGE_TEST_ONLY -ErrorAction SilentlyContinue
 
+    $parallelSources = @(
+        'maximum_optimizer\parallelism.py',
+        'maximum_optimizer\family_scheduler.py',
+        'maximum_optimizer\progress_journal.py',
+        'maximum_optimizer\reference_bundle.py'
+    )
+    $workerSources = @(Get-WorkerSourceFiles | ForEach-Object { $_.FullName })
+    foreach ($relative in $parallelSources) {
+        $expected = (Join-Path $repoRoot $relative)
+        Assert-True ($workerSources -contains $expected) `
+            "Worker freshness must include $relative"
+    }
+
     New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
     $fakeWorker = Join-Path $tempRoot 'SourceAddonOptimizerWorker.exe'
     Set-Content -LiteralPath $fakeWorker -Value 'old worker'

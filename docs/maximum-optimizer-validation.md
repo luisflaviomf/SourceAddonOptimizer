@@ -69,3 +69,17 @@ The corrected evidence runs were:
 
 This is evidence for the tested LVS car families, not a promise that every addon
 will lose 34.92%. Safety remains per-family and fail-closed.
+
+## Balanced parallel validation
+
+Performance validation compares cold `--maximum-jobs 1` and
+`--maximum-jobs 0` runs over identical copies of the same five-family LVS sample.
+The two runs use distinct work, output, candidate-cache, reference-cache, and VTF
+cache directories so neither run inherits evidence produced by the other.
+
+The comparison records elapsed seconds, average process-tree CPU, peak working set,
+peak active families, selected candidate IDs, terminal fidelity decisions, final
+artifact SHA-256 values, and DX80 inventory. Acceptance requires identical selected
+candidates, decisions, and final bytes; no `.dx80.vtx`; and no visual gate weakening.
+Timing and CPU claims are recorded only after a measured frozen-worker run on the
+five named LVS families above.
