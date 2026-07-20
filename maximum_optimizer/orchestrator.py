@@ -66,6 +66,7 @@ from .fidelity_selection import (
     GENERAL_BODY_DETAIL,
     LEGACY_GLOBAL,
     FamilyFidelitySelection,
+    FidelityProfileSet,
     classify_original_family,
     load_fidelity_profile_set,
 )
@@ -1979,6 +1980,975 @@ def _worst(attempts: Sequence[AttemptReport]) -> tuple[dict[str, float], dict[st
     return metrics, scopes
 
 
+@dataclass(frozen=True)
+class _FamilyExecutionResult:
+    index: int
+    outcome: FamilyRunOutcome
+    control_snapshot: CompiledSizeSnapshot | None
+    selected_snapshot: CompiledSizeSnapshot
+    selected_build: CandidateBuild | None
+    recovery_authorization: tuple[FocusedRecoveryAdapterResult, object, CacheKey, Path] | None
+    selection_record: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if type(self.index) is not int or self.index < 0:
+            raise ValueError("family execution index is invalid")
+        if not isinstance(self.outcome, FamilyRunOutcome):
+            raise TypeError("family execution outcome is invalid")
+        if self.control_snapshot is not None and not isinstance(
+            self.control_snapshot, CompiledSizeSnapshot
+        ):
+            raise TypeError("family control snapshot is invalid")
+        if not isinstance(self.selected_snapshot, CompiledSizeSnapshot):
+            raise TypeError("family selected snapshot is invalid")
+        if self.selected_snapshot != self.outcome.selected_size:
+            raise ValueError("family result differs from outcome selection")
+        if self.selected_build is not None and not isinstance(
+            self.selected_build, CandidateBuild
+        ):
+            raise TypeError("family selected build is invalid")
+        object.__setattr__(
+            self, "selection_record", deep_freeze(dict(self.selection_record))
+        )
+
+
+def _execute_family(
+    *,
+    index: int,
+    manifest: FamilyManifest,
+    config: MaximumRunConfig,
+    original: CompiledSizeSnapshot,
+    profile_set: FidelityProfileSet,
+    adapter_set: AdapterSet,
+    structural_validator: StructuralValidator,
+    cache: CandidateCache,
+    versions: Mapping[str, str],
+    dependency: Mapping[str, object],
+    tools: CandidateTools,
+    cancel: threading.Event,
+    emit: Callable[..., None],
+    profile_selector: Callable[[FamilyManifest], FamilyFidelitySelection] | None,
+    total_family_count: int,
+) -> _FamilyExecutionResult:
+    family_index = index
+    outcomes: list[FamilyRunOutcome] = []
+    control_snapshots: list[CompiledSizeSnapshot] = []
+    selected_snapshots: list[CompiledSizeSnapshot] = []
+    selected_builds: dict[str, CandidateBuild] = {}
+    selected_recovery_authorizations: dict[
+        str, tuple[FocusedRecoveryAdapterResult, object, CacheKey, Path]
+    ] = {}
+    selection_records: list[dict[str, Any]] = []
+    terminal_result: _FamilyExecutionResult | None = None
+
+    def finish_result() -> _FamilyExecutionResult:
+        if len(outcomes) != 1 or len(selected_snapshots) != 1:
+            raise RuntimeError("family execution did not produce one terminal outcome")
+        if len(control_snapshots) > 1 or len(selection_records) != 1:
+            raise RuntimeError("family execution produced ambiguous state")
+        outcome = outcomes[0]
+        optimized = outcome.status == "optimized"
+        return _FamilyExecutionResult(
+            index=family_index,
+            outcome=outcome,
+            control_snapshot=(control_snapshots[0] if control_snapshots else None),
+            selected_snapshot=selected_snapshots[0],
+            selected_build=(
+                selected_builds.get(manifest.family_id) if optimized else None
+            ),
+            recovery_authorization=(
+                selected_recovery_authorizations.get(manifest.family_id)
+                if optimized else None
+            ),
+            selection_record=selection_records[0],
+        )
+
+    coordinator_emit = emit
+
+    def emit(kind: str, **payload: Any) -> None:
+        nonlocal terminal_result
+        if kind == "family_finished" and terminal_result is None:
+            terminal_result = finish_result()
+        coordinator_emit(kind, **payload)
+
+    def terminal_result_value() -> _FamilyExecutionResult:
+        if terminal_result is None:
+            raise RuntimeError("family execution returned before its terminal event")
+        return terminal_result
+
+    original_family = _family_snapshot(original, manifest.model_rel)
+    original_without_dx80 = _without_dx80(original_family)
+    attempts: list[AttemptReport] = []
+    emit("family_started", family=manifest.model_rel, index=family_index, total=total_family_count)
+    try:
+        if profile_set.mode == LEGACY_GLOBAL:
+            profile_class = LEGACY_GLOBAL
+            profile = profile_set.profile_for(GENERAL_BODY_DETAIL)
+            reason = "legacy-global-profile"
+            sources: list[dict[str, Any]] = []
+        else:
+            if profile_selector is not None:
+                selection = profile_selector(manifest)
+            else:
+                original_qcs = _matching_qcs(
+                    manifest.source_dir, manifest.model_rel, optimized=False
+                )
+                if len(original_qcs) != 1:
+                    raise ValueError(
+                        "typed fidelity selection requires exactly one original QC"
+                    )
+                selection = classify_original_family(
+                    parse_qc_graph(original_qcs[0], manifest.source_dir)
+                )
+            if not isinstance(selection, FamilyFidelitySelection):
+                raise TypeError("profile selector returned an invalid selection")
+            profile_class = selection.profile_class
+            profile = profile_set.profile_for(profile_class)
+            reason = selection.reason
+            sources = [asdict(source) for source in selection.sources]
+        focused_policy = profile_set.focused_policy
+        focused_profile = (
+            profile_set.focused_profile_for(profile_class)
+            if focused_policy is not None
+            else None
+        )
+        selection_records.append({
+            "family_id": manifest.family_id,
+            "model_rel": manifest.model_rel,
+            "status": "selected",
+            "profile_class": profile_class,
+            "reason": reason,
+            "version": profile.version,
+            "corpus_hash": profile.corpus_hash,
+            "sources": sources,
+        })
+    except Exception as exc:
+        selection_records.append({
+            "family_id": manifest.family_id,
+            "model_rel": manifest.model_rel,
+            "status": "failed",
+            "profile_class": None,
+            "reason": f"classification-error:{type(exc).__name__}",
+            "version": None,
+            "corpus_hash": profile_set.corpus_hash,
+            "sources": [],
+        })
+        outcome = FamilyRunOutcome(
+            manifest.family_id, manifest.model_rel, "failed", None,
+            original_family, None, original_without_dx80,
+            compare_snapshots(original_family, original_family, original_without_dx80),
+            tuple(attempts),
+            f"fidelity profile selection failed: {exc}", {}, {},
+            {"source": "original-preserved"},
+        )
+        outcomes.append(outcome)
+        selected_snapshots.append(original_without_dx80)
+        emit(
+            "family_finished",
+            family=manifest.model_rel,
+            status="failed",
+            reason=outcome.reason,
+        )
+        return terminal_result_value()
+    control_spec = CandidateSpec(
+        "roundtrip-control",
+        "blender",
+        1.0,
+        0.0,
+        "blender-adaptive-v1",
+        strategy="blender-adaptive-v1",
+        update_vertices=True,
+        transfer="blender-native-v1",
+    )
+    control_build: CandidateBuild | None = None
+    control_size: CompiledSizeSnapshot | None = None
+    control_valid = False
+
+    if cancel.is_set():
+        outcome = FamilyRunOutcome(
+            manifest.family_id, manifest.model_rel, "cancelled", None,
+            original_family, None, original_family, {}, tuple(attempts),
+            "run cancelled before control compile", {}, {}, {"source": "original-preserved"},
+        )
+        outcomes.append(outcome)
+        selected_snapshots.append(original_family)
+        emit("family_finished", family=manifest.model_rel, status="cancelled")
+        return terminal_result_value()
+
+    emit("candidate_started", family=manifest.model_rel, candidate=control_spec.candidate_id, engine="blender")
+    emit("stage", family=manifest.model_rel, candidate=control_spec.candidate_id, stage="generate_compile")
+    try:
+        control_workspace = config.work_dir / "families" / manifest.family_id / control_spec.candidate_id
+        if control_workspace.exists():
+            shutil.rmtree(control_workspace)
+        control_build = adapter_set.build(manifest, control_spec, control_workspace, tools, cancel)
+        if cancel.is_set():
+            raise ProcessCancelledError("cancelled after control compile")
+        control_size = _family_snapshot(scan_compiled_models(control_build.compiled_models_dir), manifest.model_rel)
+        structural = structural_validator(manifest, control_build)
+        emit("stage", family=manifest.model_rel, candidate=control_spec.candidate_id, stage="structural")
+        control_visual = (
+            adapter_set.visual(manifest, control_build, control_build, profile)
+            if structural.passed
+            else ValidationResult(False, worst_scope=structural.worst_scope)
+        )
+        emit("stage", family=manifest.model_rel, candidate=control_spec.candidate_id, stage="visual")
+        attempts.append(AttemptReport(
+            control_spec.candidate_id,
+            "blender",
+            "control" if structural.passed and control_visual.passed else "control_rejected",
+            control_size,
+            structural,
+            control_visual,
+            False,
+            "",
+            control_build.provenance,
+        ))
+        control_snapshots.append(control_size)
+        control_valid = structural.passed and control_visual.passed
+        emit("candidate_finished", family=manifest.model_rel, candidate=control_spec.candidate_id, status="control" if control_valid else "control_rejected", compiled_bytes=control_size.total_bytes)
+    except ProcessCancelledError as exc:
+        cancel.set()
+        attempts.append(AttemptReport(control_spec.candidate_id, "blender", "cancelled", None, None, None, False, str(exc), {}))
+        emit("candidate_finished", family=manifest.model_rel, candidate=control_spec.candidate_id, status="cancelled")
+    except Exception as exc:
+        attempts.append(AttemptReport(control_spec.candidate_id, "blender", "compile_failed", None, None, None, False, str(exc), {}))
+        emit("candidate_finished", family=manifest.model_rel, candidate=control_spec.candidate_id, status="compile_failed", stage=getattr(exc, "stage", "orchestrator"))
+
+    if control_build is None or control_size is None or not control_valid:
+        status = "cancelled" if cancel.is_set() else ("failed" if control_build is None else "preserved")
+        reason = (
+            "run cancelled during control compile"
+            if cancel.is_set()
+            else (
+                "mandatory control compile failed"
+                if control_build is None
+                else "control roundtrip failed structural or visual compatibility gates"
+            )
+        )
+        retained = original_family if cancel.is_set() else original_without_dx80
+        control_savings = compare_snapshots(
+            original_family,
+            control_size if control_size is not None else original_family,
+            retained,
+        )
+        outcome = FamilyRunOutcome(
+            manifest.family_id, manifest.model_rel, status, None,
+            original_family, control_size, retained, control_savings, tuple(attempts), reason,
+            *_worst(attempts), {"source": "original-preserved"},
+        )
+        outcomes.append(outcome)
+        selected_snapshots.append(retained)
+        emit("family_finished", family=manifest.model_rel, status=status, reason=reason)
+        return terminal_result_value()
+
+    schedule_method = getattr(adapter_set, "candidate_schedule", None)
+    schedule = tuple(schedule_method(manifest)) if callable(schedule_method) else _default_schedule()
+    if (
+        not schedule
+        or len({item.candidate_id for item in schedule}) != len(schedule)
+        or any(
+            not isinstance(item, CandidateSpec)
+            or type(item.engine) is not str
+            or item.engine not in _ENGINE_NAMES
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", item.candidate_id) is None
+            or not math.isfinite(item.target_ratio)
+            or not 0 < item.target_ratio <= 1
+            for item in schedule
+        )
+    ):
+        reason = "candidate schedule is empty, duplicated, or invalid"
+        outcome = FamilyRunOutcome(
+            manifest.family_id,
+            manifest.model_rel,
+            "failed",
+            None,
+            original_family,
+            control_size,
+            original_without_dx80,
+            compare_snapshots(original_family, control_size, original_without_dx80),
+            tuple(attempts),
+            reason,
+            *_worst(attempts),
+            {
+                item.relative_path: "original-preserved"
+                for item in original_without_dx80.artifacts
+            },
+        )
+        outcomes.append(outcome)
+        selected_snapshots.append(original_without_dx80)
+        emit(
+            "family_finished",
+            family=manifest.model_rel,
+            status="failed",
+            reason=reason,
+            best_bytes=original_without_dx80.total_bytes,
+            reduction_percent=(
+                (original_family.total_bytes - original_without_dx80.total_bytes)
+                / original_family.total_bytes * 100
+                if original_family.total_bytes else 0.0
+            ),
+        )
+        return terminal_result_value()
+    evaluations: list[CandidateEvaluation] = []
+    candidate_builds: dict[str, CandidateBuild] = {}
+    recovery_authorizations: dict[
+        str, tuple[FocusedRecoveryAdapterResult, object, CacheKey, Path]
+    ] = {}
+    retained_candidates: dict[
+        str, tuple[CandidateBuild, CandidateEvaluation, RecoverySourceSnapshot]
+    ] = {}
+    attempted_ids: set[str] = set()
+    last_best: str | None = None
+    recovery_base: tuple[CandidateBuild, CandidateEvaluation, RecoverySourceSnapshot] | None = None
+    while not cancel.is_set():
+        if (
+            recovery_base is not None and focused_policy is not None
+            and len(attempted_ids) >= max(
+                0, config.budget.max_candidates - focused_policy.max_recovery_rounds
+            )
+        ):
+            break
+        spec = choose_next(
+            evaluations,
+            config.budget,
+            initial=schedule,
+            attempted_ids=attempted_ids,
+            recovery_mode=(
+                "external-byte-exact"
+                if focused_policy is not None
+                else "legacy-regional"
+            ),
+        )
+        if spec is None:
+            break
+        attempted_ids.add(spec.candidate_id)
+        emit("candidate_started", family=manifest.model_rel, candidate=spec.candidate_id, engine=spec.engine)
+        emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="generate_compile")
+        workspace = config.work_dir / "families" / manifest.family_id / spec.candidate_id
+        key = CacheKey.build(manifest.input_hash, spec.cache_payload(), versions, profile.version)
+        cache_hit = False
+        try:
+            cache_entry = cache.lookup(key) if config.resume else None
+            if cache_entry is not None and not _verify_cache_entry(cache_entry, cancel):
+                cache.invalidate(key)
+                cache_entry = None
+            if cache_entry is not None:
+                try:
+                    _restore_cache_payload(cache_entry, workspace, cancel)
+                    build = _load_cached_build(
+                        cache_entry,
+                        spec,
+                        key=key,
+                        manifest=manifest,
+                        dependency_digest=str(dependency["digest"]),
+                        materialized_workspace=workspace,
+                        cancel_event=cancel,
+                        optimizer_contract_digest=(
+                            optimizer_contract_sha256(spec)
+                            if focused_policy is not None else None
+                        ),
+                        whole_profile_digest=(
+                            _profile_contract_sha256(
+                                profile, versions["profile_sha256"]
+                            ) if focused_policy is not None else None
+                        ),
+                        focused_profile_digest=(
+                            _profile_contract_sha256(
+                                focused_profile, versions["profile_sha256"]
+                            ) if focused_profile is not None else None
+                        ),
+                    )
+                except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                    cache.invalidate(key)
+                    cache_entry = None
+                else:
+                    cache_hit = True
+                    emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="cache_hit")
+                    if cancel.is_set():
+                        raise ProcessCancelledError("cancelled after cache restore")
+            if cache_entry is None:
+                if workspace.exists():
+                    shutil.rmtree(workspace)
+                build = adapter_set.build(manifest, spec, workspace, tools, cancel)
+                if cancel.is_set():
+                    raise ProcessCancelledError("cancelled after candidate compile")
+            emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="compiled_size")
+            # Cached diagnostics never authorize a candidate: both hard gates
+            # are evaluated from the sealed artifacts and current materials.
+            structural = structural_validator(manifest, build)
+            emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="structural")
+            if cancel.is_set():
+                raise ProcessCancelledError("cancelled after structural validation")
+            bind_cache_digest = getattr(adapter_set, "bind_candidate_cache_digest", None)
+            if focused_policy is not None and callable(bind_cache_digest):
+                bind_cache_digest(build, key.digest)
+            whole_visual = (
+                adapter_set.visual(
+                    manifest, control_build, build, profile,
+                    focused_profile=focused_profile,
+                )
+                if structural.passed and focused_policy is not None
+                else (
+                    adapter_set.visual(manifest, control_build, build, profile)
+                    if structural.passed
+                    else ValidationResult(False, worst_scope=structural.worst_scope)
+                )
+            )
+            emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="visual")
+            if cancel.is_set():
+                raise ProcessCancelledError("cancelled after visual validation")
+            focused_by_region: Mapping[str, FocusRegionResult] = {}
+            visual = whole_visual
+            if focused_policy is not None and structural.passed and whole_visual.passed:
+                focused_method = getattr(adapter_set, "focused_visual", None)
+                if not callable(focused_method):
+                    raise TypeError("schema-3 adapter does not implement focused_visual")
+                focused_gate = focused_method(
+                    manifest, control_build, build, profile,
+                    focused_profile, focused_policy,
+                )
+                if cancel.is_set():
+                    raise ProcessCancelledError("cancelled after focused visual validation")
+                visual = _aggregate_focused_gate(whole_visual, focused_gate)
+                focused_by_region = focused_gate.regions
+                emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="focused_visual")
+            if focused_policy is not None:
+                if focused_profile is None:
+                    raise TypeError("schema-3 focused profile is unavailable")
+                build = _attach_recovery_source_snapshot(
+                    build, manifest, key=key, whole_profile=profile,
+                    focused_profile=focused_profile,
+                    profile_file_sha256=versions["profile_sha256"],
+                    dependency_digest=str(dependency["digest"]),
+                    focused_by_region=focused_by_region,
+                    cancel_event=cancel,
+                )
+            if not cache_hit and (focused_policy is None or visual.passed):
+                _check_cancelled(cancel, "cancelled before candidate cache record")
+                _store_cache_record(
+                    workspace,
+                    build,
+                    structural,
+                    visual,
+                    key=key,
+                    manifest=manifest,
+                    dependency_digest=str(dependency["digest"]),
+                )
+                _check_cancelled(cancel, "cancelled before candidate cache store")
+                stored = cache.store(
+                    key,
+                    workspace,
+                    {"candidate": spec.candidate_id, "profile": profile.version},
+                    copy_function=lambda source, destination: _copy_file_cancellable(
+                        source, destination, cancel
+                    ),
+                )
+                _seal_cache_entry(stored, cancel)
+            size = _family_snapshot(scan_compiled_models(build.compiled_models_dir), manifest.model_rel)
+            evaluation = CandidateEvaluation(
+                spec, size, structural, visual, build.compiled_models_dir,
+                whole_visual, focused_by_region,
+            )
+            evaluations.append(evaluation)
+            candidate_builds[spec.candidate_id] = build
+            if focused_policy is not None:
+                if build.source_snapshot is None:
+                    raise ValueError("schema-3 completed build has no recovery snapshot")
+                if len(retained_candidates) >= config.budget.max_candidates:
+                    raise ValueError("schema-3 retained candidate registry exceeds budget")
+                retained_candidates[spec.candidate_id] = (
+                    build, evaluation, build.source_snapshot,
+                )
+                if (
+                    structural.passed and whole_visual.passed
+                    and focused_by_region and not visual.passed
+                ):
+                    proposed_base = retained_candidates[spec.candidate_id]
+                    if recovery_base is None or (
+                        evaluation.size.total_bytes, spec.candidate_id
+                    ) < (
+                        recovery_base[1].size.total_bytes,
+                        recovery_base[1].spec.candidate_id,
+                    ):
+                        recovery_base = proposed_base
+            status = "passed" if evaluation.passed else "rejected"
+            attempts.append(AttemptReport(
+                spec.candidate_id, spec.engine, status, size, structural, visual,
+                cache_hit, "", build.provenance,
+            ))
+            emit("candidate_finished", family=manifest.model_rel, candidate=spec.candidate_id, status=status, compiled_bytes=size.total_bytes, cache_hit=cache_hit)
+            best = select_winner(evaluations)
+            if best is not None and best.spec.candidate_id != last_best:
+                last_best = best.spec.candidate_id
+                selected_builds[manifest.family_id] = candidate_builds[
+                    best.spec.candidate_id
+                ]
+                emit("best_updated", family=manifest.model_rel, candidate=best.spec.candidate_id, compiled_bytes=best.size.total_bytes)
+        except ProcessCancelledError as exc:
+            cancel.set()
+            attempts.append(AttemptReport(spec.candidate_id, spec.engine, "cancelled", None, None, None, cache_hit, str(exc), {}))
+            emit("candidate_finished", family=manifest.model_rel, candidate=spec.candidate_id, status="cancelled")
+        except Exception as exc:
+            attempts.append(AttemptReport(spec.candidate_id, spec.engine, "compile_failed", None, None, None, cache_hit, str(exc), {}))
+            emit("candidate_finished", family=manifest.model_rel, candidate=spec.candidate_id, status="compile_failed", stage=getattr(exc, "stage", "orchestrator"))
+
+    recover_method = getattr(adapter_set, "recover_focused_candidate", None)
+    recovery_error_reason: str | None = None
+    if (
+        focused_policy is not None and recovery_base is not None
+        and not callable(recover_method)
+    ):
+        recovery_error_reason = (
+            "schema-3 adapter does not implement byte-exact focused recovery"
+        )
+        attempts.append(AttemptReport(
+            recovery_base[0].spec.candidate_id,
+            recovery_base[0].spec.engine,
+            "compile_failed", None, None, None, False,
+            recovery_error_reason, {},
+        ))
+    if (
+        focused_policy is not None
+        and focused_profile is not None
+        and recovery_base is not None
+        and callable(recover_method)
+        and not cancel.is_set()
+    ):
+        base_build, base_evaluation, base_snapshot = recovery_base
+        selected_targets = tuple(sorted(
+            (item.target for item in base_evaluation.focused_by_region.values()),
+            key=lambda item: item.rank,
+        ))
+        if selected_targets and tuple(item.rank for item in selected_targets) == tuple(range(len(selected_targets))):
+            focus_selection = FocusSelection(
+                selected_targets[0].selector_input_sha256,
+                selected_targets,
+                selected_targets,
+            )
+            snapshots_by_candidate = {
+                candidate_id: entry[2]
+                for candidate_id, entry in retained_candidates.items()
+            }
+            original_snapshot: RecoverySourceSnapshot | None = None
+            current_recipe = None
+            failed_for_selection = base_evaluation
+            attempted_overlay_hashes: set[str] = set()
+            recovery_records: list[FocusedRecoveryEvidence] = []
+            for round_index in range(focused_policy.max_recovery_rounds):
+                # Availability is checked before original/donor snapshot I/O.
+                if len(attempted_ids) >= config.budget.max_candidates:
+                    break
+                recovery_evidence_path: Path | None = None
+                recovery_cache_owned = False
+                recovery_cache_sealed = False
+                workspace: Path | None = None
+                recovery_key: CacheKey | None = None
+                try:
+                    if original_snapshot is None:
+                        original_snapshot = _build_original_recovery_snapshot(
+                            manifest, base_snapshot, cancel
+                        )
+                    overlays = select_recovery_overlays(
+                        failed_for_selection, focus_selection, evaluations,
+                        snapshots_by_candidate, original_snapshot, current_recipe,
+                        attempted_overlay_hashes, round_index,
+                    )
+                    if not overlays:
+                        break
+                    recipe = focused_recovery_recipe(
+                        base_build.spec, base_snapshot, overlays,
+                        round_index=round_index,
+                        selector_version=focused_policy.selector,
+                    )
+                    recovery_spec = recovery_candidate_spec(base_build.spec, recipe)
+                    if recovery_spec.candidate_id in attempted_ids:
+                        raise ValueError("focused recovery repeated a candidate identity")
+                    recovery_key = CacheKey.build(
+                        manifest.input_hash, recovery_spec.cache_payload(), versions,
+                        profile.version,
+                    )
+                except ProcessCancelledError:
+                    cancel.set()
+                    break
+                except Exception as exc:
+                    attempts.append(AttemptReport(
+                        f"recovery-plan-{round_index}", base_build.spec.engine,
+                        "compile_failed", None, None, None, False, str(exc), {},
+                    ))
+                    break
+                # Reserve both shared counters before reopening a snapshot,
+                # mutating a workspace, or launching a process.
+                attempted_ids.add(recovery_spec.candidate_id)
+                previous = {
+                    item.source_identity: item
+                    for item in (() if current_recipe is None else current_recipe.overlays)
+                }
+                for overlay in overlays:
+                    if previous.get(overlay.source_identity) != overlay:
+                        attempted_overlay_hashes.add(hashlib.sha256(
+                            canonical_json(source_overlay_payload(overlay)).encode("utf-8")
+                        ).hexdigest())
+                current_recipe = recipe
+                workspace = (
+                    config.work_dir / "families" / manifest.family_id
+                    / recovery_spec.candidate_id
+                )
+                emit(
+                    "candidate_started", family=manifest.model_rel,
+                    candidate=recovery_spec.candidate_id, engine=recovery_spec.engine,
+                )
+                try:
+                    result = recover_method(
+                        manifest=manifest,
+                        control_build=control_build,
+                        base_build=base_build,
+                        base_evaluation=base_evaluation,
+                        recipe=recipe,
+                        spec=recovery_spec,
+                        cache_key=recovery_key,
+                        snapshots_by_sha256={
+                            snapshot.snapshot_sha256: snapshot
+                            for snapshot in (*snapshots_by_candidate.values(), original_snapshot)
+                        },
+                        workspace=workspace,
+                        whole_profile=profile,
+                        focused_profile=focused_profile,
+                        policy=focused_policy,
+                        structural_validator=structural_validator,
+                        tools=tools,
+                        prior_recoveries=tuple(recovery_records),
+                        cancel_event=cancel,
+                    )
+                    _check_cancelled(
+                        cancel, "cancelled after focused recovery adapter"
+                    )
+                    if not isinstance(result, FocusedRecoveryAdapterResult):
+                        raise TypeError("focused recovery adapter returned an invalid result")
+                    if result.evidence.round_index != round_index or result.evidence.recipe != recipe:
+                        raise ValueError("focused recovery adapter evidence differs from reserved recipe")
+                    recovery_records.append(result.evidence)
+                    if result.evidence.terminal_status != "authorized":
+                        if result.evaluation is not None:
+                            failed_for_selection = result.evaluation
+                        attempts.append(AttemptReport(
+                            recovery_spec.candidate_id, recovery_spec.engine,
+                            "rejected", None, None, None, False,
+                            result.evidence.terminal_status,
+                            {"recovery_evidence_sha256": result.evidence.evidence_sha256},
+                        ))
+                        emit(
+                            "candidate_finished", family=manifest.model_rel,
+                            candidate=recovery_spec.candidate_id, status="rejected",
+                            stage=result.evidence.terminal_status,
+                        )
+                        continue
+                    build = result.build
+                    evaluation = result.evaluation
+                    if (
+                        build.spec != recovery_spec
+                        or build.source_snapshot.candidate_cache_digest != recovery_key.digest
+                        or evaluation.spec != recovery_spec
+                        or result.authorization["candidate_id"] != recovery_spec.candidate_id
+                    ):
+                        raise ValueError("authorized focused recovery identity mismatch")
+                    validated_authorization = _validate_authorized_recovery_boundary(
+                        result=result, manifest=manifest, recipe=recipe,
+                        cache_key=recovery_key, cancel_event=cancel,
+                    )
+                    _check_cancelled(
+                        cancel, "cancelled before focused recovery evidence publication"
+                    )
+                    recovery_evidence_path = (
+                        build.workspace / "logs/focused-region-gate.json"
+                    )
+                    _safe_workspace_atomic_json(
+                        build.workspace,
+                        recovery_evidence_path,
+                        validated_authorization,
+                        "focused recovery authoritative evidence",
+                    )
+                    _check_cancelled(
+                        cancel, "cancelled before focused recovery cache record"
+                    )
+                    _store_cache_record(
+                        build.workspace, build, evaluation.structural, evaluation.visual,
+                        key=recovery_key, manifest=manifest,
+                        dependency_digest=str(dependency["digest"]),
+                    )
+                    _check_cancelled(
+                        cancel, "cancelled before focused recovery cache store"
+                    )
+                    validated_authorization = _validate_authorized_recovery_boundary(
+                        result=result, manifest=manifest, recipe=recipe,
+                        cache_key=recovery_key, cancel_event=cancel,
+                    )
+                    _safe_workspace_atomic_json(
+                        build.workspace, recovery_evidence_path,
+                        validated_authorization,
+                        "focused recovery authoritative evidence",
+                    )
+                    cache_state: dict[str, object] = {}
+
+                    def validate_private_entry(
+                        entry: Path, *, publish_integrity: bool,
+                    ) -> None:
+                        cached_workspace = entry / "payload"
+                        cached_build = _load_cached_build(
+                            entry, recovery_spec, key=recovery_key,
+                            manifest=manifest,
+                            dependency_digest=str(dependency["digest"]),
+                            materialized_workspace=cached_workspace,
+                            cancel_event=cancel,
+                            optimizer_contract_digest=recipe.optimizer_contract_sha256,
+                            whole_profile_digest=recipe.whole_profile_sha256,
+                            focused_profile_digest=recipe.focused_profile_sha256,
+                        )
+                        cached_authorization = json.loads(
+                            _read_regular_no_follow(
+                                cached_workspace / "logs/focused-region-gate.json",
+                                cancel, contained_root=cached_workspace,
+                            ).decode("utf-8")
+                        )
+                        cached_evaluation = replace(
+                            evaluation,
+                            size=_family_snapshot(
+                                scan_compiled_models(cached_build.compiled_models_dir),
+                                manifest.model_rel,
+                            ),
+                            compiled_models_dir=cached_build.compiled_models_dir,
+                        )
+                        cached_result = replace(
+                            result, build=cached_build,
+                            evaluation=cached_evaluation,
+                            authorization=cached_authorization,
+                        )
+                        def authorize_current_entry() -> None:
+                            _validate_authorized_recovery_boundary(
+                                result=cached_result, manifest=manifest,
+                                recipe=recipe, cache_key=recovery_key,
+                                cancel_event=cancel,
+                            )
+
+                        if publish_integrity:
+                            _seal_then_validate_private_recovery_entry(
+                                entry, authorize_current_entry
+                            )
+                        else:
+                            authorize_current_entry()
+                            if not _verify_cache_entry(entry, None):
+                                raise ValueError(
+                                    "focused recovery cache integrity is invalid"
+                                )
+                        cache_state.update({
+                            "result": cached_result, "build": cached_build,
+                            "evaluation": cached_evaluation,
+                        })
+
+                    stored, recovery_cache_owned = cache.store_validated(
+                        recovery_key, build.workspace,
+                        {"candidate": recovery_spec.candidate_id, "profile": profile.version},
+                        finalize_staging=lambda staging: validate_private_entry(
+                            staging, publish_integrity=True
+                        ),
+                        validate_existing=lambda entry: validate_private_entry(
+                            entry, publish_integrity=False
+                        ),
+                        copy_function=lambda source, destination: _copy_file_cancellable(
+                            source, destination, cancel
+                        ),
+                        cancel_check=lambda: _check_cancelled(
+                            cancel, "cancelled waiting for recovery cache lock"
+                        ),
+                        is_cancellation=lambda exc: isinstance(
+                            exc, ProcessCancelledError
+                        ),
+                    )
+                    recovery_cache_sealed = True
+                    # The atomic rename invalidates paths rooted in private
+                    # staging. Reopen and reauthorize only from final/payload.
+                    validate_private_entry(stored, publish_integrity=False)
+                    cached_result = cache_state["result"]
+                    cached_build = cache_state["build"]
+                    cached_evaluation = cache_state["evaluation"]
+                    _check_cancelled(
+                        cancel, "cancelled before focused recovery promotion"
+                    )
+                    if not _verify_recovery_cache_entry(
+                        stored, recovery_key, cancel
+                    ):
+                        raise ValueError("sealed focused recovery cache changed")
+                    _validate_authorized_recovery_boundary(
+                        result=cached_result, manifest=manifest, recipe=recipe,
+                        cache_key=recovery_key, cancel_event=cancel,
+                    )
+                    evaluations.append(cached_evaluation)
+                    candidate_builds[recovery_spec.candidate_id] = cached_build
+                    recovery_authorizations[recovery_spec.candidate_id] = (
+                        cached_result, recipe, recovery_key, stored,
+                    )
+                    attempts.append(AttemptReport(
+                        recovery_spec.candidate_id, recovery_spec.engine, "passed",
+                        cached_evaluation.size, cached_evaluation.structural,
+                        cached_evaluation.visual, False, "", cached_build.provenance,
+                    ))
+                    emit(
+                        "candidate_finished", family=manifest.model_rel,
+                        candidate=recovery_spec.candidate_id, status="passed",
+                        compiled_bytes=cached_evaluation.size.total_bytes, cache_hit=False,
+                    )
+                    break
+                except ProcessCancelledError as exc:
+                    if recovery_cache_owned and not recovery_cache_sealed:
+                        try:
+                            cache.invalidate(recovery_key)
+                        except Exception:
+                            pass
+                    if recovery_evidence_path is not None and workspace is not None:
+                        try:
+                            _safe_workspace_leaf(
+                                workspace,
+                                recovery_evidence_path,
+                                "cancelled focused recovery evidence",
+                            )
+                            if (
+                                os.path.lexists(recovery_evidence_path)
+                                and recovery_evidence_path.is_file()
+                                and not _is_reparse(recovery_evidence_path)
+                            ):
+                                recovery_evidence_path.unlink()
+                        except (OSError, ValueError):
+                            pass
+                    cancel.set()
+                    attempts.append(AttemptReport(
+                        recovery_spec.candidate_id, recovery_spec.engine,
+                        "cancelled", None, None, None, False, str(exc), {},
+                    ))
+                    emit(
+                        "candidate_finished", family=manifest.model_rel,
+                        candidate=recovery_spec.candidate_id, status="cancelled",
+                    )
+                    break
+                except Exception as exc:
+                    if recovery_cache_owned and not recovery_cache_sealed:
+                        try:
+                            cache.invalidate(recovery_key)
+                        except Exception:
+                            pass
+                    if recovery_evidence_path is not None and workspace is not None:
+                        try:
+                            _safe_workspace_leaf(
+                                workspace,
+                                recovery_evidence_path,
+                                "failed focused recovery evidence",
+                            )
+                            if (
+                                os.path.lexists(recovery_evidence_path)
+                                and recovery_evidence_path.is_file()
+                                and not _is_reparse(recovery_evidence_path)
+                            ):
+                                recovery_evidence_path.unlink()
+                        except (OSError, ValueError):
+                            pass
+                    attempts.append(AttemptReport(
+                        recovery_spec.candidate_id, recovery_spec.engine,
+                        "compile_failed", None, None, None, False, str(exc), {},
+                    ))
+                    emit(
+                        "candidate_finished", family=manifest.model_rel,
+                        candidate=recovery_spec.candidate_id,
+                        status="compile_failed",
+                        stage=getattr(exc, "stage", "focused-recovery"),
+                    )
+                    break
+
+    winner = None if recovery_error_reason is not None else select_winner(evaluations)
+    no_positive_saving = (
+        winner is not None
+        and _without_dx80(winner.size).total_bytes
+        >= original_without_dx80.total_bytes
+    )
+    if no_positive_saving:
+        winner = None
+    if cancel.is_set():
+        status, reason, selected = "cancelled", "run cancelled; original family retained", original_family
+        selected_id = None
+        provenance = {"source": "original-preserved"}
+    elif recovery_error_reason is not None:
+        status, reason, selected = "failed", recovery_error_reason, original_without_dx80
+        selected_id = None
+        provenance = {"source": "original-preserved"}
+    elif winner is None:
+        status, reason, selected = (
+            "preserved",
+            (
+                "no candidate produced a strictly positive compiled saving"
+                if no_positive_saving
+                else "no candidate passed all hard gates"
+            ),
+            original_without_dx80,
+        )
+        selected_id = None
+        provenance = {"source": "original-preserved"}
+    else:
+        status, reason, selected = (
+            "optimized",
+            "smallest passing compiled candidate selected",
+            _without_dx80(winner.size),
+        )
+        selected_id = winner.spec.candidate_id
+        selected_builds[manifest.family_id] = candidate_builds[selected_id]
+        if selected_id in recovery_authorizations:
+            selected_recovery_authorizations[manifest.family_id] = (
+                recovery_authorizations[selected_id]
+            )
+        chosen_attempt = next(item for item in attempts if item.candidate_id == selected_id)
+        provenance = dict(chosen_attempt.provenance)
+    selected_snapshots.append(selected)
+    savings = compare_snapshots(original_family, control_size, selected)
+    approved_attempts = (
+        [next(item for item in attempts if item.candidate_id == selected_id)]
+        if selected_id is not None
+        else [item for item in attempts if item.status in {"control", "control_rejected"}]
+    )
+    metrics, scopes = _worst(approved_attempts)
+    margins: dict[str, float] = {}
+    if selected_id is not None:
+        selected_attempt = approved_attempts[0]
+        if selected_attempt.visual is not None:
+            margins = {
+                name: float(limit) - float(selected_attempt.visual.metrics.get(name, 0.0))
+                for name, limit in profile.limits.items()
+            }
+    outcome = FamilyRunOutcome(
+        manifest.family_id, manifest.model_rel, status, selected_id,
+        original_family, control_size, selected, savings, tuple(attempts), reason,
+        metrics, scopes, provenance, margins,
+    )
+    outcomes.append(outcome)
+    emit(
+        "family_finished",
+        family=manifest.model_rel,
+        status=status,
+        selected=selected_id,
+        reason=reason,
+        best_bytes=selected.total_bytes,
+        reduction_percent=(
+            (original_family.total_bytes - selected.total_bytes)
+            / original_family.total_bytes
+            * 100
+            if original_family.total_bytes
+            else 0.0
+        ),
+    )
+    clear_recovery_artifacts = getattr(
+        adapter_set, "clear_recovery_artifacts", None
+    )
+    if callable(clear_recovery_artifacts):
+        clear_recovery_artifacts()
+    return terminal_result_value()
+
+
 def run_maximum_addon(
     config: MaximumRunConfig,
     cancel_event: threading.Event | None = None,
@@ -2220,884 +3190,41 @@ def run_maximum_addon(
     total_family_count = len(manifests) + len(missing_model_rels)
     emit("run_started", family_count=total_family_count)
 
+    def commit_family_result(result: _FamilyExecutionResult) -> None:
+        outcomes.append(result.outcome)
+        if result.control_snapshot is not None:
+            control_snapshots.append(result.control_snapshot)
+        selected_snapshots.append(result.selected_snapshot)
+        if result.selected_build is not None:
+            selected_builds[result.outcome.family_id] = result.selected_build
+        if result.recovery_authorization is not None:
+            selected_recovery_authorizations[result.outcome.family_id] = (
+                result.recovery_authorization
+            )
+
     for family_index, manifest in enumerate(manifests):
-        original_family = _family_snapshot(original, manifest.model_rel)
-        original_without_dx80 = _without_dx80(original_family)
-        attempts: list[AttemptReport] = []
-        emit("family_started", family=manifest.model_rel, index=family_index, total=total_family_count)
-        try:
-            if profile_set.mode == LEGACY_GLOBAL:
-                profile_class = LEGACY_GLOBAL
-                profile = profile_set.profile_for(GENERAL_BODY_DETAIL)
-                reason = "legacy-global-profile"
-                sources: list[dict[str, Any]] = []
-            else:
-                if profile_selector is not None:
-                    selection = profile_selector(manifest)
-                else:
-                    original_qcs = _matching_qcs(
-                        manifest.source_dir, manifest.model_rel, optimized=False
-                    )
-                    if len(original_qcs) != 1:
-                        raise ValueError(
-                            "typed fidelity selection requires exactly one original QC"
-                        )
-                    selection = classify_original_family(
-                        parse_qc_graph(original_qcs[0], manifest.source_dir)
-                    )
-                if not isinstance(selection, FamilyFidelitySelection):
-                    raise TypeError("profile selector returned an invalid selection")
-                profile_class = selection.profile_class
-                profile = profile_set.profile_for(profile_class)
-                reason = selection.reason
-                sources = [asdict(source) for source in selection.sources]
-            focused_policy = profile_set.focused_policy
-            focused_profile = (
-                profile_set.focused_profile_for(profile_class)
-                if focused_policy is not None
-                else None
-            )
-            selection_records.append({
-                "family_id": manifest.family_id,
-                "model_rel": manifest.model_rel,
-                "status": "selected",
-                "profile_class": profile_class,
-                "reason": reason,
-                "version": profile.version,
-                "corpus_hash": profile.corpus_hash,
-                "sources": sources,
-            })
-            write_selection_audit()
-        except Exception as exc:
-            selection_records.append({
-                "family_id": manifest.family_id,
-                "model_rel": manifest.model_rel,
-                "status": "failed",
-                "profile_class": None,
-                "reason": f"classification-error:{type(exc).__name__}",
-                "version": None,
-                "corpus_hash": profile_set.corpus_hash,
-                "sources": [],
-            })
-            write_selection_audit()
-            outcome = FamilyRunOutcome(
-                manifest.family_id, manifest.model_rel, "failed", None,
-                original_family, None, original_without_dx80,
-                compare_snapshots(original_family, original_family, original_without_dx80),
-                tuple(attempts),
-                f"fidelity profile selection failed: {exc}", {}, {},
-                {"source": "original-preserved"},
-            )
-            outcomes.append(outcome)
-            selected_snapshots.append(original_without_dx80)
-            emit(
-                "family_finished",
-                family=manifest.model_rel,
-                status="failed",
-                reason=outcome.reason,
-            )
-            continue
-        control_spec = CandidateSpec(
-            "roundtrip-control",
-            "blender",
-            1.0,
-            0.0,
-            "blender-adaptive-v1",
-            strategy="blender-adaptive-v1",
-            update_vertices=True,
-            transfer="blender-native-v1",
+        result = _execute_family(
+            index=family_index,
+            manifest=manifest,
+            config=config,
+            original=original,
+            profile_set=profile_set,
+            adapter_set=adapter_set,
+            structural_validator=structural_validator,
+            cache=cache,
+            versions=versions,
+            dependency=dependency,
+            tools=tools,
+            cancel=cancel,
+            emit=emit,
+            profile_selector=profile_selector,
+            total_family_count=total_family_count,
         )
-        control_build: CandidateBuild | None = None
-        control_size: CompiledSizeSnapshot | None = None
-        control_valid = False
-
-        if cancel.is_set():
-            outcome = FamilyRunOutcome(
-                manifest.family_id, manifest.model_rel, "cancelled", None,
-                original_family, None, original_family, {}, tuple(attempts),
-                "run cancelled before control compile", {}, {}, {"source": "original-preserved"},
-            )
-            outcomes.append(outcome)
-            selected_snapshots.append(original_family)
-            emit("family_finished", family=manifest.model_rel, status="cancelled")
-            break
-
-        emit("candidate_started", family=manifest.model_rel, candidate=control_spec.candidate_id, engine="blender")
-        emit("stage", family=manifest.model_rel, candidate=control_spec.candidate_id, stage="generate_compile")
-        try:
-            control_workspace = config.work_dir / "families" / manifest.family_id / control_spec.candidate_id
-            if control_workspace.exists():
-                shutil.rmtree(control_workspace)
-            control_build = adapter_set.build(manifest, control_spec, control_workspace, tools, cancel)
-            if cancel.is_set():
-                raise ProcessCancelledError("cancelled after control compile")
-            control_size = _family_snapshot(scan_compiled_models(control_build.compiled_models_dir), manifest.model_rel)
-            structural = structural_validator(manifest, control_build)
-            emit("stage", family=manifest.model_rel, candidate=control_spec.candidate_id, stage="structural")
-            control_visual = (
-                adapter_set.visual(manifest, control_build, control_build, profile)
-                if structural.passed
-                else ValidationResult(False, worst_scope=structural.worst_scope)
-            )
-            emit("stage", family=manifest.model_rel, candidate=control_spec.candidate_id, stage="visual")
-            attempts.append(AttemptReport(
-                control_spec.candidate_id,
-                "blender",
-                "control" if structural.passed and control_visual.passed else "control_rejected",
-                control_size,
-                structural,
-                control_visual,
-                False,
-                "",
-                control_build.provenance,
-            ))
-            control_snapshots.append(control_size)
-            control_valid = structural.passed and control_visual.passed
-            emit("candidate_finished", family=manifest.model_rel, candidate=control_spec.candidate_id, status="control" if control_valid else "control_rejected", compiled_bytes=control_size.total_bytes)
-        except ProcessCancelledError as exc:
-            cancel.set()
-            attempts.append(AttemptReport(control_spec.candidate_id, "blender", "cancelled", None, None, None, False, str(exc), {}))
-            emit("candidate_finished", family=manifest.model_rel, candidate=control_spec.candidate_id, status="cancelled")
-        except Exception as exc:
-            attempts.append(AttemptReport(control_spec.candidate_id, "blender", "compile_failed", None, None, None, False, str(exc), {}))
-            emit("candidate_finished", family=manifest.model_rel, candidate=control_spec.candidate_id, status="compile_failed", stage=getattr(exc, "stage", "orchestrator"))
-
-        if control_build is None or control_size is None or not control_valid:
-            status = "cancelled" if cancel.is_set() else ("failed" if control_build is None else "preserved")
-            reason = (
-                "run cancelled during control compile"
-                if cancel.is_set()
-                else (
-                    "mandatory control compile failed"
-                    if control_build is None
-                    else "control roundtrip failed structural or visual compatibility gates"
-                )
-            )
-            retained = original_family if cancel.is_set() else original_without_dx80
-            control_savings = compare_snapshots(
-                original_family,
-                control_size if control_size is not None else original_family,
-                retained,
-            )
-            outcome = FamilyRunOutcome(
-                manifest.family_id, manifest.model_rel, status, None,
-                original_family, control_size, retained, control_savings, tuple(attempts), reason,
-                *_worst(attempts), {"source": "original-preserved"},
-            )
-            outcomes.append(outcome)
-            selected_snapshots.append(retained)
-            emit("family_finished", family=manifest.model_rel, status=status, reason=reason)
-            if cancel.is_set():
-                break
-            continue
-
-        schedule_method = getattr(adapter_set, "candidate_schedule", None)
-        schedule = tuple(schedule_method(manifest)) if callable(schedule_method) else _default_schedule()
-        if (
-            not schedule
-            or len({item.candidate_id for item in schedule}) != len(schedule)
-            or any(
-                not isinstance(item, CandidateSpec)
-                or type(item.engine) is not str
-                or item.engine not in _ENGINE_NAMES
-                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", item.candidate_id) is None
-                or not math.isfinite(item.target_ratio)
-                or not 0 < item.target_ratio <= 1
-                for item in schedule
-            )
-        ):
-            reason = "candidate schedule is empty, duplicated, or invalid"
-            outcome = FamilyRunOutcome(
-                manifest.family_id,
-                manifest.model_rel,
-                "failed",
-                None,
-                original_family,
-                control_size,
-                original_without_dx80,
-                compare_snapshots(original_family, control_size, original_without_dx80),
-                tuple(attempts),
-                reason,
-                *_worst(attempts),
-                {
-                    item.relative_path: "original-preserved"
-                    for item in original_without_dx80.artifacts
-                },
-            )
-            outcomes.append(outcome)
-            selected_snapshots.append(original_without_dx80)
-            emit(
-                "family_finished",
-                family=manifest.model_rel,
-                status="failed",
-                reason=reason,
-                best_bytes=original_without_dx80.total_bytes,
-                reduction_percent=(
-                    (original_family.total_bytes - original_without_dx80.total_bytes)
-                    / original_family.total_bytes * 100
-                    if original_family.total_bytes else 0.0
-                ),
-            )
-            continue
-        evaluations: list[CandidateEvaluation] = []
-        candidate_builds: dict[str, CandidateBuild] = {}
-        recovery_authorizations: dict[
-            str, tuple[FocusedRecoveryAdapterResult, object, CacheKey, Path]
-        ] = {}
-        retained_candidates: dict[
-            str, tuple[CandidateBuild, CandidateEvaluation, RecoverySourceSnapshot]
-        ] = {}
-        attempted_ids: set[str] = set()
-        last_best: str | None = None
-        recovery_base: tuple[CandidateBuild, CandidateEvaluation, RecoverySourceSnapshot] | None = None
-        while not cancel.is_set():
-            if (
-                recovery_base is not None and focused_policy is not None
-                and len(attempted_ids) >= max(
-                    0, config.budget.max_candidates - focused_policy.max_recovery_rounds
-                )
-            ):
-                break
-            spec = choose_next(
-                evaluations,
-                config.budget,
-                initial=schedule,
-                attempted_ids=attempted_ids,
-                recovery_mode=(
-                    "external-byte-exact"
-                    if focused_policy is not None
-                    else "legacy-regional"
-                ),
-            )
-            if spec is None:
-                break
-            attempted_ids.add(spec.candidate_id)
-            emit("candidate_started", family=manifest.model_rel, candidate=spec.candidate_id, engine=spec.engine)
-            emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="generate_compile")
-            workspace = config.work_dir / "families" / manifest.family_id / spec.candidate_id
-            key = CacheKey.build(manifest.input_hash, spec.cache_payload(), versions, profile.version)
-            cache_hit = False
-            try:
-                cache_entry = cache.lookup(key) if config.resume else None
-                if cache_entry is not None and not _verify_cache_entry(cache_entry, cancel):
-                    cache.invalidate(key)
-                    cache_entry = None
-                if cache_entry is not None:
-                    try:
-                        _restore_cache_payload(cache_entry, workspace, cancel)
-                        build = _load_cached_build(
-                            cache_entry,
-                            spec,
-                            key=key,
-                            manifest=manifest,
-                            dependency_digest=str(dependency["digest"]),
-                            materialized_workspace=workspace,
-                            cancel_event=cancel,
-                            optimizer_contract_digest=(
-                                optimizer_contract_sha256(spec)
-                                if focused_policy is not None else None
-                            ),
-                            whole_profile_digest=(
-                                _profile_contract_sha256(
-                                    profile, versions["profile_sha256"]
-                                ) if focused_policy is not None else None
-                            ),
-                            focused_profile_digest=(
-                                _profile_contract_sha256(
-                                    focused_profile, versions["profile_sha256"]
-                                ) if focused_profile is not None else None
-                            ),
-                        )
-                    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-                        cache.invalidate(key)
-                        cache_entry = None
-                    else:
-                        cache_hit = True
-                        emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="cache_hit")
-                        if cancel.is_set():
-                            raise ProcessCancelledError("cancelled after cache restore")
-                if cache_entry is None:
-                    if workspace.exists():
-                        shutil.rmtree(workspace)
-                    build = adapter_set.build(manifest, spec, workspace, tools, cancel)
-                    if cancel.is_set():
-                        raise ProcessCancelledError("cancelled after candidate compile")
-                emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="compiled_size")
-                # Cached diagnostics never authorize a candidate: both hard gates
-                # are evaluated from the sealed artifacts and current materials.
-                structural = structural_validator(manifest, build)
-                emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="structural")
-                if cancel.is_set():
-                    raise ProcessCancelledError("cancelled after structural validation")
-                bind_cache_digest = getattr(adapter_set, "bind_candidate_cache_digest", None)
-                if focused_policy is not None and callable(bind_cache_digest):
-                    bind_cache_digest(build, key.digest)
-                whole_visual = (
-                    adapter_set.visual(
-                        manifest, control_build, build, profile,
-                        focused_profile=focused_profile,
-                    )
-                    if structural.passed and focused_policy is not None
-                    else (
-                        adapter_set.visual(manifest, control_build, build, profile)
-                        if structural.passed
-                        else ValidationResult(False, worst_scope=structural.worst_scope)
-                    )
-                )
-                emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="visual")
-                if cancel.is_set():
-                    raise ProcessCancelledError("cancelled after visual validation")
-                focused_by_region: Mapping[str, FocusRegionResult] = {}
-                visual = whole_visual
-                if focused_policy is not None and structural.passed and whole_visual.passed:
-                    focused_method = getattr(adapter_set, "focused_visual", None)
-                    if not callable(focused_method):
-                        raise TypeError("schema-3 adapter does not implement focused_visual")
-                    focused_gate = focused_method(
-                        manifest, control_build, build, profile,
-                        focused_profile, focused_policy,
-                    )
-                    if cancel.is_set():
-                        raise ProcessCancelledError("cancelled after focused visual validation")
-                    visual = _aggregate_focused_gate(whole_visual, focused_gate)
-                    focused_by_region = focused_gate.regions
-                    emit("stage", family=manifest.model_rel, candidate=spec.candidate_id, stage="focused_visual")
-                if focused_policy is not None:
-                    if focused_profile is None:
-                        raise TypeError("schema-3 focused profile is unavailable")
-                    build = _attach_recovery_source_snapshot(
-                        build, manifest, key=key, whole_profile=profile,
-                        focused_profile=focused_profile,
-                        profile_file_sha256=versions["profile_sha256"],
-                        dependency_digest=str(dependency["digest"]),
-                        focused_by_region=focused_by_region,
-                        cancel_event=cancel,
-                    )
-                if not cache_hit and (focused_policy is None or visual.passed):
-                    _check_cancelled(cancel, "cancelled before candidate cache record")
-                    _store_cache_record(
-                        workspace,
-                        build,
-                        structural,
-                        visual,
-                        key=key,
-                        manifest=manifest,
-                        dependency_digest=str(dependency["digest"]),
-                    )
-                    _check_cancelled(cancel, "cancelled before candidate cache store")
-                    stored = cache.store(
-                        key,
-                        workspace,
-                        {"candidate": spec.candidate_id, "profile": profile.version},
-                        copy_function=lambda source, destination: _copy_file_cancellable(
-                            source, destination, cancel
-                        ),
-                    )
-                    _seal_cache_entry(stored, cancel)
-                size = _family_snapshot(scan_compiled_models(build.compiled_models_dir), manifest.model_rel)
-                evaluation = CandidateEvaluation(
-                    spec, size, structural, visual, build.compiled_models_dir,
-                    whole_visual, focused_by_region,
-                )
-                evaluations.append(evaluation)
-                candidate_builds[spec.candidate_id] = build
-                if focused_policy is not None:
-                    if build.source_snapshot is None:
-                        raise ValueError("schema-3 completed build has no recovery snapshot")
-                    if len(retained_candidates) >= config.budget.max_candidates:
-                        raise ValueError("schema-3 retained candidate registry exceeds budget")
-                    retained_candidates[spec.candidate_id] = (
-                        build, evaluation, build.source_snapshot,
-                    )
-                    if (
-                        structural.passed and whole_visual.passed
-                        and focused_by_region and not visual.passed
-                    ):
-                        proposed_base = retained_candidates[spec.candidate_id]
-                        if recovery_base is None or (
-                            evaluation.size.total_bytes, spec.candidate_id
-                        ) < (
-                            recovery_base[1].size.total_bytes,
-                            recovery_base[1].spec.candidate_id,
-                        ):
-                            recovery_base = proposed_base
-                status = "passed" if evaluation.passed else "rejected"
-                attempts.append(AttemptReport(
-                    spec.candidate_id, spec.engine, status, size, structural, visual,
-                    cache_hit, "", build.provenance,
-                ))
-                emit("candidate_finished", family=manifest.model_rel, candidate=spec.candidate_id, status=status, compiled_bytes=size.total_bytes, cache_hit=cache_hit)
-                best = select_winner(evaluations)
-                if best is not None and best.spec.candidate_id != last_best:
-                    last_best = best.spec.candidate_id
-                    selected_builds[manifest.family_id] = candidate_builds[
-                        best.spec.candidate_id
-                    ]
-                    emit("best_updated", family=manifest.model_rel, candidate=best.spec.candidate_id, compiled_bytes=best.size.total_bytes)
-            except ProcessCancelledError as exc:
-                cancel.set()
-                attempts.append(AttemptReport(spec.candidate_id, spec.engine, "cancelled", None, None, None, cache_hit, str(exc), {}))
-                emit("candidate_finished", family=manifest.model_rel, candidate=spec.candidate_id, status="cancelled")
-            except Exception as exc:
-                attempts.append(AttemptReport(spec.candidate_id, spec.engine, "compile_failed", None, None, None, cache_hit, str(exc), {}))
-                emit("candidate_finished", family=manifest.model_rel, candidate=spec.candidate_id, status="compile_failed", stage=getattr(exc, "stage", "orchestrator"))
-
-        recover_method = getattr(adapter_set, "recover_focused_candidate", None)
-        recovery_error_reason: str | None = None
-        if (
-            focused_policy is not None and recovery_base is not None
-            and not callable(recover_method)
-        ):
-            recovery_error_reason = (
-                "schema-3 adapter does not implement byte-exact focused recovery"
-            )
-            attempts.append(AttemptReport(
-                recovery_base[0].spec.candidate_id,
-                recovery_base[0].spec.engine,
-                "compile_failed", None, None, None, False,
-                recovery_error_reason, {},
-            ))
-        if (
-            focused_policy is not None
-            and focused_profile is not None
-            and recovery_base is not None
-            and callable(recover_method)
-            and not cancel.is_set()
-        ):
-            base_build, base_evaluation, base_snapshot = recovery_base
-            selected_targets = tuple(sorted(
-                (item.target for item in base_evaluation.focused_by_region.values()),
-                key=lambda item: item.rank,
-            ))
-            if selected_targets and tuple(item.rank for item in selected_targets) == tuple(range(len(selected_targets))):
-                focus_selection = FocusSelection(
-                    selected_targets[0].selector_input_sha256,
-                    selected_targets,
-                    selected_targets,
-                )
-                snapshots_by_candidate = {
-                    candidate_id: entry[2]
-                    for candidate_id, entry in retained_candidates.items()
-                }
-                original_snapshot: RecoverySourceSnapshot | None = None
-                current_recipe = None
-                failed_for_selection = base_evaluation
-                attempted_overlay_hashes: set[str] = set()
-                recovery_records: list[FocusedRecoveryEvidence] = []
-                for round_index in range(focused_policy.max_recovery_rounds):
-                    # Availability is checked before original/donor snapshot I/O.
-                    if len(attempted_ids) >= config.budget.max_candidates:
-                        break
-                    recovery_evidence_path: Path | None = None
-                    recovery_cache_owned = False
-                    recovery_cache_sealed = False
-                    workspace: Path | None = None
-                    recovery_key: CacheKey | None = None
-                    try:
-                        if original_snapshot is None:
-                            original_snapshot = _build_original_recovery_snapshot(
-                                manifest, base_snapshot, cancel
-                            )
-                        overlays = select_recovery_overlays(
-                            failed_for_selection, focus_selection, evaluations,
-                            snapshots_by_candidate, original_snapshot, current_recipe,
-                            attempted_overlay_hashes, round_index,
-                        )
-                        if not overlays:
-                            break
-                        recipe = focused_recovery_recipe(
-                            base_build.spec, base_snapshot, overlays,
-                            round_index=round_index,
-                            selector_version=focused_policy.selector,
-                        )
-                        recovery_spec = recovery_candidate_spec(base_build.spec, recipe)
-                        if recovery_spec.candidate_id in attempted_ids:
-                            raise ValueError("focused recovery repeated a candidate identity")
-                        recovery_key = CacheKey.build(
-                            manifest.input_hash, recovery_spec.cache_payload(), versions,
-                            profile.version,
-                        )
-                    except ProcessCancelledError:
-                        cancel.set()
-                        break
-                    except Exception as exc:
-                        attempts.append(AttemptReport(
-                            f"recovery-plan-{round_index}", base_build.spec.engine,
-                            "compile_failed", None, None, None, False, str(exc), {},
-                        ))
-                        break
-                    # Reserve both shared counters before reopening a snapshot,
-                    # mutating a workspace, or launching a process.
-                    attempted_ids.add(recovery_spec.candidate_id)
-                    previous = {
-                        item.source_identity: item
-                        for item in (() if current_recipe is None else current_recipe.overlays)
-                    }
-                    for overlay in overlays:
-                        if previous.get(overlay.source_identity) != overlay:
-                            attempted_overlay_hashes.add(hashlib.sha256(
-                                canonical_json(source_overlay_payload(overlay)).encode("utf-8")
-                            ).hexdigest())
-                    current_recipe = recipe
-                    workspace = (
-                        config.work_dir / "families" / manifest.family_id
-                        / recovery_spec.candidate_id
-                    )
-                    emit(
-                        "candidate_started", family=manifest.model_rel,
-                        candidate=recovery_spec.candidate_id, engine=recovery_spec.engine,
-                    )
-                    try:
-                        result = recover_method(
-                            manifest=manifest,
-                            control_build=control_build,
-                            base_build=base_build,
-                            base_evaluation=base_evaluation,
-                            recipe=recipe,
-                            spec=recovery_spec,
-                            cache_key=recovery_key,
-                            snapshots_by_sha256={
-                                snapshot.snapshot_sha256: snapshot
-                                for snapshot in (*snapshots_by_candidate.values(), original_snapshot)
-                            },
-                            workspace=workspace,
-                            whole_profile=profile,
-                            focused_profile=focused_profile,
-                            policy=focused_policy,
-                            structural_validator=structural_validator,
-                            tools=tools,
-                            prior_recoveries=tuple(recovery_records),
-                            cancel_event=cancel,
-                        )
-                        _check_cancelled(
-                            cancel, "cancelled after focused recovery adapter"
-                        )
-                        if not isinstance(result, FocusedRecoveryAdapterResult):
-                            raise TypeError("focused recovery adapter returned an invalid result")
-                        if result.evidence.round_index != round_index or result.evidence.recipe != recipe:
-                            raise ValueError("focused recovery adapter evidence differs from reserved recipe")
-                        recovery_records.append(result.evidence)
-                        if result.evidence.terminal_status != "authorized":
-                            if result.evaluation is not None:
-                                failed_for_selection = result.evaluation
-                            attempts.append(AttemptReport(
-                                recovery_spec.candidate_id, recovery_spec.engine,
-                                "rejected", None, None, None, False,
-                                result.evidence.terminal_status,
-                                {"recovery_evidence_sha256": result.evidence.evidence_sha256},
-                            ))
-                            emit(
-                                "candidate_finished", family=manifest.model_rel,
-                                candidate=recovery_spec.candidate_id, status="rejected",
-                                stage=result.evidence.terminal_status,
-                            )
-                            continue
-                        build = result.build
-                        evaluation = result.evaluation
-                        if (
-                            build.spec != recovery_spec
-                            or build.source_snapshot.candidate_cache_digest != recovery_key.digest
-                            or evaluation.spec != recovery_spec
-                            or result.authorization["candidate_id"] != recovery_spec.candidate_id
-                        ):
-                            raise ValueError("authorized focused recovery identity mismatch")
-                        validated_authorization = _validate_authorized_recovery_boundary(
-                            result=result, manifest=manifest, recipe=recipe,
-                            cache_key=recovery_key, cancel_event=cancel,
-                        )
-                        _check_cancelled(
-                            cancel, "cancelled before focused recovery evidence publication"
-                        )
-                        recovery_evidence_path = (
-                            build.workspace / "logs/focused-region-gate.json"
-                        )
-                        _safe_workspace_atomic_json(
-                            build.workspace,
-                            recovery_evidence_path,
-                            validated_authorization,
-                            "focused recovery authoritative evidence",
-                        )
-                        _check_cancelled(
-                            cancel, "cancelled before focused recovery cache record"
-                        )
-                        _store_cache_record(
-                            build.workspace, build, evaluation.structural, evaluation.visual,
-                            key=recovery_key, manifest=manifest,
-                            dependency_digest=str(dependency["digest"]),
-                        )
-                        _check_cancelled(
-                            cancel, "cancelled before focused recovery cache store"
-                        )
-                        validated_authorization = _validate_authorized_recovery_boundary(
-                            result=result, manifest=manifest, recipe=recipe,
-                            cache_key=recovery_key, cancel_event=cancel,
-                        )
-                        _safe_workspace_atomic_json(
-                            build.workspace, recovery_evidence_path,
-                            validated_authorization,
-                            "focused recovery authoritative evidence",
-                        )
-                        cache_state: dict[str, object] = {}
-
-                        def validate_private_entry(
-                            entry: Path, *, publish_integrity: bool,
-                        ) -> None:
-                            cached_workspace = entry / "payload"
-                            cached_build = _load_cached_build(
-                                entry, recovery_spec, key=recovery_key,
-                                manifest=manifest,
-                                dependency_digest=str(dependency["digest"]),
-                                materialized_workspace=cached_workspace,
-                                cancel_event=cancel,
-                                optimizer_contract_digest=recipe.optimizer_contract_sha256,
-                                whole_profile_digest=recipe.whole_profile_sha256,
-                                focused_profile_digest=recipe.focused_profile_sha256,
-                            )
-                            cached_authorization = json.loads(
-                                _read_regular_no_follow(
-                                    cached_workspace / "logs/focused-region-gate.json",
-                                    cancel, contained_root=cached_workspace,
-                                ).decode("utf-8")
-                            )
-                            cached_evaluation = replace(
-                                evaluation,
-                                size=_family_snapshot(
-                                    scan_compiled_models(cached_build.compiled_models_dir),
-                                    manifest.model_rel,
-                                ),
-                                compiled_models_dir=cached_build.compiled_models_dir,
-                            )
-                            cached_result = replace(
-                                result, build=cached_build,
-                                evaluation=cached_evaluation,
-                                authorization=cached_authorization,
-                            )
-                            def authorize_current_entry() -> None:
-                                _validate_authorized_recovery_boundary(
-                                    result=cached_result, manifest=manifest,
-                                    recipe=recipe, cache_key=recovery_key,
-                                    cancel_event=cancel,
-                                )
-
-                            if publish_integrity:
-                                _seal_then_validate_private_recovery_entry(
-                                    entry, authorize_current_entry
-                                )
-                            else:
-                                authorize_current_entry()
-                                if not _verify_cache_entry(entry, None):
-                                    raise ValueError(
-                                        "focused recovery cache integrity is invalid"
-                                    )
-                            cache_state.update({
-                                "result": cached_result, "build": cached_build,
-                                "evaluation": cached_evaluation,
-                            })
-
-                        stored, recovery_cache_owned = cache.store_validated(
-                            recovery_key, build.workspace,
-                            {"candidate": recovery_spec.candidate_id, "profile": profile.version},
-                            finalize_staging=lambda staging: validate_private_entry(
-                                staging, publish_integrity=True
-                            ),
-                            validate_existing=lambda entry: validate_private_entry(
-                                entry, publish_integrity=False
-                            ),
-                            copy_function=lambda source, destination: _copy_file_cancellable(
-                                source, destination, cancel
-                            ),
-                            cancel_check=lambda: _check_cancelled(
-                                cancel, "cancelled waiting for recovery cache lock"
-                            ),
-                            is_cancellation=lambda exc: isinstance(
-                                exc, ProcessCancelledError
-                            ),
-                        )
-                        recovery_cache_sealed = True
-                        # The atomic rename invalidates paths rooted in private
-                        # staging. Reopen and reauthorize only from final/payload.
-                        validate_private_entry(stored, publish_integrity=False)
-                        cached_result = cache_state["result"]
-                        cached_build = cache_state["build"]
-                        cached_evaluation = cache_state["evaluation"]
-                        _check_cancelled(
-                            cancel, "cancelled before focused recovery promotion"
-                        )
-                        if not _verify_recovery_cache_entry(
-                            stored, recovery_key, cancel
-                        ):
-                            raise ValueError("sealed focused recovery cache changed")
-                        _validate_authorized_recovery_boundary(
-                            result=cached_result, manifest=manifest, recipe=recipe,
-                            cache_key=recovery_key, cancel_event=cancel,
-                        )
-                        evaluations.append(cached_evaluation)
-                        candidate_builds[recovery_spec.candidate_id] = cached_build
-                        recovery_authorizations[recovery_spec.candidate_id] = (
-                            cached_result, recipe, recovery_key, stored,
-                        )
-                        attempts.append(AttemptReport(
-                            recovery_spec.candidate_id, recovery_spec.engine, "passed",
-                            cached_evaluation.size, cached_evaluation.structural,
-                            cached_evaluation.visual, False, "", cached_build.provenance,
-                        ))
-                        emit(
-                            "candidate_finished", family=manifest.model_rel,
-                            candidate=recovery_spec.candidate_id, status="passed",
-                            compiled_bytes=cached_evaluation.size.total_bytes, cache_hit=False,
-                        )
-                        break
-                    except ProcessCancelledError as exc:
-                        if recovery_cache_owned and not recovery_cache_sealed:
-                            try:
-                                cache.invalidate(recovery_key)
-                            except Exception:
-                                pass
-                        if recovery_evidence_path is not None and workspace is not None:
-                            try:
-                                _safe_workspace_leaf(
-                                    workspace,
-                                    recovery_evidence_path,
-                                    "cancelled focused recovery evidence",
-                                )
-                                if (
-                                    os.path.lexists(recovery_evidence_path)
-                                    and recovery_evidence_path.is_file()
-                                    and not _is_reparse(recovery_evidence_path)
-                                ):
-                                    recovery_evidence_path.unlink()
-                            except (OSError, ValueError):
-                                pass
-                        cancel.set()
-                        attempts.append(AttemptReport(
-                            recovery_spec.candidate_id, recovery_spec.engine,
-                            "cancelled", None, None, None, False, str(exc), {},
-                        ))
-                        emit(
-                            "candidate_finished", family=manifest.model_rel,
-                            candidate=recovery_spec.candidate_id, status="cancelled",
-                        )
-                        break
-                    except Exception as exc:
-                        if recovery_cache_owned and not recovery_cache_sealed:
-                            try:
-                                cache.invalidate(recovery_key)
-                            except Exception:
-                                pass
-                        if recovery_evidence_path is not None and workspace is not None:
-                            try:
-                                _safe_workspace_leaf(
-                                    workspace,
-                                    recovery_evidence_path,
-                                    "failed focused recovery evidence",
-                                )
-                                if (
-                                    os.path.lexists(recovery_evidence_path)
-                                    and recovery_evidence_path.is_file()
-                                    and not _is_reparse(recovery_evidence_path)
-                                ):
-                                    recovery_evidence_path.unlink()
-                            except (OSError, ValueError):
-                                pass
-                        attempts.append(AttemptReport(
-                            recovery_spec.candidate_id, recovery_spec.engine,
-                            "compile_failed", None, None, None, False, str(exc), {},
-                        ))
-                        emit(
-                            "candidate_finished", family=manifest.model_rel,
-                            candidate=recovery_spec.candidate_id,
-                            status="compile_failed",
-                            stage=getattr(exc, "stage", "focused-recovery"),
-                        )
-                        break
-
-        winner = None if recovery_error_reason is not None else select_winner(evaluations)
-        no_positive_saving = (
-            winner is not None
-            and _without_dx80(winner.size).total_bytes
-            >= original_without_dx80.total_bytes
-        )
-        if no_positive_saving:
-            winner = None
-        if cancel.is_set():
-            status, reason, selected = "cancelled", "run cancelled; original family retained", original_family
-            selected_id = None
-            provenance = {"source": "original-preserved"}
-        elif recovery_error_reason is not None:
-            status, reason, selected = "failed", recovery_error_reason, original_without_dx80
-            selected_id = None
-            provenance = {"source": "original-preserved"}
-        elif winner is None:
-            status, reason, selected = (
-                "preserved",
-                (
-                    "no candidate produced a strictly positive compiled saving"
-                    if no_positive_saving
-                    else "no candidate passed all hard gates"
-                ),
-                original_without_dx80,
-            )
-            selected_id = None
-            provenance = {"source": "original-preserved"}
-        else:
-            status, reason, selected = (
-                "optimized",
-                "smallest passing compiled candidate selected",
-                _without_dx80(winner.size),
-            )
-            selected_id = winner.spec.candidate_id
-            selected_builds[manifest.family_id] = candidate_builds[selected_id]
-            if selected_id in recovery_authorizations:
-                selected_recovery_authorizations[manifest.family_id] = (
-                    recovery_authorizations[selected_id]
-                )
-            chosen_attempt = next(item for item in attempts if item.candidate_id == selected_id)
-            provenance = dict(chosen_attempt.provenance)
-        selected_snapshots.append(selected)
-        savings = compare_snapshots(original_family, control_size, selected)
-        approved_attempts = (
-            [next(item for item in attempts if item.candidate_id == selected_id)]
-            if selected_id is not None
-            else [item for item in attempts if item.status in {"control", "control_rejected"}]
-        )
-        metrics, scopes = _worst(approved_attempts)
-        margins: dict[str, float] = {}
-        if selected_id is not None:
-            selected_attempt = approved_attempts[0]
-            if selected_attempt.visual is not None:
-                margins = {
-                    name: float(limit) - float(selected_attempt.visual.metrics.get(name, 0.0))
-                    for name, limit in profile.limits.items()
-                }
-        outcome = FamilyRunOutcome(
-            manifest.family_id, manifest.model_rel, status, selected_id,
-            original_family, control_size, selected, savings, tuple(attempts), reason,
-            metrics, scopes, provenance, margins,
-        )
-        outcomes.append(outcome)
-        emit(
-            "family_finished",
-            family=manifest.model_rel,
-            status=status,
-            selected=selected_id,
-            reason=reason,
-            best_bytes=selected.total_bytes,
-            reduction_percent=(
-                (original_family.total_bytes - selected.total_bytes)
-                / original_family.total_bytes
-                * 100
-                if original_family.total_bytes
-                else 0.0
-            ),
-        )
-        clear_recovery_artifacts = getattr(
-            adapter_set, "clear_recovery_artifacts", None
-        )
-        if callable(clear_recovery_artifacts):
-            clear_recovery_artifacts()
+        selection_records.append(dict(result.selection_record))
+        write_selection_audit()
+        commit_family_result(result)
         if cancel.is_set():
             break
-
     # Families not reached after cancellation remain explicit.
     if cancel.is_set() and len(outcomes) < len(manifests):
         for manifest in manifests[len(outcomes):]:

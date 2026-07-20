@@ -1804,6 +1804,52 @@ class OrchestratorTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             family.savings["total_saving_bytes"] = 0
 
+    def test_extracted_execution_preserves_serial_selection_and_hashes(self):
+        first = self.run_optimizer()
+        second_config = MaximumRunConfig(**{
+            **self.config.to_kwargs(),
+            "output_dir": self.root / "output-second",
+            "work_dir": self.root / "work-second",
+        })
+        second_adapters = FakeAdapters(
+            self.root,
+            (self.family,),
+            {
+                "roundtrip-control": 110,
+                "candidate-100": 100,
+                "candidate-60": 60,
+                "candidate-40": 40,
+            },
+        )
+        second = run_maximum_addon(
+            second_config,
+            adapters=second_adapters,
+            validator=self.structural,
+        )
+        self.assertEqual(first.families[0].selected_candidate, "candidate-60")
+        self.assertEqual(second.families[0].selected_candidate, "candidate-60")
+
+        def selection(report):
+            return tuple(
+                (
+                    family.family_id,
+                    family.model_rel,
+                    family.status,
+                    family.selected_candidate,
+                    family.original_size.total_bytes,
+                    family.control_size.total_bytes if family.control_size else None,
+                    family.selected_size.total_bytes,
+                    tuple((item.relative_path, item.size_bytes) for item in family.selected_size.artifacts),
+                )
+                for family in report.families
+            )
+
+        self.assertEqual(selection(first), selection(second))
+        self.assertEqual(
+            _tree_manifest(self.config.output_dir),
+            _tree_manifest(second_config.output_dir),
+        )
+
     def test_event_encoding_is_exact_one_line_canonical_json_and_rejects_nan(self):
         self.assertEqual(
             event_line({"schema": 1, "kind": "stage", "z": 2, "a": "ç"}),
