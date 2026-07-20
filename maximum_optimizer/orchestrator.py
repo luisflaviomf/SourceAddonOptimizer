@@ -99,13 +99,16 @@ from .focused_cache import (
     validate_focused_target,
 )
 from .focused_regions import FocusSelection, select_focus_targets_with_evidence
+from .family_scheduler import FamilySchedulerUpdate, FamilyWorkItem, run_family_jobs
 from .meshopt_bridge import MESHOPT_ENGINE_PREFERRED
 from .processes import ProcessCancelledError, run_process
 from .parallelism import (
     MaximumParallelismPlan,
+    current_memory_job_limit,
     detect_memory_snapshot,
     resolve_maximum_parallelism,
 )
+from .progress_journal import DurableProgressJournal
 from .qc_inventory import _inventory_qc, build_family_manifests
 from .qc_graph import QcGraph, parse_qc_graph
 from .regions import filter_region_manifest, load_region_manifest_payload
@@ -133,6 +136,7 @@ EVENT_KINDS = frozenset(
         "family_finished",
         "run_finished",
         "run_cancelled",
+        "scheduler_status",
     }
 )
 _RATIOS = (0.75, 0.50, 0.35, 0.25, 0.15, 0.10, 0.05)
@@ -315,12 +319,14 @@ class MaximumRunReport:
     report_path: Path
     events: tuple[Mapping[str, object], ...] = ()
     cancelled: bool = False
+    parallelism: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.schema != 1:
             raise ValueError("unsupported Maximum report schema")
         object.__setattr__(self, "tool_versions", deep_freeze(dict(self.tool_versions)))
         object.__setattr__(self, "events", deep_freeze(tuple(self.events)))
+        object.__setattr__(self, "parallelism", deep_freeze(dict(self.parallelism)))
 
 
 class AdapterSet(Protocol):
@@ -1980,6 +1986,36 @@ def _worst(attempts: Sequence[AttemptReport]) -> tuple[dict[str, float], dict[st
     return metrics, scopes
 
 
+def _family_work_estimate(
+    manifest: FamilyManifest,
+    original: CompiledSizeSnapshot,
+) -> int:
+    source_bytes = 0
+    try:
+        for path in manifest.source_dir.rglob("*"):
+            if (
+                path.suffix.casefold() in {".smd", ".dmx", ".qc"}
+                and path.is_file()
+                and not _is_reparse(path)
+            ):
+                source_bytes += path.stat().st_size
+    except OSError:
+        source_bytes = 0
+    visual_states = 1
+    try:
+        original_qcs = _matching_qcs(
+            manifest.source_dir, manifest.model_rel, optimized=False
+        )
+        if len(original_qcs) == 1:
+            visual_states = max(1, len(_graph_visual_configurations(
+                parse_qc_graph(original_qcs[0], manifest.source_dir)
+            )))
+    except (OSError, UnicodeError, ValueError):
+        visual_states = 1
+    original_bytes = _family_snapshot(original, manifest.model_rel).total_bytes
+    return max(1, source_bytes) * visual_states + original_bytes
+
+
 @dataclass(frozen=True)
 class _FamilyExecutionResult:
     index: int
@@ -3037,6 +3073,9 @@ def run_maximum_addon(
     event_history: list[dict[str, Any]] = []
     candidate_counts: dict[str, int] = {}
     candidate_indexes: dict[tuple[str, str], int] = {}
+    journal_lock = threading.RLock()
+    peak_active_families = 0
+    runtime_memory_throttled = config.parallelism.memory_throttled
     tools = CandidateTools(
         sys.executable,
         config.blender_path,
@@ -3048,29 +3087,46 @@ def run_maximum_addon(
     )
 
     def write_selection_audit() -> None:
-        atomic_write_json(selection_audit_path, {
-            "schema": 1,
-            "selector": profile_set.mode,
-            "families": selection_records,
-        })
-
-    def partial(status: str) -> None:
-        atomic_write_json(
-            report_path,
-            {
+        with journal_lock:
+            atomic_write_json(selection_audit_path, {
                 "schema": 1,
-                "status": status,
-                "original_size": original,
-                "control_size": _combine_snapshots(config.work_dir, control_snapshots),
-                "selected_size": _combine_snapshots(config.work_dir, selected_snapshots),
-                "tool_versions": versions,
-                "families": tuple(outcomes),
-                "events": tuple(event_history),
-            },
-        )
+                "selector": profile_set.mode,
+                "families": selection_records,
+            })
+
+    def parallelism_payload() -> dict[str, object]:
+        return {
+            "requested_jobs": config.parallelism.requested_jobs,
+            "cpu_target_jobs": config.parallelism.cpu_target_jobs,
+            "effective_jobs": config.parallelism.effective_jobs,
+            "memory_limit_jobs": config.parallelism.memory_limit_jobs,
+            "memory_throttled": runtime_memory_throttled,
+            "peak_active_families": peak_active_families,
+        }
+
+    def partial_payload(status: str) -> dict[str, object]:
+        return {
+            "schema": 1,
+            "status": status,
+            "original_size": original,
+            "control_size": _combine_snapshots(config.work_dir, control_snapshots),
+            "selected_size": _combine_snapshots(config.work_dir, selected_snapshots),
+            "tool_versions": versions,
+            "families": tuple(outcomes),
+            "events": tuple(event_history),
+            "parallelism": parallelism_payload(),
+        }
+
+    def write_journal(payload: Mapping[str, object]) -> None:
+        atomic_write_json(report_path, payload)
         write_selection_audit()
 
-    def emit(kind: str, **payload: Any) -> None:
+    journal = DurableProgressJournal(
+        write_journal,
+        min_interval=0.25,
+    )
+
+    def _emit_locked(kind: str, **payload: Any) -> None:
         if kind not in EVENT_KINDS:
             raise ValueError(f"unknown Maximum event kind: {kind}")
         payload.setdefault("report_path", "logs/maximum_report.json")
@@ -3147,8 +3203,14 @@ def run_maximum_addon(
             # Progress observers are non-authoritative; the atomic report journal
             # remains the durable protocol and must still reach a terminal state.
             pass
-        if kind not in {"run_finished", "run_cancelled"}:
-            partial("running")
+        journal.publish(
+            lambda: partial_payload("running"),
+            force=kind in {"family_finished", "run_finished", "run_cancelled"},
+        )
+
+    def emit(kind: str, **payload: Any) -> None:
+        with journal_lock:
+            _emit_locked(kind, **payload)
 
     manifests: tuple[FamilyManifest, ...] = ()
     missing_model_rels: tuple[str, ...] = ()
@@ -3180,6 +3242,7 @@ def run_maximum_addon(
             report_path,
             tuple(event_history),
             False,
+            parallelism_payload(),
         )
         atomic_write_json(report_path, report)
         return report
@@ -3188,13 +3251,25 @@ def run_maximum_addon(
         dict(diagnostic_method(config)) if callable(diagnostic_method) else {}
     )
     total_family_count = len(manifests) + len(missing_model_rels)
+    parallel_fork = getattr(adapter_set, "fork_for_family", None)
+    if config.parallelism.effective_jobs > 1 and not callable(parallel_fork):
+        raise MaximumConfigError(
+            "parallel Maximum adapters must implement fork_for_family()"
+        )
     emit("run_started", family_count=total_family_count)
+
+    selected_snapshot_by_family: dict[str, CompiledSizeSnapshot] = {}
+    control_snapshot_by_family: dict[str, CompiledSizeSnapshot] = {}
 
     def commit_family_result(result: _FamilyExecutionResult) -> None:
         outcomes.append(result.outcome)
         if result.control_snapshot is not None:
             control_snapshots.append(result.control_snapshot)
+            control_snapshot_by_family[result.outcome.family_id] = (
+                result.control_snapshot
+            )
         selected_snapshots.append(result.selected_snapshot)
+        selected_snapshot_by_family[result.outcome.family_id] = result.selected_snapshot
         if result.selected_build is not None:
             selected_builds[result.outcome.family_id] = result.selected_build
         if result.recovery_authorization is not None:
@@ -3202,16 +3277,26 @@ def run_maximum_addon(
                 result.recovery_authorization
             )
 
-    for family_index, manifest in enumerate(manifests):
-        result = _execute_family(
-            index=family_index,
-            manifest=manifest,
+    def execute_family(item: tuple[int, FamilyManifest]) -> _FamilyExecutionResult:
+        family_index, manifest = item
+        family_adapters = (
+            adapter_set
+            if config.parallelism.effective_jobs == 1
+            else parallel_fork()
+        )
+        family_cache = (
+            cache
+            if config.parallelism.effective_jobs == 1
+            else CandidateCache(config.work_dir / "cache")
+        )
+        return _execute_family(
+            index=family_index, manifest=manifest,
             config=config,
             original=original,
             profile_set=profile_set,
-            adapter_set=adapter_set,
+            adapter_set=family_adapters,
             structural_validator=structural_validator,
-            cache=cache,
+            cache=family_cache,
             versions=versions,
             dependency=dependency,
             tools=tools,
@@ -3220,14 +3305,51 @@ def run_maximum_addon(
             profile_selector=profile_selector,
             total_family_count=total_family_count,
         )
+
+    def emit_scheduler_status(update: FamilySchedulerUpdate) -> None:
+        nonlocal peak_active_families, runtime_memory_throttled
+        with journal_lock:
+            peak_active_families = max(peak_active_families, update.active)
+            runtime_memory_throttled = (
+                runtime_memory_throttled or update.memory_throttled
+            )
+            _emit_locked(
+                "scheduler_status",
+                active_families=update.active,
+                completed_families=update.completed,
+                family_total=total_family_count,
+                effective_jobs=update.capacity,
+                memory_throttled=update.memory_throttled,
+            )
+
+    work_items = tuple(
+        FamilyWorkItem(
+            index,
+            _family_work_estimate(manifest, original),
+            (index, manifest),
+        )
+        for index, manifest in enumerate(manifests)
+    )
+    family_results = run_family_jobs(
+        work_items,
+        max_workers=config.parallelism.effective_jobs,
+        worker=execute_family,
+        cancel_event=cancel,
+        memory_limit=lambda: current_memory_job_limit(
+            config.parallelism, detect_memory_snapshot()
+        ),
+        on_update=emit_scheduler_status,
+    )
+    completed_indexes = {result.index for result in family_results}
+    for result in family_results:
         selection_records.append(dict(result.selection_record))
-        write_selection_audit()
         commit_family_result(result)
-        if cancel.is_set():
-            break
+
     # Families not reached after cancellation remain explicit.
-    if cancel.is_set() and len(outcomes) < len(manifests):
-        for manifest in manifests[len(outcomes):]:
+    if cancel.is_set() and len(completed_indexes) < len(manifests):
+        for manifest_index, manifest in enumerate(manifests):
+            if manifest_index in completed_indexes:
+                continue
             original_family = _family_snapshot(original, manifest.model_rel)
             if not any(
                 item["family_id"] == manifest.family_id for item in selection_records
@@ -3242,13 +3364,30 @@ def run_maximum_addon(
                     "corpus_hash": profile_set.corpus_hash,
                     "sources": [],
                 })
-                write_selection_audit()
-            outcomes.append(FamilyRunOutcome(
+            cancelled_outcome = FamilyRunOutcome(
                 manifest.family_id, manifest.model_rel, "cancelled", None,
                 original_family, None, original_family, {}, (),
                 "run cancelled before family started", {}, {}, {"source": "original-preserved"},
-            ))
-            selected_snapshots.append(original_family)
+            )
+            outcomes.append(cancelled_outcome)
+            selected_snapshot_by_family[manifest.family_id] = original_family
+
+    manifest_order = {
+        manifest.family_id: index for index, manifest in enumerate(manifests)
+    }
+    outcomes.sort(key=lambda item: manifest_order[item.family_id])
+    selection_records.sort(
+        key=lambda item: manifest_order.get(str(item["family_id"]), len(manifests))
+    )
+    selected_snapshots[:] = [
+        selected_snapshot_by_family[outcome.family_id] for outcome in outcomes
+    ]
+    control_snapshots[:] = [
+        control_snapshot_by_family[outcome.family_id]
+        for outcome in outcomes
+        if outcome.family_id in control_snapshot_by_family
+    ]
+    write_selection_audit()
 
     for missing_index, model_rel in enumerate(missing_model_rels, start=len(manifests)):
         family_id = hashlib.sha256(model_rel.casefold().encode("utf-8")).hexdigest()
@@ -3302,6 +3441,7 @@ def run_maximum_addon(
         report = MaximumRunReport(
             1, "cancelled", original, control_total, selected_total, final,
             versions, tuple(outcomes), report_path, tuple(event_history), True,
+            parallelism_payload(),
         )
         atomic_write_json(report_path, report)
         return report
@@ -3373,6 +3513,7 @@ def run_maximum_addon(
         report = MaximumRunReport(
             1, "cancelled", original, control_total, selected_total, original,
             versions, tuple(outcomes), report_path, tuple(event_history), True,
+            parallelism_payload(),
         )
         atomic_write_json(report_path, report)
         return report
@@ -3396,6 +3537,7 @@ def run_maximum_addon(
         report = MaximumRunReport(
             1, "failed", original, control_total, selected_total, final,
             versions, tuple(outcomes), report_path, tuple(event_history), False,
+            parallelism_payload(),
         )
         atomic_write_json(report_path, report)
         return report
@@ -3407,6 +3549,7 @@ def run_maximum_addon(
     report = MaximumRunReport(
         1, status, original, control_total, selected_total, final,
         versions, tuple(outcomes), report_path, tuple(event_history), False,
+        parallelism_payload(),
     )
     atomic_write_json(report_path, report)
     return report
@@ -4305,6 +4448,9 @@ class ProductionAdapters:
             Path, tuple[FocusedEvidenceContext, FocusSelection, tuple[object, ...], Mapping[str, object]]
         ] = {}
         self._recovery_artifact_roots: dict[str, Path] = {}
+
+    def fork_for_family(self) -> ProductionAdapters:
+        return ProductionAdapters(self.config, self.cancel_event)
 
     def _blender_command(self, *arguments: str | Path) -> tuple[str, ...]:
         prefix = [str(self.config.blender_path)]

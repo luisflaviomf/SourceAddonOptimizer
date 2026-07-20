@@ -74,6 +74,7 @@ def run_family_jobs(
     results: dict[int, R] = {}
     pending: dict[Future[R], FamilyWorkItem[T]] = {}
     cancel = cancel_event or threading.Event()
+    last_update: FamilySchedulerUpdate | None = None
 
     def capacity() -> int:
         if memory_limit is None:
@@ -84,14 +85,19 @@ def run_family_jobs(
         return min(max_workers, current)
 
     def publish(current_capacity: int) -> None:
+        nonlocal last_update
         if on_update is not None:
-            on_update(FamilySchedulerUpdate(
+            update = FamilySchedulerUpdate(
                 active=len(pending),
                 completed=len(results),
                 total=len(work),
                 capacity=current_capacity,
                 memory_throttled=current_capacity < max_workers,
-            ))
+            )
+            if update == last_update:
+                return
+            on_update(update)
+            last_update = update
 
     with ThreadPoolExecutor(
         max_workers=max_workers,

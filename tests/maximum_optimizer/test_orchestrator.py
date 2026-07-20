@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -248,6 +249,40 @@ class FakeAdapters:
         self.cancel_event = None
         self.extra_collision = False
         self.visual_profiles: list[tuple[str, str, str]] = []
+        self._parallel_state = {
+            "lock": threading.Lock(),
+            "active": 0,
+            "peak": 0,
+            "probe": False,
+            "forks": 0,
+        }
+
+    @property
+    def peak_active_families(self) -> int:
+        with self._parallel_state["lock"]:
+            return int(self._parallel_state["peak"])
+
+    def enable_overlap_probe(self) -> None:
+        self._parallel_state["probe"] = True
+
+    def fork_for_family(self):
+        child = FakeAdapters(self.root, self._families, self.sizes)
+        child.calls = self.calls
+        child.fail = self.fail
+        child.cancel_on = self.cancel_on
+        child.cancel_during_visual = self.cancel_during_visual
+        child.extra_collision = self.extra_collision
+        child.visual_profiles = self.visual_profiles
+        child._parallel_state = self._parallel_state
+        for name in (
+            "candidate_schedule", "visual", "focused_visual",
+            "recover_focused_candidate", "clear_recovery_artifacts",
+        ):
+            if name in self.__dict__:
+                setattr(child, name, self.__dict__[name])
+        with self._parallel_state["lock"]:
+            self._parallel_state["forks"] += 1
+        return child
 
     def inventory(self, config):
         return self._families
@@ -261,6 +296,19 @@ class FakeAdapters:
     def build(self, manifest, spec, workspace, tools, cancel_event):
         self.cancel_event = cancel_event
         self.calls.append((manifest.model_rel, spec.candidate_id))
+        probing = (
+            spec.candidate_id == "roundtrip-control"
+            and bool(self._parallel_state["probe"])
+        )
+        if probing:
+            with self._parallel_state["lock"]:
+                self._parallel_state["active"] += 1
+                self._parallel_state["peak"] = max(
+                    self._parallel_state["peak"], self._parallel_state["active"]
+                )
+            time.sleep(0.05)
+            with self._parallel_state["lock"]:
+                self._parallel_state["active"] -= 1
         if self.cancel_on == spec.candidate_id:
             cancel_event.set()
         if (manifest.model_rel, spec.candidate_id) in self.fail:
@@ -370,6 +418,21 @@ class OrchestratorTests(unittest.TestCase):
             ProductionAdapters(self.config, threading.Event())._blender_command("--background"),
             (str(self.config.blender_path), "--background"),
         )
+
+    def test_production_family_fork_isolates_mutable_adapter_state(self):
+        cancel = threading.Event()
+        adapter = ProductionAdapters(self.config, cancel)
+
+        forked = adapter.fork_for_family()
+
+        self.assertIsNot(forked, adapter)
+        self.assertIs(forked.config, adapter.config)
+        self.assertIs(forked.cancel_event, cancel)
+        self.assertIsNot(forked._whole_index_seals, adapter._whole_index_seals)
+        self.assertIsNot(
+            forked._candidate_cache_digests, adapter._candidate_cache_digests
+        )
+        self.assertIsNot(forked._focused_runtime, adapter._focused_runtime)
 
     def test_candidate_evaluation_trailing_focused_fields_preserve_legacy_construction(self):
         from maximum_optimizer.compiled_size import scan_compiled_models
@@ -1850,6 +1913,147 @@ class OrchestratorTests(unittest.TestCase):
             _tree_manifest(second_config.output_dir),
         )
 
+    def _two_family_parallel_fixture(self, *, jobs: int, suffix: str):
+        other = _family(self.root, "other")
+        (self.addon / "models" / "other.mdl").write_bytes(b"z" * 120)
+        parallelism = MaximumParallelismPlan(
+            jobs, 4, jobs, jobs, 4, False, 1 if jobs > 1 else 0
+        )
+        config = MaximumRunConfig(**{
+            **self.config.to_kwargs(),
+            "output_dir": self.root / f"output-{suffix}",
+            "work_dir": self.root / f"work-{suffix}",
+            "budget": SearchBudget(1, .025, 0),
+            "parallelism": parallelism,
+        })
+        adapters = FakeAdapters(
+            self.root,
+            (self.family, other),
+            {
+                "roundtrip-control": 110,
+                "candidate-100": 100,
+                "candidate-60": 60,
+                "candidate-40": 40,
+            },
+        )
+        return config, adapters, (self.family, other)
+
+    def test_parallel_families_overlap_but_merge_in_manifest_order(self):
+        config, adapters, manifests = self._two_family_parallel_fixture(
+            jobs=2, suffix="parallel-overlap"
+        )
+        adapters.enable_overlap_probe()
+
+        report = run_maximum_addon(
+            config,
+            adapters=adapters,
+            validator=self.structural,
+            event_sink=self.events.append,
+        )
+
+        self.assertGreaterEqual(adapters.peak_active_families, 2)
+        self.assertEqual(
+            [item.model_rel for item in report.families],
+            [item.model_rel for item in manifests],
+        )
+        scheduler_events = [
+            event for event in self.events if event["kind"] == "scheduler_status"
+        ]
+        self.assertTrue(scheduler_events)
+        self.assertGreaterEqual(
+            max(event["active_families"] for event in scheduler_events), 2
+        )
+        payload = json.loads(report.report_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["parallelism"]["effective_jobs"], 2)
+        self.assertGreaterEqual(payload["parallelism"]["peak_active_families"], 2)
+
+    def test_serial_and_parallel_outputs_are_identical(self):
+        serial_config, serial_adapters, _ = self._two_family_parallel_fixture(
+            jobs=1, suffix="serial-equivalence"
+        )
+        serial = run_maximum_addon(
+            serial_config, adapters=serial_adapters, validator=self.structural
+        )
+        parallel_config = MaximumRunConfig(**{
+            **serial_config.to_kwargs(),
+            "output_dir": self.root / "output-parallel-equivalence",
+            "work_dir": self.root / "work-parallel-equivalence",
+            "parallelism": MaximumParallelismPlan(2, 4, 2, 2, 4, False, 1),
+        })
+        parallel_adapters = FakeAdapters(
+            self.root, serial_adapters._families, serial_adapters.sizes
+        )
+        parallel = run_maximum_addon(
+            parallel_config, adapters=parallel_adapters, validator=self.structural
+        )
+
+        signature = lambda report: tuple(
+            (
+                item.family_id, item.model_rel, item.status,
+                item.selected_candidate, item.selected_size.total_bytes,
+                tuple((artifact.relative_path, artifact.size_bytes) for artifact in item.selected_size.artifacts),
+            )
+            for item in report.families
+        )
+        self.assertEqual(signature(serial), signature(parallel))
+        self.assertEqual(
+            _tree_manifest(serial_config.output_dir),
+            _tree_manifest(parallel_config.output_dir),
+        )
+
+    def test_one_family_candidate_failure_does_not_cancel_good_family(self):
+        config, adapters, _ = self._two_family_parallel_fixture(
+            jobs=2, suffix="parallel-failure"
+        )
+        adapters.fail.add(("test.mdl", "candidate-100"))
+
+        report = run_maximum_addon(
+            config, adapters=adapters, validator=self.structural
+        )
+
+        by_model = {item.model_rel: item for item in report.families}
+        self.assertEqual(by_model["test.mdl"].status, "preserved")
+        self.assertEqual(by_model["other.mdl"].status, "optimized")
+        self.assertFalse(report.cancelled)
+
+    def test_parallel_cancel_marks_non_prefix_unstarted_families_explicitly(self):
+        config, adapters, manifests = self._two_family_parallel_fixture(
+            jobs=2, suffix="parallel-cancel"
+        )
+        third = _family(self.root, "third")
+        (self.addon / "models" / "third.mdl").write_bytes(b"t" * 120)
+        adapters._families = (*manifests, third)
+        adapters.cancel_on = "roundtrip-control"
+
+        report = run_maximum_addon(
+            config,
+            cancel_event=threading.Event(),
+            adapters=adapters,
+            validator=self.structural,
+        )
+
+        self.assertTrue(report.cancelled)
+        self.assertEqual(
+            [item.model_rel for item in report.families],
+            [item.model_rel for item in adapters._families],
+        )
+        self.assertTrue(all(item.status == "cancelled" for item in report.families))
+        self.assertNotIn("third.mdl", {model for model, _candidate in adapters.calls})
+        self.assertFalse(config.output_dir.exists())
+
+    def test_parallel_injected_adapter_must_fork_before_family_work(self):
+        config, adapters, _ = self._two_family_parallel_fixture(
+            jobs=2, suffix="parallel-no-fork"
+        )
+        adapters.fork_for_family = None
+
+        with self.assertRaisesRegex(MaximumConfigError, "fork_for_family"):
+            run_maximum_addon(
+                config, adapters=adapters, validator=self.structural
+            )
+
+        self.assertEqual(adapters.calls, [])
+
     def test_event_encoding_is_exact_one_line_canonical_json_and_rejects_nan(self):
         self.assertEqual(
             event_line({"schema": 1, "kind": "stage", "z": 2, "a": "ç"}),
@@ -2146,6 +2350,20 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(candidate_started["candidate_total"], self.config.budget.max_candidates + 1)
         final_payload = json.loads(report.report_path.read_text(encoding="utf-8"))
         self.assertEqual(final_payload["events"][-1]["kind"], "run_finished")
+
+    def test_progress_journal_coalesces_report_writes_below_event_count(self):
+        real_write = orchestrator_module.atomic_write_json
+        with patch.object(
+            orchestrator_module, "atomic_write_json", wraps=real_write
+        ) as write:
+            report = self.run_optimizer()
+
+        report_writes = [
+            call for call in write.call_args_list
+            if Path(call.args[0]) == report.report_path
+        ]
+        self.assertGreater(len(report.events), 10)
+        self.assertLess(len(report_writes), len(report.events) // 2)
 
     def test_legacy_profile_never_invokes_typed_selector(self):
         def forbidden(_manifest):

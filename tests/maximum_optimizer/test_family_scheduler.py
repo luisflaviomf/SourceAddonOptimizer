@@ -144,6 +144,22 @@ class FamilySchedulerTests(unittest.TestCase):
                 memory_limit=lambda: 0,
             )
 
+    def test_does_not_publish_duplicate_updates_while_worker_is_busy(self):
+        updates: list[FamilySchedulerUpdate] = []
+
+        run_family_jobs(
+            (FamilyWorkItem(0, 1, "family"),),
+            max_workers=1,
+            worker=lambda value: time.sleep(0.3) or value,
+            on_update=updates.append,
+        )
+
+        self.assertTrue(updates)
+        self.assertTrue(all(
+            current != previous
+            for previous, current in zip(updates, updates[1:])
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()
