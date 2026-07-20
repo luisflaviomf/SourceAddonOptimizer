@@ -214,6 +214,20 @@ def _index_entries(
     return indexed
 
 
+def _material_availability(entry: dict) -> tuple[bool, tuple[str, ...]] | None:
+    texture_missing = entry.get("texture_missing")
+    missing_materials = entry.get("missing_materials")
+    if (
+        type(texture_missing) is not bool
+        or type(missing_materials) is not list
+        or any(type(value) is not str or not value for value in missing_materials)
+        or len(set(missing_materials)) != len(missing_materials)
+        or texture_missing != bool(missing_materials)
+    ):
+        return None
+    return texture_missing, tuple(missing_materials)
+
+
 def _validate_entry_matrix(
     indexed: dict[tuple[str, str, str], dict],
     expected: dict[str, object],
@@ -245,6 +259,12 @@ def _validate_resolved_materials(
     consistent_evidence: dict[str, dict] = {}
     for key, entry in indexed.items():
         scope = _scope(key)
+        availability = _material_availability(entry)
+        if availability is None or (key[0] != "textured" and availability[0]):
+            failures.append(_failure(
+                "invalid_material_evidence", f"{label}/{scope}",
+                "texture availability evidence is invalid",
+            ))
         raw = entry.get("resolved_materials")
         if type(raw) is not list:
             failures.append(_failure(
@@ -724,8 +744,7 @@ def _load_source_union_manifest(
     for entry in manifest["entries"]:
         if (
             type(entry) is not dict or set(entry) != entry_fields
-            or entry.get("missing_materials") != []
-            or entry.get("texture_missing") is not False
+            or _material_availability(entry) is None
             or type(entry.get("resolved_materials")) is not list
         ):
             failures.append(_failure("invalid_manifest", label, "source-union entry schema is invalid"))
@@ -894,18 +913,13 @@ def _compare_bound_render_manifests(
                         "material_evidence_mismatch", scope,
                         "reference and candidate material evidence differ",
                     ))
-                for label, entry in (
-                    ("reference", reference_entry),
-                    ("candidate", candidate_entry),
-                ):
-                    if entry.get("texture_missing") is not False:
-                        failures.append(
-                            _failure(
-                                "texture_missing",
-                                scope,
-                                f"{label} textured render has missing texture material",
-                            )
-                        )
+                reference_availability = _material_availability(reference_entry)
+                candidate_availability = _material_availability(candidate_entry)
+                if reference_availability != candidate_availability:
+                    failures.append(_failure(
+                        "texture_missing", scope,
+                        "reference and candidate unresolved material sets differ",
+                    ))
             reference_image = _load_verified_image(
                 reference_dir, reference_entry, "reference", scope, failures
             )

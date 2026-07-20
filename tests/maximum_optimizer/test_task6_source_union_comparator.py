@@ -72,6 +72,30 @@ class SourceUnionComparatorTests(unittest.TestCase):
             self.assertTrue(result.passed)
             self.assertEqual(set(REQUIRED_METRICS), set(result.metrics) - {"fidelity_score"})
 
+    def test_matching_unresolved_external_materials_are_valid_without_overlay_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reference = root / "reference"; candidate = root / "candidate"
+            reference.mkdir(); candidate.mkdir(); contract = _contract()
+            _write_union_side(reference, "reference", contract)
+            _write_union_side(candidate, "candidate", contract)
+            missing = ["meshes/body.smd:slot:0:external/body"]
+            for side in (reference, candidate):
+                manifest_path = side / "render_manifest.json"
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+                for entry in payload["entries"]:
+                    if entry["pass"] == "textured":
+                        entry["texture_missing"] = True
+                        entry["missing_materials"] = missing
+                        entry["resolved_materials"] = []
+                manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            result = compare_source_union_render_sets(
+                reference, candidate, _profile(), expected_contract=contract
+            )
+
+            self.assertTrue(result.passed, result.failures)
+
     def test_shared_core_matches_legacy_for_identical_images_and_geometry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); contract = _contract()

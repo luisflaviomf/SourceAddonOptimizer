@@ -202,6 +202,24 @@ class VisualValidationTests(unittest.TestCase):
             self.candidate, candidate_entries, poses=poses, regions=regions
         )
 
+    def test_matching_unresolved_external_materials_do_not_require_another_addon(self):
+        self.write_matching()
+        missing = ["fixture.smd:slot:0:external/body"]
+        for root in (self.reference, self.candidate):
+            manifest_path = root / "render_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for entry in manifest["entries"]:
+                if entry["pass"] == "textured":
+                    entry["texture_missing"] = True
+                    entry["missing_materials"] = missing
+                    entry["resolved_materials"] = []
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        result = compare_render_sets(self.reference, self.candidate, _profile())
+
+        self.assertTrue(result.passed, result.failures)
+        self.assertEqual(result.metrics["fidelity_score"], 1.0)
+
     def test_resolved_material_evidence_mutations_fail_closed(self):
         self.write_matching()
         manifest_path = self.candidate / "render_manifest.json"
