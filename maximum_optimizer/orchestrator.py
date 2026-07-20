@@ -111,6 +111,11 @@ from .parallelism import (
 from .progress_journal import DurableProgressJournal
 from .qc_inventory import _inventory_qc, build_family_manifests
 from .qc_graph import QcGraph, parse_qc_graph
+from .reference_bundle import (
+    ReferenceBundle,
+    ReferenceBundleIdentity,
+    ReferenceBundleStore,
+)
 from .regions import filter_region_manifest, load_region_manifest_payload
 from .reporting import atomic_write_json, canonical_json, canonical_payload, deep_freeze, event_line
 from .search import blender_adaptive_candidates, choose_next, select_winner
@@ -4448,6 +4453,12 @@ class ProductionAdapters:
             Path, tuple[FocusedEvidenceContext, FocusSelection, tuple[object, ...], Mapping[str, object]]
         ] = {}
         self._recovery_artifact_roots: dict[str, Path] = {}
+        self._reference_store = ReferenceBundleStore(
+            self.config.work_dir / "reference-render-cache"
+        )
+        self._reference_identities: dict[
+            tuple[str, str], ReferenceBundleIdentity
+        ] = {}
 
     def fork_for_family(self) -> ProductionAdapters:
         return ProductionAdapters(self.config, self.cancel_event)
@@ -4624,6 +4635,81 @@ class ProductionAdapters:
             str(candidate.workspace.resolve()).casefold().encode("utf-8")
         ).hexdigest()[:16]
         return Path(tempfile.gettempdir()).resolve() / "maximum-vtf-cache" / identity
+
+    @staticmethod
+    def _optional_file_digest(path: Path | None) -> str:
+        if path is None or not path.is_file() or _is_reparse(path):
+            return hashlib.sha256(b"missing").hexdigest()
+        return _sha256_file(path)
+
+    def _reference_identity(
+        self, manifest: FamilyManifest, profile: FidelityProfile
+    ) -> ReferenceBundleIdentity:
+        cache_key = (manifest.family_id, profile.version)
+        cached = self._reference_identities.get(cache_key)
+        if cached is not None:
+            return cached
+        material_roots = tuple(str(path) for path in self._materials_roots())
+        identity = ReferenceBundleIdentity(
+            family_id=manifest.family_id,
+            family_hash=manifest.input_hash,
+            renderer_sha256=self._optional_file_digest(
+                self.config.repo_root / "render_previews.py"
+            ),
+            profile_sha256=self._optional_file_digest(self.config.profile_path),
+            dependency_digest=str(
+                _dependency_proof(self.config, self.cancel_event)["digest"]
+            ),
+            material_roots_sha256=hashlib.sha256(
+                canonical_json(material_roots).encode("utf-8")
+            ).hexdigest(),
+            vtfcmd_sha256=self._optional_file_digest(self._vtfcmd()),
+        )
+        self._reference_identities[cache_key] = identity
+        return identity
+
+    def _publish_reference_bundle(
+        self,
+        identity: ReferenceBundleIdentity,
+        render_root: Path,
+        state_names: Sequence[str],
+        workspace: Path,
+    ) -> ReferenceBundle:
+        source = workspace / "reference-bundle-source"
+        if os.path.lexists(source):
+            _remove_workspace_owned_tree(
+                workspace, source, "reference bundle staging source"
+            )
+        source.mkdir()
+        try:
+            for state_name in state_names:
+                original = render_root / state_name / "original"
+                if not (original / "render_manifest.json").is_file():
+                    raise CandidateBuildError(
+                        "reference render manifest is unavailable", stage="render"
+                    )
+                _copytree_cancellable(
+                    original, source / state_name / "original", self.cancel_event
+                )
+            return self._reference_store.publish(identity, source)
+        finally:
+            if os.path.lexists(source):
+                _remove_workspace_owned_tree(
+                    workspace, source, "reference bundle staging source"
+                )
+
+    def _materialize_reference_state(
+        self,
+        bundle: ReferenceBundle,
+        state_name: str,
+        destination: Path,
+    ) -> None:
+        source = bundle.root / state_name / "original"
+        if not (source / "render_manifest.json").is_file():
+            raise CandidateBuildError(
+                f"sealed reference state is missing: {state_name}", stage="render"
+            )
+        _copytree_cancellable(source, destination, self.cancel_event)
 
     def inventory(self, config: MaximumRunConfig) -> Sequence[FamilyManifest]:
         return build_family_manifests(
@@ -4819,6 +4905,8 @@ class ProductionAdapters:
             )
         pose_arg = f"bind:0,representative:{animation[2]}" if animation else "bind:0"
         vtfcmd = self._vtfcmd()
+        reference_identity = self._reference_identity(manifest, profile)
+        reference_bundle = self._reference_store.lookup(reference_identity)
         state_results: list[tuple[str, ValidationResult]] = []
         state_index_records: list[dict[str, object]] = []
         for state_index, (before_state, after_state) in enumerate(
@@ -4828,6 +4916,10 @@ class ProductionAdapters:
                 raise ProcessCancelledError("cancelled before render validation")
             state_name = before_state.name
             state_root = render_root / state_name
+            if reference_bundle is not None:
+                self._materialize_reference_state(
+                    reference_bundle, state_name, state_root / "original"
+                )
             before = tuple(
                 source_root / source.relative_to(manifest.source_dir.resolve(strict=True))
                 for source in before_state.sources
@@ -4887,6 +4979,9 @@ class ProductionAdapters:
             command.extend((
                 "--out", str(state_root), "--size", "512",
                 "--passes", "textured,clay", "--poses", pose_arg,
+                "--render-side", (
+                    "candidate" if reference_bundle is not None else "both"
+                ),
                 "--region-manifest", str(state_region_manifest),
                 "--source-root", str(copied_source_root),
                 "--configuration-manifest", str(configuration_manifest),
@@ -4991,6 +5086,13 @@ class ProductionAdapters:
                         geometry_rows, key=lambda row: (row["scope"], row["pose"])
                     ),
                 })
+        if reference_bundle is None:
+            reference_bundle = self._publish_reference_bundle(
+                reference_identity,
+                render_root,
+                tuple(state.name for state in original_states),
+                candidate.workspace,
+            )
         aggregate = _aggregate_visual_results(state_results)
         if focused_profile is not None and aggregate.passed:
             profile_file_hash = _sha256_file(self.config.profile_path, self.cancel_event)

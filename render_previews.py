@@ -1316,6 +1316,12 @@ def _parse_args(argv: list[str]):
         "--source-pose-evidence-out", default=None,
         help="Source-only regional pose producer evidence JSON",
     )
+    ap.add_argument(
+        "--render-side",
+        choices=("both", "reference", "candidate"),
+        default="both",
+        help="Render one image side while still loading both geometries",
+    )
     return ap.parse_args(argv)
 
 
@@ -4370,6 +4376,64 @@ def _run_source_union(args, before: list[Path], after: list[Path], out_dir: Path
         raise ValueError("source-union renderer final raw inventory differs")
 
 
+def _render_side_flags(render_side: str) -> tuple[bool, bool]:
+    if render_side == "both":
+        return True, True
+    if render_side == "reference":
+        return True, False
+    if render_side == "candidate":
+        return False, True
+    raise ValueError("render side is invalid")
+
+
+def _render_extended_pair(render_side: str, render_reference, render_candidate):
+    render_reference_images, render_candidate_images = _render_side_flags(render_side)
+    reference = render_reference(render_images=render_reference_images)
+    candidate = render_candidate(
+        render_images=render_candidate_images, fit=reference[2]
+    )
+    return reference, candidate
+
+
+def _reuse_reference_entries(root: Path) -> list[dict]:
+    manifest_path = Path(root) / "render_manifest.json"
+    if _bootstrap_reparse(manifest_path):
+        raise ValueError("reused reference manifest is unsafe")
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("reused reference manifest is missing or corrupt") from exc
+    entries = payload.get("entries") if type(payload) is dict else None
+    if payload.get("schema") != 1 or type(entries) is not list or not entries:
+        raise ValueError("reused reference manifest entries are invalid")
+    copied: list[dict] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if type(entry) is not dict:
+            raise ValueError("reused reference entry is invalid")
+        relative = entry.get("image")
+        expected = entry.get("sha256")
+        if (
+            type(relative) is not str
+            or not relative
+            or PurePosixPath(relative).as_posix() != relative
+            or relative.startswith("/")
+            or ".." in PurePosixPath(relative).parts
+            or relative.casefold() in seen
+            or type(expected) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+        ):
+            raise ValueError("reused reference entry path or hash is invalid")
+        seen.add(relative.casefold())
+        image_path = Path(root).joinpath(*PurePosixPath(relative).parts)
+        if not image_path.is_file() or _bootstrap_reparse(image_path):
+            raise ValueError("reused reference image is missing or unsafe")
+        if hashlib.sha256(image_path.read_bytes()).hexdigest() != expected:
+            raise ValueError("reused reference image hash differs")
+        copied.append(dict(entry))
+    return copied
+
+
 def _render_extended_set(
     label: str,
     src_paths: list[Path],
@@ -4393,6 +4457,7 @@ def _render_extended_set(
     source_pose_request=None,
     source_pose_evidence_root: Path | None = None,
     source_pose_sink: dict | None = None,
+    render_images: bool = True,
 ) -> tuple[list[dict], dict[str, dict[str, dict]], tuple, dict]:
     _clear_scene()
     _setup_scene(size, transparent=True)
@@ -4448,6 +4513,8 @@ def _render_extended_set(
     )
     source_pose_runtime = None
     if source_pose_request is not None:
+        if not render_images:
+            raise ValueError("source pose evidence requires reference image rendering")
         if (
             source_pose_evidence_root is None or type(source_pose_sink) is not dict
             or source_pose_sink or focus_region is None or animation_binding is None
@@ -4494,41 +4561,42 @@ def _render_extended_set(
     cam_obj.data.ortho_scale = ortho_scale
     _setup_lights(center, ortho_scale)
     entries = []
-    root.mkdir(parents=True, exist_ok=True)
-    for render_pass in passes:
-        if render_pass == "clay":
-            _apply_clay_material(render_objs)
-            material_audit = {"missing": (), "resolved": ()}
-        else:
-            material_audit = _apply_textured_materials(
-                render_objs,
-                blender_source_materials,
-                materials_root,
-                vtfcmd,
-                texture_cache,
-                source_search_paths=source_search_paths,
-            )
-        for pose_name, frame in poses:
-            _set_pose_state(animation_binding, pose_name, frame)
-            for angle in angles:
-                direction = ANGLE_DIRS[angle]
-                _set_camera_pose(cam_obj, center, direction, dist)
-                image_path = root / render_pass / pose_name / f"{angle}.png"
-                image_path.parent.mkdir(parents=True, exist_ok=True)
-                bpy.context.scene.render.filepath = str(image_path)
-                bpy.ops.render.render(write_still=True)
-                entries.append(
-                    _render_entry(
-                        root,
-                        render_pass,
-                        pose_name,
-                        angle,
-                        image_path,
-                        texture_missing=bool(material_audit["missing"]),
-                        missing_materials=material_audit["missing"],
-                        resolved_materials=material_audit["resolved"],
-                    )
+    if render_images:
+        root.mkdir(parents=True, exist_ok=True)
+        for render_pass in passes:
+            if render_pass == "clay":
+                _apply_clay_material(render_objs)
+                material_audit = {"missing": (), "resolved": ()}
+            else:
+                material_audit = _apply_textured_materials(
+                    render_objs,
+                    blender_source_materials,
+                    materials_root,
+                    vtfcmd,
+                    texture_cache,
+                    source_search_paths=source_search_paths,
                 )
+            for pose_name, frame in poses:
+                _set_pose_state(animation_binding, pose_name, frame)
+                for angle in angles:
+                    direction = ANGLE_DIRS[angle]
+                    _set_camera_pose(cam_obj, center, direction, dist)
+                    image_path = root / render_pass / pose_name / f"{angle}.png"
+                    image_path.parent.mkdir(parents=True, exist_ok=True)
+                    bpy.context.scene.render.filepath = str(image_path)
+                    bpy.ops.render.render(write_still=True)
+                    entries.append(
+                        _render_entry(
+                            root,
+                            render_pass,
+                            pose_name,
+                            angle,
+                            image_path,
+                            texture_missing=bool(material_audit["missing"]),
+                            missing_materials=material_audit["missing"],
+                            resolved_materials=material_audit["resolved"],
+                        )
+                    )
     if source_pose_runtime is not None:
         evidence_root = Path(source_pose_evidence_root)
         if evidence_root.exists():
@@ -4645,54 +4713,70 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
     original_dir = out_dir / "original"
     candidate_dir = out_dir / "optimized"
     source_pose_sink = {} if source_pose_request is not None else None
-    reference_entries, reference_snapshots, fit, bbox = _render_extended_set(
-        "before",
-        before,
-        original_dir,
-        validated_angles,
-        args.size,
-        passes,
-        poses,
-        materials_root,
-        vtfcmd,
-        texture_cache,
-        region_manifest,
-        source_identities_tuple,
-        source_materials,
-        animation_before,
-        source_search_paths=source_search_paths,
-        aggregate_regions=args.aggregate_regions,
-        focus_region=focus_region,
-        source_pose_request=source_pose_request,
-        source_pose_evidence_root=(
-            out_dir / "source-pose-repeat" if source_pose_request is not None else None
-        ),
-        source_pose_sink=source_pose_sink,
+    def render_reference(*, render_images: bool):
+        return _render_extended_set(
+            "before",
+            before,
+            original_dir,
+            validated_angles,
+            args.size,
+            passes,
+            poses,
+            materials_root,
+            vtfcmd,
+            texture_cache,
+            region_manifest,
+            source_identities_tuple,
+            source_materials,
+            animation_before,
+            source_search_paths=source_search_paths,
+            aggregate_regions=args.aggregate_regions,
+            focus_region=focus_region,
+            source_pose_request=source_pose_request,
+            source_pose_evidence_root=(
+                out_dir / "source-pose-repeat" if source_pose_request is not None else None
+            ),
+            source_pose_sink=source_pose_sink,
+            render_images=render_images,
+        )
+
+    def render_candidate(*, render_images: bool, fit):
+        return _render_extended_set(
+            "after",
+            after,
+            candidate_dir,
+            validated_angles,
+            args.size,
+            passes,
+            poses,
+            materials_root,
+            vtfcmd,
+            texture_cache,
+            region_manifest,
+            source_identities_tuple,
+            source_materials,
+            animation_after,
+            fit=fit,
+            source_search_paths=source_search_paths,
+            aggregate_regions=args.aggregate_regions,
+            focus_region=focus_region,
+            render_images=render_images,
+        )
+
+    reference, candidate = _render_extended_pair(
+        args.render_side, render_reference, render_candidate
     )
+    reference_entries, reference_snapshots, fit, bbox = reference
+    candidate_entries, candidate_snapshots, _, candidate_bbox = candidate
+    render_reference_images, render_candidate_images = _render_side_flags(
+        args.render_side
+    )
+    if not render_reference_images:
+        reference_entries = _reuse_reference_entries(original_dir)
     if source_pose_request is not None:
         if not source_pose_sink or source_pose_output is None:
             raise ValueError("source pose producer emitted no evidence")
         _source_union_write_json(source_pose_output, source_pose_sink)
-    candidate_entries, candidate_snapshots, _, candidate_bbox = _render_extended_set(
-        "after",
-        after,
-        candidate_dir,
-        validated_angles,
-        args.size,
-        passes,
-        poses,
-        materials_root,
-        vtfcmd,
-        texture_cache,
-        region_manifest,
-        source_identities_tuple,
-        source_materials,
-        animation_after,
-        fit=fit,
-        source_search_paths=source_search_paths,
-        aggregate_regions=args.aggregate_regions,
-        focus_region=focus_region,
-    )
     if focus_region is not None:
         _validate_focus_render_payload(
             reference_entries, reference_snapshots, passes, validated_angles,
@@ -4720,29 +4804,32 @@ def _run_extended(args, before: list[Path], after: list[Path], out_dir: Path, an
     reference_geometry = _reference_geometry_entries(
         reference_snapshots, regions, pose_names
     )
-    _write_render_manifest(
-        original_dir,
-        reference_entries,
-        reference_geometry,
-        bbox,
-        expected=expected,
-        stride=stride,
-        seed=seed,
-        configuration=configuration,
-        geometry_audit=_geometry_audit_payload(reference_snapshots),
-    )
-    manifest_path = _write_render_manifest(
-        candidate_dir,
-        candidate_entries,
-        geometry,
-        candidate_bbox,
-        expected=expected,
-        stride=stride,
-        seed=seed,
-        configuration=configuration,
-        geometry_audit=_geometry_audit_payload(candidate_snapshots),
-    )
-    print(f"[OK] Render manifest: {manifest_path}")
+    if render_reference_images or args.render_side == "candidate":
+        _write_render_manifest(
+            original_dir,
+            reference_entries,
+            reference_geometry,
+            bbox,
+            expected=expected,
+            stride=stride,
+            seed=seed,
+            configuration=configuration,
+            geometry_audit=_geometry_audit_payload(reference_snapshots),
+        )
+    manifest_path = None
+    if render_candidate_images:
+        manifest_path = _write_render_manifest(
+            candidate_dir,
+            candidate_entries,
+            geometry,
+            candidate_bbox,
+            expected=expected,
+            stride=stride,
+            seed=seed,
+            configuration=configuration,
+            geometry_audit=_geometry_audit_payload(candidate_snapshots),
+        )
+    print(f"[OK] Render manifest: {manifest_path or original_dir / 'render_manifest.json'}")
 
 
 def main():

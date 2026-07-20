@@ -3171,8 +3171,13 @@ class OrchestratorTests(unittest.TestCase):
                     entry.descriptor.source_identity for entry in region_manifest.entries
                 })
                 out = Path(command[command.index("--out") + 1])
-                for side in ("original", "optimized"):
-                    (out / side).mkdir(parents=True)
+                render_side = command[command.index("--render-side") + 1]
+                sides = (
+                    ("optimized",) if render_side == "candidate"
+                    else ("original", "optimized")
+                )
+                for side in sides:
+                    (out / side).mkdir(parents=True, exist_ok=True)
                     (out / side / "render_manifest.json").write_text(json.dumps({
                         "geometry": [
                             {
@@ -3205,6 +3210,7 @@ class OrchestratorTests(unittest.TestCase):
             renders[1][renders[1].index("--region-manifest") + 1],
         )
         for render in renders:
+            self.assertEqual(render[render.index("--render-side") + 1], "both")
             self.assertTrue(
                 render[render.index("--source-root") + 1].endswith("render-source")
             )
@@ -3235,6 +3241,11 @@ class OrchestratorTests(unittest.TestCase):
                 focused_profile=load_profile(self.config.profile_path),
             )
         self.assertTrue(focused_whole.passed)
+        reused_renders = commands[-2:]
+        self.assertTrue(all(
+            command[command.index("--render-side") + 1] == "candidate"
+            for command in reused_renders
+        ))
         whole_index_path = workspace / "logs/whole-visual-index.json"
         self.assertTrue(whole_index_path.is_file())
         seal = adapter._whole_index_seals[workspace.resolve()]
