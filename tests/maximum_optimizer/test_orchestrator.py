@@ -3225,6 +3225,11 @@ class OrchestratorTests(unittest.TestCase):
                 })
                 out = Path(command[command.index("--out") + 1])
                 render_side = command[command.index("--render-side") + 1]
+                if render_side == "candidate":
+                    self.assertTrue(
+                        (out / "original" / "render_manifest.json").is_file(),
+                        "candidate-only staging must include the sealed reference bundle",
+                    )
                 sides = (
                     ("optimized",) if render_side == "candidate"
                     else ("original", "optimized")

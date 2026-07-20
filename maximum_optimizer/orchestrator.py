@@ -5014,6 +5014,12 @@ class ProductionAdapters:
             render_log = candidate.workspace / "logs" / f"render-{state_name}.log"
             with tempfile.TemporaryDirectory(prefix="maximum-render-") as temporary:
                 blender_render_root = Path(temporary).resolve(strict=True)
+                if reference_bundle is not None:
+                    _copytree_cancellable(
+                        state_root / "original",
+                        blender_render_root / "original",
+                        self.cancel_event,
+                    )
                 command: list[str] = list(self._blender_command(
                     "--background", "--python",
                     str(self.config.repo_root / "render_previews.py"), "--",
