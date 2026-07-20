@@ -28,6 +28,7 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal int? Jobs { get; init; }
         internal int? DecompileJobs { get; init; }
         internal int? CompileJobs { get; init; }
+        internal int MaximumJobs { get; init; } = 0;
         internal bool Strict { get; init; }
         internal bool ResumeOpt { get; init; }
         internal bool Overwrite { get; init; }
@@ -123,17 +124,12 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal event Action<SourceAddonOptimizerProgressUpdate>? ProgressUpdate;
         internal event Action<string>? OutputPathFound;
 
-        internal async Task<int> RunAsync(SourceAddonOptimizerRunOptions options, CancellationToken cancellationToken)
+        internal static ProcessStartInfo BuildStartInfo(SourceAddonOptimizerRunOptions options)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (string.IsNullOrWhiteSpace(options.WorkerExePath))
-                throw new ArgumentException("Worker exe path is required.", nameof(options.WorkerExePath));
-            if (!File.Exists(options.WorkerExePath))
-                throw new FileNotFoundException("Worker exe not found.", options.WorkerExePath);
-            if (string.IsNullOrWhiteSpace(options.AddonPath))
-                throw new ArgumentException("Addon path is required.", nameof(options.AddonPath));
-            if (string.IsNullOrWhiteSpace(options.WorkDir))
-                throw new ArgumentException("Work dir is required.", nameof(options.WorkDir));
+            if (options == null)
+                throw new ArgumentNullException(nameof(options));
+            if (options.MaximumJobs < 0 || options.MaximumJobs > Environment.ProcessorCount)
+                throw new ArgumentOutOfRangeException(nameof(options.MaximumJobs));
 
             var startInfo = new ProcessStartInfo
             {
@@ -149,115 +145,93 @@ namespace GmodAddonCompressor.Systems.Optimizer
             startInfo.ArgumentList.Add("--work");
             startInfo.ArgumentList.Add(options.WorkDir);
 
-            if (!string.IsNullOrWhiteSpace(options.Suffix))
+            static void AddValue(ProcessStartInfo info, string name, string? value)
             {
-                startInfo.ArgumentList.Add("--suffix");
-                startInfo.ArgumentList.Add(options.Suffix);
+                if (string.IsNullOrWhiteSpace(value))
+                    return;
+                info.ArgumentList.Add(name);
+                info.ArgumentList.Add(value);
             }
 
-            if (!string.IsNullOrWhiteSpace(options.OptimizerMode))
+            AddValue(startInfo, "--suffix", options.Suffix);
+            AddValue(startInfo, "--optimizer-mode", options.OptimizerMode);
+            AddValue(startInfo, "--blender", options.BlenderPath);
+            AddValue(startInfo, "--studiomdl", options.StudioMdlPath);
+
+            static void AddNumber(ProcessStartInfo info, string name, double? value)
             {
-                startInfo.ArgumentList.Add("--optimizer-mode");
-                startInfo.ArgumentList.Add(options.OptimizerMode);
+                if (!value.HasValue)
+                    return;
+                info.ArgumentList.Add(name);
+                info.ArgumentList.Add(value.Value.ToString(CultureInfo.InvariantCulture));
             }
 
-            if (!string.IsNullOrWhiteSpace(options.BlenderPath))
-            {
-                startInfo.ArgumentList.Add("--blender");
-                startInfo.ArgumentList.Add(options.BlenderPath);
-            }
-
-            if (!string.IsNullOrWhiteSpace(options.StudioMdlPath))
-            {
-                startInfo.ArgumentList.Add("--studiomdl");
-                startInfo.ArgumentList.Add(options.StudioMdlPath);
-            }
-
-            if (options.Ratio.HasValue)
-            {
-                startInfo.ArgumentList.Add("--ratio");
-                startInfo.ArgumentList.Add(options.Ratio.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (options.Merge.HasValue)
-            {
-                startInfo.ArgumentList.Add("--merge");
-                startInfo.ArgumentList.Add(options.Merge.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (options.AutoSmooth.HasValue)
-            {
-                startInfo.ArgumentList.Add("--autosmooth");
-                startInfo.ArgumentList.Add(options.AutoSmooth.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
+            AddNumber(startInfo, "--ratio", options.Ratio);
+            AddNumber(startInfo, "--merge", options.Merge);
+            AddNumber(startInfo, "--autosmooth", options.AutoSmooth);
             if (options.UsePlanar)
             {
                 startInfo.ArgumentList.Add("--use-planar");
-
-                if (options.PlanarAngle.HasValue)
-                {
-                    startInfo.ArgumentList.Add("--planar-angle");
-                    startInfo.ArgumentList.Add(options.PlanarAngle.Value.ToString(CultureInfo.InvariantCulture));
-                }
+                AddNumber(startInfo, "--planar-angle", options.PlanarAngle);
             }
-
             if (options.ExperimentalGroundPolicy)
                 startInfo.ArgumentList.Add("--experimental-ground-policy");
-
             if (options.ExperimentalRoundPartsPolicy)
                 startInfo.ArgumentList.Add("--experimental-round-parts-policy");
-
             if (options.ExperimentalSteerTurnBasisFix)
                 startInfo.ArgumentList.Add("--experimental-steer-turn-basis-fix");
+            AddValue(startInfo, "--format", options.Format);
 
-            if (!string.IsNullOrWhiteSpace(options.Format))
+            static void AddInteger(ProcessStartInfo info, string name, int? value)
             {
-                startInfo.ArgumentList.Add("--format");
-                startInfo.ArgumentList.Add(options.Format);
+                if (!value.HasValue)
+                    return;
+                info.ArgumentList.Add(name);
+                info.ArgumentList.Add(value.Value.ToString(CultureInfo.InvariantCulture));
             }
 
-            if (options.Jobs.HasValue)
+            AddInteger(startInfo, "--jobs", options.Jobs);
+            AddInteger(startInfo, "--decompile-jobs", options.DecompileJobs);
+            AddInteger(startInfo, "--compile-jobs", options.CompileJobs);
+            if (string.Equals(
+                options.OptimizerMode, "maximum", StringComparison.OrdinalIgnoreCase))
             {
-                startInfo.ArgumentList.Add("--jobs");
-                startInfo.ArgumentList.Add(options.Jobs.Value.ToString(CultureInfo.InvariantCulture));
+                startInfo.ArgumentList.Add("--maximum-jobs");
+                startInfo.ArgumentList.Add(
+                    options.MaximumJobs.ToString(CultureInfo.InvariantCulture));
             }
-
-            if (options.DecompileJobs.HasValue)
-            {
-                startInfo.ArgumentList.Add("--decompile-jobs");
-                startInfo.ArgumentList.Add(options.DecompileJobs.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (options.CompileJobs.HasValue)
-            {
-                startInfo.ArgumentList.Add("--compile-jobs");
-                startInfo.ArgumentList.Add(options.CompileJobs.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
             if (options.Strict)
                 startInfo.ArgumentList.Add("--strict");
-
             if (options.ResumeOpt)
                 startInfo.ArgumentList.Add("--resume-opt");
-
             if (options.Overwrite)
                 startInfo.ArgumentList.Add("--overwrite");
-
             if (options.OverwriteWork)
                 startInfo.ArgumentList.Add("--overwrite-work");
-
             if (!options.RestoreSkins)
                 startInfo.ArgumentList.Add("--no-restore-skins");
-
             if (options.CompileVerbose)
                 startInfo.ArgumentList.Add("--compile-verbose");
-
             if (options.CleanupWorkModelArtifacts)
                 startInfo.ArgumentList.Add("--cleanup-work-model-artifacts");
-
             if (options.SingleAddonOnly)
                 startInfo.ArgumentList.Add("--single-addon-only");
+            return startInfo;
+        }
+
+        internal async Task<int> RunAsync(SourceAddonOptimizerRunOptions options, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(options.WorkerExePath))
+                throw new ArgumentException("Worker exe path is required.", nameof(options.WorkerExePath));
+            if (!File.Exists(options.WorkerExePath))
+                throw new FileNotFoundException("Worker exe not found.", options.WorkerExePath);
+            if (string.IsNullOrWhiteSpace(options.AddonPath))
+                throw new ArgumentException("Addon path is required.", nameof(options.AddonPath));
+            if (string.IsNullOrWhiteSpace(options.WorkDir))
+                throw new ArgumentException("Work dir is required.", nameof(options.WorkDir));
+
+            var startInfo = BuildStartInfo(options);
 
             using var process = _processFactory(startInfo);
             process.OutputLine += line => HandleLine(line, false);

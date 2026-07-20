@@ -56,6 +56,7 @@ namespace GmodAddonCompressor.DataContexts
         private int _optimizerJobs = 0;
         private int _optimizerDecompileJobs = 1;
         private int _optimizerCompileJobs = 1;
+        private int _optimizerMaximumJobs = 0;
         private bool _optimizerStrict = false;
         private bool _optimizerResumeOpt = false;
         private bool _optimizerOverwrite = false;
@@ -1069,6 +1070,17 @@ namespace GmodAddonCompressor.DataContexts
             set
             {
                 _modelsProgressText = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public int OptimizerMaximumJobs
+        {
+            get { return _optimizerMaximumJobs; }
+            set
+            {
+                _optimizerMaximumJobs = System.Math.Clamp(
+                    value, 0, System.Environment.ProcessorCount);
                 OnPropertyChanged();
             }
         }

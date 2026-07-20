@@ -34,6 +34,10 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal double? ReductionPercent { get; init; }
         internal string? GateStatus { get; init; }
         internal string? ReportPath { get; init; }
+        internal int? ActiveFamilies { get; init; }
+        internal int? CompletedFamilies { get; init; }
+        internal int? EffectiveMaximumJobs { get; init; }
+        internal bool? MemoryThrottled { get; init; }
     }
 
     internal sealed class SourceAddonOptimizerProgressParser
@@ -198,13 +202,27 @@ namespace GmodAddonCompressor.Systems.Optimizer
                     || !TryReadNullableInt64(root, "best_bytes", out var bestBytes)
                     || !TryReadNullableDouble(root, "reduction_percent", out var reductionPercent)
                     || !TryReadNullableString(root, "gate_status", out var gateStatus)
-                    || !TryReadNullableString(root, "report_path", out var reportPath))
+                    || !TryReadNullableString(root, "report_path", out var reportPath)
+                    || !TryReadNullableInt32(root, "active_families", out var activeFamilies)
+                    || !TryReadNullableInt32(root, "completed_families", out var completedFamilies)
+                    || !TryReadNullableInt32(root, "effective_jobs", out var effectiveJobs)
+                    || !TryReadNullableBoolean(root, "memory_throttled", out var memoryThrottled))
                     return null;
 
                 if (!HasValidCounterPair(familyIndex, familyTotal)
                     || !HasValidCounterPair(candidateIndex, candidateTotal)
                     || bestBytes < 0
-                    || reductionPercent > 100)
+                    || reductionPercent > 100
+                    || activeFamilies < 0
+                    || completedFamilies < 0
+                    || effectiveJobs <= 0
+                    || (activeFamilies.HasValue && effectiveJobs.HasValue
+                        && activeFamilies.Value > effectiveJobs.Value)
+                    || (completedFamilies.HasValue && familyTotal.HasValue
+                        && completedFamilies.Value > familyTotal.Value)
+                    || (activeFamilies.HasValue && completedFamilies.HasValue
+                        && familyTotal.HasValue
+                        && activeFamilies.Value + completedFamilies.Value > familyTotal.Value))
                     return null;
 
                 return new SourceAddonOptimizerProgressUpdate
@@ -220,7 +238,11 @@ namespace GmodAddonCompressor.Systems.Optimizer
                     BestBytes = bestBytes,
                     ReductionPercent = reductionPercent,
                     GateStatus = gateStatus,
-                    ReportPath = reportPath
+                    ReportPath = reportPath,
+                    ActiveFamilies = activeFamilies,
+                    CompletedFamilies = completedFamilies,
+                    EffectiveMaximumJobs = effectiveJobs,
+                    MemoryThrottled = memoryThrottled
                 };
             }
             catch (JsonException)
@@ -301,6 +323,24 @@ namespace GmodAddonCompressor.Systems.Optimizer
                 return false;
             value = parsed;
             return true;
+        }
+
+        private static bool TryReadNullableBoolean(JsonElement root, string name, out bool? value)
+        {
+            value = null;
+            if (!root.TryGetProperty(name, out var element) || element.ValueKind == JsonValueKind.Null)
+                return true;
+            if (element.ValueKind == JsonValueKind.True)
+            {
+                value = true;
+                return true;
+            }
+            if (element.ValueKind == JsonValueKind.False)
+            {
+                value = false;
+                return true;
+            }
+            return false;
         }
 
         private static bool IsIntegerToken(JsonElement element)

@@ -63,6 +63,7 @@ namespace GmodAddonCompressor
         private string? _modelsWorkDir = null;
         private string? _modelsLastErrorLine = null;
         private string? _maximumReportPath = null;
+        private string _maximumCandidateProgressText = string.Empty;
         private int _modelsStepIndex = 0;
         private int _modelsStepTotal = 0;
         private string _modelsPhase = string.Empty;
@@ -2308,6 +2309,7 @@ namespace GmodAddonCompressor
             _context.ModelsProgressText = string.Empty;
             _context.MaximumProgressText = string.Empty;
             _context.MaximumBestText = string.Empty;
+            _maximumCandidateProgressText = string.Empty;
             _context.ModelsProgressMinValue = 0;
             _context.ModelsProgressMaxValue = 100;
             _context.ModelsProgressValue = 0;
@@ -2334,6 +2336,7 @@ namespace GmodAddonCompressor
                 Jobs = _context.OptimizerJobs,
                 DecompileJobs = _context.OptimizerDecompileJobs,
                 CompileJobs = _context.OptimizerCompileJobs,
+                MaximumJobs = _context.OptimizerMaximumJobs,
                 Strict = _context.OptimizerStrict,
                 ResumeOpt = _context.OptimizerResumeOpt,
                 Overwrite = _context.OptimizerOverwrite,
@@ -2449,6 +2452,7 @@ namespace GmodAddonCompressor
             _maximumReportPath = null;
             _context.MaximumProgressText = string.Empty;
             _context.MaximumBestText = string.Empty;
+            _maximumCandidateProgressText = string.Empty;
             _modelsStepIndex = 0;
             _modelsStepTotal = 0;
             _modelsPhase = string.Empty;
@@ -2530,6 +2534,7 @@ namespace GmodAddonCompressor
                     Jobs = _context.OptimizerJobs,
                     DecompileJobs = _context.OptimizerDecompileJobs,
                     CompileJobs = _context.OptimizerCompileJobs,
+                    MaximumJobs = _context.OptimizerMaximumJobs,
                     Strict = _context.OptimizerStrict,
                     ResumeOpt = _context.OptimizerResumeOpt,
                     Overwrite = _context.OptimizerOverwrite,
@@ -2797,9 +2802,35 @@ namespace GmodAddonCompressor
             if (!string.IsNullOrWhiteSpace(update.GateStatus))
                 progressParts.Add($"Gate: {update.GateStatus}");
 
-            _context.MaximumProgressText = progressParts.Count > 0
+            string itemProgress = progressParts.Count > 0
                 ? string.Join(" | ", progressParts)
                 : update.MaximumKind!;
+            bool hasCandidateProgress = update.CandidateIndex.HasValue
+                || !string.IsNullOrWhiteSpace(update.CandidateId)
+                || !string.IsNullOrWhiteSpace(update.Stage);
+            if (hasCandidateProgress)
+                _maximumCandidateProgressText = itemProgress;
+
+            if (string.Equals(
+                update.MaximumKind, "scheduler_status", StringComparison.Ordinal))
+            {
+                var aggregateParts = new List<string>();
+                if (update.ActiveFamilies.HasValue && update.EffectiveMaximumJobs.HasValue)
+                    aggregateParts.Add($"Active families: {update.ActiveFamilies.Value}/{update.EffectiveMaximumJobs.Value}");
+                if (update.CompletedFamilies.HasValue && update.FamilyTotal.HasValue)
+                    aggregateParts.Add($"Completed: {update.CompletedFamilies.Value}/{update.FamilyTotal.Value}");
+                if (update.MemoryThrottled == true)
+                    aggregateParts.Add("RAM limited");
+                if (!string.IsNullOrWhiteSpace(_maximumCandidateProgressText))
+                    aggregateParts.Add(_maximumCandidateProgressText);
+                _context.MaximumProgressText = aggregateParts.Count > 0
+                    ? string.Join(" | ", aggregateParts)
+                    : itemProgress;
+            }
+            else
+            {
+                _context.MaximumProgressText = itemProgress;
+            }
 
             var bestParts = new List<string>();
             if (update.BestBytes.HasValue)
@@ -2812,7 +2843,14 @@ namespace GmodAddonCompressor
                 _context.MaximumBestText = string.Join(" | ", bestParts);
 
             _context.ModelsStatusText = $"Maximum: {update.MaximumKind}";
-            if (update.CandidateIndex.HasValue && update.CandidateTotal.HasValue)
+            if (update.CompletedFamilies.HasValue && update.FamilyTotal.HasValue)
+            {
+                _context.ModelsProgressMinValue = 0;
+                _context.ModelsProgressMaxValue = Math.Max(update.FamilyTotal.Value, 1);
+                _context.ModelsProgressValue = Math.Min(
+                    update.CompletedFamilies.Value, _context.ModelsProgressMaxValue);
+            }
+            else if (update.CandidateIndex.HasValue && update.CandidateTotal.HasValue)
             {
                 _context.ModelsProgressMinValue = 0;
                 _context.ModelsProgressMaxValue = Math.Max(update.CandidateTotal.Value, 1);
@@ -3309,6 +3347,8 @@ namespace GmodAddonCompressor
                 if (index >= 0 && index < _context.OptimizerModeList.Length)
                     _context.OptimizerModeIndex = index;
             }
+            if (_settings.OptimizerMaximumJobs.HasValue)
+                _context.OptimizerMaximumJobs = _settings.OptimizerMaximumJobs.Value;
             if (_settings.OptimizerUsePlanar.HasValue)
                 _context.OptimizerUsePlanar = _settings.OptimizerUsePlanar.Value;
             if (_settings.OptimizerPlanarAngle.HasValue)
@@ -3425,6 +3465,7 @@ namespace GmodAddonCompressor
                 OptimizerSuffix = _context.OptimizerSuffix,
                 OptimizerPreset = PresetNameFromIndex(_context.OptimizerPresetIndex),
                 OptimizerModeIndex = _context.OptimizerModeIndex,
+                OptimizerMaximumJobs = _context.OptimizerMaximumJobs,
                 OptimizerUsePlanar = _context.OptimizerUsePlanar,
                 OptimizerPlanarAngle = _context.OptimizerPlanarAngle,
                 OptimizerUseExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,

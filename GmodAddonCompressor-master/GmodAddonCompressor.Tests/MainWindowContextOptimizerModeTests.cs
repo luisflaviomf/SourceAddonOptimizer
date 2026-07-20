@@ -79,4 +79,18 @@ public sealed class MainWindowContextOptimizerModeTests
         CollectionAssert.Contains(changed, nameof(context.MaximumProgressText));
         CollectionAssert.Contains(changed, nameof(context.MaximumBestText));
     }
+
+    [TestMethod]
+    public void MaximumJobsDefaultsToAutoAndIsObservable()
+    {
+        var context = new MainWindowContext();
+        var changed = new List<string>();
+        context.PropertyChanged += (_, args) => changed.Add(args.PropertyName ?? string.Empty);
+
+        Assert.AreEqual(0, context.OptimizerMaximumJobs);
+        context.OptimizerMaximumJobs = 4;
+
+        Assert.AreEqual(4, context.OptimizerMaximumJobs);
+        CollectionAssert.Contains(changed, nameof(context.OptimizerMaximumJobs));
+    }
 }

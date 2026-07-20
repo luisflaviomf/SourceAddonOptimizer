@@ -9,6 +9,31 @@ public sealed class SourceAddonOptimizerProgressParserTests
     private readonly SourceAddonOptimizerProgressParser _parser = new();
 
     [TestMethod]
+    public void SchedulerStatusParsesAggregateProgress()
+    {
+        var update = _parser.Parse(
+            "MAXIMUM_EVENT {\"schema\":1,\"kind\":\"scheduler_status\",\"active_families\":8,\"completed_families\":24,\"family_total\":163,\"effective_jobs\":10,\"memory_throttled\":false}");
+
+        Assert.IsNotNull(update);
+        Assert.AreEqual(8, update.ActiveFamilies);
+        Assert.AreEqual(24, update.CompletedFamilies);
+        Assert.AreEqual(10, update.EffectiveMaximumJobs);
+        Assert.AreEqual(false, update.MemoryThrottled);
+    }
+
+    [TestMethod]
+    [DataRow("active_families", "-1")]
+    [DataRow("completed_families", "1.5")]
+    [DataRow("effective_jobs", "0")]
+    [DataRow("memory_throttled", "\"false\"")]
+    public void RejectsMalformedSchedulerStatusFields(string field, string value)
+    {
+        var line = $"MAXIMUM_EVENT {{\"schema\":1,\"kind\":\"scheduler_status\",\"{field}\":{value}}}";
+
+        Assert.IsNull(_parser.Parse(line));
+    }
+
+    [TestMethod]
     public void ParsesEveryMaximumFieldWithExactTypes()
     {
         var update = _parser.Parse(

@@ -39,6 +39,7 @@ namespace GmodAddonCompressor.Models
         public string? OptimizerSuffix { get; set; }
         public string? OptimizerPreset { get; set; }
         public int? OptimizerModeIndex { get; set; }
+        public int? OptimizerMaximumJobs { get; set; }
         public OptimizerCustomParams OptimizerCustom { get; set; } = new OptimizerCustomParams();
         public bool? OptimizerUsePlanar { get; set; }
         public double? OptimizerPlanarAngle { get; set; }
