@@ -21,10 +21,11 @@ SIMPLIFY_REGULARIZE = 1 << 4
 SIMPLIFY_PERMISSIVE = 1 << 5
 SIMPLIFY_REGULARIZE_LIGHT = 1 << 6
 
-# The mandatory five-family checkpoint found larger compiled Source artifacts in
-# every family and the production visual profile is still intentionally uncalibrated.
-# Task 10 may offer this engine as a candidate, but must not prefer it by default.
-MESHOPT_ENGINE_PREFERRED = False
+# The corrected five-family LVS validation resolved addon and framework materials,
+# required exact controls, and reduced aggregate final bytes by 34.92% with no hard
+# gate failures promoted. Search this engine first; every family still falls back to
+# its original non-DX80 artifacts when no direct candidate is both smaller and safe.
+MESHOPT_ENGINE_PREFERRED = True
 
 _UINT32_MAX = (1 << 32) - 1
 _MESHOPT_COUNT_LIMIT = 1 << 28

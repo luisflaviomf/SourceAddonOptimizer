@@ -130,7 +130,7 @@ EVENT_KINDS = frozenset(
     }
 )
 _RATIOS = (0.75, 0.50, 0.35, 0.25, 0.15, 0.10, 0.05)
-_POSITION_DIRECT_TARGET_ERRORS = (0.005, 0.0075, 0.009, 0.01, 0.015, 0.02)
+_POSITION_DIRECT_TARGET_ERRORS = (0.005, 0.00625, 0.0075, 0.009, 0.01, 0.015, 0.02)
 _ENGINE_NAMES = frozenset({"fidelity", "blender", "meshoptimizer"})
 _IO_CHUNK_SIZE = 1024 * 1024
 
@@ -362,6 +362,18 @@ def _snapshot_from_artifacts(root: Path, artifacts: Sequence[ArtifactStat]) -> C
     )
 
 
+def _without_dx80(snapshot: CompiledSizeSnapshot) -> CompiledSizeSnapshot:
+    return _snapshot_from_artifacts(
+        snapshot.root,
+        tuple(
+            artifact
+            for artifact in snapshot.artifacts
+            if artifact.kind.casefold() != ".dx80.vtx"
+            and not artifact.relative_path.casefold().endswith(".dx80.vtx")
+        ),
+    )
+
+
 def _family_snapshot(snapshot: CompiledSizeSnapshot, model_rel: str) -> CompiledSizeSnapshot:
     artifacts = tuple(
         item for item in snapshot.artifacts
@@ -529,7 +541,7 @@ def _default_schedule() -> tuple[CandidateSpec, ...]:
     )
     if os.environ.get("MAXIMUM_RND_BLENDER_ADAPTIVE") == "1":
         return (fidelity, *blender_adaptive_candidates(), *meshopt)
-    return (fidelity, *meshopt, *blender) if MESHOPT_ENGINE_PREFERRED else (fidelity, *blender, *meshopt)
+    return (*meshopt, fidelity, *blender) if MESHOPT_ENGINE_PREFERRED else (fidelity, *blender, *meshopt)
 
 
 def _default_sink(event: dict[str, Any]) -> None:
@@ -686,6 +698,31 @@ def _copytree_cancellable(
     return destination
 
 
+def _remove_dx80_artifacts(
+    models_root: Path,
+    cancel_event: threading.Event | None,
+) -> None:
+    root = Path(models_root).resolve(strict=True)
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        _check_cancelled(cancel_event, "cancelled while removing DX80 artifacts")
+        parent = Path(directory)
+        for name in directory_names:
+            if _is_reparse(parent / name):
+                raise ValueError("models output contains a reparse directory")
+        for name in file_names:
+            if not name.casefold().endswith(".dx80.vtx"):
+                continue
+            path = parent / name
+            if (
+                _is_reparse(path)
+                or not stat.S_ISREG(path.lstat().st_mode)
+                or not _within(path.resolve(strict=True), root)
+            ):
+                raise ValueError("DX80 output artifact is unsafe")
+            path.unlink()
+    _check_cancelled(cancel_event, "cancelled after removing DX80 artifacts")
+
+
 def _restore_cache_payload(
     cache_entry: Path,
     workspace: Path,
@@ -706,14 +743,37 @@ def _restore_cache_payload(
 
 
 def _configured_vtfcmd(config: MaximumRunConfig) -> Path | None:
-    local = Path(os.environ.get("LOCALAPPDATA", "")) / "GmodAddonOptimizer" / "tools" / "VTFEdit" / "VTFCmd.exe"
+    local_root = (
+        Path(os.environ.get("LOCALAPPDATA", ""))
+        / "GmodAddonOptimizer" / "tools" / "VTFEdit"
+    )
+    versioned: tuple[Path, ...] = ()
+    try:
+        if local_root.is_dir() and not _is_reparse(local_root):
+            versioned = tuple(
+                child / "VTFEdit" / "VTFCmd.exe"
+                for child in sorted(
+                    (item for item in local_root.iterdir() if item.is_dir()),
+                    key=lambda item: item.name.casefold(),
+                    reverse=True,
+                )
+            )
+    except OSError:
+        versioned = ()
     candidates = (
         Path(os.environ["VTFCMD"]).expanduser() if os.environ.get("VTFCMD") else None,
         config.repo_root / "VTFEdit" / "VTFCmd.exe",
         config.repo_root / "tools" / "VTFEdit" / "VTFCmd.exe",
-        local,
+        local_root / "VTFCmd.exe",
+        *versioned,
     )
-    return next((path.resolve() for path in candidates if path is not None and path.is_file()), None)
+    return next((
+        path.resolve()
+        for path in candidates
+        if path is not None
+        and path.is_file()
+        and all(not _is_reparse(component) for component in _existing_components(path))
+    ), None)
 
 
 def _dependency_material_root_identities(config: MaximumRunConfig) -> tuple[str, ...]:
@@ -1792,7 +1852,14 @@ def _expected_output_manifest(
     selected: Sequence[tuple[FamilyRunOutcome, CandidateBuild, FamilyManifest]],
     cancel_event: threading.Event | None = None,
 ) -> dict[str, dict[str, int | str]]:
-    expected = _tree_manifest(addon_dir, cancel_event)
+    expected = {
+        logical: proof
+        for logical, proof in _tree_manifest(addon_dir, cancel_event).items()
+        if not (
+            logical.casefold().startswith("models/")
+            and logical.casefold().endswith(".dx80.vtx")
+        )
+    }
     for outcome, build, manifest in selected:
         family_original = [
             logical for logical in expected
@@ -1809,6 +1876,7 @@ def _expected_output_manifest(
         required = {
             base + (kind if str(kind).startswith(".") else "." + str(kind))
             for kind in manifest.required_artifact_kinds
+            if str(kind).casefold() != ".dx80.vtx"
         }
         missing_required = sorted(
             logical for logical in required
@@ -1819,6 +1887,8 @@ def _expected_output_manifest(
         for logical, provenance in sorted(build.provenance.items()):
             if provenance != "candidate-compile" or not _is_exact_family_artifact(logical, outcome.model_rel):
                 raise ValueError(f"candidate provenance contains invalid family artifact: {logical}")
+            if logical.casefold().endswith(".dx80.vtx"):
+                continue
             relative = PurePosixPath(logical.replace("\\", "/"))
             source = build.compiled_models_dir.joinpath(*relative.parts)
             if _is_reparse(source) or not source.is_file():
@@ -2140,6 +2210,7 @@ def run_maximum_addon(
 
     for family_index, manifest in enumerate(manifests):
         original_family = _family_snapshot(original, manifest.model_rel)
+        original_without_dx80 = _without_dx80(original_family)
         attempts: list[AttemptReport] = []
         emit("family_started", family=manifest.model_rel, index=family_index, total=total_family_count)
         try:
@@ -2199,12 +2270,14 @@ def run_maximum_addon(
             write_selection_audit()
             outcome = FamilyRunOutcome(
                 manifest.family_id, manifest.model_rel, "failed", None,
-                original_family, None, original_family, {}, tuple(attempts),
+                original_family, None, original_without_dx80,
+                compare_snapshots(original_family, original_family, original_without_dx80),
+                tuple(attempts),
                 f"fidelity profile selection failed: {exc}", {}, {},
                 {"source": "original-preserved"},
             )
             outcomes.append(outcome)
-            selected_snapshots.append(original_family)
+            selected_snapshots.append(original_without_dx80)
             emit(
                 "family_finished",
                 family=manifest.model_rel,
@@ -2212,7 +2285,16 @@ def run_maximum_addon(
                 reason=outcome.reason,
             )
             continue
-        control_spec = CandidateSpec("roundtrip-control", "blender", 1.0, 0.0, "roundtrip-control")
+        control_spec = CandidateSpec(
+            "roundtrip-control",
+            "blender",
+            1.0,
+            0.0,
+            "blender-adaptive-v1",
+            strategy="blender-adaptive-v1",
+            update_vertices=True,
+            transfer="blender-native-v1",
+        )
         control_build: CandidateBuild | None = None
         control_size: CompiledSizeSnapshot | None = None
         control_valid = False
@@ -2279,18 +2361,19 @@ def run_maximum_addon(
                     else "control roundtrip failed structural or visual compatibility gates"
                 )
             )
-            control_savings = (
-                compare_snapshots(original_family, control_size, original_family)
-                if control_size is not None
-                else {}
+            retained = original_family if cancel.is_set() else original_without_dx80
+            control_savings = compare_snapshots(
+                original_family,
+                control_size if control_size is not None else original_family,
+                retained,
             )
             outcome = FamilyRunOutcome(
                 manifest.family_id, manifest.model_rel, status, None,
-                original_family, control_size, original_family, control_savings, tuple(attempts), reason,
+                original_family, control_size, retained, control_savings, tuple(attempts), reason,
                 *_worst(attempts), {"source": "original-preserved"},
             )
             outcomes.append(outcome)
-            selected_snapshots.append(original_family)
+            selected_snapshots.append(retained)
             emit("family_finished", family=manifest.model_rel, status=status, reason=reason)
             if cancel.is_set():
                 break
@@ -2319,22 +2402,29 @@ def run_maximum_addon(
                 None,
                 original_family,
                 control_size,
-                original_family,
-                compare_snapshots(original_family, control_size, original_family),
+                original_without_dx80,
+                compare_snapshots(original_family, control_size, original_without_dx80),
                 tuple(attempts),
                 reason,
                 *_worst(attempts),
-                {item.relative_path: "original-preserved" for item in original_family.artifacts},
+                {
+                    item.relative_path: "original-preserved"
+                    for item in original_without_dx80.artifacts
+                },
             )
             outcomes.append(outcome)
-            selected_snapshots.append(original_family)
+            selected_snapshots.append(original_without_dx80)
             emit(
                 "family_finished",
                 family=manifest.model_rel,
                 status="failed",
                 reason=reason,
-                best_bytes=original_family.total_bytes,
-                reduction_percent=0.0,
+                best_bytes=original_without_dx80.total_bytes,
+                reduction_percent=(
+                    (original_family.total_bytes - original_without_dx80.total_bytes)
+                    / original_family.total_bytes * 100
+                    if original_family.total_bytes else 0.0
+                ),
             )
             continue
         evaluations: list[CandidateEvaluation] = []
@@ -2911,7 +3001,9 @@ def run_maximum_addon(
 
         winner = None if recovery_error_reason is not None else select_winner(evaluations)
         no_positive_saving = (
-            winner is not None and winner.size.total_bytes >= original_family.total_bytes
+            winner is not None
+            and _without_dx80(winner.size).total_bytes
+            >= original_without_dx80.total_bytes
         )
         if no_positive_saving:
             winner = None
@@ -2920,7 +3012,7 @@ def run_maximum_addon(
             selected_id = None
             provenance = {"source": "original-preserved"}
         elif recovery_error_reason is not None:
-            status, reason, selected = "failed", recovery_error_reason, original_family
+            status, reason, selected = "failed", recovery_error_reason, original_without_dx80
             selected_id = None
             provenance = {"source": "original-preserved"}
         elif winner is None:
@@ -2931,12 +3023,16 @@ def run_maximum_addon(
                     if no_positive_saving
                     else "no candidate passed all hard gates"
                 ),
-                original_family,
+                original_without_dx80,
             )
             selected_id = None
             provenance = {"source": "original-preserved"}
         else:
-            status, reason, selected = "optimized", "smallest passing compiled candidate selected", winner.size
+            status, reason, selected = (
+                "optimized",
+                "smallest passing compiled candidate selected",
+                _without_dx80(winner.size),
+            )
             selected_id = winner.spec.candidate_id
             selected_builds[manifest.family_id] = candidate_builds[selected_id]
             if selected_id in recovery_authorizations:
@@ -3019,6 +3115,7 @@ def run_maximum_addon(
         family_id = hashlib.sha256(model_rel.casefold().encode("utf-8")).hexdigest()
         original_family = _family_snapshot(original, model_rel)
         missing_status = "cancelled" if cancel.is_set() else "preserved"
+        retained = original_family if cancel.is_set() else _without_dx80(original_family)
         diagnostic = str(
             inventory_diagnostics.get(model_rel)
             or inventory_diagnostics.get(model_rel.casefold())
@@ -3039,15 +3136,15 @@ def run_maximum_addon(
             None,
             original_family,
             None,
-            original_family,
-            {},
+            retained,
+            compare_snapshots(original_family, original_family, retained),
             (),
             reason,
             {},
             {},
-            {item.relative_path: "original-preserved" for item in original_family.artifacts},
+            {item.relative_path: "original-preserved" for item in retained.artifacts},
         ))
-        selected_snapshots.append(original_family)
+        selected_snapshots.append(retained)
         emit(
             "family_finished",
             family=model_rel,
@@ -3120,6 +3217,7 @@ def run_maximum_addon(
                 _copy_selected_family(
                     build, staging / "models", outcome.model_rel, cancel
                 )
+        _remove_dx80_artifacts(staging / "models", cancel)
         if cancel.is_set():
             raise ProcessCancelledError("cancelled before output promotion")
         _promote_verified_tree(

@@ -238,8 +238,9 @@ class MeshoptBridgeTests(unittest.TestCase):
         )
         self.assertEqual(compact.bone_indices[retained], (7, 2, 0, 0))
 
-    def test_checkpoint_keeps_meshoptimizer_non_preferred(self) -> None:
-        self.assertIs(MESHOPT_ENGINE_PREFERRED, False)
+    def test_validated_direct_engine_is_preferred(self) -> None:
+        self.assertIs(MESHOPT_ENGINE_PREFERRED, True)
+
     def test_real_dll_simplifies_grid_and_preserves_locked_border_and_materials(self) -> None:
         source = _grid()
         result = simplify_mesh(

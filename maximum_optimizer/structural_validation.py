@@ -194,7 +194,13 @@ def _artifact_gates(
             )
             continue
 
-        if relative_path not in provenance:
+        provenance_matches = [
+            value
+            for path, value in provenance.items()
+            if isinstance(path, str)
+            and path.replace("\\", "/").casefold() == relative_path.casefold()
+        ]
+        if not provenance_matches:
             failures.append(
                 GateFailure(
                     "missing_provenance",
@@ -204,12 +210,22 @@ def _artifact_gates(
                     f"candidate artifact has no provenance: {relative_path}",
                 )
             )
-        elif provenance[relative_path] != "candidate-compile":
+        elif len(provenance_matches) > 1:
+            failures.append(
+                GateFailure(
+                    "ambiguous_provenance",
+                    relative_path,
+                    float(len(provenance_matches)),
+                    1.0,
+                    f"candidate artifact has ambiguous provenance: {relative_path}",
+                )
+            )
+        elif provenance_matches[0] != "candidate-compile":
             failures.append(
                 GateFailure(
                     "hidden_fallback",
                     relative_path,
-                    str(provenance[relative_path]),
+                    str(provenance_matches[0]),
                     "candidate-compile",
                     f"candidate artifact was not produced by candidate compile: {relative_path}",
                 )

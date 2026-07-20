@@ -2274,7 +2274,9 @@ namespace GmodAddonCompressor
 
             await RefreshAddonWorkshopWarningAsync(addonDirectoryPath, force: true);
 
-            if (!EnsureToolsAvailable("Models"))
+            if (!EnsureToolsAvailable(
+                "Models",
+                OptimizerModeNeedsVtfTool(_context.OptimizerModeIndex)))
                 return;
 
             if (!File.Exists(ToolPaths.WorkerExePath))
@@ -2417,7 +2419,9 @@ namespace GmodAddonCompressor
 
             await RefreshAddonWorkshopWarningAsync(addonDirectoryPath, force: true);
 
-            if (!EnsureToolsAvailable("Pipeline"))
+            if (!EnsureToolsAvailable(
+                "Pipeline",
+                OptimizerModeNeedsVtfTool(_context.OptimizerModeIndex)))
                 return;
 
             if (!File.Exists(ToolPaths.WorkerExePath))
@@ -3251,11 +3255,19 @@ namespace GmodAddonCompressor
             });
         }
 
-        private bool EnsureToolsAvailable(string title)
+        private bool EnsureToolsAvailable(string title, bool includeVtfRenderTool = false)
         {
             try
             {
                 ToolExtractionSystem.EnsureSourceAddonOptimizerExtracted();
+                if (includeVtfRenderTool)
+                {
+                    ToolExtractionSystem.EnsureExtracted(
+                        "VTFEdit",
+                        "1",
+                        global::GmodAddonCompressor.Properties.Resources.VTFEdit,
+                        new[] { Path.Combine("VTFEdit", "VTFCmd.exe") });
+                }
                 return true;
             }
             catch (FileNotFoundException ex)
@@ -3568,6 +3580,9 @@ namespace GmodAddonCompressor
                 _ => "normal",
             };
         }
+
+        internal static bool OptimizerModeNeedsVtfTool(int optimizerModeIndex) =>
+            optimizerModeIndex == OptimizerModeMaximumIndex;
 
         private string GetOptimizerModeArgument() =>
             GetOptimizerModeArgument(_context.OptimizerModeIndex);

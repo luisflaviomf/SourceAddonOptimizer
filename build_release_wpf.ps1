@@ -5,6 +5,8 @@ $repoRoot = Split-Path -Parent $PSCommandPath
 
 $packageScript = Join-Path $repoRoot "pyinstaller\package_wpf_tools.ps1"
 $csprojPath = Join-Path $repoRoot "GmodAddonCompressor-master\GmodAddonCompressor\GmodAddonCompressor.csproj"
+$testProjectPath = Join-Path $repoRoot "GmodAddonCompressor-master\GmodAddonCompressor.Tests\GmodAddonCompressor.Tests.csproj"
+$bridgeBuildScript = Join-Path $repoRoot "maximum_optimizer\native\build.ps1"
 $runtimeIdentifier = "win-x64"
 $configuration = "Release"
 $publishProfile = "win-x64-singlefile"
@@ -47,6 +49,28 @@ if (!(Test-Path $packageScript)) {
 
 if (!(Test-Path $csprojPath)) {
     throw "WPF project not found: $csprojPath"
+}
+
+Invoke-Step -Name "Build meshoptimizer bridge" -Action {
+    & $bridgeBuildScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "meshoptimizer bridge build failed with exit code $LASTEXITCODE."
+    }
+}
+
+Invoke-Step -Name "Run Maximum optimizer Python tests" -Action {
+    & python -m unittest discover -s tests/maximum_optimizer -t . -p "test_*.py" -q
+    if ($LASTEXITCODE -ne 0) {
+        throw "Maximum optimizer Python tests failed with exit code $LASTEXITCODE."
+    }
+}
+
+Invoke-Step -Name "Run WPF tests" -Action {
+    Invoke-Dotnet @(
+        "test",
+        $testProjectPath,
+        "-c", $configuration
+    )
 }
 
 Invoke-Step -Name "Clean runtime-specific build output" -Action {

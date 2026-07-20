@@ -4,6 +4,7 @@ import os
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Sequence
@@ -29,6 +30,11 @@ class ProcessExecutionError(RuntimeError):
 
 
 _CANCEL_EXIT_GRACE_SECONDS = 0.1
+_FROZEN_WORKER_SCRIPT_COMMAND = "__worker_script__"
+_FROZEN_WORKER_SCRIPTS = frozenset({
+    "batch_compile_opt_qc.py",
+    "batch_decompile_organize.py",
+})
 
 
 def _normalize_command(command: Sequence[str | os.PathLike[str]]) -> tuple[str, ...]:
@@ -38,6 +44,28 @@ def _normalize_command(command: Sequence[str | os.PathLike[str]]) -> tuple[str, 
     if not normalized or any(not isinstance(item, str) or not item for item in normalized):
         raise ValueError("command must contain non-empty string or path arguments")
     return normalized
+
+
+def _prepare_command_for_runtime(
+    command: Sequence[str | os.PathLike[str]],
+) -> tuple[str, ...]:
+    normalized = _normalize_command(command)
+    if not getattr(sys, "frozen", False) or len(normalized) < 2:
+        return normalized
+    try:
+        executable = Path(normalized[0]).resolve()
+        frozen_executable = Path(sys.executable).resolve()
+    except (OSError, RuntimeError):
+        return normalized
+    script_name = Path(normalized[1]).name.casefold()
+    if executable != frozen_executable or script_name not in _FROZEN_WORKER_SCRIPTS:
+        return normalized
+    return (
+        str(frozen_executable),
+        _FROZEN_WORKER_SCRIPT_COMMAND,
+        script_name,
+        *normalized[2:],
+    )
 
 
 def _quoted_command(command: tuple[str, ...]) -> str:
@@ -341,7 +369,7 @@ def run_process(
     log_path: str | os.PathLike[str],
     cancel_event: Event,
 ) -> ProcessResult:
-    normalized = _normalize_command(command)
+    normalized = _prepare_command_for_runtime(command)
     working_directory = Path(cwd).expanduser().resolve()
     destination = Path(log_path)
     if not working_directory.is_dir():

@@ -46,3 +46,4 @@ teste*.zip
 
 # PyInstaller
 *.spec
+!pyinstaller/worker.spec

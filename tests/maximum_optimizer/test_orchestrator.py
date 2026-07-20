@@ -1840,10 +1840,99 @@ class OrchestratorTests(unittest.TestCase):
         )
         report = self.run_optimizer()
         family = report.families[0]
-        self.assertEqual(family.status, "preserved")
+        self.assertEqual(family.status, "preserved", family.reason)
         self.assertIsNone(family.selected_candidate)
         self.assertIn("no candidate passed", family.reason)
         self.assertEqual((self.config.output_dir / "models" / "test.mdl").read_bytes(), b"o" * 120)
+
+    def test_roundtrip_control_uses_exact_preserving_adaptive_blender_path(self):
+        observed = []
+        original_build = self.adapters.build
+
+        def build(manifest, spec, workspace, tools, cancel_event):
+            if spec.candidate_id == "roundtrip-control":
+                observed.append(spec)
+            return original_build(manifest, spec, workspace, tools, cancel_event)
+
+        self.adapters.build = build
+        self.run_optimizer()
+
+        self.assertEqual(len(observed), 1)
+        control = observed[0]
+        self.assertEqual(control.strategy, "blender-adaptive-v1")
+        self.assertEqual(control.transfer, "blender-native-v1")
+        self.assertTrue(control.update_vertices)
+        self.assertEqual(control.target_ratio, 1.0)
+
+    def test_preserved_family_always_omits_dx80_from_output_and_accounting(self):
+        dx80 = self.config.addon_dir / "models" / "test.dx80.vtx"
+        dx80.write_bytes(b"8" * 20)
+        original_build = self.adapters.build
+
+        def build(*args, **kwargs):
+            result = original_build(*args, **kwargs)
+            if result.spec.candidate_id != "roundtrip-control":
+                return result
+            control_dx80 = result.compiled_models_dir / "test.dx80.vtx"
+            control_dx80.write_bytes(b"8" * 20)
+            return CandidateBuild(
+                result.spec,
+                result.workspace,
+                result.optimized_qc,
+                result.compiled_models_dir,
+                result.compile_record,
+                {**result.provenance, "test.dx80.vtx": "candidate-compile"},
+                result.commands,
+                result.source_snapshot,
+            )
+
+        self.adapters.build = build
+        self.adapters.visual = lambda _manifest, _control, candidate, _profile: ValidationResult(
+            candidate.spec.candidate_id == "roundtrip-control",
+            worst_scope="all",
+        )
+
+        report = self.run_optimizer()
+
+        family = report.families[0]
+        self.assertEqual(family.status, "preserved", family.reason)
+        self.assertFalse((self.config.output_dir / "models" / "test.dx80.vtx").exists())
+        self.assertEqual(family.original_size.total_bytes, 140)
+        self.assertEqual(family.selected_size.total_bytes, 120)
+        self.assertEqual(family.savings["optional_removed_bytes"], 20)
+        self.assertEqual(report.final_size.total_bytes, 120)
+        self.assertNotIn(".dx80.vtx", report.final_size.bytes_by_kind)
+
+    def test_optimized_family_always_omits_candidate_dx80(self):
+        (self.config.addon_dir / "models" / "test.dx80.vtx").write_bytes(b"8" * 20)
+        original_build = self.adapters.build
+
+        def build(*args, **kwargs):
+            result = original_build(*args, **kwargs)
+            candidate_dx80 = result.compiled_models_dir / "test.dx80.vtx"
+            candidate_dx80.write_bytes(b"8" * 10)
+            return CandidateBuild(
+                result.spec,
+                result.workspace,
+                result.optimized_qc,
+                result.compiled_models_dir,
+                result.compile_record,
+                {**result.provenance, "test.dx80.vtx": "candidate-compile"},
+                result.commands,
+                result.source_snapshot,
+            )
+
+        self.adapters.build = build
+
+        report = self.run_optimizer()
+
+        family = report.families[0]
+        self.assertEqual(family.status, "optimized")
+        self.assertEqual(family.selected_candidate, "candidate-60")
+        self.assertFalse((self.config.output_dir / "models" / "test.dx80.vtx").exists())
+        self.assertEqual(family.selected_size.total_bytes, 60)
+        self.assertEqual(report.final_size.total_bytes, 60)
+        self.assertNotIn(".dx80.vtx", report.final_size.bytes_by_kind)
 
     def test_compile_failure_is_isolated_between_families(self):
         second = _family(self.root, "other")
@@ -3105,13 +3194,17 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual(roots, (addon_materials.resolve(), overlay.resolve()))
 
-    def test_default_schedule_prefers_blender_when_meshopt_is_not_preferred(self):
+    def test_default_schedule_prefers_calibrated_position_direct_engine(self):
         self.adapters.candidate_schedule = None
         report = self.run_optimizer()
-        engines = [attempt.engine for attempt in report.families[0].attempts if attempt.candidate_id != "roundtrip-control"]
-        self.assertGreater(len(engines), 1)
-        self.assertEqual(engines[0], "fidelity")
-        self.assertEqual(engines[1], "blender")
+        attempts = [
+            attempt for attempt in report.families[0].attempts
+            if attempt.candidate_id != "roundtrip-control"
+        ]
+        self.assertGreater(len(attempts), 1)
+        self.assertEqual(attempts[0].engine, "meshoptimizer")
+        self.assertEqual(attempts[0].candidate_id, "meshopt-position-e0005")
+        self.assertEqual(attempts[1].engine, "meshoptimizer")
 
     def test_explicit_rnd_flag_wires_compiler_aware_blender_schedule(self):
         with patch.dict(os.environ, {"MAXIMUM_RND_BLENDER_ADAPTIVE": "1"}):
@@ -3128,18 +3221,22 @@ class OrchestratorTests(unittest.TestCase):
         ]
         self.assertEqual(
             tuple(item.target_error for item in direct),
-            (0.005, 0.0075, 0.009, 0.01, 0.015, 0.02),
+            (0.005, 0.00625, 0.0075, 0.009, 0.01, 0.015, 0.02),
         )
         self.assertTrue(all(item.target_ratio == 0.20 for item in direct))
         self.assertTrue(all(item.update_vertices is False for item in direct))
 
-    def test_uncalibrated_production_profile_fails_closed_before_promotion(self):
-        self.config = MaximumRunConfig(
-            **{**self.config.to_kwargs(), "profile_path": Path(__file__).parents[2] / "maximum_optimizer" / "profiles" / "maximum-experimental-v1.json"}
+    def test_production_profile_is_calibrated_and_keeps_the_conservative_visual_frontier(self):
+        profile = load_profile(
+            Path(__file__).parents[2]
+            / "maximum_optimizer"
+            / "profiles"
+            / "maximum-experimental-v1.json"
         )
-        with self.assertRaisesRegex(ValueError, "calibrated"):
-            self.run_optimizer()
-        self.assertFalse(self.config.output_dir.exists())
+        self.assertTrue(profile.calibrated)
+        self.assertLessEqual(profile.limits["edge_error"], 0.105)
+        self.assertLessEqual(profile.limits["silhouette_iou"], 0.0125)
+        self.assertLessEqual(profile.limits["rgb_mae"], 0.0021)
 
     def test_lexical_work_overlap_is_rejected_before_any_mutation(self):
         sentinel = self.addon / "do-not-touch.txt"
@@ -3324,6 +3421,21 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(indexed["tool/vtfcmd"]["state"], "file")
         self.assertIn(str(materials.resolve()), first["material_roots"])
         self.assertNotEqual(first["digest"], second["digest"])
+
+    def test_configured_vtfcmd_finds_wpf_versioned_tool_extraction(self):
+        local = self.root / "local-app-data"
+        expected = (
+            local / "GmodAddonOptimizer" / "tools" / "VTFEdit" / "1"
+            / "VTFEdit" / "VTFCmd.exe"
+        )
+        expected.parent.mkdir(parents=True)
+        expected.write_bytes(b"vtfcmd")
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(local)}, clear=False):
+            os.environ.pop("VTFCMD", None)
+            actual = orchestrator_module._configured_vtfcmd(self.config)
+
+        self.assertEqual(actual, expected.resolve())
 
     def test_unknown_schedule_engine_is_rejected_before_candidate_build(self):
         self.adapters.candidate_schedule = lambda _manifest: (

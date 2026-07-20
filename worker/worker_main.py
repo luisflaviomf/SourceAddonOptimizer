@@ -14,6 +14,7 @@ if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
 import batch_decompile_organize
+import batch_compile_opt_qc
 import batch_build_map_bsp
 import batch_merge_addons
 import batch_scan_map_bsp
@@ -489,6 +490,20 @@ def _run_preview(argv: list[str]) -> int:
 
 def main(argv: list[str]) -> int:
     _ensure_crowbar_env()
+    if argv and argv[0] == "__worker_script__":
+        if len(argv) < 2:
+            print("[ERROR] Missing internal worker script name.")
+            return 2
+        scripts = {
+            "batch_compile_opt_qc.py": batch_compile_opt_qc.main,
+            "batch_decompile_organize.py": batch_decompile_organize.main,
+        }
+        script_name = argv[1].casefold()
+        target = scripts.get(script_name)
+        if target is None:
+            print(f"[ERROR] Internal worker script is not authorized: {argv[1]}")
+            return 2
+        return _run_inprocess(target, [script_name, *argv[2:]])
     if argv and argv[0] == "preview":
         return _run_preview(argv[1:])
     if argv and argv[0] == "unpack":

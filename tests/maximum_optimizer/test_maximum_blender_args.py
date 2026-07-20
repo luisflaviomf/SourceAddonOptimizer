@@ -941,6 +941,23 @@ class MaximumBlenderPureTests(unittest.TestCase):
             source_material_slot_identities(
                 "cars/body.smd", ("paint", "paint.001"), ("paint.999",)
             )
+
+    def test_material_slot_identity_ignores_complete_skinfix_union_suffix(self) -> None:
+        self.assertEqual(
+            source_material_slot_identities(
+                "cars/body.smd",
+                ("paint", "glass"),
+                ("paint", "glass", "wheel", "interior"),
+            ),
+            ("slot:0:paint", "slot:1:glass"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            source_material_slot_identities(
+                "cars/body.smd",
+                ("paint", "glass"),
+                ("paint", "wheel", "interior"),
+            )
     def test_wedges_preserve_uv_hard_normal_material_and_bone_identity(self) -> None:
         positions = ((0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0))
         triangles = ((0, 1, 2), (0, 2, 3))

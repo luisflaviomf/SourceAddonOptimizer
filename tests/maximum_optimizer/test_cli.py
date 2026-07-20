@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import build_optimized_addon
+from maximum_optimizer import processes
 from maximum_optimizer.orchestrator import (
+    MaximumConfigError,
     _promote_verified_tree,
     _tree_manifest,
     run_maximum_from_existing_args,
@@ -17,6 +19,49 @@ from worker import worker_main
 
 
 class MaximumCliTests(unittest.TestCase):
+    def test_frozen_python_children_are_routed_through_the_worker_dispatch(self):
+        executable = Path(r"C:\tools\SourceAddonOptimizerWorker.exe")
+        command = (
+            executable,
+            Path(r"C:\tools\_internal\batch_decompile_organize.py"),
+            "addon",
+            "--force",
+        )
+        with (
+            patch.object(processes.sys, "frozen", True, create=True),
+            patch.object(processes.sys, "executable", str(executable)),
+        ):
+            routed = processes._prepare_command_for_runtime(command)
+        self.assertEqual(
+            routed,
+            (
+                str(executable.resolve()),
+                "__worker_script__",
+                "batch_decompile_organize.py",
+                "addon",
+                "--force",
+            ),
+        )
+
+    def test_worker_dispatches_only_known_internal_scripts(self):
+        with patch.object(
+            worker_main.batch_decompile_organize, "main", return_value=7
+        ) as target:
+            self.assertEqual(
+                worker_main.main([
+                    "__worker_script__", "batch_decompile_organize.py", "addon", "--force"
+                ]),
+                7,
+            )
+        self.assertEqual(
+            target.call_args.args,
+            (),
+        )
+        self.assertEqual(
+            worker_main.main(["__worker_script__", "not-authorized.py"]),
+            2,
+        )
+
     def test_maximum_work_selection_never_deletes_existing_work(self):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp) / "existing-work"
@@ -320,7 +365,7 @@ class MaximumCliTests(unittest.TestCase):
             build_optimized_addon.main(["missing", "--optimizer-mode", "invalid"])
         self.assertEqual(raised.exception.code, 2)
 
-    def test_production_uncalibrated_profile_exits_two_before_decompile_or_output(self):
+    def test_production_profile_passes_calibration_gate_before_tool_preflight(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             addon = root / "addon"
@@ -333,14 +378,19 @@ class MaximumCliTests(unittest.TestCase):
                 blender=None,
                 studiomdl=None,
             )
-            rc = run_maximum_from_existing_args(
-                args,
-                repo_root=Path(__file__).parents[2],
-                addon_path=addon,
-                out_addon_dir=output,
-                work_dir=work,
-            )
+            with patch(
+                "maximum_optimizer.orchestrator._resolved_blender",
+                side_effect=MaximumConfigError("tool-stop"),
+            ) as tool_preflight:
+                rc = run_maximum_from_existing_args(
+                    args,
+                    repo_root=Path(__file__).parents[2],
+                    addon_path=addon,
+                    out_addon_dir=output,
+                    work_dir=work,
+                )
             self.assertEqual(rc, 2)
+            tool_preflight.assert_called_once()
             self.assertFalse(output.exists())
             self.assertFalse(work.exists())
 

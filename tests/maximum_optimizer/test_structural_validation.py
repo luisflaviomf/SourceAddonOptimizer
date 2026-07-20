@@ -283,6 +283,20 @@ class StructuralValidationTests(unittest.TestCase):
 
         self.assertIn("missing_provenance", {failure.gate for failure in result.failures})
 
+    def test_source_artifact_provenance_paths_are_case_insensitive_but_unambiguous(self):
+        case_changed = {
+            path.swapcase(): value for path, value in self.provenance.items()
+        }
+        self.assertTrue(self.validate(provenance=case_changed).passed)
+
+        ambiguous = dict(self.provenance)
+        ambiguous["VEHICLES/TEST.MDL"] = "candidate-compile"
+        result = self.validate(provenance=ambiguous)
+        self.assertIn(
+            "ambiguous_provenance",
+            {failure.gate for failure in result.failures},
+        )
+
     def test_only_exact_candidate_compile_provenance_is_accepted(self):
         for value in ("original-copy", "candidate-Compile", "", None):
             with self.subTest(value=value):

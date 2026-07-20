@@ -1,6 +1,16 @@
 {
   "schema": 1,
-  "version": "maximum-experimental-v1",
-  "calibrated": false,
-  "limits": {}
+  "version": "maximum-lvs10-conservative-v1",
+  "calibrated": true,
+  "corpus_hash": "d702c3100da35025307288cbabe6b7295473e7352adc10b4f57e6e1f91895f10",
+  "limits": {
+    "silhouette_iou": 0.0125,
+    "rgb_mae": 0.0015,
+    "edge_error": 0.105,
+    "surface_bidirectional_p95": 0.0018,
+    "surface_max": 0.0125,
+    "normal_angle_p95": 95.0,
+    "uv_error_p95": 0.8,
+    "skinning_error_p95": 0.00225
+  }
 }

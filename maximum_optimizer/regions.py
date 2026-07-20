@@ -67,7 +67,7 @@ def source_material_slot_identities(
         return ()
     if len(canonical_source) == len(datablock_names):
         slot_indices = tuple(range(len(canonical_source)))
-    else:
+    elif len(datablock_names) < len(canonical_source):
         slot_indices_list: list[int] = []
         used: set[int] = set()
         for datablock_name in datablock_names:
@@ -80,6 +80,23 @@ def source_material_slot_identities(
             used.add(matches[0])
             slot_indices_list.append(matches[0])
         slot_indices = tuple(slot_indices_list)
+    else:
+        # The legacy skin-family repair appends one tiny triangle for every
+        # material required by the QC to the primary SMD.  Source Tools then
+        # exposes that complete union as extra Blender material slots.  Bind
+        # the canonical Source occurrences into that union and ignore only
+        # the surplus slots; a missing or duplicate binding still fails
+        # closed.
+        used = set()
+        for source_name in canonical_source:
+            matches = tuple(
+                index for index, datablock_name in enumerate(datablock_names)
+                if source_name == datablock_name and index not in used
+            )
+            if len(matches) != 1:
+                raise ValueError("ambiguous material slot mapping for Source occurrence")
+            used.add(matches[0])
+        slot_indices = tuple(range(len(canonical_source)))
     return tuple(
         f"slot:{index}:{canonical_source[index]}" for index in slot_indices
     )

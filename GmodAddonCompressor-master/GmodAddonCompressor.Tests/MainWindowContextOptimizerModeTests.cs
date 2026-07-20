@@ -27,6 +27,14 @@ public sealed class MainWindowContextOptimizerModeTests
     }
 
     [TestMethod]
+    public void OnlyMaximumModeRequiresTheVtfRenderDependency()
+    {
+        Assert.IsFalse(MainWindow.OptimizerModeNeedsVtfTool(0));
+        Assert.IsFalse(MainWindow.OptimizerModeNeedsVtfTool(1));
+        Assert.IsTrue(MainWindow.OptimizerModeNeedsVtfTool(2));
+    }
+
+    [TestMethod]
     public void MaximumModeRaisesEveryDependentPropertyNotification()
     {
         var context = new MainWindowContext();
