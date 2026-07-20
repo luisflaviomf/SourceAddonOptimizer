@@ -75,7 +75,12 @@ def allows_strategy_exact_fallback(error: object, *, strategy: str) -> bool:
         "meshopt-remapped-topology-v1",
         "meshopt-remapped-visual-v1",
     }:
-        return allows_exact_fallback(error) or str(error) in {
+        message = str(error)
+        direct_mapping_failure = message.startswith("imported triangle ") and (
+            " source-corner mapping is ambiguous" in message
+            or " has no source-corner mapping;" in message
+        )
+        return allows_exact_fallback(error) or direct_mapping_failure or message in {
             "corner normal is invalid",
             "direct SMD triangle is degenerate",
             "meshoptimizer did not reduce this mesh",

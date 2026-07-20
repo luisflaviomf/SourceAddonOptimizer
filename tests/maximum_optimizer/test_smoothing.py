@@ -137,6 +137,29 @@ class SmoothingReconstructionTests(unittest.TestCase):
         )
         self.assertEqual(mapping, (0, 1, 2))
 
+    def test_direct_corner_mapping_accepts_float32_stable_narrow_normal_winner(self):
+        original = (
+            'version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n'
+            '0 0 0 0 0 0 0\nend\ntriangles\n'
+            'paint\n0 0 0 0 0.0000465 0 1 0 0\n'
+            '0 1 0 0 0.0000465 0 1 1 0\n'
+            '0 0 1 0 0.0000465 0 1 0 1\n'
+            'paint\n0 0 0 0 0.0000964 0 1 0 0\n'
+            '0 1 0 0 0.0000964 0 1 1 0\n'
+            '0 0 1 0 0.0000964 0 1 0 1\nend\n'
+        )
+        mapping = smd_contract.map_imported_corners_to_smd(
+            original,
+            ((0, 0, 0), (1, 0, 0), (0, 1, 0)),
+            ((0, 1, 2),),
+            ((0, 0, 1),) * 3,
+            ((0, 0), (1, 0), (0, 1)),
+            (0,),
+            ("paint",),
+            ((('root', 1.0),),) * 3,
+        )
+        self.assertEqual(mapping, (0, 1, 2))
+
     @staticmethod
     def _two_triangle_smd() -> str:
         return """version 1

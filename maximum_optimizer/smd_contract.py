@@ -18,7 +18,10 @@ IMPORT_NORMAL_EQUIVALENCE_TOLERANCE = 2.0 * math.sin(math.radians(0.5))
 # position, UV and skin. Reject an opposite-hemisphere association and near ties; the
 # serializer always copies the exact source normal and never emits the imported value.
 IMPORT_NORMAL_DISAMBIGUATION_CEILING = 2.0 * math.sin(math.radians(7.5))
-IMPORT_NORMAL_DISAMBIGUATION_MARGIN = 1e-4
+# Blender exposes imported normals as float32. Require a winner by more than eight
+# float32 ULPs at unit magnitude so importer rounding cannot reverse the choice,
+# without rejecting distinct source normals that happen to be visually near-identical.
+IMPORT_NORMAL_DISAMBIGUATION_MARGIN = 8.0 * (2.0 ** -23)
 
 
 @dataclass(frozen=True)

@@ -45,6 +45,14 @@ class SmdAuditFallbackTests(unittest.TestCase):
             ValueError("corner normal is invalid"),
             ValueError("normal must be non-zero"),
             ValueError("direct SMD triangle is degenerate"),
+            RuntimeError(
+                "imported triangle 5601 source-corner mapping is ambiguous; "
+                "normal_rank=((0.1, 1, (0, 1, 2)), (0.1, 2, (0, 1, 2)))"
+            ),
+            RuntimeError(
+                "imported triangle 42 has no source-corner mapping; "
+                "coarse_candidates=0"
+            ),
         ):
             with self.subTest(error=str(error)):
                 self.assertTrue(maximum.allows_strategy_exact_fallback(
