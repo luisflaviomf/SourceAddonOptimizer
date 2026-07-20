@@ -1500,6 +1500,23 @@ class OrchestratorTests(unittest.TestCase):
             )
         self.assertFalse((mutable_parent / "new-target").exists())
 
+    def test_workspace_cleanup_accepts_explicit_bounded_reference_inventory(self):
+        workspace = self.root / "reference-cleanup"
+        staging = workspace / "reference-bundle-source"
+        staging.mkdir(parents=True)
+        for index in range(129):
+            (staging / f"render-{index:03d}.png").write_bytes(b"evidence")
+
+        orchestrator_module._remove_workspace_owned_tree(
+            workspace,
+            staging,
+            "reference bundle staging source",
+            max_files=129,
+            max_bytes=129 * len(b"evidence"),
+        )
+
+        self.assertFalse(staging.exists())
+
     def test_whole_visual_index_rejects_self_reseal_path_escape_and_state_gaps(self):
         workspace = self.root / "whole-index-adversarial"
         payload = _whole_index_payload(workspace)

@@ -148,6 +148,8 @@ _RATIOS = (0.75, 0.50, 0.35, 0.25, 0.15, 0.10, 0.05)
 _POSITION_DIRECT_TARGET_ERRORS = (0.005, 0.00625, 0.0075, 0.009, 0.01, 0.015, 0.02)
 _ENGINE_NAMES = frozenset({"fidelity", "blender", "meshoptimizer"})
 _IO_CHUNK_SIZE = 1024 * 1024
+_REFERENCE_RENDER_FILES_PER_STATE = 33
+_REFERENCE_RENDER_BYTES_PER_STATE = 512 * 1024 ** 2
 
 
 class MaximumConfigError(ValueError):
@@ -3974,12 +3976,24 @@ def _safe_workspace_atomic_json(
     _safe_workspace_leaf(workspace, leaf, label)
 
 
-def _remove_workspace_owned_tree(workspace: Path, path: Path, label: str) -> None:
+def _remove_workspace_owned_tree(
+    workspace: Path,
+    path: Path,
+    label: str,
+    *,
+    max_files: int = 128,
+    max_bytes: int = 2 * 512 * 1024 ** 2 + 2 * 16 * 1024 ** 2,
+) -> None:
     _safe_workspace_leaf(workspace, path, label)
     if not os.path.lexists(path):
         return
     try:
-        _focused_remove_owned_tree(path, path.parent)
+        _focused_remove_owned_tree(
+            path,
+            path.parent,
+            max_files=max_files,
+            max_bytes=max_bytes,
+        )
     except (OSError, ValueError) as exc:
         raise CandidateBuildError(f"{label} is unsafe", stage="focused-render") from exc
 
@@ -4676,9 +4690,17 @@ class ProductionAdapters:
         workspace: Path,
     ) -> ReferenceBundle:
         source = workspace / "reference-bundle-source"
+        state_count = max(1, len(state_names))
+        cleanup_limits = {
+            "max_files": state_count * _REFERENCE_RENDER_FILES_PER_STATE,
+            "max_bytes": state_count * _REFERENCE_RENDER_BYTES_PER_STATE,
+        }
         if os.path.lexists(source):
             _remove_workspace_owned_tree(
-                workspace, source, "reference bundle staging source"
+                workspace,
+                source,
+                "reference bundle staging source",
+                **cleanup_limits,
             )
         source.mkdir()
         try:
@@ -4695,7 +4717,10 @@ class ProductionAdapters:
         finally:
             if os.path.lexists(source):
                 _remove_workspace_owned_tree(
-                    workspace, source, "reference bundle staging source"
+                    workspace,
+                    source,
+                    "reference bundle staging source",
+                    **cleanup_limits,
                 )
 
     def _materialize_reference_state(

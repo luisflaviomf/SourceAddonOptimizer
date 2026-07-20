@@ -1887,13 +1887,19 @@ def _metadata_payload(metadata: FocusCacheMetadata) -> dict[str, object]:
     }
 
 
-def _remove_owned_tree(path: Path, parent: Path) -> None:
+def _remove_owned_tree(
+    path: Path,
+    parent: Path,
+    *,
+    max_files: int = 128,
+    max_bytes: int = _MAX_CACHE_TREE_BYTES,
+) -> None:
     if path.parent.resolve(strict=True) != parent.resolve(strict=True):
         raise ValueError("cache cleanup path escapes its parent")
     if _is_reparse(path):
         raise ValueError("refusing to remove cache reparse point")
     if path.exists():
-        _assert_safe_tree(path)
+        _assert_safe_tree(path, max_files=max_files, max_bytes=max_bytes)
         shutil.rmtree(path)
 
 
