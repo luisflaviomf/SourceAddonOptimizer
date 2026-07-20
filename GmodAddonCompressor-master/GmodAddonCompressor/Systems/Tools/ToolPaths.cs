@@ -1,19 +1,28 @@
 using System;
 using System.IO;
+using GmodAddonCompressor.Properties;
 
 namespace GmodAddonCompressor.Systems.Tools
 {
         internal static class ToolPaths
         {
-            internal const string ToolName = "SourceAddonOptimizer";
+        internal const string ToolName = "SourceAddonOptimizer";
         internal const string ToolVersion = "0.1.17";
+
+        private static readonly Lazy<string> SourcePackageHash = new(() =>
+            ToolExtractionSystem.ComputePackageHash(
+                Resources.SourceAddonOptimizer_win_x64));
 
         internal static string AppDataRoot =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GmodAddonOptimizer");
 
         internal static string ToolsRoot => Path.Combine(AppDataRoot, "tools");
 
-        internal static string ToolRoot => Path.Combine(ToolsRoot, ToolName, ToolVersion);
+        internal static string ToolRoot => ToolExtractionSystem.GetPackageRoot(
+            ToolsRoot,
+            ToolName,
+            ToolVersion,
+            SourcePackageHash.Value);
 
         internal static string WorkRoot => Path.Combine(AppDataRoot, "work");
 

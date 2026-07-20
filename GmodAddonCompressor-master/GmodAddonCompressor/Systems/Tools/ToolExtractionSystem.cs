@@ -33,9 +33,13 @@ namespace GmodAddonCompressor.Systems.Tools
 
         internal static string EnsureExtracted(string toolName, string toolVersion, byte[] zipBytes, IReadOnlyCollection<string> expectedFiles)
         {
-            string toolRoot = Path.Combine(ToolPaths.ToolsRoot, toolName, toolVersion);
-            string lockPath = Path.Combine(ToolPaths.ToolsRoot, toolName, "extract.lock");
             string packageHash = ComputePackageHash(zipBytes);
+            string toolRoot = GetPackageRoot(
+                ToolPaths.ToolsRoot,
+                toolName,
+                toolVersion,
+                packageHash);
+            string lockPath = Path.Combine(ToolPaths.ToolsRoot, toolName, "extract.lock");
 
             Directory.CreateDirectory(ToolPaths.ToolsRoot);
             using var lockStream = AcquireLock(lockPath);
@@ -58,6 +62,15 @@ namespace GmodAddonCompressor.Systems.Tools
             }
 
             return toolRoot;
+        }
+
+        internal static string GetPackageRoot(
+            string toolsRoot,
+            string toolName,
+            string toolVersion,
+            string packageHash)
+        {
+            return Path.Combine(toolsRoot, toolName, toolVersion, packageHash);
         }
 
         private static FileStream AcquireLock(string lockPath)
@@ -153,7 +166,7 @@ namespace GmodAddonCompressor.Systems.Tools
             return value.ToString();
         }
 
-        private static string ComputePackageHash(byte[] zipBytes)
+        internal static string ComputePackageHash(byte[] zipBytes)
         {
             using SHA256 sha256 = SHA256.Create();
             return Convert.ToHexString(sha256.ComputeHash(zipBytes));
