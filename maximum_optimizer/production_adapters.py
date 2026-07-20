@@ -708,6 +708,7 @@ class SourceUnionRenderTools:
     texture_cache: Path | None = None
     dependency_digest_provider: object = None
     pose_bindings: Mapping[str, tuple[SourceUnionPoseBinding, ...]] | None = None
+    blender_threads: int = 0
 
     def __post_init__(self) -> None:
         blender = Path(self.blender_exe).resolve()
@@ -724,6 +725,8 @@ class SourceUnionRenderTools:
             raise ValueError("source-union materials root is unavailable or unsafe")
         if not callable(self.dependency_digest_provider):
             raise TypeError("source-union dependency digest provider is required")
+        if type(self.blender_threads) is not int or self.blender_threads < 0:
+            raise ValueError("source-union Blender threads must be zero or positive")
         for identity, bindings in pose_bindings.items():
             if (
                 type(identity) is not str or not identity
@@ -1448,8 +1451,11 @@ class AdaptiveDirectProductionBoundary:
             _write_private_bytes_fsync(render_log, b"")
             private_texture_cache = output_root / "texture-cache"
             private_texture_cache.mkdir()
-            command = [
-                str(tools.blender_exe), "--background", "--python", str(renderer_input), "--",
+            command = [str(tools.blender_exe)]
+            if tools.blender_threads > 0:
+                command.extend(("--threads", str(tools.blender_threads)))
+            command.extend((
+                "--background", "--python", str(renderer_input), "--",
                 "--before", str(reference_input), "--after", str(candidate_input),
                 "--out", str(raw), "--size", "512", "--angles", ",".join(_ANGLES),
                 "--passes", "textured,clay", "--poses", ",".join(
@@ -1458,7 +1464,7 @@ class AdaptiveDirectProductionBoundary:
                 "--source-union-contract", str(contract_path),
                 "--source-union-control-sha256", contract_digest,
                 "--source-union-visibility-out", str(visibility_path),
-            ]
+            ))
             if len(pose_bindings) == 2:
                 command.extend((
                     "--animation-before", str(private_animation_before),

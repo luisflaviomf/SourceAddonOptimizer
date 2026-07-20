@@ -105,6 +105,29 @@ class MaximumCliTests(unittest.TestCase):
                 rc = build_optimized_addon.main([str(addon), "--optimizer-mode", "maximum"])
             self.assertEqual(rc, 0)
             self.assertEqual(run_one.call_args.args[0].optimizer_mode, "maximum")
+            self.assertEqual(run_one.call_args.args[0].maximum_jobs, 0)
+
+    def test_parser_accepts_explicit_maximum_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            addon = root / "addon"
+            (addon / "models").mkdir(parents=True)
+            for name in (
+                "batch_decompile_organize.py", "batch_optimize_qc.py",
+                "batch_compile_opt_qc.py", "batch_optimize_selective_policy.py",
+                "batch_optimize_round_parts_policy.py", "batch_optimize_maximum.py",
+                "render_previews.py",
+            ):
+                (root / name).write_text("", encoding="utf-8")
+            with (
+                patch.object(build_optimized_addon, "_runtime_root", return_value=root),
+                patch.object(build_optimized_addon, "_run_single_addon", return_value=0) as run_one,
+            ):
+                rc = build_optimized_addon.main([
+                    str(addon), "--optimizer-mode", "maximum", "--maximum-jobs", "7",
+                ])
+            self.assertEqual(rc, 0)
+            self.assertEqual(run_one.call_args.args[0].maximum_jobs, 7)
 
     def test_parser_keeps_normal_and_fidelity_defaults_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:

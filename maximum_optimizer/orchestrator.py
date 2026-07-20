@@ -100,6 +100,11 @@ from .focused_cache import (
 from .focused_regions import FocusSelection, select_focus_targets_with_evidence
 from .meshopt_bridge import MESHOPT_ENGINE_PREFERRED
 from .processes import ProcessCancelledError, run_process
+from .parallelism import (
+    MaximumParallelismPlan,
+    detect_memory_snapshot,
+    resolve_maximum_parallelism,
+)
 from .qc_inventory import _inventory_qc, build_family_manifests
 from .qc_graph import QcGraph, parse_qc_graph
 from .regions import filter_region_manifest, load_region_manifest_payload
@@ -151,6 +156,9 @@ class MaximumRunConfig:
     profile_path: Path
     resume: bool = False
     overwrite: bool = False
+    parallelism: MaximumParallelismPlan = field(
+        default_factory=MaximumParallelismPlan.serial
+    )
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -178,6 +186,8 @@ class MaximumRunConfig:
                 raise ValueError(f"budget.{name} is out of range")
         if type(self.resume) is not bool or type(self.overwrite) is not bool:
             raise TypeError("resume and overwrite must be booleans")
+        if not isinstance(self.parallelism, MaximumParallelismPlan):
+            raise TypeError("parallelism must be a MaximumParallelismPlan")
 
     def to_kwargs(self) -> dict[str, Any]:
         return {
@@ -191,6 +201,7 @@ class MaximumRunConfig:
             "profile_path": self.profile_path,
             "resume": self.resume,
             "overwrite": self.overwrite,
+            "parallelism": self.parallelism,
         }
 
 
@@ -2063,6 +2074,7 @@ def run_maximum_addon(
         config.repo_root,
         heuristic_map=config.work_dir / "logs" / "selective_policy_map.json",
         meshopt_dll=config.repo_root / "maximum_optimizer" / "native" / "bin" / "win-x64" / "meshopt_bridge.dll",
+        blender_threads=config.parallelism.blender_threads,
     )
 
     def write_selection_audit() -> None:
@@ -4167,6 +4179,14 @@ class ProductionAdapters:
         ] = {}
         self._recovery_artifact_roots: dict[str, Path] = {}
 
+    def _blender_command(self, *arguments: str | Path) -> tuple[str, ...]:
+        prefix = [str(self.config.blender_path)]
+        threads = self.config.parallelism.blender_threads
+        if threads > 0:
+            prefix.extend(("--threads", str(threads)))
+        prefix.extend(str(argument) for argument in arguments)
+        return tuple(prefix)
+
     def compile_adaptive_direct_candidate(self, **kwargs):
         """Typed E2 boundary; scheduling remains an E3 concern."""
         from .production_adapters import AdaptiveDirectProductionBoundary
@@ -4203,6 +4223,7 @@ class ProductionAdapters:
             dependency_digest_provider=lambda event: str(
                 _dependency_proof(self.config, event)["digest"]
             ),
+            blender_threads=self.config.parallelism.blender_threads,
         )
         return AdaptiveDirectProductionBoundary(
             process_runner=run_process
@@ -4416,7 +4437,7 @@ class ProductionAdapters:
         )
         manifest_log = candidate.workspace / "logs" / "render-manifest.log"
         result = run_process(
-            (str(self.config.blender_path), "--background", "--python-expr", expression),
+            self._blender_command("--background", "--python-expr", expression),
             cwd=self.config.repo_root,
             log_path=manifest_log,
             cancel_event=self.cancel_event,
@@ -4582,10 +4603,10 @@ class ProductionAdapters:
                     f"state region manifest is invalid for {state_name}: {exc}",
                     stage="render",
                 ) from exc
-            command: list[str] = [
-                str(self.config.blender_path), "--background", "--python",
+            command: list[str] = list(self._blender_command(
+                "--background", "--python",
                 str(self.config.repo_root / "render_previews.py"), "--",
-            ]
+            ))
             for path in before:
                 command.extend(("--before", str(path)))
             for path in after:
@@ -5026,10 +5047,10 @@ class ProductionAdapters:
                 _safe_workspace_mkdir(
                     workspace, target_root, "focused render root"
                 )
-                command: list[str] = [
-                    str(self.config.blender_path), "--background", "--python",
+                command: list[str] = list(self._blender_command(
+                    "--background", "--python",
                     str(inputs["renderer"]), "--",
-                ]
+                ))
                 for source in inputs["before"]:
                     command.extend(("--before", str(source)))
                 for source in inputs["after"]:
@@ -5569,6 +5590,10 @@ def run_maximum_from_existing_args(
             min_ratio_step=getattr(args, "maximum_min_ratio_step", 0.025),
             min_marginal_saving=getattr(args, "maximum_min_marginal_saving", 0.005),
         )
+        parallelism = resolve_maximum_parallelism(
+            int(getattr(args, "maximum_jobs", 0)),
+            memory=detect_memory_snapshot(),
+        )
         config = MaximumRunConfig(
             addon_path,
             out_addon_dir,
@@ -5580,6 +5605,7 @@ def run_maximum_from_existing_args(
             profile_path,
             bool(getattr(args, "maximum_resume", False) or getattr(args, "resume_opt", False)),
             bool(getattr(args, "overwrite", False)),
+            parallelism,
         )
         validate_run_paths(config, create=False)
         _recover_output_transaction(config.output_dir)

@@ -60,6 +60,7 @@ class CandidateTools:
     heuristic_map: Path | None = None
     meshopt_dll: Path | None = None
     compile_jobs: int = 1
+    blender_threads: int = 0
 
     def __post_init__(self) -> None:
         for name in ("python_exe", "blender_exe", "studiomdl_exe", "repo_root"):
@@ -74,6 +75,18 @@ class CandidateTools:
             )
         if self.compile_jobs < 1:
             raise ValueError("compile_jobs must be at least 1")
+        if type(self.blender_threads) is not int or self.blender_threads < 0:
+            raise ValueError("blender_threads must be zero or a positive integer")
+
+
+def _blender_command(
+    tools: CandidateTools, *arguments: str | Path
+) -> tuple[str, ...]:
+    prefix = [str(tools.blender_exe)]
+    if tools.blender_threads > 0:
+        prefix.extend(("--threads", str(tools.blender_threads)))
+    prefix.extend(str(argument) for argument in arguments)
+    return tuple(prefix)
 
 
 @dataclass(frozen=True)
@@ -499,8 +512,8 @@ class _BaseAdapter:
     def _optimize_command(
         self, source: Path, spec: CandidateSpec, workspace: Path, tools: CandidateTools
     ) -> tuple[str, ...]:
-        command = [
-            str(tools.blender_exe),
+        command = list(_blender_command(
+            tools,
             "--background",
             "--python",
             str(tools.repo_root / self.optimize_script),
@@ -514,7 +527,7 @@ class _BaseAdapter:
             "45",
             "--format",
             "smd",
-        ]
+        ))
         return tuple(command)
 
     def _after_optimize(self, source: Path, workspace: Path) -> None:
@@ -744,8 +757,8 @@ class BlenderAdapter(_BaseAdapter):
             json.dump(spec.cache_payload(), stream, sort_keys=True, separators=(",", ":"))
             stream.flush()
             os.fsync(stream.fileno())
-        return (
-            str(tools.blender_exe), "--background", "--python",
+        return _blender_command(
+            tools, "--background", "--python",
             str(tools.repo_root / "batch_optimize_maximum.py"), "--", str(source),
             "--candidate-json", str(candidate_path),
         )
@@ -806,8 +819,8 @@ class MeshoptimizerAdapter(_BaseAdapter):
             json.dump(spec.cache_payload(), stream, sort_keys=True, separators=(",", ":"))
             stream.flush()
             os.fsync(stream.fileno())
-        return (
-            str(tools.blender_exe),
+        return _blender_command(
+            tools,
             "--background",
             "--python",
             str(tools.repo_root / self.optimize_script),

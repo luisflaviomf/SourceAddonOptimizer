@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -589,6 +589,42 @@ class CandidateAdapterTests(unittest.TestCase):
         )
         self.assertIn("--ratio 0.4 --merge 0 --autosmooth 45 --format smd", " ".join(build.commands[0]))
         self.assertFalse((self.workspace / "logs" / "vehicle_steer_turn_basis_fix_summary.json").exists())
+
+    def test_parallel_candidate_blender_commands_use_one_thread(self):
+        tools = replace(self.tools, blender_threads=1)
+        cases = (
+            (
+                BlenderAdapter(process_runner=MaterializingRunner(self.manifest.model_rel)),
+                CandidateSpec("blender-r04", "blender", 0.4, 0.02, "repair-v1"),
+                self.root / "parallel-blender",
+            ),
+            (
+                FidelityAdapter(process_runner=MaterializingRunner(self.manifest.model_rel)),
+                self.spec,
+                self.root / "parallel-fidelity",
+            ),
+            (
+                MeshoptimizerAdapter(process_runner=MaterializingRunner(self.manifest.model_rel)),
+                CandidateSpec(
+                    "meshopt-direct-r055", "meshoptimizer", 0.55, 0.01,
+                    "meshopt-direct-v1", strategy="meshopt-direct-v1",
+                    update_vertices=False, transfer="direct-v1",
+                ),
+                self.root / "parallel-meshopt",
+            ),
+        )
+        for adapter, spec, workspace in cases:
+            with self.subTest(engine=spec.engine):
+                build = adapter.generate(self.manifest, spec, workspace, tools)
+                self.assertEqual(build.commands[0][1:3], ("--threads", "1"))
+
+    def test_serial_candidate_does_not_force_blender_threads(self):
+        tools = replace(self.tools, blender_threads=0)
+        build = BlenderAdapter(
+            process_runner=MaterializingRunner(self.manifest.model_rel)
+        ).generate(self.manifest, self.spec, self.root / "serial-blender", tools)
+
+        self.assertNotIn("--threads", build.commands[0])
 
     def test_blender_adaptive_adapter_routes_through_maximum_with_region_payload(self):
         region = "r-" + "a" * 64

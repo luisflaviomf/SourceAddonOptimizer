@@ -21,6 +21,7 @@ from maximum_optimizer.composite import compose_candidate_sources
 from maximum_optimizer.domain import CandidateSpec, CompileFileProof, FamilyManifest, SourceFileProof, StructuralFingerprint
 from maximum_optimizer.processes import ProcessCancelledError, ProcessResult
 from maximum_optimizer.orchestrator import ProductionAdapters as OrchestratorProductionAdapters
+from maximum_optimizer.parallelism import MaximumParallelismPlan
 from maximum_optimizer.production_adapters import (
     AdaptiveDirectProductionBoundary,
     AdaptiveDirectCompileResult,
@@ -341,7 +342,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
         dependency_provider=None, base_build=None, candidate_transform=None,
         event=None, source_proof=None, snapshot=None, tools_texture_cache=None,
         material_contract=None, material_roots=None, python_runtime_contract=None,
-        pose_bindings=None,
+        pose_bindings=None, blender_threads=0,
     ):
         fixture = runner.fixture
         spec = CandidateSpec(
@@ -391,6 +392,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 lambda _event: fixture.requests[0].dependency_proof_sha256
             ),
             pose_bindings=pose_bindings,
+            blender_threads=blender_threads,
         )
         source = source_proof or next(
             item for item in fixture.coverage.sources
@@ -502,6 +504,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
             adapter.config = mock.Mock(
                 blender_path=authoritative_blender,
                 repo_root=repo,
+                parallelism=MaximumParallelismPlan.serial(),
             )
             adapter.cancel_event = threading.Event()
             expected = object()
@@ -838,6 +841,7 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 command[command.index("--source-union-control-sha256") + 1],
                 hashlib.sha256(control_path.read_bytes()).hexdigest(),
             )
+
             self.assertNotIn("--configuration-manifest", command)
             self.assertNotIn("--focus-region", command)
             self.assertEqual(command[1:4], ("--background", "--python", command[3]))
@@ -952,6 +956,19 @@ class ProductionAdapterContractTests(unittest.TestCase):
                 contract["comparison_contract"]["reference_source_sha256"],
                 component_manifest.filtered_source_sha256,
             )
+
+    def test_parallel_source_union_blender_uses_one_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture, component_manifest = self._render_fixture(root)
+            runner = SourceUnionRunner(fixture)
+
+            self._render_case(
+                root, runner, root / "union-parallel", component_manifest,
+                blender_threads=1,
+            )
+
+            self.assertEqual(runner.commands[0][1:3], ("--threads", "1"))
 
     def test_source_union_renderer_imports_only_private_python_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -890,6 +890,12 @@ def main(argv: list[str]) -> int:
         help="Calibrated Maximum fidelity profile JSON (experimental).",
     )
     ap.add_argument("--maximum-max-candidates", type=int, default=18)
+    ap.add_argument(
+        "--maximum-jobs",
+        type=int,
+        default=0,
+        help="Concurrent Maximum families (0 = Auto balanced at about 50%% CPU).",
+    )
     ap.add_argument("--maximum-min-ratio-step", type=float, default=0.025)
     ap.add_argument("--maximum-min-marginal-saving", type=float, default=0.005)
     ap.add_argument("--maximum-resume", action="store_true")

@@ -53,6 +53,7 @@ from maximum_optimizer.orchestrator import (
     validate_run_paths,
     run_maximum_addon,
 )
+from maximum_optimizer.parallelism import MaximumParallelismPlan
 from maximum_optimizer.reporting import canonical_json, event_line
 from maximum_optimizer.processes import ProcessCancelledError, ProcessResult
 from maximum_optimizer.qc_graph import parse_qc_graph
@@ -345,6 +346,29 @@ class OrchestratorTests(unittest.TestCase):
             validator=self.structural,
             event_sink=self.events.append,
             **kwargs,
+        )
+
+    def test_run_config_defaults_to_serial_parallelism(self):
+        self.assertEqual(self.config.parallelism, MaximumParallelismPlan.serial())
+        self.assertEqual(
+            self.config.to_kwargs()["parallelism"], MaximumParallelismPlan.serial()
+        )
+
+    def test_production_blender_command_applies_parallel_thread_limit(self):
+        parallel = MaximumParallelismPlan(0, 20, 10, 10, 16, False, 1)
+        config = MaximumRunConfig(**{
+            **self.config.to_kwargs(),
+            "parallelism": parallel,
+        })
+        adapter = ProductionAdapters(config, threading.Event())
+
+        self.assertEqual(
+            adapter._blender_command("--background", "--python", "script.py"),
+            (str(config.blender_path), "--threads", "1", "--background", "--python", "script.py"),
+        )
+        self.assertEqual(
+            ProductionAdapters(self.config, threading.Event())._blender_command("--background"),
+            (str(self.config.blender_path), "--background"),
         )
 
     def test_candidate_evaluation_trailing_focused_fields_preserve_legacy_construction(self):
@@ -1266,9 +1290,11 @@ class OrchestratorTests(unittest.TestCase):
             maximum_profile=str(profile), blender=str(blender), studiomdl=str(studiomdl),
             maximum_max_candidates=1, maximum_min_ratio_step=.025,
             maximum_min_marginal_saving=0.0, maximum_resume=False,
-            resume_opt=False, overwrite=False, decompile_jobs=1,
+            maximum_jobs=7, resume_opt=False, overwrite=False, decompile_jobs=1,
         )
         work = self.root / "bridge-work"
+        memory_snapshot = object()
+        expected_parallelism = MaximumParallelismPlan(7, 20, 7, 7, 16, False, 1)
 
         def decompile(*_args, **_kwargs):
             logs = work / "logs"
@@ -1286,12 +1312,17 @@ class OrchestratorTests(unittest.TestCase):
             side_effect=AssertionError("schema-1-only loader must not be called"),
         ), patch.object(
             orchestrator_module, "run_process", side_effect=decompile,
-        ), patch(
+        ), patch.object(
+            orchestrator_module, "detect_memory_snapshot", return_value=memory_snapshot,
+        ), patch.object(
+            orchestrator_module, "resolve_maximum_parallelism",
+            return_value=expected_parallelism,
+        ) as resolve_parallelism, patch(
             "selective_policy_models.write_final_policy_files",
         ), patch.object(
             orchestrator_module, "run_maximum_addon",
             return_value=SimpleNamespace(status="success"),
-        ):
+        ) as run_optimizer:
             result = run_maximum_from_existing_args(
                 args, repo_root=repo, addon_path=self.addon,
                 out_addon_dir=self.root / "bridge-output", work_dir=work,
@@ -1299,6 +1330,8 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         profile_loader.assert_called_once_with(profile.resolve())
+        resolve_parallelism.assert_called_once_with(7, memory=memory_snapshot)
+        self.assertEqual(run_optimizer.call_args.args[0].parallelism, expected_parallelism)
 
     def test_whole_visual_index_is_exact_sealed_and_rechecks_current_bytes(self):
         workspace = self.root / "whole-index"
