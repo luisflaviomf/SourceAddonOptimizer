@@ -3230,6 +3230,33 @@ class OrchestratorTests(unittest.TestCase):
             },
         )
 
+        failed_state = ValidationResult(
+            False,
+            (GateFailure(
+                "rgb_mae", "body/bind/front", 0.5, 0.1,
+                "rgb_mae exceeded at body/bind/front",
+            ),),
+            {"rgb_mae": 0.5, "fidelity_score": 0.0},
+            "body/bind/front",
+        )
+        command_count = len(commands)
+        with (
+            patch("maximum_optimizer.orchestrator.run_process", side_effect=runner),
+            patch(
+                "maximum_optimizer.orchestrator.compare_render_sets",
+                return_value=failed_state,
+            ),
+        ):
+            early_rejected = adapter.visual(
+                manifest, build, build, load_profile(self.config.profile_path)
+            )
+        early_commands = commands[command_count:]
+        self.assertFalse(early_rejected.passed)
+        self.assertEqual(len(early_commands), 2)  # manifest generation + first state
+        self.assertEqual(early_rejected.metrics["early_rejected"], 1.0)
+        self.assertEqual(early_rejected.metrics["completed_state_count"], 1.0)
+        self.assertEqual(early_rejected.metrics["total_state_count"], 2.0)
+
         (self.root / "render_previews.py").write_text("# renderer", encoding="utf-8")
         adapter.bind_candidate_cache_digest(build, "a" * 64)
         with (

@@ -5022,10 +5022,21 @@ class ProductionAdapters:
                     stage="render",
                     log_path=render_log,
                 )
-            state_results.append((
-                state_name,
-                compare_render_sets(state_root / "original", state_root / "optimized", profile),
-            ))
+            state_result = compare_render_sets(
+                state_root / "original", state_root / "optimized", profile
+            )
+            state_results.append((state_name, state_result))
+            if not state_result.passed:
+                aggregate = _aggregate_visual_results(state_results)
+                metrics = dict(aggregate.metrics)
+                metrics.update({
+                    "early_rejected": 1.0,
+                    "completed_state_count": float(len(state_results)),
+                    "total_state_count": float(len(original_states)),
+                })
+                return ValidationResult(
+                    False, aggregate.failures, metrics, aggregate.worst_scope
+                )
             if focused_profile is not None:
                 candidate_render_manifest = state_root / "optimized" / "render_manifest.json"
                 try:
@@ -5094,6 +5105,18 @@ class ProductionAdapters:
                 candidate.workspace,
             )
         aggregate = _aggregate_visual_results(state_results)
+        completion_metrics = dict(aggregate.metrics)
+        completion_metrics.update({
+            "early_rejected": 0.0,
+            "completed_state_count": float(len(state_results)),
+            "total_state_count": float(len(original_states)),
+        })
+        aggregate = ValidationResult(
+            aggregate.passed,
+            aggregate.failures,
+            completion_metrics,
+            aggregate.worst_scope,
+        )
         if focused_profile is not None and aggregate.passed:
             profile_file_hash = _sha256_file(self.config.profile_path, self.cancel_event)
             dependency = _dependency_proof(self.config, self.cancel_event)
