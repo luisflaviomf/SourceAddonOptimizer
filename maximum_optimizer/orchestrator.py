@@ -101,7 +101,12 @@ from .focused_cache import (
 from .focused_regions import FocusSelection, select_focus_targets_with_evidence
 from .family_scheduler import FamilySchedulerUpdate, FamilyWorkItem, run_family_jobs
 from .meshopt_bridge import MESHOPT_ENGINE_PREFERRED
-from .processes import ProcessCancelledError, run_process
+from .processes import (
+    ProcessCancelledError,
+    blender_path_argument,
+    blender_tree_requires_extended_paths,
+    run_process,
+)
 from .parallelism import (
     MaximumParallelismPlan,
     current_memory_job_limit,
@@ -4813,11 +4818,24 @@ class ProductionAdapters:
                 raise CandidateBuildError("render root is unsafe", stage="render")
             shutil.rmtree(render_root)
         _copytree_cancellable(manifest.source_dir, source_root, self.cancel_event)
+        use_extended_blender_paths = (
+            blender_tree_requires_extended_paths(source_root)
+            or (
+                os.name == "nt"
+                and len(str(candidate.workspace.resolve(strict=False))) + 128 >= 248
+            )
+        )
+
+        def blender_workspace_path(path: Path) -> str:
+            return blender_path_argument(
+                path, force_extended=use_extended_blender_paths
+            )
+
         expression = (
             "import sys;from pathlib import Path;"
             f"sys.path.insert(0,{str(self.config.repo_root)!r});"
             "from batch_optimize_maximum import write_source_region_manifest;"
-            f"write_source_region_manifest(Path({str(source_root)!r}))"
+            f"write_source_region_manifest(Path({blender_workspace_path(source_root)!r}))"
         )
         manifest_log = candidate.workspace / "logs" / "render-manifest.log"
         result = run_process(
@@ -4998,18 +5016,18 @@ class ProductionAdapters:
                 str(self.config.repo_root / "render_previews.py"), "--",
             ))
             for path in before:
-                command.extend(("--before", str(path)))
+                command.extend(("--before", blender_workspace_path(path)))
             for path in after:
-                command.extend(("--after", str(path)))
+                command.extend(("--after", blender_workspace_path(path)))
             command.extend((
-                "--out", str(state_root), "--size", "512",
+                "--out", blender_workspace_path(state_root), "--size", "512",
                 "--passes", "textured,clay", "--poses", pose_arg,
                 "--render-side", (
                     "candidate" if reference_bundle is not None else "both"
                 ),
-                "--region-manifest", str(state_region_manifest),
-                "--source-root", str(copied_source_root),
-                "--configuration-manifest", str(configuration_manifest),
+                "--region-manifest", blender_workspace_path(state_region_manifest),
+                "--source-root", blender_workspace_path(copied_source_root),
+                "--configuration-manifest", blender_workspace_path(configuration_manifest),
                 "--texture-cache", str(self._texture_cache_root(candidate)),
             ))
             for materials_root in self._materials_roots():
@@ -5019,8 +5037,8 @@ class ProductionAdapters:
                     manifest.source_dir.resolve(strict=True)
                 )
                 command.extend((
-                    "--animation-before", str(original_animation),
-                    "--animation-after", str(animation[1]),
+                    "--animation-before", blender_workspace_path(original_animation),
+                    "--animation-after", blender_workspace_path(animation[1]),
                 ))
             if vtfcmd is not None:
                 command.extend(("--vtfcmd", str(vtfcmd)))
@@ -5470,33 +5488,54 @@ class ProductionAdapters:
                 _safe_workspace_mkdir(
                     workspace, target_root, "focused render root"
                 )
+                use_extended_focus_paths = (
+                    blender_tree_requires_extended_paths(input_root)
+                    or (
+                        os.name == "nt"
+                        and len(str(target_root.resolve(strict=False))) + 96 >= 248
+                    )
+                )
+
+                def focused_blender_path(path: Path) -> str:
+                    return blender_path_argument(
+                        path, force_extended=use_extended_focus_paths
+                    )
+
                 command: list[str] = list(self._blender_command(
                     "--background", "--python",
-                    str(inputs["renderer"]), "--",
+                    focused_blender_path(inputs["renderer"]), "--",
                 ))
                 for source in inputs["before"]:
-                    command.extend(("--before", str(source)))
+                    command.extend(("--before", focused_blender_path(source)))
                 for source in inputs["after"]:
-                    command.extend(("--after", str(source)))
+                    command.extend(("--after", focused_blender_path(source)))
                 pose_arg = ",".join(
                     "bind:0" if pose == "bind" else f"{pose}:{state_proof.selected_frame}"
                     for pose in poses
                 )
                 command.extend((
-                    "--out", str(target_root), "--size", "512",
+                    "--out", focused_blender_path(target_root), "--size", "512",
                     "--passes", "textured,clay", "--poses", pose_arg,
-                    "--region-manifest", str(inputs["region"]),
-                    "--source-root", str(input_root / "reference"),
-                    "--configuration-manifest", str(inputs["configuration"]),
-                    "--texture-cache", str(self._texture_cache_root(candidate)),
+                    "--region-manifest", focused_blender_path(inputs["region"]),
+                    "--source-root", focused_blender_path(input_root / "reference"),
+                    "--configuration-manifest", focused_blender_path(
+                        inputs["configuration"]
+                    ),
+                    "--texture-cache", focused_blender_path(
+                        self._texture_cache_root(candidate)
+                    ),
                     "--focus-region", target.region_key,
                 ))
                 for root in self._materials_roots():
                     command.extend(("--materials-root", str(root)))
                 if inputs["animation_before"] is not None:
                     command.extend((
-                        "--animation-before", str(inputs["animation_before"]),
-                        "--animation-after", str(inputs["animation_after"]),
+                        "--animation-before", focused_blender_path(
+                            inputs["animation_before"]
+                        ),
+                        "--animation-after", focused_blender_path(
+                            inputs["animation_after"]
+                        ),
                     ))
                 process = run_process(
                     command, cwd=self.config.repo_root,

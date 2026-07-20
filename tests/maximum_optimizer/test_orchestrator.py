@@ -419,6 +419,39 @@ class OrchestratorTests(unittest.TestCase):
             (str(self.config.blender_path), "--background"),
         )
 
+    def test_blender_path_argument_enables_windows_long_paths_without_changing_short_paths(self):
+        from maximum_optimizer import processes
+
+        self.assertTrue(hasattr(processes, "blender_path_argument"))
+        blender_path_argument = processes.blender_path_argument
+        short = self.root / "short" / "model.smd"
+        long = self.root / ("a" * 120) / ("b" * 120) / "model.smd"
+
+        self.assertEqual(blender_path_argument(short), str(short.resolve()))
+        expected_long = str(long.resolve())
+        if os.name == "nt":
+            expected_long = "\\\\?\\" + expected_long
+        self.assertEqual(blender_path_argument(long), expected_long)
+
+    def test_blender_tree_detects_descendant_that_exceeds_windows_path_limit(self):
+        from maximum_optimizer import processes
+
+        self.assertTrue(hasattr(processes, "blender_tree_requires_extended_paths"))
+        tree_requires_extended = processes.blender_tree_requires_extended_paths
+        short_root = self.root / "short-tree"
+        short_root.mkdir()
+        (short_root / "model.smd").write_bytes(b"short")
+        long_root = self.root / "long-tree"
+        long_file = long_root / ("a" * 100) / ("b" * 100) / "animation.smd"
+        long_file.parent.mkdir(parents=True)
+        long_file.write_bytes(b"long")
+
+        self.assertFalse(tree_requires_extended(short_root))
+        self.assertEqual(
+            tree_requires_extended(long_root),
+            os.name == "nt" and len(str(long_file.resolve())) >= 248,
+        )
+
     def test_production_family_fork_isolates_mutable_adapter_state(self):
         cancel = threading.Event()
         adapter = ProductionAdapters(self.config, cancel)
@@ -3108,6 +3141,9 @@ class OrchestratorTests(unittest.TestCase):
             "time 10\n0 1 0 0 0 0 0\n1 0 1 0 0 0 0\nend\ntriangles\nend\n"
         )
         (source / "anim.smd").write_text(animation_smd, encoding="utf-8")
+        long_animation = source / ("a" * 100) / ("b" * 100) / "animation.smd"
+        long_animation.parent.mkdir(parents=True)
+        long_animation.write_text(animation_smd, encoding="utf-8")
         (source / "nested").mkdir()
         (source / "nested" / "main.qc").write_text(
             '$modelname "test.mdl"\n$body "body" "../mesh.smd"\n'
@@ -3222,6 +3258,13 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(renders[1][renders[1].index("--before") + 1].endswith("lod.smd"))
         self.assertTrue(renders[1][renders[1].index("--after") + 1].endswith("lod_OPT.smd"))
         self.assertEqual(rendered_region_sources, [{"mesh.smd"}, {"lod.smd"}])
+        manifest_expression = commands[0][commands[0].index("--python-expr") + 1]
+        if os.name == "nt" and len(str(long_animation.resolve())) >= 248:
+            self.assertIn("\\\\?\\", manifest_expression)
+            for render in renders:
+                self.assertTrue(
+                    render[render.index("--source-root") + 1].startswith("\\\\?\\")
+                )
         self.assertNotEqual(
             renders[0][renders[0].index("--region-manifest") + 1],
             renders[1][renders[1].index("--region-manifest") + 1],

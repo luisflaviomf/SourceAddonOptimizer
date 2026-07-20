@@ -28,7 +28,12 @@ from .focused_cache import (
     _is_reparse, _read_regular_no_follow,
     _regular_file_ownership_identity_no_follow, _write_json_fsync,
 )
-from .processes import ProcessCancelledError, run_process
+from .processes import (
+    ProcessCancelledError,
+    blender_path_argument,
+    blender_tree_requires_extended_paths,
+    run_process,
+)
 from .qc_graph import parse_qc_graph
 from .reporting import canonical_json
 from .source_union import (
@@ -1451,29 +1456,44 @@ class AdaptiveDirectProductionBoundary:
             _write_private_bytes_fsync(render_log, b"")
             private_texture_cache = output_root / "texture-cache"
             private_texture_cache.mkdir()
+            use_extended_blender_paths = (
+                blender_tree_requires_extended_paths(inputs)
+                or (
+                    os.name == "nt"
+                    and len(str(output_root.resolve(strict=False))) + 128 >= 248
+                )
+            )
+
+            def blender_workspace_path(path: Path) -> str:
+                return blender_path_argument(
+                    path, force_extended=use_extended_blender_paths
+                )
+
             command = [str(tools.blender_exe)]
             if tools.blender_threads > 0:
                 command.extend(("--threads", str(tools.blender_threads)))
             command.extend((
-                "--background", "--python", str(renderer_input), "--",
-                "--before", str(reference_input), "--after", str(candidate_input),
-                "--out", str(raw), "--size", "512", "--angles", ",".join(_ANGLES),
+                "--background", "--python", blender_workspace_path(renderer_input), "--",
+                "--before", blender_workspace_path(reference_input),
+                "--after", blender_workspace_path(candidate_input),
+                "--out", blender_workspace_path(raw),
+                "--size", "512", "--angles", ",".join(_ANGLES),
                 "--passes", "textured,clay", "--poses", ",".join(
                     f"{key}:{frame}" for key, frame in pose_frames
                 ),
-                "--source-union-contract", str(contract_path),
+                "--source-union-contract", blender_workspace_path(contract_path),
                 "--source-union-control-sha256", contract_digest,
-                "--source-union-visibility-out", str(visibility_path),
+                "--source-union-visibility-out", blender_workspace_path(visibility_path),
             ))
             if len(pose_bindings) == 2:
                 command.extend((
-                    "--animation-before", str(private_animation_before),
-                    "--animation-after", str(private_animation_after),
+                    "--animation-before", blender_workspace_path(private_animation_before),
+                    "--animation-after", blender_workspace_path(private_animation_after),
                 ))
             for root in private_material_roots:
-                command.extend(("--materials-root", str(root)))
+                command.extend(("--materials-root", blender_workspace_path(root)))
             if tools.vtfcmd is not None: command.extend(("--vtfcmd", str(tools.vtfcmd)))
-            command.extend(("--texture-cache", str(private_texture_cache)))
+            command.extend(("--texture-cache", blender_workspace_path(private_texture_cache)))
             if tools.dependency_digest_provider(event) != snapshot.request.dependency_proof_sha256:
                 raise ValueError("source-union dependency changed before Blender")
             validate_current_materials(event)

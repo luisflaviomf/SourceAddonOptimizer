@@ -31,10 +31,44 @@ class ProcessExecutionError(RuntimeError):
 
 _CANCEL_EXIT_GRACE_SECONDS = 0.1
 _FROZEN_WORKER_SCRIPT_COMMAND = "__worker_script__"
+_WINDOWS_DIRECTORY_PATH_LIMIT = 248
+_WINDOWS_EXTENDED_PATH_PREFIX = "\\\\?\\"
+_WINDOWS_EXTENDED_UNC_PREFIX = "\\\\?\\UNC\\"
 _FROZEN_WORKER_SCRIPTS = frozenset({
     "batch_compile_opt_qc.py",
     "batch_decompile_organize.py",
 })
+
+
+def blender_path_argument(
+    path: str | os.PathLike[str], *, force_extended: bool = False
+) -> str:
+    """Return an absolute Blender-safe path, enabling Win32 extended paths as needed."""
+    value = str(Path(path).resolve(strict=False))
+    if os.name != "nt" or value.startswith(_WINDOWS_EXTENDED_PATH_PREFIX):
+        return value
+    if not force_extended and len(value) < _WINDOWS_DIRECTORY_PATH_LIMIT:
+        return value
+    if value.startswith("\\\\"):
+        return _WINDOWS_EXTENDED_UNC_PREFIX + value[2:]
+    return _WINDOWS_EXTENDED_PATH_PREFIX + value
+
+
+def blender_tree_requires_extended_paths(root: str | os.PathLike[str]) -> bool:
+    """Detect a copied Blender input tree containing a Win32 MAX_PATH-risk entry."""
+    resolved_root = Path(root).resolve(strict=True)
+    if os.name != "nt":
+        return False
+    if len(str(resolved_root)) >= _WINDOWS_DIRECTORY_PATH_LIMIT:
+        return True
+    for directory, child_directories, files in os.walk(resolved_root, followlinks=False):
+        parent = Path(directory)
+        if any(
+            len(str(parent / name)) >= _WINDOWS_DIRECTORY_PATH_LIMIT
+            for name in (*child_directories, *files)
+        ):
+            return True
+    return False
 
 
 def _normalize_command(command: Sequence[str | os.PathLike[str]]) -> tuple[str, ...]:
