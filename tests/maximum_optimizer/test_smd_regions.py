@@ -107,7 +107,7 @@ class RegionGraphTests(unittest.TestCase):
             {region.key for region in original.regions},
         )
 
-    def test_duplicate_normal_component_falls_back_only_its_material_regions(self) -> None:
+    def test_extra_normal_component_does_not_discard_confident_original_matches(self) -> None:
         original = build_region_graph(parse_smd(ORIGINAL.read_text(encoding="utf-8")), OCCURRENCE)
         normal_text = NORMAL.read_text(encoding="utf-8")
         record = "paint\n0 8.02 0 0 0 0 1 0 0\n0 9.02 0 0 0 0 1 1 0\n0 8.52 1 0 0 0 1 0.5 1\n"
@@ -120,9 +120,28 @@ class RegionGraphTests(unittest.TestCase):
         paint = tuple(pair for pair in correspondence.pairs if pair.original.material == "paint")
         glass = tuple(pair for pair in correspondence.pairs if pair.original.material == "glass")
         self.assertTrue(paint)
-        self.assertTrue(all(not pair.confident and pair.normal == pair.original for pair in paint))
+        self.assertTrue(all(pair.confident for pair in paint))
         self.assertTrue(all(pair.confident for pair in glass))
-        self.assertIn("local fallback", correspondence.reason)
+        self.assertIn("ignored normal-only components", correspondence.reason)
+
+    def test_missing_normal_component_falls_back_only_the_unmatched_original_component(self) -> None:
+        original = build_region_graph(parse_smd(ORIGINAL.read_text(encoding="utf-8")), OCCURRENCE)
+        normal_text = NORMAL.read_text(encoding="utf-8")
+        shifted_component = (
+            "paint\n"
+            "0 4.02 0 0 0 0 1 0 0\n"
+            "0 5.02 0 0 0 0 1 1 0\n"
+            "0 4.52 1 0 0 0 1 0.5 1\n"
+        )
+        normal = build_region_graph(parse_smd(normal_text.replace(shifted_component, "")), OCCURRENCE)
+
+        correspondence = correspond_graphs(original, normal)
+
+        paint = tuple(pair for pair in correspondence.pairs if pair.original.material == "paint")
+        self.assertEqual(len(paint), 2)
+        self.assertEqual(sum(pair.confident for pair in paint), 1)
+        unmatched = next(pair for pair in paint if not pair.confident)
+        self.assertEqual(unmatched.normal, unmatched.original)
 
 
 if __name__ == "__main__":

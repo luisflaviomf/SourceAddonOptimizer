@@ -213,39 +213,55 @@ def correspond_graphs(original: RegionGraph, normal: RegionGraph) -> RegionCorre
     for material in sorted(original_by_material):
         originals = original_by_material[material]
         normals = normal_by_material.get(material, [])
-        if len(originals) != len(normals):
-            reason = f"component count differs for material {material}"
+        scores = {
+            (original_index, normal_index): _mapping_score(original_region, normal_region, scale)
+            for original_index, original_region in enumerate(originals)
+            for normal_index, normal_region in enumerate(normals)
+            if original_region.bone_ids == normal_region.bone_ids
+        }
+        tied_originals = set()
+        for original_index in range(len(originals)):
+            ranked = sorted(score for (index, _normal), score in scores.items() if index == original_index)
+            if len(ranked) > 1 and abs(ranked[0] - ranked[1]) <= 1e-9:
+                tied_originals.add(original_index)
+        for normal_index in range(len(normals)):
+            ranked = sorted(
+                (score, original_index)
+                for (original_index, index), score in scores.items()
+                if index == normal_index
+            )
+            if len(ranked) > 1 and abs(ranked[0][0] - ranked[1][0]) <= 1e-9:
+                best = ranked[0][0]
+                tied_originals.update(index for score, index in ranked if abs(score - best) <= 1e-9)
+
+        matches: dict[int, int] = {}
+        used_normals: set[int] = set()
+        for score, original_index, normal_index in sorted(
+            (score, original_index, normal_index)
+            for (original_index, normal_index), score in scores.items()
+            if score <= 0.35 and original_index not in tied_originals
+        ):
+            if original_index in matches or normal_index in used_normals:
+                continue
+            matches[original_index] = normal_index
+            used_normals.add(normal_index)
+
+        for original_index, original_region in enumerate(originals):
+            normal_index = matches.get(original_index)
+            if normal_index is not None:
+                pairs.append(RegionPair(original_region, normals[normal_index]))
+                continue
+            reason = (
+                f"tied component match for material {material}"
+                if original_index in tied_originals
+                else f"no confident component match for material {material}"
+            )
             fallback_reasons.append(reason)
-            pairs.extend(
-                RegionPair(original_region, original_region, False, reason)
-                for original_region in originals
-            )
-            continue
-        unused = set(range(len(normals)))
-        for original_region in originals:
-            candidates = sorted(
-                (
-                    (_mapping_score(original_region, normals[index], scale), index)
-                    for index in unused
-                    if original_region.bone_ids == normals[index].bone_ids
-                ),
-                key=lambda item: (item[0], item[1]),
-            )
-            if not candidates or candidates[0][0] > 0.35:
-                reason = f"no confident component match for material {material}"
-                fallback_reasons.append(reason)
-                pairs.append(RegionPair(original_region, original_region, False, reason))
-                continue
-            if len(candidates) > 1 and abs(candidates[0][0] - candidates[1][0]) <= 1e-9:
-                reason = f"tied component match for material {material}"
-                fallback_reasons.append(reason)
-                pairs.append(RegionPair(original_region, original_region, False, reason))
-                continue
-            index = candidates[0][1]
-            unused.remove(index)
-            pairs.append(RegionPair(original_region, normals[index]))
+            pairs.append(RegionPair(original_region, original_region, False, reason))
+        if len(used_normals) < len(normals):
+            fallback_reasons.append(f"ignored normal-only components for material {material}")
     extra_materials = sorted(set(normal_by_material) - set(original_by_material))
     if extra_materials:
         fallback_reasons.append(f"ignored normal-only materials: {', '.join(extra_materials)}")
-    reason = f"{len(set(fallback_reasons))} local fallback reason(s)" if fallback_reasons else ""
+    reason = "; ".join(sorted(set(fallback_reasons)))
     return RegionCorrespondence("mapped", "none", tuple(pairs), reason)

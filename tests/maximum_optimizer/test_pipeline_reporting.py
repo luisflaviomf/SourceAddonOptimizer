@@ -191,7 +191,7 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertEqual(detail.representation, "original")
         self.assertIn("targeted render failed", detail.reason)
 
-    def test_ambiguous_sources_restore_original_instead_of_unvalidated_aggressive_seed(self) -> None:
+    def test_normal_only_extra_component_is_ignored_without_inflating_triangle_totals(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             options = self._fixture_options(root)
@@ -214,7 +214,7 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertEqual(report.normal_triangles, 9)
         self.assertEqual(report.final_triangles, selected_regions)
         self.assertEqual(report.regions.ambiguous, 0)
-        self.assertGreater(report.regions.original_fallback, 0)
+        self.assertLessEqual(report.final_triangles, report.original_triangles)
 
 
 if __name__ == "__main__":
