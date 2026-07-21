@@ -1,6 +1,5 @@
 using GmodAddonCompressor.Models;
 using System;
-using System.Collections.Generic;
 using System.IO;
 
 namespace GmodAddonCompressor.Systems.Vtf
@@ -20,35 +19,22 @@ namespace GmodAddonCompressor.Systems.Vtf
 
         internal static bool TryDecodeHighResRgba(string vtfFilePath, VtfFileModel metadata, out byte[] rgba)
         {
-            rgba = Array.Empty<byte>();
             if (!CanDecodeRaw(metadata))
+            {
+                rgba = Array.Empty<byte>();
                 return false;
+            }
 
             try
             {
-                int topMipBytes = GetImageByteCount(metadata.HighResImageFormat, metadata.Width, metadata.Height);
-                byte[] encoded = new byte[topMipBytes];
-
-                using FileStream stream = File.OpenRead(vtfFilePath);
-                long offset = GetHighResTopMipOffset(metadata);
-                if (offset < 0 || offset + topMipBytes > stream.Length)
-                    return false;
-
-                stream.Seek(offset, SeekOrigin.Begin);
-                int readBytes = 0;
-                while (readBytes < topMipBytes)
+                if (!VtfDocumentReader.TryRead(vtfFilePath, out VtfDocumentInfo document, out _) ||
+                    document.Frames != 1 || document.Faces != 1 || document.Depth != 1)
                 {
-                    int chunk = stream.Read(encoded, readBytes, topMipBytes - readBytes);
-                    if (chunk <= 0)
-                        return false;
-
-                    readBytes += chunk;
+                    rgba = Array.Empty<byte>();
+                    return false;
                 }
 
-                rgba = metadata.HighResImageFormat == 15
-                    ? DecodeDxt5(encoded, metadata.Width, metadata.Height)
-                    : DecodeDxt1(encoded, metadata.Width, metadata.Height);
-                return true;
+                return TryDecodeHighResSliceRgba(vtfFilePath, document, 0, 0, 0, out rgba);
             }
             catch
             {
@@ -57,29 +43,68 @@ namespace GmodAddonCompressor.Systems.Vtf
             }
         }
 
-        private static long GetHighResTopMipOffset(VtfFileModel metadata)
+        internal static bool TryDecodeHighResSliceRgba(
+            string vtfFilePath,
+            VtfDocumentInfo document,
+            int frame,
+            int face,
+            int depthSlice,
+            out byte[] rgba) =>
+            TryDecodeHighResMipSliceRgba(vtfFilePath, document, 0, frame, face, depthSlice, out rgba);
+
+        internal static bool TryDecodeHighResMipSliceRgba(
+            string vtfFilePath,
+            VtfDocumentInfo document,
+            int mipLevel,
+            int frame,
+            int face,
+            int depthSlice,
+            out byte[] rgba)
         {
-            long offset = metadata.HeaderSize +
-                          GetImageByteCount(metadata.LowResImageFormat, metadata.LowResWidth, metadata.LowResHeight);
-
-            int width = metadata.Width;
-            int height = metadata.Height;
-            var mipSizes = new List<int>();
-
-            while (true)
+            rgba = Array.Empty<byte>();
+            if (mipLevel < 0 || mipLevel >= document.MipLevels.Count ||
+                frame < 0 || frame >= document.Frames ||
+                face < 0 || face >= document.Faces ||
+                document.HighResFormat is not (13 or 15 or 20))
             {
-                mipSizes.Add(GetImageByteCount(metadata.HighResImageFormat, width, height));
-                if (width == 1 && height == 1)
-                    break;
-
-                width = Math.Max(1, width / 2);
-                height = Math.Max(1, height / 2);
+                return false;
             }
 
-            for (int index = 1; index < mipSizes.Count; index++)
-                offset += mipSizes[index];
+            try
+            {
+                VtfMipLevelInfo mip = document.MipLevels[mipLevel];
+                if (depthSlice < 0 || depthSlice >= mip.Depth)
+                    return false;
+                int mipBytes = GetImageByteCount(document.HighResFormat, mip.Width, mip.Height);
+                byte[] encoded = new byte[mipBytes];
 
-            return offset;
+                using FileStream stream = File.OpenRead(vtfFilePath);
+                int sliceIndex = checked((frame * document.Faces + face) * mip.Depth + depthSlice);
+                long offset = checked(mip.Offset + (long)sliceIndex * mipBytes);
+                if (offset < 0 || offset + mipBytes > stream.Length)
+                    return false;
+
+                stream.Seek(offset, SeekOrigin.Begin);
+                int readBytes = 0;
+                while (readBytes < mipBytes)
+                {
+                    int chunk = stream.Read(encoded, readBytes, mipBytes - readBytes);
+                    if (chunk <= 0)
+                        return false;
+
+                    readBytes += chunk;
+                }
+
+                rgba = document.HighResFormat == 15
+                    ? DecodeDxt5(encoded, mip.Width, mip.Height)
+                    : DecodeDxt1(encoded, mip.Width, mip.Height);
+                return true;
+            }
+            catch
+            {
+                rgba = Array.Empty<byte>();
+                return false;
+            }
         }
 
         private static int GetImageByteCount(int formatId, int width, int height)

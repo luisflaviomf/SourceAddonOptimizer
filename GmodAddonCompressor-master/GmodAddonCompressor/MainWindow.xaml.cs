@@ -1,6 +1,7 @@
 ﻿using GmodAddonCompressor.DataContexts;
 using GmodAddonCompressor.Helpres;
 using GmodAddonCompressor.Models;
+using GmodAddonCompressor.Objects;
 using GmodAddonCompressor.Systems.Maps;
 using GmodAddonCompressor.Systems;
 using GmodAddonCompressor.Systems.Optimizer;
@@ -3787,6 +3788,12 @@ namespace GmodAddonCompressor
 
             var compressSystem = new CompressAddonSystem(addonDirectoryPath, pipelineOptions: compressOptions);
 
+            if (compressOptions.IsMaximumMode)
+            {
+                _context.CompressMaximumStatusText = "Preparing semantic inventory and encoder tools...";
+                compressSystem.e_MaximumProgress += CompressMaximumProgress;
+            }
+
             if (_context.CompressVTF) compressSystem.IncludeVTF();
             if (audioAvailable)
             {
@@ -3847,6 +3854,23 @@ namespace GmodAddonCompressor
             }
         }
 
+        private void CompressMaximumProgress(MaximumVtfProgress progress)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                double reduction = progress.OriginalBytes > 0
+                    ? (1.0 - (double)progress.ResultBytes / progress.OriginalBytes) * 100
+                    : 0;
+                string duration = progress.DurationMilliseconds > 0
+                    ? $" | {TimeSpan.FromMilliseconds(progress.DurationMilliseconds):hh\\:mm\\:ss}"
+                    : string.Empty;
+                _context.CompressMaximumStatusText =
+                    $"{progress.Stage}: {progress.RelativePath}{Environment.NewLine}" +
+                    $"Candidate: {progress.Candidate} | {FormatBytes(progress.OriginalBytes)} -> {FormatBytes(progress.ResultBytes)} ({reduction:0.00}%) | " +
+                    $"accepted {progress.AcceptedCandidates}, rejected {progress.RejectedCandidates}{duration}";
+            });
+        }
+
         private void CompressCompleted(bool unlockUi)
         {
             _context.ProgressBarMinValue = 0;
@@ -3882,10 +3906,13 @@ namespace GmodAddonCompressor
         private CompressPipelineOptions BuildCompressPipelineOptions()
         {
             bool isMagickMode = _context.CompressModeIsMagick;
+            bool isMaximumMode = _context.CompressModeIsMaximum;
 
             return new CompressPipelineOptions
             {
-                Mode = isMagickMode ? CompressPipelineMode.Magick : CompressPipelineMode.Standard,
+                Mode = isMaximumMode
+                    ? CompressPipelineMode.Maximum
+                    : isMagickMode ? CompressPipelineMode.Magick : CompressPipelineMode.Standard,
                 UseMagickForAggressivePng = isMagickMode && _context.CompressMagickUseAggressivePng
             };
         }

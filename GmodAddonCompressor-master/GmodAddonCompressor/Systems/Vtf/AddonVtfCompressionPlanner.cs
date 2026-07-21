@@ -1,6 +1,7 @@
 using GmodAddonCompressor.Models;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -74,6 +75,12 @@ namespace GmodAddonCompressor.Systems.Vtf
         public bool HasAdditive { get; set; }
         public bool HasIgnoreZ { get; set; }
         public bool HasDepthBlend { get; set; }
+        public bool UsesBaseTextureAsPhongMask { get; set; }
+        public bool UsesBaseTextureAsEnvMapMask { get; set; }
+        public bool HasPhong { get; set; }
+        public bool HasSelfIllum { get; set; }
+        public bool HasDecal { get; set; }
+        public double AlphaTestReference { get; set; } = 0.5;
         public bool HasOpacityAlpha => HasAlphaTest || HasTranslucent || HasVertexAlpha || HasAlphaToCoverage;
 
         public int FxFlagCount
@@ -118,7 +125,13 @@ namespace GmodAddonCompressor.Systems.Vtf
                 HasAlphaToCoverage = HasAlphaToCoverage,
                 HasAdditive = HasAdditive,
                 HasIgnoreZ = HasIgnoreZ,
-                HasDepthBlend = HasDepthBlend
+                HasDepthBlend = HasDepthBlend,
+                UsesBaseTextureAsPhongMask = UsesBaseTextureAsPhongMask,
+                UsesBaseTextureAsEnvMapMask = UsesBaseTextureAsEnvMapMask,
+                HasPhong = HasPhong,
+                HasSelfIllum = HasSelfIllum,
+                HasDecal = HasDecal,
+                AlphaTestReference = AlphaTestReference
             };
 
             foreach (string vmtKey in VmtKeys)
@@ -197,6 +210,51 @@ namespace GmodAddonCompressor.Systems.Vtf
             }
 
             return EvaluateFxProfile(signals);
+        }
+
+        public VtfSemanticProfile GetSemanticProfile(string? textureKey, string? relativePath)
+        {
+            string normalizedTextureKey = AddonVtfCompressionPlanner.NormalizeTextureReference(textureKey ?? string.Empty);
+            if (VmtTextureMap.TryGetValue(normalizedTextureKey, out string? mappedTextureKey))
+                normalizedTextureKey = mappedTextureKey;
+
+            AddonVtfTextureSignals signals = TryGetSignals(normalizedTextureKey, out AddonVtfTextureSignals? existing)
+                ? existing!.Clone()
+                : new AddonVtfTextureSignals(normalizedTextureKey);
+
+            AddonVtfCompressionPlanner.ApplyPathSignals(signals, normalizedTextureKey, relativePath, EffectNamespaces);
+            if (EffectLuaTextureKeys.Contains(normalizedTextureKey))
+                signals.HasEffectLuaReference = true;
+            if (PcfTextureKeys.Contains(normalizedTextureKey))
+                signals.HasPcfReference = true;
+
+            AddonVtfFxProfile fxProfile = EvaluateFxProfile(signals);
+            var evidence = new List<string>();
+            evidence.AddRange(signals.VmtKeys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase).Select(key => $"vmt:{key}"));
+            if (signals.HasEffectLuaReference)
+                evidence.Add("lua:effect_reference");
+            if (signals.HasPcfReference)
+                evidence.Add("pcf:material_reference");
+            if (!string.Equals(fxProfile.SignalSummary, "none", StringComparison.OrdinalIgnoreCase))
+                evidence.Add($"fx:{fxProfile.SignalSummary}");
+
+            return new VtfSemanticProfile(
+                normalizedTextureKey,
+                signals.UsesBaseTextureAlpha,
+                signals.IsNormalLike,
+                signals.UsesNormalAlpha,
+                signals.HasTranslucent || signals.HasVertexAlpha,
+                signals.HasAlphaTest,
+                signals.HasAlphaToCoverage,
+                signals.HasOpacityAlpha && AddonVtfCompressionPlanner.HasVehicleGlassHint(signals),
+                signals.UsesBaseTextureAsPhongMask,
+                signals.UsesBaseTextureAsEnvMapMask,
+                signals.HasPhong,
+                signals.HasSelfIllum,
+                signals.HasDecal,
+                fxProfile.IsSensitive || signals.HasEffectLuaReference || signals.HasPcfReference,
+                signals.AlphaTestReference,
+                evidence);
         }
 
         private bool TryGetSignals(string? textureKey, out AddonVtfTextureSignals? signals)
@@ -445,7 +503,8 @@ namespace GmodAddonCompressor.Systems.Vtf
             "$translucent",
             "$alphatest",
             "$additive",
-            "$allowalphatocoverage"
+            "$allowalphatocoverage",
+            "$selfillum"
         };
 
         private static readonly HashSet<string> SpriteShaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -560,6 +619,12 @@ namespace GmodAddonCompressor.Systems.Vtf
                 bool hasAdditive = false;
                 bool hasIgnoreZ = false;
                 bool hasDepthBlend = false;
+                bool usesBaseTextureAsPhongMask = false;
+                bool usesBaseTextureAsEnvMapMask = false;
+                bool hasPhong = false;
+                bool hasSelfIllum = false;
+                bool hasDecal = shaderName.IndexOf("decal", StringComparison.OrdinalIgnoreCase) >= 0;
+                double alphaTestReference = 0.5;
 
                 foreach (Match match in VmtTextureAssignmentRegex.Matches(content))
                 {
@@ -599,6 +664,27 @@ namespace GmodAddonCompressor.Systems.Vtf
 
                     if (key.Equals("$depthblend", StringComparison.OrdinalIgnoreCase) && IsTruthyMaterialValue(rawValue))
                         hasDepthBlend = true;
+
+                    if (key.Equals("$basemapalphaphongmask", StringComparison.OrdinalIgnoreCase) && IsTruthyMaterialValue(rawValue))
+                        usesBaseTextureAsPhongMask = true;
+
+                    if (key.Equals("$basealphaenvmapmask", StringComparison.OrdinalIgnoreCase) && IsTruthyMaterialValue(rawValue))
+                        usesBaseTextureAsEnvMapMask = true;
+
+                    if (key.Equals("$phong", StringComparison.OrdinalIgnoreCase) && IsTruthyMaterialValue(rawValue))
+                        hasPhong = true;
+
+                    if (key.Equals("$selfillum", StringComparison.OrdinalIgnoreCase) && IsTruthyMaterialValue(rawValue))
+                        hasSelfIllum = true;
+
+                    if (key.Equals("$decal", StringComparison.OrdinalIgnoreCase) && IsTruthyMaterialValue(rawValue))
+                        hasDecal = true;
+
+                    if (key.Equals("$alphatestreference", StringComparison.OrdinalIgnoreCase) &&
+                        double.TryParse(rawValue.Trim().Trim('"'), NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedReference))
+                    {
+                        alphaTestReference = Math.Clamp(parsedReference, 0.0, 1.0);
+                    }
                 }
 
                 if (!string.IsNullOrWhiteSpace(baseTexture))
@@ -614,6 +700,13 @@ namespace GmodAddonCompressor.Systems.Vtf
                     signals.HasAdditive |= hasAdditive;
                     signals.HasIgnoreZ |= hasIgnoreZ;
                     signals.HasDepthBlend |= hasDepthBlend;
+                    signals.UsesBaseTextureAsPhongMask |= usesBaseTextureAsPhongMask;
+                    signals.UsesBaseTextureAsEnvMapMask |= usesBaseTextureAsEnvMapMask;
+                    signals.HasPhong |= hasPhong;
+                    signals.HasSelfIllum |= hasSelfIllum;
+                    signals.HasDecal |= hasDecal;
+                    if (hasAlphaTest)
+                        signals.AlphaTestReference = alphaTestReference;
                     ApplyPathSignals(signals, baseTexture, null, effectNamespaces: null);
                     vmtTextureMap[materialKey] = baseTexture;
                 }
@@ -621,6 +714,7 @@ namespace GmodAddonCompressor.Systems.Vtf
                 if (!string.IsNullOrWhiteSpace(bumpTexture))
                 {
                     AddonVtfTextureSignals signals = GetOrCreateTextureSignals(textures, bumpTexture);
+                    signals.VmtKeys.Add(materialKey);
                     signals.IsNormalLike = true;
                     signals.UsesNormalAlpha |= usesBumpAlpha;
                     ApplyPathSignals(signals, bumpTexture, null, effectNamespaces: null);
@@ -698,6 +792,12 @@ namespace GmodAddonCompressor.Systems.Vtf
             bool fullyOpaqueAlpha,
             out AddonVtfCompressionPlan plan)
         {
+            if ((vtfInfo.Flags & 0x00004000) != 0)
+            {
+                plan = new AddonVtfCompressionPlan(true, string.Empty, "cubemap_faces", AddonVtfFxProfile.None);
+                return false;
+            }
+
             if (vtfInfo.Frames > 1)
             {
                 plan = new AddonVtfCompressionPlan(true, string.Empty, "animated_frames", AddonVtfFxProfile.None);

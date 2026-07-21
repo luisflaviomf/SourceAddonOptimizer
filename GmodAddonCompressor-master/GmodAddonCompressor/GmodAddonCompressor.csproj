@@ -4,6 +4,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net6.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <AssemblyName>GmodAddonOptimizer</AssemblyName>
@@ -14,6 +15,23 @@
 
   <ItemGroup>
     <Content Include="icon.ico" />
+    <EmbeddedResource Include="Resources\VtfMaximumTools.zip"
+                      LogicalName="GmodAddonCompressor.Resources.VtfMaximumTools.zip" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\experiments\VtfMaximumLab\Candidates\*.cs" Link="Systems\Vtf\Maximum\Candidates\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Baseline\*.cs" Link="Systems\Vtf\Maximum\Baseline\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Encoding\*.cs" Link="Systems\Vtf\Maximum\Encoding\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Experiment\*.cs" Link="Systems\Vtf\Maximum\Experiment\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Images\*.cs" Link="Systems\Vtf\Maximum\Images\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Inventory\*.cs" Link="Systems\Vtf\Maximum\Inventory\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Metrics\*.cs" Link="Systems\Vtf\Maximum\Metrics\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Reporting\*.cs" Link="Systems\Vtf\Maximum\Reporting\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Sampling\*.cs" Link="Systems\Vtf\Maximum\Sampling\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Selection\*.cs" Link="Systems\Vtf\Maximum\Selection\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Tools\*.cs" Link="Systems\Vtf\Maximum\Tools\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Validation\*.cs" Link="Systems\Vtf\Maximum\Validation\%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

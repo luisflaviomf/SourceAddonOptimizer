@@ -17,6 +17,7 @@ namespace GmodAddonCompressor.Systems
     {
         internal delegate void ProgressChangedEvent(string filePath, int fileIndex, int filesCount);
         internal delegate void CompletedCompressEvent();
+        internal delegate void MaximumProgressEvent(MaximumVtfProgress progress);
 
         private sealed class CompressionBucket
         {
@@ -39,6 +40,7 @@ namespace GmodAddonCompressor.Systems
 
         internal ProgressChangedEvent? e_ProgressChanged;
         internal CompletedCompressEvent? e_CompletedCompress;
+        internal MaximumProgressEvent? e_MaximumProgress;
 
         private Queue<FileInfo> _registredFiles = new Queue<FileInfo>();
         private bool _hasStarted = false;
@@ -90,7 +92,16 @@ namespace GmodAddonCompressor.Systems
         {
             string extension = ".vtf";
             AddValidFileExtensions(extension);
-            _compressServices.Add(extension, new VTFEdit(_directoryPath));
+            if (_pipelineOptions.IsMaximumMode)
+            {
+                var maximum = new MaximumVTFEdit(_directoryPath);
+                maximum.ProgressChanged += progress => e_MaximumProgress?.Invoke(progress);
+                _compressServices.Add(extension, maximum);
+            }
+            else
+            {
+                _compressServices.Add(extension, new VTFEdit(_directoryPath));
+            }
         }
 
         internal void IncludeJPG()
@@ -198,6 +209,18 @@ namespace GmodAddonCompressor.Systems
 
             await Task.WhenAll(buckets.Select(bucket => ProcessBucketAsync(bucket, filesCount, progressCounter)));
 
+            foreach (ICompressFinalizer finalizer in _compressServices.Values.OfType<ICompressFinalizer>().Distinct())
+            {
+                try
+                {
+                    await finalizer.CompleteAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex.ToString());
+                }
+            }
+
             _hasStarted = false;
 
             e_CompletedCompress?.Invoke();
@@ -278,11 +301,12 @@ namespace GmodAddonCompressor.Systems
             };
         }
 
-        private static int GetMaxDegreeOfParallelism(string bucketName)
+        private int GetMaxDegreeOfParallelism(string bucketName)
         {
             int cpuCount = Math.Max(1, Environment.ProcessorCount);
             return bucketName switch
             {
+                "vtf" when _pipelineOptions.IsMaximumMode => Math.Max(1, Math.Min(2, cpuCount / 2)),
                 "vtf" => Math.Max(1, Math.Min(4, cpuCount / 2)),
                 "audio" => Math.Max(1, Math.Min(2, cpuCount / 4)),
                 "image" => Math.Max(2, Math.Min(8, cpuCount)),
