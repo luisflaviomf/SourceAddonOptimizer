@@ -19,6 +19,8 @@ using System.Threading.Tasks;
 
 namespace GmodAddonCompressor.Objects
 {
+    internal sealed record VtfResizePolicy(int ResolutionFactor, int MinimumWidth, int MinimumHeight, bool KeepAspectRatio);
+
     internal class VTFEdit : ImageEditBase, ICompress, ICompressPreparation
     {
         private const string ToolName = "VTFEdit";
@@ -28,15 +30,17 @@ namespace GmodAddonCompressor.Objects
         private readonly ILogger _logger = LogSystem.CreateLogger<VTFEdit>();
         private readonly Lazy<AddonVtfCompressionAnalysis> _analysisSnapshot;
         private readonly string _addonRoot;
+        private readonly VtfResizePolicy? _resizePolicy;
 
         public VTFEdit()
             : this(CompressDirectoryContext.DirectoryPath)
         {
         }
 
-        public VTFEdit(string addonRoot)
+        public VTFEdit(string addonRoot, VtfResizePolicy? resizePolicy = null)
         {
             _addonRoot = addonRoot;
+            _resizePolicy = resizePolicy;
             string toolRoot = ToolExtractionSystem.EnsureExtracted(
                 ToolName,
                 ToolVersion,
@@ -141,7 +145,7 @@ namespace GmodAddonCompressor.Objects
                     }
 
                     bool isSingleColor = ImageIsSingleColor(sourceImage);
-                    if (!TryGetResizeBounds(
+                    if (!TryGetVtfResizeBounds(
                             (int)sourceImage.Width,
                             (int)sourceImage.Height,
                             isSingleColor,
@@ -161,7 +165,8 @@ namespace GmodAddonCompressor.Objects
 
                     string splitPngPath = Path.Combine(tempRoot, "split_source.png");
                     bool preserveAlpha = !string.Equals(plan.TargetFormat, "DXT1", StringComparison.OrdinalIgnoreCase);
-                    bool ignoreAspectRatio = isSingleColor || !ImageContext.KeepImageAspectRatio;
+                    bool keepAspectRatio = _resizePolicy?.KeepAspectRatio ?? ImageContext.KeepImageAspectRatio;
+                    bool ignoreAspectRatio = isSingleColor || !keepAspectRatio;
                     ApplyFxResizeFloor(
                         (int)sourceImage.Width,
                         (int)sourceImage.Height,
@@ -247,6 +252,38 @@ namespace GmodAddonCompressor.Objects
             {
                 TryDelete(tempRoot);
             }
+        }
+
+        private bool TryGetVtfResizeBounds(
+            int originalWidth,
+            int originalHeight,
+            bool isSingleColor,
+            out int resizeWidth,
+            out int resizeHeight)
+        {
+            if (_resizePolicy == null)
+                return TryGetResizeBounds(originalWidth, originalHeight, isSingleColor, out resizeWidth, out resizeHeight);
+
+            int factor = Math.Max(1, _resizePolicy.ResolutionFactor);
+            resizeWidth = Math.Max(_resizePolicy.MinimumWidth, FloorPowerOfTwo(originalWidth / factor));
+            resizeHeight = Math.Max(_resizePolicy.MinimumHeight, FloorPowerOfTwo(originalHeight / factor));
+            if (resizeWidth > originalWidth || resizeHeight > originalHeight)
+            {
+                resizeWidth = 0;
+                resizeHeight = 0;
+                return false;
+            }
+            return true;
+        }
+
+        private static int FloorPowerOfTwo(int value)
+        {
+            if (value <= 0)
+                return 0;
+            int result = 1;
+            while (result <= value / 2)
+                result *= 2;
+            return result;
         }
 
         private async Task<(MagickImage? Image, string SourceKind)> TryCreateSourceImageAsync(

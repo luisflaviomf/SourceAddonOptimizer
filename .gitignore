@@ -35,7 +35,15 @@ teste*.zip
 /arc9junto_merged/
 /arc9junto_merged_optimized/
 /lvsjunto/
-/experiments/
+/experiments/*
+!/experiments/VtfMaximumLab/
+!/experiments/VtfMaximumLab/**
+!/experiments/VtfMaximumLab.Tests/
+!/experiments/VtfMaximumLab.Tests/**
+/experiments/VtfMaximumLab/**/bin/
+/experiments/VtfMaximumLab/**/obj/
+/experiments/VtfMaximumLab.Tests/**/bin/
+/experiments/VtfMaximumLab.Tests/**/obj/
 
 # Large local archives (do not commit)
 /*.zip
