@@ -160,6 +160,18 @@ def _attribute_contract_sha256() -> str:
     return digest.hexdigest()
 
 
+def _source_triangle_total(root: Path) -> int:
+    total = 0
+    for path in sorted(Path(root).rglob("*.smd"), key=lambda value: value.as_posix().casefold()):
+        if "output" in {part.casefold() for part in path.relative_to(root).parts[:-1]}:
+            continue
+        try:
+            total += len(parse_smd(path.read_text(encoding="utf-8", errors="strict")).triangles)
+        except (OSError, UnicodeError, ValueError):
+            continue
+    return total
+
+
 def _region_stats(key: RegionKey, template: SmdRegion, triangles: tuple[SmdTriangle, ...]) -> SmdRegion:
     positions = tuple(vertex.position for triangle in triangles for vertex in triangle.vertices)
     if not positions:
@@ -626,9 +638,10 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
     }
     compile_count = 0
     compiled: CompileResult | None = None
+    compiled_source_root: Path | None = None
 
     def compile_with_fallback() -> None:
-        nonlocal compile_count, compiled, adaptive_sources
+        nonlocal compile_count, compiled, compiled_source_root, adaptive_sources
         composition = compose_source_tree(
             options.original_source_root,
             options.normal_source_root,
@@ -636,6 +649,7 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
             options.staging_root,
             normal_source_fallbacks=ambiguous_sources,
         )
+        compiled_source_root = composition.root
         compiled = options.compile_family(composition.root)
         compile_count += 1
         if compiled.success:
@@ -650,7 +664,7 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
             isolation_index = 0
 
             def compile_active(values: tuple[str, ...]) -> bool:
-                nonlocal compile_count, isolation_index, compiled
+                nonlocal compile_count, isolation_index, compiled, compiled_source_root
                 isolation_index += 1
                 active = {PurePosixPath(value) for value in values}
                 stage = options.staging_root.with_name(f"{options.staging_root.name}.isolate-{isolation_index}")
@@ -661,6 +675,7 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
                     stage,
                     normal_source_fallbacks=tuple(sorted(set(ambiguous_sources) | (adaptive_sources - active))),
                 )
+                compiled_source_root = composition_try.root
                 compiled = options.compile_family(composition_try.root)
                 compile_count += 1
                 return compiled.success
@@ -695,6 +710,7 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
             final_stage,
             normal_source_fallbacks=tuple(sorted(set(ambiguous_sources) | {bad_source})),
         )
+        compiled_source_root = final_composition.root
         compiled = options.compile_family(final_composition.root)
         compile_count += 1
         if not compiled.success:
@@ -702,6 +718,7 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
 
     _run_stage(options, timings, "compile-fallback", compile_with_fallback)
     assert compiled is not None
+    assert compiled_source_root is not None
 
     def package_validation() -> None:
         if not compiled.success:
@@ -766,9 +783,9 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
         compile_count,
         sum(item.decision.evaluations for item in selected),
         sum(item.decision.cache_hits for item in selected),
-        sum(len(item.original.triangles) for item in selected),
-        sum(len(item.normal.triangles) for item in selected),
-        sum(len(item.decision.selected.triangles) for item in selected),
+        _source_triangle_total(options.original_source_root),
+        _source_triangle_total(options.normal_source_root),
+        _source_triangle_total(compiled_source_root),
         tuple(timings),
         region_details,
         tuple(dict.fromkeys(failures)),

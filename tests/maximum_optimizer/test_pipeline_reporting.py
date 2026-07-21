@@ -168,6 +168,29 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertEqual(detail.representation, "original")
         self.assertIn("targeted render failed", detail.reason)
 
+    def test_triangle_totals_include_ambiguous_sources_using_normal_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            options = self._fixture_options(root)
+            original_text = (FIXTURES / "two_components.smd").read_text(encoding="utf-8")
+            extra = "paint\n0 8.02 0 0 0 0 1 0 0\n0 9.02 0 0 0 0 1 1 0\n0 8.52 1 0 0 0 1 0.5 1\n"
+            normal_text = original_text.replace("glass\n", extra + "glass\n")
+            (options.original_source_root / "ambiguous.smd").write_text(original_text, encoding="utf-8")
+            (options.normal_source_root / "ambiguous.smd").write_text(normal_text, encoding="utf-8")
+            for source_root in (options.original_source_root, options.normal_source_root):
+                qc = source_root / "vehicle.qc"
+                qc.write_text(
+                    qc.read_text(encoding="utf-8") + '$body "ambiguous" "ambiguous.smd"\n',
+                    encoding="utf-8",
+                )
+
+            report = run_maximum_adaptive(options)
+
+        selected_mapped = sum(item.selected_triangles for item in report.region_details)
+        self.assertEqual(report.original_triangles, 8)
+        self.assertEqual(report.normal_triangles, 9)
+        self.assertEqual(report.final_triangles, selected_mapped + 5)
+
 
 if __name__ == "__main__":
     unittest.main()
