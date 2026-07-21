@@ -2367,6 +2367,7 @@ def _execute_family(
                 if focused_policy is not None
                 else "legacy-regional"
             ),
+            binary_ladders=not callable(schedule_method),
         )
         if spec is None:
             break

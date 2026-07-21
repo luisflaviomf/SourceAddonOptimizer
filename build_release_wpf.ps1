@@ -59,9 +59,19 @@ Invoke-Step -Name "Build meshoptimizer bridge" -Action {
 }
 
 Invoke-Step -Name "Run Maximum optimizer Python tests" -Action {
-    & python -m unittest discover -s tests/maximum_optimizer -t . -p "test_*.py" -q
-    if ($LASTEXITCODE -ne 0) {
-        throw "Maximum optimizer Python tests failed with exit code $LASTEXITCODE."
+    # Some negative-path tests intentionally write argparse diagnostics to stderr.
+    # Windows PowerShell turns native stderr into a terminating NativeCommandError
+    # when ErrorActionPreference is Stop, even when unittest ultimately exits 0.
+    $python = (Get-Command python -ErrorAction Stop).Source
+    $process = Start-Process -FilePath $python -ArgumentList @(
+        "-m", "unittest", "discover",
+        "-s", "tests/maximum_optimizer",
+        "-t", ".",
+        "-p", "test_*.py",
+        "-q"
+    ) -NoNewWindow -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "Maximum optimizer Python tests failed with exit code $($process.ExitCode)."
     }
 }
 

@@ -457,6 +457,22 @@ def _validate_configuration(
     return payload
 
 
+def _configuration_pairing_key(configuration: dict) -> tuple[object, ...]:
+    return (
+        configuration["schema"],
+        configuration["name"],
+        tuple(sorted(configuration["bodygroups"].items())),
+        configuration["lod_index"],
+        tuple(
+            (
+                pair["source_identity"].casefold(),
+                pair["reference_sha256"],
+            )
+            for pair in configuration["source_pairs"]
+        ),
+    )
+
+
 def _validate_geometry_audit(
     manifest: dict, expected: dict[str, object], label: str, failures: list[GateFailure]
 ) -> None:
@@ -828,7 +844,8 @@ def _compare_bound_render_manifests(
             if (
                 reference_configuration is not None
                 and candidate_configuration is not None
-                and reference_configuration != candidate_configuration
+                and _configuration_pairing_key(reference_configuration)
+                != _configuration_pairing_key(candidate_configuration)
             ):
                 failures.append(_failure(
                     "configuration_mismatch", "manifest",

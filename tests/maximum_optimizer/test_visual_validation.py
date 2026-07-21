@@ -635,6 +635,29 @@ class VisualValidationTests(unittest.TestCase):
         result = compare_render_sets(self.reference, self.candidate, _profile())
         self.assertIn("invalid_geometry_audit", {failure.gate for failure in result.failures})
 
+    def test_configuration_pairing_allows_candidate_geometry_hash_to_differ(self):
+        self.write_matching()
+        reference_path = self.reference / "render_manifest.json"
+        candidate_path = self.candidate / "render_manifest.json"
+        reference = json.loads(reference_path.read_text(encoding="utf-8"))
+        candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+        reference["configuration"]["source_pairs"] = [{
+            "source_identity": "body.smd",
+            "reference_sha256": "a" * 64,
+            "candidate_sha256": "a" * 64,
+        }]
+        candidate["configuration"]["source_pairs"] = [{
+            "source_identity": "body.smd",
+            "reference_sha256": "a" * 64,
+            "candidate_sha256": "b" * 64,
+        }]
+        reference_path.write_text(json.dumps(reference), encoding="utf-8")
+        candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+
+        result = compare_render_sets(self.reference, self.candidate, _profile())
+
+        self.assertTrue(result.passed, result.failures)
+
     def test_region_missing_is_a_hard_failure_even_with_permissive_limits(self):
         self.write_matching()
         manifest_path = self.candidate / "render_manifest.json"

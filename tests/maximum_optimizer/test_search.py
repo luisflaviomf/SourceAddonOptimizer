@@ -315,6 +315,78 @@ class SearchTests(unittest.TestCase):
 
         self.assertIsNone(choose_next(evaluations, budget, initial=()))
 
+    def test_binary_ladder_probes_middle_then_quality_boundary(self):
+        schedule = tuple(
+            CandidateSpec(
+                f"mesh-e{error}", "meshoptimizer", 0.20, error,
+                "meshopt-direct-position-v1",
+                strategy="meshopt-direct-position-v1",
+                update_vertices=False,
+                transfer="direct-v1",
+            )
+            for error in (0.005, 0.00625, 0.0075, 0.009, 0.01, 0.015, 0.02)
+        )
+        budget = SearchBudget(max_candidates=18, min_ratio_step=0.025, min_marginal_saving=0.0)
+
+        first = choose_next([], budget, initial=schedule, binary_ladders=True)
+        self.assertEqual(first.candidate_id, "mesh-e0.009")
+
+        middle_pass = evaluation_at(
+            0.20, True, candidate_id=first.candidate_id,
+            strategy="meshopt-direct-position-v1",
+            repair_profile="meshopt-direct-position-v1",
+            transfer="direct-v1", target_error=0.009,
+            update_vertices=False,
+        )
+        second = choose_next(
+            [middle_pass], budget, initial=schedule, binary_ladders=True
+        )
+        self.assertEqual(second.candidate_id, "mesh-e0.015")
+
+        aggressive_fail = evaluation_at(
+            0.20, False, candidate_id=second.candidate_id,
+            strategy="meshopt-direct-position-v1",
+            repair_profile="meshopt-direct-position-v1",
+            transfer="direct-v1", target_error=0.015,
+            update_vertices=False,
+        )
+        boundary = choose_next(
+            [middle_pass, aggressive_fail], budget,
+            initial=schedule, binary_ladders=True,
+        )
+        self.assertEqual(boundary.candidate_id, "mesh-e0.01")
+
+    def test_binary_ladder_retires_when_most_conservative_candidate_fails(self):
+        schedule = tuple(
+            CandidateSpec(
+                f"mesh-e{error}", "meshoptimizer", 0.20, error,
+                "meshopt-direct-position-v1",
+                strategy="meshopt-direct-position-v1",
+                update_vertices=False,
+                transfer="direct-v1",
+            )
+            for error in (0.005, 0.01, 0.02)
+        ) + (
+            CandidateSpec(
+                "fidelity-baseline", "fidelity", 0.50, 0.0,
+                "fidelity-current",
+            ),
+        )
+        failed = evaluation_at(
+            0.20, False, candidate_id="mesh-e0.005",
+            strategy="meshopt-direct-position-v1",
+            repair_profile="meshopt-direct-position-v1",
+            transfer="direct-v1", target_error=0.005,
+            update_vertices=False,
+        )
+
+        nxt = choose_next(
+            [failed], SearchBudget.experimental_default(),
+            initial=schedule, binary_ladders=True,
+        )
+
+        self.assertEqual(nxt.candidate_id, "fidelity-baseline")
+
     def test_choose_next_does_not_generate_below_ratio_floor(self):
         evaluations = [
             evaluation_at(0.011, True, candidate_id="pass"),

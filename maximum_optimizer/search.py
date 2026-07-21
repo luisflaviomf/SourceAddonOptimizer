@@ -38,6 +38,88 @@ def _recovery_key(spec: CandidateSpec) -> tuple[object, ...]:
     )
 
 
+def _ladder_key(spec: CandidateSpec) -> tuple[object, ...]:
+    return (
+        spec.engine,
+        spec.repair_profile,
+        spec.region_overrides,
+        spec.strategy,
+        spec.update_vertices,
+        spec.transfer,
+    )
+
+
+def _ordered_binary_ladder(
+    candidates: Sequence[CandidateSpec],
+) -> tuple[CandidateSpec, ...] | None:
+    ladder = tuple(candidates)
+    if len(ladder) < 2:
+        return ladder
+    ratios = tuple(item.target_ratio for item in ladder)
+    errors = tuple(item.target_error for item in ladder)
+    if len(set(ratios)) == 1 and all(
+        left < right for left, right in zip(errors, errors[1:])
+    ):
+        return ladder
+    if len(set(errors)) == 1 and all(
+        left > right for left, right in zip(ratios, ratios[1:])
+    ):
+        return ladder
+    return None
+
+
+def _binary_ladder_candidate(
+    ladder: Sequence[CandidateSpec],
+    evaluations: Sequence[CandidateEvaluation],
+    used_ids: set[str],
+) -> CandidateSpec | None:
+    ordered = tuple(ladder)
+    available = [
+        index for index, candidate in enumerate(ordered)
+        if candidate.candidate_id not in used_ids
+    ]
+    if not available:
+        return None
+    index_by_id = {
+        candidate.candidate_id: index for index, candidate in enumerate(ordered)
+    }
+    measured = [
+        (index_by_id[evaluation.spec.candidate_id], evaluation.passed)
+        for evaluation in evaluations
+        if evaluation.spec.candidate_id in index_by_id
+    ]
+    if not measured:
+        target = len(ordered) // 2
+        return ordered[min(available, key=lambda index: (abs(index - target), index))]
+
+    passing = sorted(index for index, passed in measured if passed)
+    failing = sorted(index for index, passed in measured if not passed)
+    if passing and failing and min(failing) < max(passing):
+        return ordered[max(available)]
+    if not passing:
+        upper = min(failing)
+        if upper == 0:
+            return None
+        choices = [index for index in available if index < upper]
+        target = (upper - 1) // 2
+    elif not failing:
+        lower = max(passing)
+        if lower == len(ordered) - 1:
+            return None
+        choices = [index for index in available if index > lower]
+        target = (lower + len(ordered)) // 2
+    else:
+        lower = max(passing)
+        upper = min(index for index in failing if index > lower)
+        if upper - lower <= 1:
+            return None
+        choices = [index for index in available if lower < index < upper]
+        target = (lower + upper) // 2
+    if not choices:
+        return None
+    return ordered[min(choices, key=lambda index: (abs(index - target), index))]
+
+
 def _strategy_suffix(key: tuple[object, ...]) -> str:
     raw = json.dumps(key, ensure_ascii=True, separators=(",", ":"), sort_keys=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
@@ -319,6 +401,7 @@ def choose_next(
     initial: Sequence[CandidateSpec] | None = None,
     attempted_ids: set[str] | None = None,
     recovery_mode: str = "legacy-regional",
+    binary_ladders: bool = False,
 ) -> CandidateSpec | None:
     if recovery_mode not in {"legacy-regional", "external-byte-exact"}:
         raise ValueError("search recovery mode is invalid")
@@ -355,6 +438,26 @@ def choose_next(
             recovery = _regional_recovery(trail, used_ids)
             if recovery is not None:
                 return recovery
+    if binary_ladders:
+        ladder_keys = list(dict.fromkeys(_ladder_key(item) for item in schedule))
+        for ladder_key in ladder_keys:
+            raw_ladder = tuple(
+                item for item in schedule if _ladder_key(item) == ladder_key
+            )
+            ladder = _ordered_binary_ladder(raw_ladder)
+            if ladder is None:
+                continue
+            ladder_ids = {item.candidate_id for item in ladder}
+            ladder_evaluations = [
+                item for item in evaluations
+                if item.spec.candidate_id in ladder_ids
+            ]
+            candidate = _binary_ladder_candidate(
+                ladder, ladder_evaluations, used_ids
+            )
+            if candidate is not None:
+                return candidate
+            retired.update(_trail_key(item) for item in ladder)
     for key in ordered_keys:
         trail = trails[key]
         bracket = _narrowest_bracket(trail)

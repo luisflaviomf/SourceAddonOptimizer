@@ -3601,7 +3601,7 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual(roots, (addon_materials.resolve(), overlay.resolve()))
 
-    def test_default_schedule_prefers_calibrated_position_direct_engine(self):
+    def test_default_schedule_binary_probes_calibrated_position_direct_engine(self):
         self.adapters.candidate_schedule = None
         report = self.run_optimizer()
         attempts = [
@@ -3610,7 +3610,7 @@ class OrchestratorTests(unittest.TestCase):
         ]
         self.assertGreater(len(attempts), 1)
         self.assertEqual(attempts[0].engine, "meshoptimizer")
-        self.assertEqual(attempts[0].candidate_id, "meshopt-position-e0005")
+        self.assertEqual(attempts[0].candidate_id, "meshopt-position-e0009")
         self.assertEqual(attempts[1].engine, "meshoptimizer")
 
     def test_explicit_rnd_flag_wires_compiler_aware_blender_schedule(self):

@@ -273,9 +273,15 @@ $zipPath = Join-Path $resourcesDir "SourceAddonOptimizer.win-x64.zip"
 
 if (Test-WorkerRebuildNeeded -WorkerExe $workerExe) {
     Write-Host "Worker build is missing or stale, running PyInstaller..."
-    pyinstaller --noconfirm --clean pyinstaller/worker.spec
-    if ($LASTEXITCODE -ne 0) {
-        throw "PyInstaller worker build failed (exit $LASTEXITCODE)."
+    # PyInstaller writes normal progress messages to stderr. Under Windows
+    # PowerShell with ErrorActionPreference=Stop that becomes a terminating
+    # NativeCommandError before its real process exit code can be inspected.
+    $pyinstaller = (Get-Command pyinstaller -ErrorAction Stop).Source
+    $process = Start-Process -FilePath $pyinstaller -ArgumentList @(
+        "--noconfirm", "--clean", "pyinstaller/worker.spec"
+    ) -NoNewWindow -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "PyInstaller worker build failed (exit $($process.ExitCode))."
     }
 }
 
