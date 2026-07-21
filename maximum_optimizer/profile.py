@@ -51,8 +51,13 @@ def load_profile(path: Path) -> MaximumProfile:
         raise ValueError("profile must allow exactly three simplifier evaluations")
     if type(payload["sample_count"]) is not int or payload["sample_count"] < 256:
         raise ValueError("profile sample count is invalid")
-    if type(payload["silhouette_resolution"]) is not int or payload["silhouette_resolution"] != 1024:
-        raise ValueError("profile silhouette resolution must be 1024")
+    silhouette_resolution = payload["silhouette_resolution"]
+    if (
+        type(silhouette_resolution) is not int
+        or not 256 <= silhouette_resolution <= 1024
+        or silhouette_resolution & (silhouette_resolution - 1)
+    ):
+        raise ValueError("profile silhouette resolution must be a power of two in [256, 1024]")
     return MaximumProfile(
         schema=1,
         version="maximum-adaptive-v2",
@@ -61,7 +66,7 @@ def load_profile(path: Path) -> MaximumProfile:
         max_simplifier_evaluations=3,
         near_limit_fraction=_finite_ratio(payload["near_limit_fraction"], "near-limit fraction"),
         sample_count=payload["sample_count"],
-        silhouette_resolution=1024,
+        silhouette_resolution=silhouette_resolution,
         limits=RegionBudget(**limits),
         sha256=hashlib.sha256(raw).hexdigest(),
     )

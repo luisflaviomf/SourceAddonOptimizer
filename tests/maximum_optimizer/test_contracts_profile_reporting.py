@@ -46,6 +46,8 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profile.version, "maximum-adaptive-v2")
         self.assertFalse(profile.calibrated)
         self.assertEqual(profile.max_simplifier_evaluations, 3)
+        self.assertEqual(profile.sample_count, 512)
+        self.assertEqual(profile.silhouette_resolution, 256)
         self.assertLess(profile.limits.normal_p95_degrees, 10.0)
         self.assertLessEqual(profile.limits.silhouette_boundary_p95_px, 1.5)
         self.assertEqual(profile.sha256, hashlib.sha256(PROFILE_PATH.read_bytes()).hexdigest())
@@ -65,6 +67,15 @@ class ProfileTests(unittest.TestCase):
             non_finite.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "finite"):
                 load_profile(non_finite)
+
+    def test_fast_gate_resolution_is_bounded_and_power_of_two(self) -> None:
+        payload = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "profile.json"
+            payload["silhouette_resolution"] = 768
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "power of two"):
+                load_profile(path)
 
 
 class SizeAccountingTests(unittest.TestCase):

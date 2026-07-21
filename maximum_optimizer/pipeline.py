@@ -583,6 +583,7 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
                 item.semantics,
                 item.decision.validation.margin_fraction,
                 item.semantics.confidence,
+                1.0 - len(item.decision.selected.triangles) / len(item.original.triangles),
             ):
                 continue
             targeted_renders += 1

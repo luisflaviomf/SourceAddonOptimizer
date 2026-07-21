@@ -28,10 +28,12 @@ class TargetedRenderingTests(unittest.TestCase):
             confidence=1.0,
         )
 
-        self.assertFalse(requires_targeted_render(opaque, margin=0.40, confidence=1.0))
-        self.assertTrue(requires_targeted_render(translucent, margin=0.40, confidence=1.0))
-        self.assertTrue(requires_targeted_render(opaque, margin=0.10, confidence=1.0))
-        self.assertTrue(requires_targeted_render(opaque, margin=0.40, confidence=0.60))
+        self.assertFalse(requires_targeted_render(opaque, margin=0.40, confidence=1.0, reduction=0.40))
+        self.assertTrue(requires_targeted_render(translucent, margin=0.40, confidence=1.0, reduction=0.05))
+        self.assertFalse(requires_targeted_render(translucent, margin=0.40, confidence=1.0, reduction=0.0))
+        self.assertTrue(requires_targeted_render(opaque, margin=0.10, confidence=1.0, reduction=0.0))
+        self.assertTrue(requires_targeted_render(opaque, margin=0.40, confidence=0.60, reduction=0.05))
+        self.assertFalse(requires_targeted_render(opaque, margin=0.40, confidence=0.60, reduction=0.0))
 
     def test_render_request_contains_one_region_not_family_states(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -55,7 +57,7 @@ class TargetedRenderingTests(unittest.TestCase):
         self.assertEqual(command.count("--after"), 1)
         self.assertNotIn("--all-bodygroups", command)
         self.assertIn("--camera-json", command)
-        self.assertEqual(command[command.index("--size") + 1], "1024")
+        self.assertEqual(command[command.index("--size") + 1], "512")
         self.assertEqual(
             command[command.index("--material-directory") + 1],
             "models/Cars/Vehicle",

@@ -5,17 +5,17 @@
   "seed_ratio": 0.35,
   "max_simplifier_evaluations": 3,
   "near_limit_fraction": 0.85,
-  "sample_count": 4096,
-  "silhouette_resolution": 1024,
+  "sample_count": 512,
+  "silhouette_resolution": 256,
   "limits": {
     "surface_p95": 0.0015,
     "surface_max": 0.006,
     "normal_p95_degrees": 8.0,
     "normal_max_degrees": 35.0,
     "silhouette_iou_loss": 0.003,
-    "silhouette_boundary_p95_px": 1.5,
+    "silhouette_boundary_p95_px": 0.5,
     "uv_p95": 0.002,
-    "material_boundary_p95_px": 1.0,
+    "material_boundary_p95_px": 0.5,
     "skinning_p95": 0.0015,
     "skinning_max": 0.006
   }

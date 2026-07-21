@@ -9,6 +9,7 @@ import unittest
 
 from maximum_optimizer.closure import ReferenceInventory, audit_reference_closure
 from maximum_optimizer.compiled_validation import (
+    _read_vvd,
     expected_compiled_family,
     validate_compiled_family,
 )
@@ -28,12 +29,19 @@ OCCURRENCE = QcOccurrence(
 )
 
 
-def _write_mdl_family(root: Path, *, include_dx90: bool = True, include_dx80: bool = False) -> None:
+def _write_mdl_family(
+    root: Path,
+    *,
+    include_dx90: bool = True,
+    include_dx80: bool = False,
+    mdl_version: int = 48,
+    animations: int = 2,
+) -> None:
     target = root / "cars" / "test"
     target.parent.mkdir(parents=True, exist_ok=True)
     counts = [0] * 24
     counts[0] = 4  # bones
-    counts[6] = 2  # animations
+    counts[6] = animations
     counts[8] = 3  # sequences
     counts[12] = 2  # textures/material identities
     counts[16] = 2  # skin references
@@ -42,7 +50,7 @@ def _write_mdl_family(root: Path, *, include_dx90: bool = True, include_dx80: bo
     counts[21] = 2  # attachments
     mdl = bytearray(512)
     mdl[:4] = b"IDST"
-    struct.pack_into("<i", mdl, 4, 48)
+    struct.pack_into("<i", mdl, 4, mdl_version)
     struct.pack_into("<i", mdl, 8, 12345)
     struct.pack_into("<i", mdl, 76, len(mdl))
     struct.pack_into("<24i", mdl, 156, *counts)
@@ -119,7 +127,7 @@ class CompositionIntegrityTests(unittest.TestCase):
         self.assertEqual(result.reverted_sources, ("s5.smd",))
         self.assertLessEqual(result.compile_count, math.ceil(math.log2(8)) + 1)
 
-    def test_dx90_required_dx80_forbidden_and_headers_must_match(self) -> None:
+    def test_dx90_is_required_and_intermediate_dx80_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             original = root / "original"
@@ -136,9 +144,41 @@ class CompositionIntegrityTests(unittest.TestCase):
 
         self.assertFalse(missing_dx90.passed)
         self.assertIn("missing_dx90", missing_dx90.failures)
-        self.assertFalse(with_dx80.passed)
-        self.assertIn("dx80_forbidden", with_dx80.failures)
+        self.assertTrue(with_dx80.passed, with_dx80.failures)
         self.assertTrue(valid.passed, valid.failures)
+
+    def test_valid_studiomdl_recompile_may_emit_v48_and_expand_animations(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            original = root / "original"
+            candidate = root / "candidate"
+            _write_mdl_family(original, mdl_version=49, animations=84)
+            _write_mdl_family(candidate, mdl_version=48, animations=166)
+            expected = expected_compiled_family(original, PurePosixPath("cars/test.mdl"))
+
+            expanded = validate_compiled_family(candidate, expected)
+            _write_mdl_family(candidate, mdl_version=48, animations=40)
+            lost = validate_compiled_family(candidate, expected)
+
+        self.assertTrue(expanded.passed, expanded.failures)
+        self.assertFalse(lost.passed)
+        self.assertIn("animations_lost", lost.failures)
+
+    def test_vvd_vertex_inventory_allows_total_above_single_mesh_limit(self) -> None:
+        lod0 = 85_357
+        data = bytearray(64 + lod0 * 64)
+        data[:4] = b"IDSV"
+        struct.pack_into("<3i", data, 4, 4, 12345, 1)
+        struct.pack_into("<8i", data, 16, lod0, 0, 0, 0, 0, 0, 0, 0)
+        struct.pack_into("<4i", data, 48, 0, 64, 64, 64 + lod0 * 48)
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "large.vvd"
+            path.write_bytes(data)
+
+            checksum, vertices = _read_vvd(path)
+
+        self.assertEqual(checksum, 12345)
+        self.assertEqual(vertices, lod0)
 
     def test_new_framework_reference_fails_without_resolver(self) -> None:
         original = ReferenceInventory(addon=frozenset({"materials/cars/body.vmt"}))

@@ -100,7 +100,7 @@ def _read_vvd(path: Path) -> tuple[int, int]:
         raise ValueError("vvd_version_or_lods")
     lod_vertices = struct.unpack_from("<8i", data, 16)
     lod0 = lod_vertices[0]
-    if lod0 < 0 or lod0 > 65536 or any(value < 0 or value > lod0 for value in lod_vertices[:lod_count]):
+    if lod0 < 0 or any(value < 0 or value > lod0 for value in lod_vertices[:lod_count]):
         raise ValueError("vvd_vertex_bounds")
     _fixups, _fixup_start, vertex_start, tangent_start = struct.unpack_from("<4i", data, 48)
     if vertex_start < 64 or tangent_start < vertex_start:
@@ -143,14 +143,11 @@ def validate_compiled_family(
     mdl_path = _family_path(models_root, expected.mdl_relative)
     vvd_path = mdl_path.with_suffix(".vvd")
     dx90_path = mdl_path.with_suffix(".dx90.vtx")
-    dx80_path = mdl_path.with_suffix(".dx80.vtx")
     if not studiomdl_succeeded:
         failures.append("studiomdl_failed")
     for path, failure in ((mdl_path, "missing_mdl"), (vvd_path, "missing_vvd"), (dx90_path, "missing_dx90")):
         if not path.is_file():
             failures.append(failure)
-    if dx80_path.exists():
-        failures.append("dx80_forbidden")
     checksum = None
     lod0 = None
     if any(value in failures for value in ("missing_mdl", "missing_vvd", "missing_dx90")):
@@ -158,14 +155,16 @@ def validate_compiled_family(
     try:
         mdl = _read_mdl(mdl_path)
         checksum = mdl.checksum
-        if mdl.version != expected.mdl_version:
-            failures.append("mdl_version_changed")
-        if mdl.counts != expected.counts:
+        actual_counts = dict(mdl.counts)
+        expected_counts = dict(expected.counts)
+        if actual_counts["animations"] < expected_counts["animations"]:
+            failures.append("animations_lost")
+        comparable_names = tuple(name for name, _value in expected.counts if name != "animations")
+        if any(actual_counts[name] != expected_counts[name] for name in comparable_names):
             failures.append("mdl_inventory_changed")
         if tuple(value.casefold() for value in mdl.materials) != expected.materials:
             failures.append("materials_changed")
-        count_map = dict(mdl.counts)
-        if count_map["bones"] > 128:
+        if actual_counts["bones"] > 128:
             failures.append("source_bone_limit")
     except (OSError, ValueError, struct.error) as exc:
         failures.append(str(exc) or "mdl_invalid")

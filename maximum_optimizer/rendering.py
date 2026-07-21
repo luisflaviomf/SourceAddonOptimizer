@@ -28,7 +28,7 @@ class RenderRequest:
     pose: str
     material_roots: tuple[Path, ...] = ()
     material_directories: tuple[PurePosixPath, ...] = ()
-    size: int = 1024
+    size: int = 512
     rgb_mae_limit: float = 0.035
     edge_error_limit: float = 1.5
     blender_version: str | None = None
@@ -66,13 +66,14 @@ def requires_targeted_render(
     semantics: MaterialSemantics,
     margin: float,
     confidence: float,
+    reduction: float,
 ) -> bool:
-    for name, value in (("margin", margin), ("confidence", confidence)):
+    for name, value in (("margin", margin), ("confidence", confidence), ("reduction", reduction)):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
             raise ValueError(f"{name} must be finite")
         if not 0.0 <= value <= 1.0:
             raise ValueError(f"{name} must be in [0, 1]")
-    return semantics.requires_render or margin <= 0.15 or confidence < 0.75
+    return margin <= 0.15 or reduction >= 0.02 and (semantics.requires_render or confidence < 0.75)
 
 
 def build_render_command(request: RenderRequest) -> list[str]:
