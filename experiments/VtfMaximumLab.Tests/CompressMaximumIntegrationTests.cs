@@ -1,5 +1,6 @@
 using GmodAddonCompressor.DataContexts;
 using GmodAddonCompressor.Models;
+using GmodAddonCompressor.Systems;
 using GmodAddonCompressor.Systems.Tools;
 using Xunit;
 
@@ -38,5 +39,18 @@ public sealed class CompressMaximumIntegrationTests
         string[] resources = typeof(MaximumVtfToolSystem).Assembly.GetManifestResourceNames();
 
         Assert.Contains("GmodAddonCompressor.Resources.VtfMaximumTools.zip", resources);
+    }
+
+    [Fact]
+    public void MaximumUsesTenParallelVtfJobs()
+    {
+        var options = new CompressPipelineOptions
+        {
+            Mode = CompressPipelineMode.Maximum,
+            MaximumVtfParallelism = 10
+        };
+        var compressor = new CompressAddonSystem(Path.GetTempPath(), pipelineOptions: options);
+
+        Assert.Equal(10, compressor.GetMaxDegreeOfParallelism("vtf"));
     }
 }

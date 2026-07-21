@@ -13,6 +13,7 @@ namespace GmodAddonCompressor.Models
         public bool UseLegacyStandardVtfDemo { get; init; }
         public bool UseMagickForCommonVtf { get; init; }
         public bool UseMagickForAggressivePng { get; init; }
+        public int MaximumVtfParallelism { get; init; } = 10;
 
         public bool IsMagickMode => Mode == CompressPipelineMode.Magick;
         public bool IsMaximumMode => Mode == CompressPipelineMode.Maximum;
