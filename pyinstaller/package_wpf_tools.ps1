@@ -32,6 +32,98 @@ function Get-WorkerSourceFiles {
             Get-Item $path
         }
     }
+
+    $maximumRoot = Join-Path $PWD "maximum_optimizer"
+    if (Test-Path $maximumRoot) {
+        Get-ChildItem -LiteralPath $maximumRoot -Recurse -File |
+            Where-Object { $_.FullName -notmatch '[\\/]__pycache__[\\/]' -and $_.Extension -ne '.pyc' }
+    }
+}
+
+function Test-WorkerRuntimeFilesHealthy {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $WorkerExe
+    )
+
+    if (!(Test-Path -LiteralPath $WorkerExe)) {
+        return $false
+    }
+
+    $internalDir = Join-Path (Split-Path -Parent $WorkerExe) "_internal"
+    $pythonDll = Join-Path $internalDir "python311.dll"
+    $baseLibrary = Join-Path $internalDir "base_library.zip"
+    foreach ($path in @($pythonDll, $baseLibrary)) {
+        if (!(Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -le 0) {
+            return $false
+        }
+    }
+
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($baseLibrary)
+        try {
+            foreach ($entry in $archive.Entries) {
+                if ($entry.FullName.EndsWith("/")) {
+                    continue
+                }
+                $stream = $entry.Open()
+                try {
+                    $stream.CopyTo([System.IO.Stream]::Null)
+                }
+                finally {
+                    $stream.Dispose()
+                }
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    catch {
+        return $false
+    }
+
+    return $true
+}
+
+function Assert-WorkerStarts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $WorkerExe
+    )
+
+    if (!(Test-WorkerRuntimeFilesHealthy -WorkerExe $WorkerExe)) {
+        throw "Worker runtime is missing or corrupt: $WorkerExe"
+    }
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $WorkerExe
+    $startInfo.Arguments = "--help"
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (!$process.Start()) {
+            throw "Worker process could not be started: $WorkerExe"
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (!$process.WaitForExit(30000)) {
+            $process.Kill()
+            throw "Worker --help timed out after 30 seconds: $WorkerExe"
+        }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0 -or $stdout -notmatch "normal,fidelity,maximum") {
+            throw "Worker --help contract failed with exit $($process.ExitCode): $stderr$stdout"
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
 }
 
 function Test-WorkerRebuildNeeded {
@@ -41,6 +133,10 @@ function Test-WorkerRebuildNeeded {
     )
 
     if (!(Test-Path $WorkerExe)) {
+        return $true
+    }
+
+    if (!(Test-WorkerRuntimeFilesHealthy -WorkerExe $WorkerExe)) {
         return $true
     }
 
@@ -98,7 +194,9 @@ function Assert-PackageZip {
         "SourceAddonOptimizerWorker.exe",
         "CrowbarCommandLineDecomp.exe",
         "_internal/base_library.zip",
-        "_internal/python311.dll"
+        "_internal/python311.dll",
+        "_internal/maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll",
+        "_internal/maximum_optimizer/profiles/maximum-adaptive-v2.json"
     )
 
     foreach ($entry in $requiredEntries) {
@@ -167,11 +265,16 @@ $zipPath = Join-Path $resourcesDir "SourceAddonOptimizer.win-x64.zip"
 
 if (Test-WorkerRebuildNeeded -WorkerExe $workerExe) {
     Write-Host "Worker build is missing or stale, running PyInstaller..."
-    pyinstaller --noconfirm --clean pyinstaller/worker.spec
-    if ($LASTEXITCODE -ne 0) {
-        throw "PyInstaller worker build failed (exit $LASTEXITCODE)."
+    $pyinstaller = (Get-Command pyinstaller -ErrorAction Stop).Source
+    $process = Start-Process -FilePath $pyinstaller -ArgumentList @(
+        "--noconfirm", "--clean", "pyinstaller/worker.spec"
+    ) -WindowStyle Hidden -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "PyInstaller worker build failed (exit $($process.ExitCode))."
     }
 }
+
+Assert-WorkerStarts -WorkerExe $workerExe
 
 if (!(Test-Path $workerExe)) { throw "Worker exe not found: $workerExe" }
 if (!(Test-Path $internalDir)) { throw "Worker _internal folder not found: $internalDir" }

@@ -10,7 +10,7 @@ import time
 import traceback
 from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import selective_policy_models
 import vehicle_steer_turn_basis_fix
@@ -18,6 +18,7 @@ import vehicle_steer_turn_basis_fix
 
 OPTIMIZER_MODE_NORMAL = "normal"
 OPTIMIZER_MODE_FIDELITY = "fidelity"
+OPTIMIZER_MODE_MAXIMUM = "maximum"
 
 
 def _ts() -> str:
@@ -346,6 +347,105 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _build_maximum_normal_source_tree(
+    original_snapshot: Path,
+    optimized_live_tree: Path,
+    normal_snapshot: Path,
+) -> int:
+    from maximum_optimizer.qc_graph import scan_qc_occurrences
+
+    original_root = Path(original_snapshot).resolve()
+    live_root = Path(optimized_live_tree).resolve()
+    normal_root = Path(normal_snapshot).resolve()
+    if not original_root.is_dir() or not live_root.is_dir():
+        raise FileNotFoundError("Maximum source snapshots require original and optimized trees")
+    if normal_root.exists():
+        raise FileExistsError(normal_root)
+    shutil.copytree(original_root, normal_root)
+
+    original_by_qc: dict[PurePosixPath, list] = {}
+    for occurrence in scan_qc_occurrences(original_root):
+        original_by_qc.setdefault(occurrence.qc_path, []).append(occurrence)
+    optimized_by_qc: dict[PurePosixPath, list] = {}
+    for occurrence in scan_qc_occurrences(live_root):
+        if not occurrence.qc_path.name.endswith("_OPT.qc"):
+            continue
+        original_name = occurrence.qc_path.name[:-7] + ".qc"
+        original_qc = occurrence.qc_path.with_name(original_name)
+        optimized_by_qc.setdefault(original_qc, []).append(occurrence)
+
+    mapped = 0
+    for qc_path, originals in sorted(original_by_qc.items(), key=lambda item: item[0].as_posix().casefold()):
+        optimized = optimized_by_qc.get(qc_path, [])
+        originals = sorted(originals, key=lambda value: (value.line, value.directive))
+        optimized = sorted(optimized, key=lambda value: (value.line, value.directive))
+        if len(originals) != len(optimized):
+            raise ValueError(f"Maximum normal source mapping differs for {qc_path.as_posix()}")
+        for original_occurrence, optimized_occurrence in zip(originals, optimized):
+            if original_occurrence.directive != optimized_occurrence.directive:
+                raise ValueError(f"Maximum normal directive mapping differs for {qc_path.as_posix()}")
+            source = live_root / Path(*optimized_occurrence.source_path.parts)
+            destination = normal_root / Path(*original_occurrence.source_path.parts)
+            if not source.is_file():
+                raise FileNotFoundError(source)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            mapped += 1
+    return mapped
+
+
+def _prepare_maximum_compile_tree(source_tree: Path) -> dict[str, tuple[str, ...]]:
+    from maximum_optimizer.qc_graph import scan_qc_occurrences
+
+    root = Path(source_tree).resolve()
+    by_qc: dict[PurePosixPath, set[str]] = {}
+    for occurrence in scan_qc_occurrences(root):
+        if occurrence.qc_path.name.endswith("_OPT.qc"):
+            continue
+        by_qc.setdefault(occurrence.qc_path, set()).add(occurrence.source_path.as_posix())
+    result = {}
+    for relative, sources in sorted(by_qc.items(), key=lambda item: item[0].as_posix().casefold()):
+        original_qc = root / Path(*relative.parts)
+        optimized_qc = original_qc.with_name(f"{original_qc.stem}_OPT.qc")
+        shutil.copy2(original_qc, optimized_qc)
+        result[optimized_qc.resolve().as_posix().casefold()] = tuple(sorted(sources, key=str.casefold))
+    return result
+
+
+def _compile_command(
+    args: argparse.Namespace,
+    compile_script: Path,
+    source_root: Path,
+    compiled_dir: Path,
+    work_dir: Path,
+    orig_models_dir: Path,
+) -> list[str]:
+    cmd = [sys.executable, str(compile_script), str(source_root), "--out", str(compiled_dir)]
+    if args.studiomdl:
+        cmd.extend(["--studiomdl", str(Path(args.studiomdl).expanduser().resolve())])
+    if args.compile_jobs is not None:
+        cmd.extend(["--compile-jobs", str(int(args.compile_jobs))])
+    if args.compile_verbose:
+        cmd.extend(["--studiomdl-verbose", "--log-detail", "full"])
+    if args.no_restore_phy:
+        cmd.append("--no-restore-phy")
+    else:
+        cmd.extend(["--restore-phy-from", str((work_dir / "original" / "models").resolve())])
+        if args.require_phy_backup:
+            cmd.append("--require-phy-backup")
+    if args.restore_skins:
+        if orig_models_dir.exists():
+            cmd.extend(["--restore-skin-from", str(orig_models_dir.resolve())])
+        else:
+            print(f"[WARN] Original models folder not found; skin restore disabled: {orig_models_dir}")
+    return cmd
+
+
+class _WorkerCancellationProbe:
+    def throw_if_cancelled(self) -> None:
+        return None
+
+
 def _run_single_addon(
     args: argparse.Namespace,
     *,
@@ -368,6 +468,7 @@ def _run_single_addon(
 
     t_all = time.monotonic()
     orig_models_dir = addon_path / "models"
+    maximum_mode_active = str(getattr(args, "optimizer_mode", OPTIMIZER_MODE_NORMAL)).lower() == OPTIMIZER_MODE_MAXIMUM
 
     try:
         # 1) Decompile + organize + backup .phy
@@ -523,6 +624,16 @@ def _run_single_addon(
         if not src_root.exists():
             print(f"[ERROR] Missing src root: {src_root}")
             return 2
+        maximum_root = work_dir / "maximum"
+        maximum_original_source = maximum_root / "original-source"
+        maximum_normal_source = maximum_root / "normal-source"
+        if maximum_mode_active:
+            maximum_root.mkdir(parents=True, exist_ok=True)
+            if maximum_original_source.exists() or maximum_normal_source.exists():
+                print(f"[ERROR] Maximum source snapshots already exist: {maximum_root}")
+                return 2
+            shutil.copytree(src_root, maximum_original_source)
+            print(f"[MAXIMUM] immutable_original_source={maximum_original_source}")
 
         jobs = 1 if args.jobs is None else args.jobs
         if jobs < 0:
@@ -539,7 +650,7 @@ def _run_single_addon(
                     "--",
                     str(src_root),
                     "--ratio",
-                    str(args.ratio),
+                    str(effective_normal_ratio(args)),
                     "--merge",
                     str(args.merge),
                     "--autosmooth",
@@ -564,7 +675,7 @@ def _run_single_addon(
                     "--blender",
                     str(blender_exe),
                     "--ratio",
-                    str(args.ratio),
+                    str(effective_normal_ratio(args)),
                     "--merge",
                     str(args.merge),
                     "--autosmooth",
@@ -588,6 +699,19 @@ def _run_single_addon(
             print(f"[ERROR] No *_OPT.qc files were generated under: {src_root}")
             return 2
         print(f"[OK] Generated {len(opt_qcs)} *_OPT.qc file(s).")
+        if maximum_mode_active:
+            mapped_sources = _build_maximum_normal_source_tree(
+                maximum_original_source,
+                src_root,
+                maximum_normal_source,
+            )
+            if mapped_sources <= 0:
+                print("[ERROR] Maximum normal source mirror contains no mapped render sources.")
+                return 2
+            print(
+                f"[MAXIMUM] normal_seed_ratio={effective_normal_ratio(args):.4f} "
+                f"mapped_sources={mapped_sources} normal_source={maximum_normal_source}"
+            )
 
         if (fidelity_mode_active or args.experimental_round_parts_policy) and round_parts_summary_dir and round_parts_summary_path:
             merged_round_parts = _merge_round_parts_summary_parts(round_parts_summary_dir, round_parts_summary_path)
@@ -623,32 +747,130 @@ def _run_single_addon(
 
         # 3) Compile + (optional) restore .phy to compiled/models
         print("\n== Step 3/3: Compile + restore .phy ==")
-        compiled_dir = work_dir / "compiled"
-        cmd = [sys.executable, str(compile_script), str(src_root), "--out", str(compiled_dir)]
-        if args.studiomdl:
-            cmd.extend(["--studiomdl", str(Path(args.studiomdl).expanduser().resolve())])
-        if args.compile_jobs is not None:
-            cmd.extend(["--compile-jobs", str(int(args.compile_jobs))])
-        if args.compile_verbose:
-            cmd.extend(["--studiomdl-verbose", "--log-detail", "full"])
-        if args.no_restore_phy:
-            cmd.append("--no-restore-phy")
-        else:
-            cmd.extend(["--restore-phy-from", str((work_dir / "original" / "models").resolve())])
-            if args.require_phy_backup:
-                cmd.append("--require-phy-backup")
-        if args.restore_skins:
-            if orig_models_dir.exists():
-                cmd.extend(["--restore-skin-from", str(orig_models_dir.resolve())])
-            else:
-                print(f"[WARN] Original models folder not found; skin restore disabled: {orig_models_dir}")
-        _run(cmd)
+        if maximum_mode_active:
+            from maximum_optimizer.compiled_validation import expected_compiled_family
+            from maximum_optimizer.pipeline import CompileResult, MaximumRunOptions, run_maximum_adaptive
+            from maximum_optimizer.profile import load_profile
+            from maximum_optimizer.rendering import render_region_comparison
 
-        compile_summary = compiled_dir / "compile_summary.json"
-        if not compile_summary.exists():
-            print(f"[ERROR] Missing compile summary: {compile_summary}")
-            return 2
-        c = _read_json(compile_summary)
+            maximum_attempt = 0
+            maximum_last_summary: dict = {}
+            maximum_last_compiled_dir: Path | None = None
+
+            def compile_maximum(source_tree: Path) -> CompileResult:
+                nonlocal maximum_attempt, maximum_last_summary, maximum_last_compiled_dir
+                maximum_attempt += 1
+                source_map = _prepare_maximum_compile_tree(source_tree)
+                attempt_dir = maximum_root / "compile-attempts" / f"attempt-{maximum_attempt:02d}"
+                command = _compile_command(
+                    args,
+                    compile_script,
+                    source_tree,
+                    attempt_dir,
+                    work_dir,
+                    orig_models_dir,
+                )
+                exit_ok = True
+                try:
+                    _run(command)
+                except SystemExit:
+                    exit_ok = False
+                summary_path = attempt_dir / "compile_summary.json"
+                summary = _read_json(summary_path) if summary_path.is_file() else {}
+                maximum_last_summary = summary
+                maximum_last_compiled_dir = attempt_dir
+                failed = [item for item in summary.get("results", []) if item.get("status") != "ok"]
+                changed_source = None
+                if len(failed) == 1 and failed[0].get("qc_path"):
+                    key = Path(failed[0]["qc_path"]).resolve().as_posix().casefold()
+                    candidates = source_map.get(key, ())
+                    if len(candidates) == 1:
+                        changed_source = candidates[0]
+                success = (
+                    exit_ok
+                    and int(summary.get("total", 0)) > 0
+                    and int(summary.get("fail", 0)) == 0
+                    and (attempt_dir / "models").is_dir()
+                )
+                return CompileResult(success, attempt_dir / "models", changed_source, summary_path)
+
+            expectations = []
+            seen_models = set()
+            for item in d.get("results", []):
+                if item.get("status") != "ok":
+                    continue
+                model_rel = item.get("model_rel") or item.get("model_rel_fallback")
+                if not model_rel:
+                    continue
+                normalized = PurePosixPath(str(model_rel).replace("\\", "/"))
+                if normalized.as_posix().casefold() in seen_models:
+                    continue
+                try:
+                    expectations.append(expected_compiled_family(orig_models_dir, normalized))
+                    seen_models.add(normalized.as_posix().casefold())
+                except (OSError, ValueError):
+                    print(f"[WARN] Maximum could not inventory original compiled family: {normalized}")
+
+            profile = load_profile(
+                repo_root / "maximum_optimizer" / "profiles" / "maximum-adaptive-v2.json"
+            )
+            framework_resolver = (
+                Path(args.maximum_framework_resolver).expanduser().resolve()
+                if args.maximum_framework_resolver
+                else None
+            )
+            if framework_resolver is not None and not framework_resolver.is_dir():
+                print(f"[ERROR] Maximum framework resolver not found: {framework_resolver}")
+                return 2
+            maximum_report = run_maximum_adaptive(
+                MaximumRunOptions(
+                    addon_root=addon_path,
+                    original_source_root=maximum_original_source,
+                    normal_source_root=maximum_normal_source,
+                    staging_root=maximum_root / "adaptive-source",
+                    cache_root=maximum_root / "cache",
+                    report_path=work_dir / "logs" / "maximum_adaptive_report.json",
+                    profile=profile,
+                    framework_resolver_root=framework_resolver,
+                    blender=blender_exe,
+                    compile_family=compile_maximum,
+                    render_region=render_region_comparison,
+                    cancel=_WorkerCancellationProbe(),
+                    compiled_expectations=tuple(expectations),
+                )
+            )
+            print(
+                "[MAXIMUM] result "
+                f"status={maximum_report.family_status} "
+                f"original_triangles={maximum_report.original_triangles} "
+                f"final_triangles={maximum_report.final_triangles} "
+                f"compiles={maximum_report.studiomdl_compiles} "
+                f"targeted_renders={maximum_report.targeted_renders} "
+                f"report={maximum_report.report_path}"
+            )
+            if maximum_report.family_status != "optimized" or maximum_last_compiled_dir is None:
+                print(f"[ERROR] Maximum adaptive pipeline failed: {maximum_report.failures}")
+                return 2
+            compiled_dir = maximum_last_compiled_dir
+            compile_summary = compiled_dir / "compile_summary.json"
+            c = maximum_last_summary
+        else:
+            compiled_dir = work_dir / "compiled"
+            cmd = _compile_command(
+                args,
+                compile_script,
+                src_root,
+                compiled_dir,
+                work_dir,
+                orig_models_dir,
+            )
+            _run(cmd)
+            compile_summary = compiled_dir / "compile_summary.json"
+            if not compile_summary.exists():
+                print(f"[ERROR] Missing compile summary: {compile_summary}")
+                return 2
+            c = _read_json(compile_summary)
+
         print(f"[OK] Compile summary: total={c.get('total')} ok={c.get('ok')} fail={c.get('fail')}")
         if int(c.get("total", 0)) <= 0:
             print(f"[ERROR] Compile summary has total=0 (see {compile_summary})")
@@ -827,7 +1049,7 @@ def _run_single_addon(
         return 1
 
 
-def main(argv: list[str]) -> int:
+def _build_argument_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="End-to-end: decompile+organize -> Blender optimize -> compile+restore .phy -> create new addon folder."
     )
@@ -850,9 +1072,14 @@ def main(argv: list[str]) -> int:
     )
     ap.add_argument(
         "--optimizer-mode",
-        choices=[OPTIMIZER_MODE_NORMAL, OPTIMIZER_MODE_FIDELITY],
+        choices=[OPTIMIZER_MODE_NORMAL, OPTIMIZER_MODE_FIDELITY, OPTIMIZER_MODE_MAXIMUM],
         default=OPTIMIZER_MODE_NORMAL,
-        help="Official Models pipeline mode. normal keeps the current flow; fidelity uses the validated sandbox stack built from selective ground policy + round-parts wheel handling + steer basis fix.",
+        help="Official Models pipeline mode: normal, fidelity, or maximum adaptive regional recovery.",
+    )
+    ap.add_argument(
+        "--maximum-framework-resolver",
+        default=None,
+        help="Optional read-only addon root used only to resolve Maximum analysis references.",
     )
     ap.add_argument("--blender", default=None, help="Path to blender.exe (auto-detect if omitted).")
     ap.add_argument(
@@ -961,7 +1188,19 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Reject folders that contain multiple addon subfolders instead of running batch mode.",
     )
-    args = ap.parse_args(argv)
+    return ap
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    return _build_argument_parser().parse_args(argv)
+
+
+def effective_normal_ratio(args: argparse.Namespace) -> float:
+    return 0.35 if args.optimizer_mode == OPTIMIZER_MODE_MAXIMUM else float(args.ratio)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
 
     repo_root = _runtime_root()
     decompile_script = (repo_root / "batch_decompile_organize.py").resolve()
