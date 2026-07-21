@@ -464,7 +464,7 @@ internal sealed class VtfMaximumExperimentRunner
                 candidatePath,
                 sizeBytes,
                 entry.SizeBytes,
-                true,
+                MipPolicyMatches(entry.MipCount, candidate.Document.MipCount, candidate.Width, candidate.Height),
                 candidate.Document.MajorVersion == entry.MajorVersion && candidate.Document.MinorVersion == entry.MinorVersion,
                 requiresAlpha,
                 isCutout,
@@ -733,6 +733,15 @@ internal sealed class VtfMaximumExperimentRunner
         }
         return count;
     }
+
+    internal static bool MipPolicyMatches(
+        int originalMipCount,
+        int candidateMipCount,
+        int candidateWidth,
+        int candidateHeight) =>
+        originalMipCount == 1
+            ? candidateMipCount == 1
+            : candidateMipCount == GetFullMipCount(candidateWidth, candidateHeight);
 
     private static long SumFileBytes(string root) =>
         Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Sum(path => new FileInfo(path).Length);

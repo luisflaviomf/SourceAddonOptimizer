@@ -1,4 +1,5 @@
 using GmodAddonCompressor.Systems.Vtf;
+using VtfMaximumLab.Experiment;
 using VtfMaximumLab.Validation;
 using Xunit;
 
@@ -17,5 +18,13 @@ public sealed class VtfMaximumStructuralValidatorTests
         IReadOnlyList<string> errors = VtfMaximumStructuralValidator.ValidatePair(original, candidate);
 
         Assert.Contains("version", errors);
+    }
+
+    [Fact]
+    public void MaximumRejectsAddingMipmapsWhenOriginalHasNone()
+    {
+        Assert.False(VtfMaximumExperimentRunner.MipPolicyMatches(1, 10, 512, 512));
+        Assert.True(VtfMaximumExperimentRunner.MipPolicyMatches(1, 1, 512, 512));
+        Assert.True(VtfMaximumExperimentRunner.MipPolicyMatches(11, 10, 512, 512));
     }
 }

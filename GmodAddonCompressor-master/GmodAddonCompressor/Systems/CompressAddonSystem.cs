@@ -301,12 +301,12 @@ namespace GmodAddonCompressor.Systems
             };
         }
 
-        private int GetMaxDegreeOfParallelism(string bucketName)
+        internal int GetMaxDegreeOfParallelism(string bucketName)
         {
             int cpuCount = Math.Max(1, Environment.ProcessorCount);
             return bucketName switch
             {
-                "vtf" when _pipelineOptions.IsMaximumMode => Math.Max(1, Math.Min(2, cpuCount / 2)),
+                "vtf" when _pipelineOptions.IsMaximumMode => Math.Clamp(_pipelineOptions.MaximumVtfParallelism, 1, 10),
                 "vtf" => Math.Max(1, Math.Min(4, cpuCount / 2)),
                 "audio" => Math.Max(1, Math.Min(2, cpuCount / 4)),
                 "image" => Math.Max(2, Math.Min(8, cpuCount)),
