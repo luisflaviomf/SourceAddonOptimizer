@@ -39,6 +39,19 @@ class ValidationDecision:
 
 
 @dataclass(frozen=True)
+class RiskFeatures:
+    curvature_p95_norm: float
+    silhouette_fraction: float
+    hard_boundary_density: float
+    uv_seam_density: float
+    material_semantic_risk: float
+    skinning_risk: float
+    visibility_confidence: float
+    score: float
+    target_ratio: float
+
+
+@dataclass(frozen=True)
 class RegionBudget:
     surface_p95: float
     surface_max: float
