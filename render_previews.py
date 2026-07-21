@@ -39,6 +39,12 @@ def _parse_args(argv: list[str]):
     ap.add_argument("--pose", default="reference", help="Pose identity recorded by the caller")
     ap.add_argument("--material-root", action="append", default=[], help="Addon/framework material root")
     ap.add_argument(
+        "--view-mode",
+        choices=("preview", "clay", "uv", "normal", "silhouette"),
+        default="preview",
+        help="Deterministic benchmark shading mode.",
+    )
+    ap.add_argument(
         "--angles",
         default="front,back,left,right,top,bottom,iso1,iso2",
         help="Comma-separated list of angles",
@@ -73,7 +79,7 @@ def _clear_scene():
             datablock.remove(block, do_unlink=True)
 
 
-def _setup_scene(size: int):
+def _setup_scene(size: int, view_mode: str = "preview"):
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_EEVEE"
     scene.render.resolution_x = size
@@ -89,8 +95,8 @@ def _setup_scene(size: int):
     nodes = scene.world.node_tree.nodes
     bg = nodes.get("Background")
     if bg:
-        bg.inputs[0].default_value = (0.12, 0.13, 0.15, 1.0)
-        bg.inputs[1].default_value = 1.0
+        bg.inputs[0].default_value = (0.0, 0.0, 0.0, 1.0) if view_mode == "silhouette" else (0.12, 0.13, 0.15, 1.0)
+        bg.inputs[1].default_value = 0.0 if view_mode == "silhouette" else 1.0
     return scene
 
 
@@ -151,14 +157,18 @@ def _material_semantics(name: str, material_roots: list[Path]):
     return {"transparent": False, "refractive": False, "two_sided": False}
 
 
-def _make_preview_material(name: str, material_roots: list[Path]):
+def _make_preview_material(name: str, material_roots: list[Path], view_mode: str = "preview"):
     mat = bpy.data.materials.new(name=f"Preview_{name}")
     mat.use_nodes = True
     semantics = _material_semantics(name, material_roots)
+    if view_mode != "preview":
+        semantics = {"transparent": False, "refractive": False, "two_sided": True}
     nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
     bsdf = nodes.get("Principled BSDF")
     if bsdf:
-        bsdf.inputs["Base Color"].default_value = _color_from_name(name)
+        color = _color_from_name(name) if view_mode == "preview" else (0.62, 0.64, 0.68, 1.0)
+        bsdf.inputs["Base Color"].default_value = color
         bsdf.inputs["Roughness"].default_value = 0.45
         if "Specular" in bsdf.inputs:
             bsdf.inputs["Specular"].default_value = 0.25
@@ -168,6 +178,30 @@ def _make_preview_material(name: str, material_roots: list[Path]):
             bsdf.inputs["Alpha"].default_value = 0.45
         if semantics["refractive"] and "Transmission Weight" in bsdf.inputs:
             bsdf.inputs["Transmission Weight"].default_value = 0.65
+        if view_mode == "uv":
+            coordinates = nodes.new("ShaderNodeTexCoord")
+            checker = nodes.new("ShaderNodeTexChecker")
+            checker.inputs["Color1"].default_value = (0.03, 0.03, 0.03, 1.0)
+            checker.inputs["Color2"].default_value = (0.95, 0.95, 0.95, 1.0)
+            checker.inputs["Scale"].default_value = 24.0
+            links.new(coordinates.outputs["UV"], checker.inputs["Vector"])
+            links.new(checker.outputs["Color"], bsdf.inputs["Base Color"])
+        elif view_mode == "normal":
+            geometry = nodes.new("ShaderNodeNewGeometry")
+            remap = nodes.new("ShaderNodeVectorMath")
+            remap.operation = "MULTIPLY_ADD"
+            remap.inputs[1].default_value = (0.5, 0.5, 0.5)
+            remap.inputs[2].default_value = (0.5, 0.5, 0.5)
+            links.new(geometry.outputs["Normal"], remap.inputs[0])
+            links.new(remap.outputs["Vector"], bsdf.inputs["Base Color"])
+            bsdf.inputs["Roughness"].default_value = 1.0
+        elif view_mode == "silhouette":
+            bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+            bsdf.inputs["Roughness"].default_value = 1.0
+            if "Emission Color" in bsdf.inputs:
+                bsdf.inputs["Emission Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+            if "Emission Strength" in bsdf.inputs:
+                bsdf.inputs["Emission Strength"].default_value = 1.0
     mat.use_backface_culling = not semantics["two_sided"]
     if semantics["transparent"]:
         try:
@@ -177,7 +211,7 @@ def _make_preview_material(name: str, material_roots: list[Path]):
     return mat
 
 
-def _apply_preview_materials(objs, material_roots: list[Path]):
+def _apply_preview_materials(objs, material_roots: list[Path], view_mode: str = "preview"):
     cache = {}
     for obj in objs:
         if not hasattr(obj.data, "materials"):
@@ -187,14 +221,14 @@ def _apply_preview_materials(objs, material_roots: list[Path]):
                 key = mat.name if mat else f"{obj.name}_{idx}"
                 preview = cache.get(key)
                 if preview is None:
-                    preview = _make_preview_material(key, material_roots)
+                    preview = _make_preview_material(key, material_roots, view_mode)
                     cache[key] = preview
                 obj.data.materials[idx] = preview
         else:
             key = f"{obj.name}_mat"
             preview = cache.get(key)
             if preview is None:
-                preview = _make_preview_material(key, material_roots)
+                preview = _make_preview_material(key, material_roots, view_mode)
                 cache[key] = preview
             obj.data.materials.append(preview)
 
@@ -311,9 +345,10 @@ def _render_set(
     size: int,
     fit=None,
     material_roots=None,
+    view_mode="preview",
 ):
     _clear_scene()
-    _setup_scene(size)
+    _setup_scene(size, view_mode)
     cam_obj = _ensure_camera()
 
     for src_path in src_paths:
@@ -322,7 +357,7 @@ def _render_set(
     if not objs:
         raise RuntimeError(f"No mesh objects found for {label}: {src_paths}")
 
-    _apply_preview_materials(objs, material_roots or [])
+    _apply_preview_materials(objs, material_roots or [], view_mode)
     tris = _count_tris(objs)
 
     center, ortho_scale, dist = _fit_camera(objs, cam_obj, fit=fit)
@@ -383,10 +418,12 @@ def main():
     optimized_dir = out_dir / "optimized"
 
     before_tris, fit = _render_set(
-        "before", before, original_dir, angles, args.size, fit=camera_fit, material_roots=material_roots
+        "before", before, original_dir, angles, args.size, fit=camera_fit, material_roots=material_roots,
+        view_mode=args.view_mode
     )
     after_tris, _ = _render_set(
-        "after", after, optimized_dir, angles, args.size, fit=fit, material_roots=material_roots
+        "after", after, optimized_dir, angles, args.size, fit=fit, material_roots=material_roots,
+        view_mode=args.view_mode
     )
 
     before_files = [str(p) for p in before]
@@ -395,6 +432,7 @@ def main():
         "angles": angles,
         "size": args.size,
         "pose": args.pose,
+        "view_mode": args.view_mode,
         "before": {
             "file": before_files[0] if before_files else "",
             "files": before_files,
