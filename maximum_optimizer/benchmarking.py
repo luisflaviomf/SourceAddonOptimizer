@@ -663,7 +663,8 @@ def load_family_results(root: Path, partition: str = "all") -> tuple[FamilyResul
     results = []
     result_root = Path(root)
     for path in result_root.rglob("result.json"):
-        if ".archive" in path.relative_to(result_root).parts:
+        relative = path.relative_to(result_root)
+        if not relative.parts or relative.parts[0] not in {"development", "holdout"}:
             continue
         try:
             result = FamilyResult.from_dict(json.loads(path.read_text(encoding="utf-8")))

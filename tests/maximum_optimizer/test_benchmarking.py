@@ -117,12 +117,15 @@ class BenchmarkingTests(unittest.TestCase):
             root = Path(temporary)
             active = root / "development" / "wheel" / "normal-safe" / "result.json"
             archived = root / ".archive" / "wheel-normal-safe-aborted" / "result.json"
+            prototype = root / "prototypes" / "wheel-normal-safe" / "result.json"
             active.parent.mkdir(parents=True)
             archived.parent.mkdir(parents=True)
+            prototype.parent.mkdir(parents=True)
             payload = FamilyResult.fixture("wheel", original=1000, final=400, dx80=100).__dict__
             active.write_text(json.dumps(payload), encoding="utf-8")
             archived_payload = dict(payload, status="failed", exit_code=-1)
             archived.write_text(json.dumps(archived_payload), encoding="utf-8")
+            prototype.write_text(json.dumps(payload), encoding="utf-8")
 
             results = load_family_results(root)
 

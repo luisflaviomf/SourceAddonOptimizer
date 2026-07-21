@@ -70,11 +70,42 @@ def _largest_mesh_smd(root: Path) -> Path:
     return max(candidates, key=lambda item: (item[0], item[1].as_posix()))[1]
 
 
-def _decompile(model: Path, destination: Path) -> Path:
+def _corresponding_mesh_smd(reference_root: Path, reference: Path, candidate_root: Path) -> Path:
+    reference_relative = reference.relative_to(reference_root).as_posix().casefold()
+    reference_occurrences = tuple(
+        occurrence
+        for occurrence in scan_qc_occurrences(reference_root)
+        if occurrence.source_path.as_posix().casefold() == reference_relative
+    )
+    candidate_by_identity = {
+        (occurrence.qc_path.as_posix().casefold(), occurrence.directive, occurrence.line): occurrence
+        for occurrence in scan_qc_occurrences(candidate_root)
+    }
+    for occurrence in reference_occurrences:
+        identity = (occurrence.qc_path.as_posix().casefold(), occurrence.directive, occurrence.line)
+        candidate_occurrence = candidate_by_identity.get(identity)
+        if candidate_occurrence is None:
+            continue
+        candidate = candidate_root / Path(*candidate_occurrence.source_path.parts)
+        try:
+            triangles = len(parse_smd(candidate.read_text(encoding="utf-8", errors="replace")).triangles)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"matched candidate visual SMD is invalid: {candidate_occurrence.source_path}") from exc
+        if not triangles:
+            raise RuntimeError(f"matched candidate visual SMD is empty: {candidate_occurrence.source_path}")
+        return candidate
+    raise RuntimeError(f"candidate QC does not contain the original visual occurrence: {reference_relative}")
+
+
+def _decompile(
+    model: Path,
+    destination: Path,
+    reference: tuple[Path, Path] | None = None,
+) -> Path:
     if destination.is_dir():
         existing = list(destination.rglob("*.smd"))
         if existing:
-            return _largest_mesh_smd(destination)
+            return _corresponding_mesh_smd(*reference, destination) if reference else _largest_mesh_smd(destination)
     command = [
         sys.executable,
         str(REPO_ROOT / "batch_decompile_organize.py"),
@@ -88,7 +119,7 @@ def _decompile(model: Path, destination: Path) -> Path:
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
         raise RuntimeError(f"decompile failed for {model}: {detail[-1000:]}")
-    return _largest_mesh_smd(destination)
+    return _corresponding_mesh_smd(*reference, destination) if reference else _largest_mesh_smd(destination)
 
 
 def _render(
@@ -214,12 +245,17 @@ def main() -> int:
         model_name = args.model_name or VISUAL_MODELS[family.id]
         family_root = output_root / family.id
         original_model = _find_model(Path(lane_results[0].work_path).parent / "source" / family.id / "models", model_name)
-        original_smd = _decompile(original_model, family_root / "decompiled" / "original")
+        original_decompile_root = family_root / "decompiled" / "original"
+        original_smd = _decompile(original_model, original_decompile_root)
         raw_root = family_root / "raw"
         candidate_smds = {}
         for result in lane_results:
             candidate_model = _find_model(Path(result.output_path) / "models", model_name)
-            candidate_smd = _decompile(candidate_model, family_root / "decompiled" / result.lane)
+            candidate_smd = _decompile(
+                candidate_model,
+                family_root / "decompiled" / result.lane,
+                (original_decompile_root, original_smd),
+            )
             candidate_smds[result.lane] = candidate_smd
             material_roots = (Path(result.output_path),)
             for mode in VIEW_MODES:

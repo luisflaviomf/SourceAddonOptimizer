@@ -18,6 +18,8 @@ def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audit reproducibility and promotion gates for LVS Models benchmark results.")
     parser.add_argument("--partition", choices=("development", "holdout", "all"), required=True)
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--lanes", help="Comma-separated completed lane IDs; defaults to all lanes.")
+    parser.add_argument("--visual-manifest", type=Path, help="Visual manifest to audit instead of <root>/panels.")
     parser.add_argument("--require-images", action="store_true")
     parser.add_argument("--require-promotion", action="store_true")
     return parser.parse_args()
@@ -29,9 +31,15 @@ def main() -> int:
     corpus = load_corpus(Path(__file__).with_name("corpus.json"))
     expected_families = {family.id for family in corpus.partition(args.partition)}
     results = load_family_results(root, args.partition)
+    lane_by_id = {lane.id: lane for lane in LANES}
+    lane_ids = tuple(value.strip() for value in args.lanes.split(",") if value.strip()) if args.lanes else tuple(lane_by_id)
+    unknown_lanes = set(lane_ids) - set(lane_by_id)
+    if unknown_lanes:
+        raise ValueError(f"unknown lanes: {sorted(unknown_lanes)}")
+    selected_lanes = tuple(lane_by_id[lane_id] for lane_id in lane_ids)
     failures: list[str] = []
     by_lane = {}
-    for lane in LANES:
+    for lane in selected_lanes:
         lane_results = tuple(result for result in results if result.lane == lane.id and result.family_id in expected_families)
         by_lane[lane.id] = lane_results
         found = {result.family_id for result in lane_results}
@@ -56,9 +64,9 @@ def main() -> int:
                 if not path.is_file() or sha256_file(path) != tool.get("sha256"):
                     failures.append(f"{result.family_id}/{lane.id}: tool hash changed ({name})")
 
-    aggregates = {lane.id: aggregate_results(lane.id, by_lane[lane.id]) for lane in LANES}
+    aggregates = {lane.id: aggregate_results(lane.id, by_lane[lane.id]) for lane in selected_lanes}
     if args.require_images:
-        manifest_path = root / "panels" / "visual-manifest.json"
+        manifest_path = args.visual_manifest.resolve() if args.visual_manifest else root / "panels" / "visual-manifest.json"
         if not manifest_path.is_file():
             failures.append("missing visual manifest")
         else:
@@ -68,18 +76,20 @@ def main() -> int:
             if missing:
                 failures.append(f"missing image panels: {sorted(missing)}")
 
-    if args.require_promotion and all(by_lane.values()):
+    if args.require_promotion and all(by_lane.get(lane, ()) for lane in ("normal-safe", "maximum-adaptive-v2")):
         normal = aggregates["normal-safe"]
-        historical = aggregates["maximum-8812c7a"]
         adaptive = aggregates["maximum-adaptive-v2"]
-        if adaptive.final_comparable >= min(normal.final_comparable, historical.final_comparable):
-            failures.append("adaptive comparable bytes do not beat both baselines")
+        historical = aggregates.get("maximum-8812c7a")
+        comparison_bytes = normal.final_comparable if historical is None else min(normal.final_comparable, historical.final_comparable)
+        if adaptive.final_comparable >= comparison_bytes:
+            failures.append("adaptive comparable bytes do not beat completed baselines")
         if adaptive.integrity_failure_count or adaptive.failed_models:
             failures.append("adaptive lane has structural failures")
-        if adaptive.full_renders + adaptive.targeted_renders >= historical.full_renders + historical.targeted_renders:
-            failures.append("adaptive lane did not reduce renders")
-        if adaptive.studiomdl_compiles >= historical.studiomdl_compiles:
-            failures.append("adaptive lane did not reduce StudioMDL compiles")
+        if historical is not None:
+            if adaptive.full_renders + adaptive.targeted_renders >= historical.full_renders + historical.targeted_renders:
+                failures.append("adaptive lane did not reduce renders")
+            if adaptive.studiomdl_compiles >= historical.studiomdl_compiles:
+                failures.append("adaptive lane did not reduce StudioMDL compiles")
         profile_path = REPO_ROOT / "maximum_optimizer/profiles/maximum-adaptive-v2.json"
         profile = json.loads(profile_path.read_text(encoding="utf-8"))
         if profile.get("calibrated") is not True:
@@ -89,6 +99,8 @@ def main() -> int:
             baseline = normal_by_family[result.family_id]
             if result.final_comparable > baseline.final_comparable and result.integrity_failures:
                 failures.append(f"{result.family_id}: holdout is worse than Normal in bytes and fidelity")
+    elif args.require_promotion:
+        failures.append("promotion requires completed normal-safe and maximum-adaptive-v2 lanes")
 
     payload = {
         "schema": 1,
