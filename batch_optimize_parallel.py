@@ -166,7 +166,7 @@ def main(argv: list[str]) -> int:
             text=True,
             bufsize=1,
         )
-        t = threading.Thread(target=_reader, args=(idx, proc, on_done), daemon=True)
+        t = threading.Thread(target=_reader, args=(idx, proc, on_done), daemon=False)
         t.start()
         procs.append(proc)
         threads.append(t)
@@ -187,7 +187,9 @@ def main(argv: list[str]) -> int:
         return 130
     finally:
         for t in threads:
-            t.join(timeout=2.0)
+            # Readers own the child stdout pipes. A timed/daemon shutdown can leave
+            # them writing while Python finalizes, which aborts large batches.
+            t.join()
 
     return exit_code
 
