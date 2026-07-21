@@ -36,6 +36,8 @@ def _write_mdl_family(
     include_dx80: bool = False,
     mdl_version: int = 48,
     animations: int = 2,
+    materials: tuple[str, str] = ("body", "glass"),
+    skin_rows: tuple[tuple[int, int], ...] = ((0, 1), (1, 0), (0, 0)),
 ) -> None:
     target = root / "cars" / "test"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -44,8 +46,10 @@ def _write_mdl_family(
     counts[6] = animations
     counts[8] = 3  # sequences
     counts[12] = 2  # textures/material identities
+    counts[13] = 300  # texture table
     counts[16] = 2  # skin references
     counts[17] = 3  # skin families
+    counts[18] = 450  # skin table
     counts[19] = 1  # bodyparts
     counts[21] = 2  # attachments
     mdl = bytearray(512)
@@ -54,6 +58,12 @@ def _write_mdl_family(
     struct.pack_into("<i", mdl, 8, 12345)
     struct.pack_into("<i", mdl, 76, len(mdl))
     struct.pack_into("<24i", mdl, 156, *counts)
+    for index, material in enumerate(materials):
+        base = counts[13] + index * 64
+        struct.pack_into("<i", mdl, base, 8)
+        encoded = material.encode("ascii") + b"\0"
+        mdl[base + 8 : base + 8 + len(encoded)] = encoded
+    struct.pack_into("<6H", mdl, counts[18], *(value for row in skin_rows for value in row))
     target.with_suffix(".mdl").write_bytes(mdl)
 
     vvd = bytearray(256)
@@ -163,6 +173,32 @@ class CompositionIntegrityTests(unittest.TestCase):
         self.assertTrue(expanded.passed, expanded.failures)
         self.assertFalse(lost.passed)
         self.assertIn("animations_lost", lost.failures)
+
+    def test_material_reordering_is_valid_only_when_skin_families_remain_semantically_equal(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            original = root / "original"
+            reordered = root / "reordered"
+            broken = root / "broken"
+            _write_mdl_family(original)
+            _write_mdl_family(
+                reordered,
+                materials=("glass", "body"),
+                skin_rows=((0, 1), (1, 0), (1, 1)),
+            )
+            _write_mdl_family(
+                broken,
+                materials=("glass", "body"),
+                skin_rows=((0, 1), (0, 1), (1, 1)),
+            )
+            expected = expected_compiled_family(original, PurePosixPath("cars/test.mdl"))
+
+            valid = validate_compiled_family(reordered, expected)
+            invalid = validate_compiled_family(broken, expected)
+
+        self.assertTrue(valid.passed, valid.failures)
+        self.assertFalse(invalid.passed)
+        self.assertIn("skin_families_changed", invalid.failures)
 
     def test_vvd_vertex_inventory_allows_total_above_single_mesh_limit(self) -> None:
         lod0 = 85_357

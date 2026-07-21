@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import struct
@@ -28,6 +29,7 @@ class _MdlHeader:
     checksum: int
     counts: tuple[tuple[str, int], ...]
     materials: tuple[str, ...]
+    skin_families: tuple[tuple[tuple[str, str], ...], ...]
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,7 @@ class CompiledFamilyExpectation:
     mdl_version: int
     counts: tuple[tuple[str, int], ...]
     materials: tuple[str, ...]
+    skin_families: tuple[tuple[tuple[str, str], ...], ...]
     require_phy: bool
     require_ani: bool
 
@@ -64,6 +67,41 @@ def _cstring(data: bytes, offset: int) -> str:
     return data[offset:end].decode("ascii", errors="ignore")
 
 
+def _canonical_skin_families(
+    data: bytes,
+    raw_counts: tuple[int, ...],
+    materials: tuple[str, ...],
+) -> tuple[tuple[tuple[str, str], ...], ...]:
+    reference_count = raw_counts[16]
+    family_count = raw_counts[17]
+    table_index = raw_counts[18]
+    if reference_count == 0 or family_count == 0:
+        return ()
+    entry_count = reference_count * family_count
+    if table_index <= 0 or table_index + entry_count * 2 > len(data):
+        raise ValueError("mdl_skin_table")
+    values = struct.unpack_from(f"<{entry_count}H", data, table_index)
+    if any(index >= len(materials) for index in values):
+        raise ValueError("mdl_skin_material")
+    rows = tuple(
+        values[offset : offset + reference_count]
+        for offset in range(0, entry_count, reference_count)
+    )
+    base = rows[0]
+    return tuple(
+        tuple(
+            sorted(
+                (
+                    materials[base[column]].casefold(),
+                    materials[row[column]].casefold(),
+                )
+                for column in range(reference_count)
+            )
+        )
+        for row in rows
+    )
+
+
 def _read_mdl(path: Path) -> _MdlHeader:
     data = path.read_bytes()
     if len(data) < 252 or data[:4] != b"IDST":
@@ -88,7 +126,14 @@ def _read_mdl(path: Path) -> _MdlHeader:
                 raise ValueError("mdl_texture_table")
             name_index = struct.unpack_from("<i", data, base)[0]
             materials.append(_cstring(data, base + name_index) if name_index > 0 else "")
-    return _MdlHeader(version, checksum, counts, tuple(materials))
+    material_tuple = tuple(materials)
+    return _MdlHeader(
+        version,
+        checksum,
+        counts,
+        material_tuple,
+        _canonical_skin_families(data, raw_counts, material_tuple),
+    )
 
 
 def _read_vvd(path: Path) -> tuple[int, int]:
@@ -128,6 +173,7 @@ def expected_compiled_family(models_root: Path, mdl_relative: PurePosixPath) -> 
         header.version,
         header.counts,
         tuple(value.casefold() for value in header.materials),
+        header.skin_families,
         mdl_path.with_suffix(".phy").is_file(),
         mdl_path.with_suffix(".ani").is_file(),
     )
@@ -162,8 +208,11 @@ def validate_compiled_family(
         comparable_names = tuple(name for name, _value in expected.counts if name != "animations")
         if any(actual_counts[name] != expected_counts[name] for name in comparable_names):
             failures.append("mdl_inventory_changed")
-        if tuple(value.casefold() for value in mdl.materials) != expected.materials:
+        actual_materials = Counter(value.casefold() for value in mdl.materials)
+        if actual_materials != Counter(expected.materials):
             failures.append("materials_changed")
+        if mdl.skin_families != expected.skin_families:
+            failures.append("skin_families_changed")
         if actual_counts["bones"] > 128:
             failures.append("source_bone_limit")
     except (OSError, ValueError, struct.error) as exc:
