@@ -4,11 +4,17 @@
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
 import bpy
 from mathutils import Vector
+
+
+SCRIPT_ROOT = Path(__file__).resolve().parent
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
 
 
 ANGLE_DIRS = {
@@ -29,6 +35,9 @@ def _parse_args(argv: list[str]):
     ap.add_argument("--after", required=True, action="append", help="Path to optimized SMD/DMX (repeatable)")
     ap.add_argument("--out", required=True, help="Output dir for renders + summary JSON")
     ap.add_argument("--size", type=int, default=1024, help="Render resolution (square)")
+    ap.add_argument("--camera-json", default=None, help="Optional deterministic camera description")
+    ap.add_argument("--pose", default="reference", help="Pose identity recorded by the caller")
+    ap.add_argument("--material-root", action="append", default=[], help="Addon/framework material root")
     ap.add_argument(
         "--angles",
         default="front,back,left,right,top,bottom,iso1,iso2",
@@ -125,9 +134,27 @@ def _color_from_name(name: str):
     return (r, g, b, 1.0)
 
 
-def _make_preview_material(name: str):
+def _material_semantics(name: str, material_roots: list[Path]):
+    relative = Path(*name.replace("\\", "/").removesuffix(".vmt").split("/")).with_suffix(".vmt")
+    for root in material_roots:
+        candidate = root / "materials" / relative
+        if not candidate.is_file():
+            continue
+        text = candidate.read_text(encoding="utf-8", errors="replace")
+        text = "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+        enabled = lambda key: re.search(rf'(?i)"?{re.escape(key)}"?\s+"?(?:1|true|yes)"?', text) is not None
+        return {
+            "transparent": enabled("$translucent") or enabled("$alphatest") or enabled("$additive"),
+            "refractive": re.search(r"(?i)refract", text) is not None,
+            "two_sided": enabled("$nocull"),
+        }
+    return {"transparent": False, "refractive": False, "two_sided": False}
+
+
+def _make_preview_material(name: str, material_roots: list[Path]):
     mat = bpy.data.materials.new(name=f"Preview_{name}")
     mat.use_nodes = True
+    semantics = _material_semantics(name, material_roots)
     nodes = mat.node_tree.nodes
     bsdf = nodes.get("Principled BSDF")
     if bsdf:
@@ -137,10 +164,20 @@ def _make_preview_material(name: str):
             bsdf.inputs["Specular"].default_value = 0.25
         elif "Specular IOR Level" in bsdf.inputs:
             bsdf.inputs["Specular IOR Level"].default_value = 0.25
+        if semantics["transparent"] and "Alpha" in bsdf.inputs:
+            bsdf.inputs["Alpha"].default_value = 0.45
+        if semantics["refractive"] and "Transmission Weight" in bsdf.inputs:
+            bsdf.inputs["Transmission Weight"].default_value = 0.65
+    mat.use_backface_culling = not semantics["two_sided"]
+    if semantics["transparent"]:
+        try:
+            mat.surface_render_method = "DITHERED"
+        except (AttributeError, TypeError):
+            pass
     return mat
 
 
-def _apply_preview_materials(objs):
+def _apply_preview_materials(objs, material_roots: list[Path]):
     cache = {}
     for obj in objs:
         if not hasattr(obj.data, "materials"):
@@ -150,14 +187,14 @@ def _apply_preview_materials(objs):
                 key = mat.name if mat else f"{obj.name}_{idx}"
                 preview = cache.get(key)
                 if preview is None:
-                    preview = _make_preview_material(key)
+                    preview = _make_preview_material(key, material_roots)
                     cache[key] = preview
                 obj.data.materials[idx] = preview
         else:
             key = f"{obj.name}_mat"
             preview = cache.get(key)
             if preview is None:
-                preview = _make_preview_material(key)
+                preview = _make_preview_material(key, material_roots)
                 cache[key] = preview
             obj.data.materials.append(preview)
 
@@ -212,10 +249,51 @@ def _set_camera_pose(cam_obj, center: Vector, direction: Vector, dist: float):
     cam_obj.rotation_euler = to_target.to_track_quat("-Z", "Y").to_euler()
 
 
+def _import_smd_without_addon(path: Path):
+    from maximum_optimizer.smd import parse_smd
+
+    document = parse_smd(path.read_text(encoding="utf-8", errors="replace"))
+    positions = []
+    normals = []
+    uvs = []
+    faces = []
+    materials = []
+    material_indices = []
+    for triangle in document.triangles:
+        start = len(positions)
+        for vertex in triangle.vertices:
+            positions.append(vertex.position)
+            normals.append(vertex.normal)
+            uvs.append(vertex.uv)
+        faces.append((start, start + 1, start + 2))
+        if triangle.material not in materials:
+            materials.append(triangle.material)
+        material_indices.append(materials.index(triangle.material))
+
+    mesh = bpy.data.meshes.new(path.stem)
+    mesh.from_pydata(positions, [], faces)
+    mesh.update()
+    for name in materials:
+        mesh.materials.append(bpy.data.materials.new(name=name))
+    uv_layer = mesh.uv_layers.new(name="UVMap")
+    for polygon, material_index in zip(mesh.polygons, material_indices):
+        polygon.material_index = material_index
+        polygon.use_smooth = True
+        for loop_index in polygon.loop_indices:
+            uv_layer.data[loop_index].uv = uvs[mesh.loops[loop_index].vertex_index]
+    if hasattr(mesh, "normals_split_custom_set"):
+        try:
+            mesh.normals_split_custom_set([normals[loop.vertex_index] for loop in mesh.loops])
+        except RuntimeError:
+            pass
+    obj = bpy.data.objects.new(path.stem, mesh)
+    bpy.context.collection.objects.link(obj)
+
+
 def _import_source(path: Path):
     ext = path.suffix.lower()
-    if ext == ".smd" and hasattr(bpy.ops.import_scene, "smd"):
-        bpy.ops.import_scene.smd(filepath=str(path))
+    if ext == ".smd":
+        _import_smd_without_addon(path)
         return
     if ext == ".dmx" and hasattr(bpy.ops.import_scene, "dmx"):
         bpy.ops.import_scene.dmx(filepath=str(path))
@@ -225,7 +303,15 @@ def _import_source(path: Path):
     )
 
 
-def _render_set(label: str, src_paths: list[Path], out_dir: Path, angles: list[str], size: int, fit=None):
+def _render_set(
+    label: str,
+    src_paths: list[Path],
+    out_dir: Path,
+    angles: list[str],
+    size: int,
+    fit=None,
+    material_roots=None,
+):
     _clear_scene()
     _setup_scene(size)
     cam_obj = _ensure_camera()
@@ -236,7 +322,7 @@ def _render_set(label: str, src_paths: list[Path], out_dir: Path, angles: list[s
     if not objs:
         raise RuntimeError(f"No mesh objects found for {label}: {src_paths}")
 
-    _apply_preview_materials(objs)
+    _apply_preview_materials(objs, material_roots or [])
     tris = _count_tris(objs)
 
     center, ortho_scale, dist = _fit_camera(objs, cam_obj, fit=fit)
@@ -266,6 +352,21 @@ def main():
     after = [Path(p).resolve() for p in _expand_paths(args.after)]
     out_dir = Path(args.out).resolve()
     angles = [a.strip() for a in args.angles.split(",") if a.strip()]
+    material_roots = [Path(value).resolve() for value in args.material_root]
+    camera_fit = None
+    if args.camera_json:
+        camera_path = Path(args.camera_json).resolve()
+        camera = json.loads(camera_path.read_text(encoding="utf-8"))
+        if isinstance(camera.get("angles"), list):
+            angles = [str(value) for value in camera["angles"] if str(value) in ANGLE_DIRS]
+        if all(name in camera for name in ("center", "ortho_scale", "distance")):
+            center = camera["center"]
+            if not isinstance(center, list) or len(center) != 3:
+                raise SystemExit("[ERROR] Camera center must contain three values.")
+            camera_fit = (Vector(tuple(float(value) for value in center)), float(camera["ortho_scale"]), float(camera["distance"]))
+
+    if args.pose != "reference":
+        raise SystemExit(f"[ERROR] Unsupported preview pose: {args.pose}")
 
     if not before:
         raise SystemExit("[ERROR] Before list is empty.")
@@ -281,14 +382,19 @@ def main():
     original_dir = out_dir / "original"
     optimized_dir = out_dir / "optimized"
 
-    before_tris, fit = _render_set("before", before, original_dir, angles, args.size, fit=None)
-    after_tris, _ = _render_set("after", after, optimized_dir, angles, args.size, fit=fit)
+    before_tris, fit = _render_set(
+        "before", before, original_dir, angles, args.size, fit=camera_fit, material_roots=material_roots
+    )
+    after_tris, _ = _render_set(
+        "after", after, optimized_dir, angles, args.size, fit=fit, material_roots=material_roots
+    )
 
     before_files = [str(p) for p in before]
     after_files = [str(p) for p in after]
     summary = {
         "angles": angles,
         "size": args.size,
+        "pose": args.pose,
         "before": {
             "file": before_files[0] if before_files else "",
             "files": before_files,
