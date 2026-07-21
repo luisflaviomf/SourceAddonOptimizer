@@ -37,7 +37,7 @@ from .reporting import (
     comparable_model_bytes,
     write_atomic_maximum_report,
 )
-from .risk import budget_for_risk, measure_risk
+from .risk import budget_for_risk, measure_risk, requires_adaptive_validation
 from .search import RegionDecision, RegionRequest, optimize_region
 from .smd import SmdDocument, SmdInfluence, SmdTriangle, SmdVertex, parse_smd, serialize_smd
 
@@ -319,7 +319,7 @@ def _pose_contract(region: SmdRegion, profile: MaximumProfile) -> MetricContract
                 ),
             )
         )
-    samples = min(profile.sample_count, max(256, len(region.triangles) * 16))
+    samples = min(profile.sample_count, max(64, len(region.triangles) * 8))
     return MetricContract(
         _VIEWS,
         profile.silhouette_resolution,
@@ -484,7 +484,7 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
     failures: list[str] = []
     options.cancel.throw_if_cancelled()
     _run_stage(options, timings, "normal-seed", lambda: None)
-    inventories, ambiguous_sources, ambiguous_regions = _run_stage(
+    inventories, _ambiguous_sources, ambiguous_regions = _run_stage(
         options,
         timings,
         "regional-inventory",
@@ -515,6 +515,63 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
                 budget = budget_for_risk(options.profile, features)
                 metric_reference: PreparedRegionReference | None = None
 
+                if not pair.confident:
+                    decision = RegionDecision(
+                        pair.original,
+                        "original",
+                        1.0,
+                        0,
+                        0,
+                        (),
+                        ValidationDecision(True, (), 1.0),
+                        f"uncertain regional correspondence; restored original region: {pair.reason}",
+                    )
+                    selected.append(
+                        _SelectedRegion(
+                            source,
+                            pair.original,
+                            pair.normal,
+                            decision,
+                            semantics,
+                            features.score,
+                            features.target_ratio,
+                        )
+                    )
+                    continue
+
+                needs_validation = validate_injected is not None or requires_adaptive_validation(
+                    source.as_posix(),
+                    pair.original.material,
+                    len(pair.original.triangles),
+                    features,
+                    semantics,
+                )
+                if not needs_validation:
+                    selected_region = pair.normal if len(pair.normal.triangles) <= len(pair.original.triangles) else pair.original
+                    representation = "normal" if selected_region is pair.normal else "original"
+                    decision = RegionDecision(
+                        selected_region,
+                        representation,  # type: ignore[arg-type]
+                        len(selected_region.triangles) / len(pair.original.triangles),
+                        0,
+                        0,
+                        (),
+                        ValidationDecision(True, (), 1.0),
+                        "aggressive Normal seed accepted by low-risk classifier",
+                    )
+                    selected.append(
+                        _SelectedRegion(
+                            source,
+                            pair.original,
+                            pair.normal,
+                            decision,
+                            semantics,
+                            features.score,
+                            features.target_ratio,
+                        )
+                    )
+                    continue
+
                 def validator(candidate: SmdRegion) -> ValidationDecision:
                     nonlocal metric_reference
                     try:
@@ -531,7 +588,6 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
                     except Exception:
                         return ValidationDecision(False, ("validator-error",), 0.0)
 
-                normal_validation = validator(pair.normal)
                 if len(pair.normal.triangles) > len(pair.original.triangles):
                     decision = RegionDecision(
                         pair.original,
@@ -544,6 +600,11 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
                         "normal region increased triangle count",
                     )
                 else:
+                    normal_validation = (
+                        validator(pair.normal)
+                        if validate_injected is not None
+                        else ValidationDecision(False, ("priority-seed-requires-lighter-candidate",), 0.0)
+                    )
                     request = RegionRequest(
                         pair.original,
                         pair.normal,
@@ -647,7 +708,6 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
             options.normal_source_root,
             replacements_for(adaptive_sources),
             options.staging_root,
-            normal_source_fallbacks=ambiguous_sources,
         )
         compiled_source_root = composition.root
         compiled = options.compile_family(composition.root)
@@ -673,7 +733,6 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
                     options.normal_source_root,
                     replacements_for(active),
                     stage,
-                    normal_source_fallbacks=tuple(sorted(set(ambiguous_sources) | (adaptive_sources - active))),
                 )
                 compiled_source_root = composition_try.root
                 compiled = options.compile_family(composition_try.root)
@@ -692,9 +751,9 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
         for index, item in enumerate(tuple(selected)):
             if item.source == bad_source:
                 fallback = RegionDecision(
-                    item.normal,
-                    "normal",
-                    len(item.normal.triangles) / len(item.original.triangles),
+                    item.original,
+                    "original",
+                    1.0,
                     item.decision.evaluations,
                     item.decision.cache_hits,
                     item.decision.attempted_ratios,
@@ -708,7 +767,6 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
             options.normal_source_root,
             replacements_for(adaptive_sources),
             final_stage,
-            normal_source_fallbacks=tuple(sorted(set(ambiguous_sources) | {bad_source})),
         )
         compiled_source_root = final_composition.root
         compiled = options.compile_family(final_composition.root)

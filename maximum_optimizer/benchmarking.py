@@ -661,7 +661,10 @@ def aggregate_payload(result: AggregateResult) -> dict[str, object]:
 
 def load_family_results(root: Path, partition: str = "all") -> tuple[FamilyResult, ...]:
     results = []
-    for path in Path(root).rglob("result.json"):
+    result_root = Path(root)
+    for path in result_root.rglob("result.json"):
+        if ".archive" in path.relative_to(result_root).parts:
+            continue
         try:
             result = FamilyResult.from_dict(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, TypeError, ValueError, json.JSONDecodeError):

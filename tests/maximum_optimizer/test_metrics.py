@@ -88,6 +88,11 @@ def make_disc(
 
 
 class RegionMetricsTests(unittest.TestCase):
+    def test_sampled_max_uses_p99_to_ignore_one_unstable_nearest_point(self) -> None:
+        values = [0.0] * 99 + [100.0]
+
+        self.assertEqual(metrics_module._percentile(values, 0.99), 0.0)
+
     def test_identical_region_has_zero_error_and_passes(self) -> None:
         original = make_disc(64)
 

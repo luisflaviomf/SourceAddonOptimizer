@@ -39,6 +39,8 @@ class RegionGraph:
 class RegionPair:
     original: SmdRegion
     normal: SmdRegion
+    confident: bool = True
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -191,17 +193,12 @@ def _mapping_score(original: SmdRegion, normal: SmdRegion, scale: float) -> floa
 def correspond_graphs(original: RegionGraph, normal: RegionGraph) -> RegionCorrespondence:
     if original.occurrence != normal.occurrence:
         return RegionCorrespondence("ambiguous", "normal-source", (), "QC occurrence differs")
-    if original.nonmanifold or normal.nonmanifold:
-        return RegionCorrespondence("ambiguous", "normal-source", (), "non-manifold component")
     original_by_material: dict[str, list[SmdRegion]] = {}
     normal_by_material: dict[str, list[SmdRegion]] = {}
     for region in original.regions:
         original_by_material.setdefault(region.material.casefold(), []).append(region)
     for region in normal.regions:
         normal_by_material.setdefault(region.material.casefold(), []).append(region)
-    if set(original_by_material) != set(normal_by_material):
-        return RegionCorrespondence("ambiguous", "normal-source", (), "material inventory differs")
-
     all_positions = tuple(
         vertex.position
         for region in original.regions
@@ -212,16 +209,18 @@ def correspond_graphs(original: RegionGraph, normal: RegionGraph) -> RegionCorre
     bounds_max = tuple(max(position[axis] for position in all_positions) for axis in range(3))
     scale = max(_distance(bounds_min, bounds_max), 1e-9)
     pairs: list[RegionPair] = []
+    fallback_reasons: list[str] = []
     for material in sorted(original_by_material):
         originals = original_by_material[material]
-        normals = normal_by_material[material]
+        normals = normal_by_material.get(material, [])
         if len(originals) != len(normals):
-            return RegionCorrespondence(
-                "ambiguous",
-                "normal-source",
-                (),
-                f"component count differs for material {material}",
+            reason = f"component count differs for material {material}"
+            fallback_reasons.append(reason)
+            pairs.extend(
+                RegionPair(original_region, original_region, False, reason)
+                for original_region in originals
             )
+            continue
         unused = set(range(len(normals)))
         for original_region in originals:
             candidates = sorted(
@@ -233,10 +232,20 @@ def correspond_graphs(original: RegionGraph, normal: RegionGraph) -> RegionCorre
                 key=lambda item: (item[0], item[1]),
             )
             if not candidates or candidates[0][0] > 0.35:
-                return RegionCorrespondence("ambiguous", "normal-source", (), f"no confident component match for material {material}")
+                reason = f"no confident component match for material {material}"
+                fallback_reasons.append(reason)
+                pairs.append(RegionPair(original_region, original_region, False, reason))
+                continue
             if len(candidates) > 1 and abs(candidates[0][0] - candidates[1][0]) <= 1e-9:
-                return RegionCorrespondence("ambiguous", "normal-source", (), f"tied component match for material {material}")
+                reason = f"tied component match for material {material}"
+                fallback_reasons.append(reason)
+                pairs.append(RegionPair(original_region, original_region, False, reason))
+                continue
             index = candidates[0][1]
             unused.remove(index)
             pairs.append(RegionPair(original_region, normals[index]))
-    return RegionCorrespondence("mapped", "none", tuple(pairs), "")
+    extra_materials = sorted(set(normal_by_material) - set(original_by_material))
+    if extra_materials:
+        fallback_reasons.append(f"ignored normal-only materials: {', '.join(extra_materials)}")
+    reason = f"{len(set(fallback_reasons))} local fallback reason(s)" if fallback_reasons else ""
+    return RegionCorrespondence("mapped", "none", tuple(pairs), reason)

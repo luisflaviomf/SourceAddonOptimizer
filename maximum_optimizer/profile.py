@@ -47,8 +47,8 @@ def load_profile(path: Path) -> MaximumProfile:
         raise ValueError("unsupported profile schema or version")
     if type(payload["calibrated"]) is not bool:
         raise ValueError("profile calibrated flag must be boolean")
-    if type(payload["max_simplifier_evaluations"]) is not int or payload["max_simplifier_evaluations"] != 3:
-        raise ValueError("profile must allow exactly three simplifier evaluations")
+    if type(payload["max_simplifier_evaluations"]) is not int or payload["max_simplifier_evaluations"] != 1:
+        raise ValueError("profile must allow exactly one lighter recovery evaluation")
     if type(payload["sample_count"]) is not int or payload["sample_count"] < 256:
         raise ValueError("profile sample count is invalid")
     silhouette_resolution = payload["silhouette_resolution"]
@@ -63,7 +63,7 @@ def load_profile(path: Path) -> MaximumProfile:
         version="maximum-adaptive-v2",
         calibrated=payload["calibrated"],
         seed_ratio=_finite_ratio(payload["seed_ratio"], "seed ratio"),
-        max_simplifier_evaluations=3,
+        max_simplifier_evaluations=1,
         near_limit_fraction=_finite_ratio(payload["near_limit_fraction"], "near-limit fraction"),
         sample_count=payload["sample_count"],
         silhouette_resolution=silhouette_resolution,

@@ -8,7 +8,7 @@ import build_optimized_addon
 
 
 class WorkerCliTests(unittest.TestCase):
-    def test_maximum_is_public_mode_and_forces_internal_seed_only(self) -> None:
+    def test_maximum_is_public_mode_and_starts_from_profiled_normal_seed(self) -> None:
         args = build_optimized_addon.parse_args(
             ["addon", "--optimizer-mode", "maximum", "--ratio", "0.75"]
         )

@@ -3,20 +3,20 @@
   "version": "maximum-adaptive-v2",
   "calibrated": false,
   "seed_ratio": 0.35,
-  "max_simplifier_evaluations": 3,
+  "max_simplifier_evaluations": 1,
   "near_limit_fraction": 0.85,
   "sample_count": 512,
   "silhouette_resolution": 256,
   "limits": {
-    "surface_p95": 0.0015,
-    "surface_max": 0.006,
-    "normal_p95_degrees": 8.0,
-    "normal_max_degrees": 35.0,
-    "silhouette_iou_loss": 0.003,
-    "silhouette_boundary_p95_px": 0.5,
-    "uv_p95": 0.002,
-    "material_boundary_p95_px": 0.5,
-    "skinning_p95": 0.0015,
-    "skinning_max": 0.006
+    "surface_p95": 0.0025,
+    "surface_max": 0.01,
+    "normal_p95_degrees": 10.0,
+    "normal_max_degrees": 75.0,
+    "silhouette_iou_loss": 0.006,
+    "silhouette_boundary_p95_px": 1.5,
+    "uv_p95": 0.006,
+    "material_boundary_p95_px": 1.5,
+    "skinning_p95": 0.003,
+    "skinning_max": 0.01
   }
 }

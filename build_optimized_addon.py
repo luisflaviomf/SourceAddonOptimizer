@@ -1196,7 +1196,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def effective_normal_ratio(args: argparse.Namespace) -> float:
-    return 0.35 if args.optimizer_mode == OPTIMIZER_MODE_MAXIMUM else float(args.ratio)
+    if args.optimizer_mode != OPTIMIZER_MODE_MAXIMUM:
+        return float(args.ratio)
+    from maximum_optimizer.profile import load_profile
+
+    profile_path = _runtime_root() / "maximum_optimizer" / "profiles" / "maximum-adaptive-v2.json"
+    return load_profile(profile_path).seed_ratio
 
 
 def main(argv: list[str]) -> int:

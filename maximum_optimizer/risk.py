@@ -24,6 +24,11 @@ CANONICAL_VIEWS: tuple[Vector3, ...] = (
     (math.sqrt(0.5), -math.sqrt(0.5), 0.0),
     (-math.sqrt(0.5), -math.sqrt(0.5), 0.0),
 )
+_VISUAL_PRIORITY_TOKENS = (
+    "wheel", "tire", "tyre", "rim", "glass", "lens", "light", "lamp",
+    "steer", "exhaust", "pipe", "tube", "gauge", "dial", "scope", "sight",
+    "windscreen", "windshield",
+)
 
 
 def _sub(left: Vector3, right: Vector3) -> Vector3:
@@ -204,4 +209,27 @@ def budget_for_risk(profile: MaximumProfile, features: RiskFeatures) -> RegionBu
         material_boundary_p95_px=limits.material_boundary_p95_px * scale,
         skinning_p95=limits.skinning_p95 * scale,
         skinning_max=limits.skinning_max * scale,
+    )
+
+
+def requires_adaptive_validation(
+    source_name: str,
+    material: str,
+    triangle_count: int,
+    features: RiskFeatures,
+    semantics: MaterialSemantics,
+) -> bool:
+    identity = f"{source_name} {material}".replace("\\", "/").casefold()
+    if any(token in identity for token in _VISUAL_PRIORITY_TOKENS):
+        return True
+    if semantics.requires_render or semantics.confidence < 0.75:
+        return True
+    if features.skinning_risk > 0.08:
+        return True
+    significant = triangle_count >= 5000
+    if significant and features.curvature_p95_norm >= 0.025:
+        return True
+    return (
+        triangle_count >= 5000
+        and features.silhouette_fraction >= 0.35
     )

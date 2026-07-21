@@ -58,10 +58,10 @@ def candidate_ratios(request: RegionRequest) -> tuple[float, ...]:
         if request.normal_validation.margin_fraction < 0.15:
             return ()
         normal_ratio = request.normal_triangle_count / request.original_triangle_count
-        values = (target, (target + normal_ratio) / 2.0)
-        return tuple(round(value, 12) for value in values if value < normal_ratio - 0.02)[:2]
-    values = (target, (target + 1.0) / 2.0, 0.85)
-    return tuple(dict.fromkeys(round(value, 12) for value in values))[:3]
+        return (round(target, 12),) if target < normal_ratio - 0.02 else ()
+    normal_ratio = request.normal_triangle_count / request.original_triangle_count
+    first = min(0.85, max(0.65, normal_ratio + 0.30))
+    return (round(first, 12),)
 
 
 def _cache_key(request: RegionRequest, ratio: float, base: str) -> str:

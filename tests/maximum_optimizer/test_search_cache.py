@@ -54,17 +54,17 @@ def request(
 
 class CandidateScheduleTests(unittest.TestCase):
     def test_passing_normal_tests_only_more_aggressive_targets(self) -> None:
-        self.assertEqual(candidate_ratios(request(normal_validation=PASS, classified_ratio=0.10)), (0.10, 0.225))
+        self.assertEqual(candidate_ratios(request(normal_validation=PASS, classified_ratio=0.10)), (0.10,))
 
     def test_near_limit_normal_is_kept_without_simplifier_call(self) -> None:
         self.assertEqual(candidate_ratios(request(normal_validation=NEAR_PASS)), ())
 
-    def test_failed_normal_has_exactly_three_monotonic_recovery_targets(self) -> None:
-        self.assertEqual(candidate_ratios(request(normal_validation=FAIL)), (0.2, 0.6, 0.85))
+    def test_failed_normal_has_one_lighter_recovery_target(self) -> None:
+        self.assertEqual(candidate_ratios(request(normal_validation=FAIL)), (0.65,))
 
 
 class AdaptiveSearchTests(unittest.TestCase):
-    def test_failed_region_never_exceeds_three_simplifier_calls(self) -> None:
+    def test_failed_region_never_exceeds_one_simplifier_call(self) -> None:
         calls = []
         with tempfile.TemporaryDirectory() as raw:
             decision = optimize_region(
@@ -75,8 +75,8 @@ class AdaptiveSearchTests(unittest.TestCase):
             )
 
         self.assertEqual(decision.representation, "original")
-        self.assertEqual(calls, [0.2, 0.6, 0.85])
-        self.assertEqual(decision.evaluations, 3)
+        self.assertEqual(calls, [0.65])
+        self.assertEqual(decision.evaluations, 1)
 
     def test_simplifier_errors_are_local_and_respect_the_evaluation_bound(self) -> None:
         calls = []
@@ -94,9 +94,9 @@ class AdaptiveSearchTests(unittest.TestCase):
             )
 
         self.assertEqual(decision.representation, "original")
-        self.assertEqual(decision.evaluations, 3)
-        self.assertEqual(calls, [0.2, 0.6, 0.85])
-        self.assertIn("3 simplifier errors", decision.reason)
+        self.assertEqual(decision.evaluations, 1)
+        self.assertEqual(calls, [0.65])
+        self.assertIn("1 simplifier errors", decision.reason)
 
     def test_failed_wheel_does_not_revert_passing_body(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

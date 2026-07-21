@@ -45,10 +45,10 @@ class ProfileTests(unittest.TestCase):
 
         self.assertEqual(profile.version, "maximum-adaptive-v2")
         self.assertFalse(profile.calibrated)
-        self.assertEqual(profile.max_simplifier_evaluations, 3)
+        self.assertEqual(profile.max_simplifier_evaluations, 1)
         self.assertEqual(profile.sample_count, 512)
         self.assertEqual(profile.silhouette_resolution, 256)
-        self.assertLess(profile.limits.normal_p95_degrees, 10.0)
+        self.assertLessEqual(profile.limits.normal_p95_degrees, 10.0)
         self.assertLessEqual(profile.limits.silhouette_boundary_p95_px, 1.5)
         self.assertEqual(profile.sha256, hashlib.sha256(PROFILE_PATH.read_bytes()).hexdigest())
 

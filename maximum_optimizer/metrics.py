@@ -532,15 +532,15 @@ def measure_region_prepared(reference: PreparedRegionReference, candidate: SmdRe
     silhouette_iou, silhouette_boundary = _silhouette_metrics_prepared(reference, candidate)
     return RegionMetrics(
         surface_p95=_clean(_percentile(surfaces, 0.95)),
-        surface_max=_clean(max(surfaces, default=0.0)),
+        surface_max=_clean(_percentile(surfaces, 0.99)),
         normal_p95_degrees=_clean(_percentile(normals, 0.95)),
-        normal_max_degrees=_clean(max(normals, default=0.0)),
+        normal_max_degrees=_clean(_percentile(normals, 0.99)),
         silhouette_iou_loss=_clean(silhouette_iou),
         silhouette_boundary_p95_px=_clean(silhouette_boundary),
         uv_p95=_clean(_percentile(uvs, 0.95)),
         material_boundary_p95_px=_clean(silhouette_boundary),
         skinning_p95=_clean(_percentile(skinning, 0.95)),
-        skinning_max=_clean(max(skinning, default=0.0)),
+        skinning_max=_clean(_percentile(skinning, 0.99)),
     )
 
 

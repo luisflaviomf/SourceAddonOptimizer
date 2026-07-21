@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from maximum_optimizer.benchmarking import LANES, load_corpus, load_family_results, write_json  # noqa: E402
+from maximum_optimizer.qc_graph import scan_qc_occurrences  # noqa: E402
 from maximum_optimizer.smd import parse_smd  # noqa: E402
 
 
@@ -36,6 +37,10 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--blender", type=Path, required=True)
+    parser.add_argument("--partition", choices=("development", "holdout", "all"), default="all")
+    parser.add_argument("--families", help="Comma-separated family IDs; defaults to the selected partition.")
+    parser.add_argument("--lanes", help="Comma-separated lane IDs; defaults to all benchmark lanes.")
+    parser.add_argument("--model-name", help="Override the visual MDL name; requires exactly one family.")
     return parser.parse_args()
 
 
@@ -47,8 +52,13 @@ def _find_model(models: Path, name: str) -> Path:
 
 
 def _largest_mesh_smd(root: Path) -> Path:
+    visual_sources = {
+        root / Path(*occurrence.source_path.parts)
+        for occurrence in scan_qc_occurrences(root)
+        if occurrence.directive in {"$body", "$model", "$bodygroup/studio"}
+    }
     candidates = []
-    for path in root.rglob("*.smd"):
+    for path in visual_sources or set(root.rglob("*.smd")):
         try:
             triangles = len(parse_smd(path.read_text(encoding="utf-8", errors="replace")).triangles)
         except (OSError, ValueError):
@@ -123,11 +133,13 @@ def _difference(before: Path, after: Path, destination: Path) -> Path:
     return destination
 
 
-def _build_panel(family_id: str, raw_root: Path, destination: Path) -> None:
-    columns = ("original", "normal-safe", "maximum-8812c7a", "maximum-adaptive-v2")
+def _build_panel(family_id: str, raw_root: Path, destination: Path, lanes: tuple[str, ...]) -> None:
+    if not lanes:
+        raise ValueError("at least one lane is required")
+    columns = ("original", *lanes)
     rows = ("preview", "clay", "uv", "normal", "normal-deviation", "silhouette-difference")
     cells = []
-    reference_lane = "normal-safe"
+    reference_lane = lanes[0]
     for row in rows:
         row_cells = []
         for column in columns:
@@ -168,17 +180,38 @@ def main() -> int:
     if not blender.is_file():
         raise FileNotFoundError(blender)
     corpus = load_corpus(Path(__file__).with_name("corpus.json"))
+    selected_family_ids = (
+        {value.strip() for value in args.families.split(",") if value.strip()}
+        if args.families else {family.id for family in corpus.partition(args.partition)}
+    )
+    known_family_ids = {family.id for family in corpus.families}
+    unknown_families = selected_family_ids - known_family_ids
+    if unknown_families:
+        raise ValueError(f"unknown families: {sorted(unknown_families)}")
+    selected_lanes = tuple(value.strip() for value in args.lanes.split(",") if value.strip()) if args.lanes else tuple(
+        lane.id for lane in LANES
+    )
+    known_lanes = {lane.id for lane in LANES}
+    unknown_lanes = set(selected_lanes) - known_lanes
+    if unknown_lanes:
+        raise ValueError(f"unknown lanes: {sorted(unknown_lanes)}")
+    if not selected_lanes:
+        raise ValueError("at least one lane is required")
+    if args.model_name and len(selected_family_ids) != 1:
+        raise ValueError("--model-name requires exactly one selected family")
     results = load_family_results(results_root)
     by_key = {(result.family_id, result.lane): result for result in results}
     manifest = {"schema": 1, "resolution": 1024, "panels": [], "missing_categories": ["weapon_sights"]}
     for family in corpus.families:
+        if family.id not in selected_family_ids:
+            continue
         lane_results = []
-        for lane in LANES:
-            result = by_key.get((family.id, lane.id))
+        for lane_id in selected_lanes:
+            result = by_key.get((family.id, lane_id))
             if result is None:
-                raise RuntimeError(f"missing result for {family.id}/{lane.id}")
+                raise RuntimeError(f"missing result for {family.id}/{lane_id}")
             lane_results.append(result)
-        model_name = VISUAL_MODELS[family.id]
+        model_name = args.model_name or VISUAL_MODELS[family.id]
         family_root = output_root / family.id
         original_model = _find_model(Path(lane_results[0].work_path).parent / "source" / family.id / "models", model_name)
         original_smd = _decompile(original_model, family_root / "decompiled" / "original")
@@ -192,7 +225,7 @@ def main() -> int:
             for mode in VIEW_MODES:
                 _render(blender, original_smd, candidate_smd, raw_root / result.lane / mode, mode, material_roots)
         panel_path = family_root / f"{family.id}-comparison.png"
-        _build_panel(family.id, raw_root, panel_path)
+        _build_panel(family.id, raw_root, panel_path, selected_lanes)
         manifest["panels"].append(
             {
                 "family_id": family.id,

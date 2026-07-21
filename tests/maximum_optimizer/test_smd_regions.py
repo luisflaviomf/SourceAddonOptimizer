@@ -69,6 +69,18 @@ class QcGraphTests(unittest.TestCase):
 
 
 class RegionGraphTests(unittest.TestCase):
+    def test_nonmanifold_source_maps_regions_instead_of_rejecting_whole_model(self) -> None:
+        text = ORIGINAL.read_text(encoding="utf-8")
+        first_triangle = text.split("paint\n", 1)[1].split("paint\n", 1)[0]
+        nonmanifold_text = text.replace("glass\n", "paint\n" + first_triangle + "glass\n")
+        original = build_region_graph(parse_smd(nonmanifold_text), OCCURRENCE)
+        normal = build_region_graph(parse_smd(nonmanifold_text), OCCURRENCE)
+
+        correspondence = correspond_graphs(original, normal)
+
+        self.assertTrue(original.nonmanifold)
+        self.assertEqual(correspondence.status, "mapped")
+
     def test_material_and_connected_components_are_distinct_and_deterministic(self) -> None:
         document = parse_smd(ORIGINAL.read_text(encoding="utf-8"))
 
@@ -95,7 +107,7 @@ class RegionGraphTests(unittest.TestCase):
             {region.key for region in original.regions},
         )
 
-    def test_duplicate_normal_component_is_ambiguous_for_only_this_source(self) -> None:
+    def test_duplicate_normal_component_falls_back_only_its_material_regions(self) -> None:
         original = build_region_graph(parse_smd(ORIGINAL.read_text(encoding="utf-8")), OCCURRENCE)
         normal_text = NORMAL.read_text(encoding="utf-8")
         record = "paint\n0 8.02 0 0 0 0 1 0 0\n0 9.02 0 0 0 0 1 1 0\n0 8.52 1 0 0 0 1 0.5 1\n"
@@ -104,9 +116,13 @@ class RegionGraphTests(unittest.TestCase):
 
         correspondence = correspond_graphs(original, normal)
 
-        self.assertEqual(correspondence.status, "ambiguous")
-        self.assertEqual(correspondence.fallback, "normal-source")
-        self.assertIn("component count", correspondence.reason)
+        self.assertEqual(correspondence.status, "mapped")
+        paint = tuple(pair for pair in correspondence.pairs if pair.original.material == "paint")
+        glass = tuple(pair for pair in correspondence.pairs if pair.original.material == "glass")
+        self.assertTrue(paint)
+        self.assertTrue(all(not pair.confident and pair.normal == pair.original for pair in paint))
+        self.assertTrue(all(pair.confident for pair in glass))
+        self.assertIn("local fallback", correspondence.reason)
 
 
 if __name__ == "__main__":

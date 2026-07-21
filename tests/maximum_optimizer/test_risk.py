@@ -9,7 +9,7 @@ from maximum_optimizer.materials import MaterialSemantics, resolve_material_sema
 from maximum_optimizer.profile import load_profile
 from maximum_optimizer.qc_graph import QcOccurrence
 from maximum_optimizer.regions import SmdRegion, build_region_graph
-from maximum_optimizer.risk import CANONICAL_VIEWS, budget_for_risk, measure_risk
+from maximum_optimizer.risk import CANONICAL_VIEWS, budget_for_risk, measure_risk, requires_adaptive_validation
 from maximum_optimizer.smd import SmdDocument, SmdInfluence, SmdTriangle, SmdVertex
 
 
@@ -167,6 +167,22 @@ class MaterialTests(unittest.TestCase):
 
 
 class RiskTests(unittest.TestCase):
+    def test_validation_targets_curves_and_named_visual_parts_but_skips_plain_planes(self) -> None:
+        opaque = MaterialSemantics.opaque()
+        flat = measure_risk(plane(), opaque, CANONICAL_VIEWS)
+        curved = measure_risk(cylinder(), opaque, CANONICAL_VIEWS)
+
+        self.assertFalse(requires_adaptive_validation("body.smd", "paint", 98, flat, opaque))
+        self.assertTrue(requires_adaptive_validation("wheel.smd", "rubber", 4, flat, opaque))
+        self.assertTrue(requires_adaptive_validation("body.smd", "paint", 5000, curved, opaque))
+
+    def test_transparency_and_skinning_always_require_adaptive_validation(self) -> None:
+        mesh = two_bone_strip()
+        semantics = MaterialSemantics(translucent=True, resolver="addon", confidence=1.0)
+        features = measure_risk(mesh, semantics, CANONICAL_VIEWS)
+
+        self.assertTrue(requires_adaptive_validation("trim.smd", "cloth", 4, features, semantics))
+
     def test_uv_and_hard_normal_discontinuities_are_measured_at_either_edge_endpoint(self) -> None:
         high_a = vertex((0.1, 0.1, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0))
         high_b = vertex((0.1, 0.1, 0.0), (0.0, 1.0, 0.0), (1.0, 1.0))

@@ -12,6 +12,7 @@ from maximum_optimizer.benchmarking import (
     assert_isolated_lane_paths,
     copy_family_input,
     load_corpus,
+    load_family_results,
     scan_compiled_models,
     tree_fingerprint,
     verify_family_input,
@@ -110,6 +111,23 @@ class BenchmarkingTests(unittest.TestCase):
 
             self.assertTrue((destination / "models" / "cars" / "wheel.mdl").is_file())
             self.assertTrue((destination / "materials" / "models" / "cars" / "rubber.vmt").is_file())
+
+    def test_result_loader_ignores_archived_aborted_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            active = root / "development" / "wheel" / "normal-safe" / "result.json"
+            archived = root / ".archive" / "wheel-normal-safe-aborted" / "result.json"
+            active.parent.mkdir(parents=True)
+            archived.parent.mkdir(parents=True)
+            payload = FamilyResult.fixture("wheel", original=1000, final=400, dx80=100).__dict__
+            active.write_text(json.dumps(payload), encoding="utf-8")
+            archived_payload = dict(payload, status="failed", exit_code=-1)
+            archived.write_text(json.dumps(archived_payload), encoding="utf-8")
+
+            results = load_family_results(root)
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].status, "ok")
 
 
 if __name__ == "__main__":

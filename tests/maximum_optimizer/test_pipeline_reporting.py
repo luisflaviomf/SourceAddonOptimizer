@@ -11,6 +11,7 @@ from maximum_optimizer.contracts import ValidationDecision
 from maximum_optimizer.pipeline import (
     CompileResult,
     MaximumRunOptions,
+    _pose_contract,
     run_maximum_adaptive,
     simplify_smd_region,
 )
@@ -35,6 +36,16 @@ class NoCancellation:
 
 
 class AdaptivePipelineTests(unittest.TestCase):
+    def test_small_regions_use_a_bounded_sample_budget(self) -> None:
+        graph = build_region_graph(
+            parse_smd((FIXTURES / "two_components.smd").read_text(encoding="utf-8")),
+            OCCURRENCE,
+        )
+
+        contract = _pose_contract(graph.regions[0], PROFILE)
+
+        self.assertEqual(contract.sample_count, 64)
+
     def test_real_native_adapter_reduces_planar_region_and_preserves_attributes(self) -> None:
         triangles = []
 
@@ -120,6 +131,18 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertEqual(report.full_family_renders, 0)
         self.assertLessEqual(report.studiomdl_compiles, 2)
 
+    def test_low_risk_region_accepts_aggressive_normal_seed_without_metric_search(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            options = replace(self._fixture_options(root), validate_candidate=None)
+
+            report = run_maximum_adaptive(options)
+            paint = next(item for item in report.region_details if item.material == "paint")
+
+        self.assertEqual(paint.representation, "normal")
+        self.assertEqual(paint.simplifier_evaluations, 0)
+        self.assertIn("low-risk classifier", paint.reason)
+
     def test_report_is_atomic_recomputable_and_dx80_neutral(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -168,7 +191,7 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertEqual(detail.representation, "original")
         self.assertIn("targeted render failed", detail.reason)
 
-    def test_triangle_totals_include_ambiguous_sources_using_normal_fallback(self) -> None:
+    def test_ambiguous_sources_restore_original_instead_of_unvalidated_aggressive_seed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             options = self._fixture_options(root)
@@ -186,10 +209,12 @@ class AdaptivePipelineTests(unittest.TestCase):
 
             report = run_maximum_adaptive(options)
 
-        selected_mapped = sum(item.selected_triangles for item in report.region_details)
+        selected_regions = sum(item.selected_triangles for item in report.region_details)
         self.assertEqual(report.original_triangles, 8)
         self.assertEqual(report.normal_triangles, 9)
-        self.assertEqual(report.final_triangles, selected_mapped + 5)
+        self.assertEqual(report.final_triangles, selected_regions)
+        self.assertEqual(report.regions.ambiguous, 0)
+        self.assertGreater(report.regions.original_fallback, 0)
 
 
 if __name__ == "__main__":
