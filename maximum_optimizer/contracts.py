@@ -52,6 +52,20 @@ class RiskFeatures:
 
 
 @dataclass(frozen=True)
+class RegionMetrics:
+    surface_p95: float
+    surface_max: float
+    normal_p95_degrees: float
+    normal_max_degrees: float
+    silhouette_iou_loss: float
+    silhouette_boundary_p95_px: float
+    uv_p95: float
+    material_boundary_p95_px: float
+    skinning_p95: float
+    skinning_max: float
+
+
+@dataclass(frozen=True)
 class RegionBudget:
     surface_p95: float
     surface_max: float
