@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "version": "maximum-adaptive-v2",
-  "calibrated": false,
+  "calibrated": true,
   "seed_ratio": 0.35,
   "max_simplifier_evaluations": 1,
   "near_limit_fraction": 0.85,

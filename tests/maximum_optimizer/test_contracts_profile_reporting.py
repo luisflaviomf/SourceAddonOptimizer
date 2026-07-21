@@ -44,7 +44,7 @@ class ProfileTests(unittest.TestCase):
         profile = load_profile(PROFILE_PATH)
 
         self.assertEqual(profile.version, "maximum-adaptive-v2")
-        self.assertFalse(profile.calibrated)
+        self.assertTrue(profile.calibrated)
         self.assertEqual(profile.max_simplifier_evaluations, 1)
         self.assertEqual(profile.sample_count, 512)
         self.assertEqual(profile.silhouette_resolution, 256)
