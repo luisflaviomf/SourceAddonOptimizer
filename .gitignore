@@ -44,6 +44,8 @@ teste*.zip
 /experiments/VtfMaximumLab/**/obj/
 /experiments/VtfMaximumLab.Tests/**/bin/
 /experiments/VtfMaximumLab.Tests/**/obj/
+/tests/**/bin/
+/tests/**/obj/
 
 # Large local archives (do not commit)
 /*.zip
