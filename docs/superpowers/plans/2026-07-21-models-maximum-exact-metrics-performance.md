@@ -267,6 +267,62 @@ git add maximum_optimizer/meshopt_bridge.py maximum_optimizer/metrics.py maximum
 git commit -m "perf(maximum): run exact silhouette edt in native bridge"
 ```
 
+> **Native transfer gate triggered 2026-07-21:** The first native EDT recovered
+> the Python regression but still measured 27.620s adaptive CPU/wall versus the
+> 27.117s KD baseline. Isolated timing showed 1.624ms in the DLL and 7.837ms
+> converting each 65,536-cell output to a Python tuple. Execute Task 2B before
+> repeating Task 3; do not promote the full-field transfer path.
+
+### Task 2B: Return only exact boundary distances from native code
+
+**Files:**
+- Modify: `tests/maximum_optimizer/test_meshopt_bridge.py`
+- Modify: `maximum_optimizer/meshopt_bridge.py`
+- Modify: `maximum_optimizer/native/meshopt_bridge.cpp`
+- Modify: `maximum_optimizer/metrics.py`
+- Regenerate: `maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll`
+
+**Interfaces:**
+- Produces native export: `maximum_silhouette_boundary_distances_squared(...) -> int`
+- Produces Python wrapper: `silhouette_boundary_distances_squared(width, height, original, candidate) -> tuple[int, ...]`
+- Preserves the original-then-candidate distance order consumed by the global p95.
+
+- [ ] **Step 1: Write the failing compact native test**
+
+Use asymmetric point sets and assert the exact ordered tuple: every original
+point's squared distance to the candidate, followed by every candidate point's
+squared distance to the original. Compare with a brute-force oracle and reject
+empty/out-of-range inputs.
+
+- [ ] **Step 2: Run the focused test and verify RED**
+
+Run: `python -m unittest tests.maximum_optimizer.test_meshopt_bridge.MeshoptBridgeTests.test_native_boundary_distances_match_brute_force -v`
+
+Expected: import failure because the compact wrapper does not exist.
+
+- [ ] **Step 3: Implement the compact native export and wrapper**
+
+Build both exact fields entirely inside the DLL, sample them only at the opposite
+boundary coordinates, and copy `original_count + candidate_count` uint32 values
+to the caller. Bind the export through `ctypes`; do not return either full grid.
+
+- [ ] **Step 4: Build and verify the compact primitive**
+
+Run the native build, focused compact test, all bridge tests, and 500 randomized
+small point-set comparisons against the ordered brute-force oracle.
+
+- [ ] **Step 5: Remove full-field storage from metric references**
+
+Store only the unchanged boundary tuple in `_SilhouetteReference`. Call the
+compact native wrapper once per view, take `sqrt` of each returned integer in
+Python, and retain the existing global `_percentile(..., 0.95)` operation.
+
+- [ ] **Step 6: Verify metric equivalence and commit**
+
+Run all metric and Maximum tests. Require frozen values
+`0.17125728716750455` and `15.0`, then commit source, tests, and rebuilt DLL as
+`perf(maximum): compact native silhouette distances`.
+
 ### Task 3: Real Pontiac equivalence and timing gate
 
 **Files:**
