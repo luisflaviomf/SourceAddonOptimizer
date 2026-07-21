@@ -215,6 +215,20 @@ class RegionMetricsTests(unittest.TestCase):
         self.assertEqual(actual, expected)
         self.assertEqual(triangle_data.call_count, 3)
 
+    def test_silhouette_field_preserves_exact_metric_without_kd_queries(self) -> None:
+        original = make_disc(64)
+        candidate = make_disc(6)
+
+        with mock.patch(
+            "maximum_optimizer.metrics._kd_tree",
+            side_effect=AssertionError("silhouette path still used the KD tree"),
+            create=True,
+        ):
+            actual = measure_region(original, candidate, CONTRACT)
+
+        self.assertEqual(actual.silhouette_iou_loss, 0.17125728716750455)
+        self.assertEqual(actual.silhouette_boundary_p95_px, 15.0)
+
 
 if __name__ == "__main__":
     unittest.main()
