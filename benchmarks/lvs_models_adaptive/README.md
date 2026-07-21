@@ -5,3 +5,8 @@ This harness freezes eight real model families from workshop addon `3027256228` 
 Comparable model bytes always exclude `*.dx80.vtx` from both denominators. Removed DX80 bytes are reported separately. Every final MDL must retain a valid matching VVD and DX90 VTX, must contain no DX80 VTX, and must preserve the compiled inventory/material contract.
 
 Run development first, calibrate and freeze the profile, then run holdout without changing code or thresholds. The exact commands are documented in `docs/superpowers/plans/2026-07-21-models-maximum-adaptive-v2.md`.
+
+The frozen July 21, 2026 result and its limitations are recorded in
+`results-2026-07-21.md`. Raw lane outputs, audit manifests, regional reports,
+and comparison panels are retained under `C:\gaco-max-v2-bench` on the
+benchmark machine.
