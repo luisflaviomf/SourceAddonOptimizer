@@ -11,6 +11,7 @@ from typing import Iterable, Sequence
 from PIL import Image, ImageChops, ImageDraw
 
 from .contracts import RegionBudget, RegionMetrics, ValidationDecision
+from .meshopt_bridge import squared_euclidean_distance_field
 from .regions import SmdRegion
 from .smd import SmdTriangle, SmdVertex
 
@@ -395,78 +396,12 @@ def _boundary_points(image: Image.Image) -> tuple[tuple[int, int], ...]:
     return tuple(points)
 
 
-def _squared_distance_transform_1d(values: Sequence[int], infinity: int) -> list[int]:
-    finite = [index for index, value in enumerate(values) if value < infinity]
-    if not finite:
-        return [infinity] * len(values)
-
-    sites = [0] * len(finite)
-    intersections = [0.0] * (len(finite) + 1)
-    envelope = 0
-    sites[0] = finite[0]
-    intersections[0] = float("-inf")
-    intersections[1] = float("inf")
-
-    for coordinate in finite[1:]:
-        site = sites[envelope]
-        crossing = (
-            (values[coordinate] + coordinate * coordinate)
-            - (values[site] + site * site)
-        ) / (2 * (coordinate - site))
-        while crossing <= intersections[envelope]:
-            envelope -= 1
-            site = sites[envelope]
-            crossing = (
-                (values[coordinate] + coordinate * coordinate)
-                - (values[site] + site * site)
-            ) / (2 * (coordinate - site))
-        envelope += 1
-        sites[envelope] = coordinate
-        intersections[envelope] = crossing
-        intersections[envelope + 1] = float("inf")
-
-    result = [infinity] * len(values)
-    envelope = 0
-    for coordinate in range(len(values)):
-        while intersections[envelope + 1] < coordinate:
-            envelope += 1
-        delta = coordinate - sites[envelope]
-        result[coordinate] = values[sites[envelope]] + delta * delta
-    return result
-
-
 def _squared_euclidean_distance_field(
     width: int,
     height: int,
     points: Sequence[tuple[int, int]],
 ) -> tuple[int, ...]:
-    if width <= 0 or height <= 0:
-        raise ValueError("distance-field dimensions must be positive")
-    if not points:
-        raise ValueError("distance-field points must not be empty")
-    if any(x < 0 or x >= width or y < 0 or y >= height for x, y in points):
-        raise ValueError("distance-field point is outside the grid")
-
-    infinity = width * width + height * height + 1
-    grid = [infinity] * (width * height)
-    for x, y in points:
-        grid[y * width + x] = 0
-
-    for y in range(height):
-        start = y * width
-        grid[start : start + width] = _squared_distance_transform_1d(
-            grid[start : start + width],
-            infinity,
-        )
-
-    for x in range(width):
-        column = _squared_distance_transform_1d(
-            [grid[y * width + x] for y in range(height)],
-            infinity,
-        )
-        for y, value in enumerate(column):
-            grid[y * width + x] = value
-    return tuple(grid)
+    return squared_euclidean_distance_field(width, height, points)
 
 
 def _prepare_silhouettes(original: SmdRegion, contract: MetricContract) -> tuple[_SilhouetteReference, ...]:

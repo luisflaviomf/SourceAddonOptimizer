@@ -13,6 +13,7 @@ from maximum_optimizer.meshopt_bridge import (
     SimplifyOptions,
     load_library,
     simplify_mesh,
+    squared_euclidean_distance_field,
 )
 
 
@@ -60,6 +61,18 @@ def make_grid(size: int = 12, *, two_bones: bool = False) -> MeshInput:
     )
 
 
+def _brute_squared_distance(
+    width: int,
+    height: int,
+    points: tuple[tuple[int, int], ...],
+) -> tuple[int, ...]:
+    return tuple(
+        min((x - point_x) ** 2 + (y - point_y) ** 2 for point_x, point_y in points)
+        for y in range(height)
+        for x in range(width)
+    )
+
+
 class TopologyTests(unittest.TestCase):
     def test_open_border_and_attribute_discontinuities_are_protected(self) -> None:
         mesh = make_grid()
@@ -80,10 +93,33 @@ class TopologyTests(unittest.TestCase):
 
 
 class MeshoptBridgeTests(unittest.TestCase):
+    def test_native_squared_distance_field_matches_brute_force(self) -> None:
+        for width, height, points in (
+            (7, 5, ((0, 0), (5, 1), (2, 4))),
+            (4, 6, ((3, 5),)),
+            (9, 3, ((0, 1), (8, 1))),
+        ):
+            with self.subTest(width=width, height=height, points=points):
+                self.assertEqual(
+                    squared_euclidean_distance_field(width, height, points),
+                    _brute_squared_distance(width, height, points),
+                )
+
+        for width, height, points in (
+            (0, 5, ((0, 0),)),
+            (5, 0, ((0, 0),)),
+            (5, 5, ()),
+            (5, 5, ((5, 0),)),
+            (5, 5, ((0, -1),)),
+        ):
+            with self.subTest(invalid=(width, height, points)):
+                with self.assertRaises(ValueError):
+                    squared_euclidean_distance_field(width, height, points)
+
     def test_reviewed_abi_and_engine_version_load(self) -> None:
         library = load_library(cache=False)
 
-        self.assertEqual(library.maximum_meshopt_abi_version(), 3)
+        self.assertEqual(library.maximum_meshopt_abi_version(), 4)
         self.assertEqual(library.maximum_meshopt_version(), 10200)
 
     def test_default_options_lock_borders_without_permissive_collapses(self) -> None:
