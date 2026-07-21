@@ -425,6 +425,70 @@ extern "C" __declspec(dllexport) int maximum_squared_euclidean_distance_field(
     }
 }
 
+extern "C" __declspec(dllexport) int maximum_silhouette_boundary_distances_squared(
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::uint32_t* original_xy,
+    std::size_t original_count,
+    const std::uint32_t* candidate_xy,
+    std::size_t candidate_count,
+    std::uint32_t* output,
+    std::size_t output_count) noexcept
+{
+    try
+    {
+        constexpr std::size_t kCellLimit = std::size_t(1) << 28;
+        if (width == 0 || height == 0 || original_count == 0 || candidate_count == 0 ||
+            !can_multiply(width, height) || !can_multiply(original_count, 2) ||
+            !can_multiply(candidate_count, 2) ||
+            original_count > std::numeric_limits<std::size_t>::max() - candidate_count)
+            return ErrorCount;
+        const std::size_t cell_count = static_cast<std::size_t>(width) * height;
+        if (cell_count >= kCellLimit || output_count != original_count + candidate_count)
+            return ErrorCount;
+        if (original_xy == nullptr || candidate_xy == nullptr || output == nullptr)
+            return ErrorNullPointer;
+        for (std::size_t index = 0; index < original_count; ++index)
+            if (original_xy[index * 2] >= width || original_xy[index * 2 + 1] >= height)
+                return ErrorData;
+        for (std::size_t index = 0; index < candidate_count; ++index)
+            if (candidate_xy[index * 2] >= width || candidate_xy[index * 2 + 1] >= height)
+                return ErrorData;
+
+        std::vector<std::uint32_t> field(cell_count);
+        int code = maximum_squared_euclidean_distance_field(
+            width, height, candidate_xy, candidate_count, field.data(), field.size());
+        if (code != 0)
+            return code;
+        for (std::size_t index = 0; index < original_count; ++index)
+        {
+            const std::size_t x = original_xy[index * 2];
+            const std::size_t y = original_xy[index * 2 + 1];
+            output[index] = field[y * width + x];
+        }
+
+        code = maximum_squared_euclidean_distance_field(
+            width, height, original_xy, original_count, field.data(), field.size());
+        if (code != 0)
+            return code;
+        for (std::size_t index = 0; index < candidate_count; ++index)
+        {
+            const std::size_t x = candidate_xy[index * 2];
+            const std::size_t y = candidate_xy[index * 2 + 1];
+            output[original_count + index] = field[y * width + x];
+        }
+        return 0;
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ErrorAllocation;
+    }
+    catch (...)
+    {
+        return ErrorException;
+    }
+}
+
 extern "C" __declspec(dllexport) int maximum_meshopt_test_pause_at(std::uint32_t point) noexcept
 {
     try

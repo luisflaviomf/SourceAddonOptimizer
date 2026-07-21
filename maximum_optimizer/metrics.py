@@ -11,7 +11,10 @@ from typing import Iterable, Sequence
 from PIL import Image, ImageChops, ImageDraw
 
 from .contracts import RegionBudget, RegionMetrics, ValidationDecision
-from .meshopt_bridge import squared_euclidean_distance_field
+from .meshopt_bridge import (
+    silhouette_boundary_distances_squared,
+    squared_euclidean_distance_field,
+)
 from .regions import SmdRegion
 from .smd import SmdTriangle, SmdVertex
 
@@ -85,7 +88,6 @@ class _SilhouetteReference:
     frame: tuple[float, float, float, float]
     mask: Image.Image
     boundary: tuple[tuple[int, int], ...]
-    boundary_distance_squared: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -417,15 +419,6 @@ def _prepare_silhouettes(original: SmdRegion, contract: MetricContract) -> tuple
         frame = (minimum_x - padding, maximum_x + padding, minimum_y - padding, maximum_y + padding)
         original_mask = _project_region(original, right, up, frame, contract.silhouette_resolution)
         boundary = _boundary_points(original_mask)
-        boundary_distance_squared = (
-            _squared_euclidean_distance_field(
-                contract.silhouette_resolution,
-                contract.silhouette_resolution,
-                boundary,
-            )
-            if boundary
-            else ()
-        )
         references.append(
             _SilhouetteReference(
                 right,
@@ -433,7 +426,6 @@ def _prepare_silhouettes(original: SmdRegion, contract: MetricContract) -> tuple
                 frame,
                 original_mask,
                 boundary,
-                boundary_distance_squared,
             )
         )
     return tuple(references)
@@ -464,18 +456,14 @@ def _silhouette_metrics_prepared(
             boundary_distances.append(float(reference.contract.silhouette_resolution))
             continue
         resolution = reference.contract.silhouette_resolution
-        candidate_distance_squared = _squared_euclidean_distance_field(
-            resolution,
-            resolution,
-            candidate_boundary,
-        )
         boundary_distances.extend(
-            math.sqrt(candidate_distance_squared[y * resolution + x])
-            for x, y in item.boundary
-        )
-        boundary_distances.extend(
-            math.sqrt(item.boundary_distance_squared[y * resolution + x])
-            for x, y in candidate_boundary
+            math.sqrt(distance_squared)
+            for distance_squared in silhouette_boundary_distances_squared(
+                resolution,
+                resolution,
+                item.boundary,
+                candidate_boundary,
+            )
         )
     return worst_iou_loss, _percentile(boundary_distances, 0.95)
 

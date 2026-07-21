@@ -12,6 +12,7 @@ from maximum_optimizer.meshopt_bridge import (
     MeshInput,
     SimplifyOptions,
     load_library,
+    silhouette_boundary_distances_squared,
     simplify_mesh,
     squared_euclidean_distance_field,
 )
@@ -93,6 +94,31 @@ class TopologyTests(unittest.TestCase):
 
 
 class MeshoptBridgeTests(unittest.TestCase):
+    def test_native_boundary_distances_match_brute_force(self) -> None:
+        original = ((0, 0), (5, 1), (2, 4))
+        candidate = ((1, 0), (6, 4))
+        expected = tuple(
+            min((x - target_x) ** 2 + (y - target_y) ** 2 for target_x, target_y in candidate)
+            for x, y in original
+        ) + tuple(
+            min((x - target_x) ** 2 + (y - target_y) ** 2 for target_x, target_y in original)
+            for x, y in candidate
+        )
+
+        self.assertEqual(
+            silhouette_boundary_distances_squared(7, 5, original, candidate),
+            expected,
+        )
+        for left, right in (
+            ((), candidate),
+            (original, ()),
+            (((7, 0),), candidate),
+            (original, ((0, -1),)),
+        ):
+            with self.subTest(left=left, right=right):
+                with self.assertRaises(ValueError):
+                    silhouette_boundary_distances_squared(7, 5, left, right)
+
     def test_native_squared_distance_field_matches_brute_force(self) -> None:
         for width, height, points in (
             (7, 5, ((0, 0), (5, 1), (2, 4))),
