@@ -6,7 +6,7 @@ import math
 import os
 import struct
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable
 
 
 LOCK = 1 << 0
@@ -25,7 +25,6 @@ _UINT32_MAX = (1 << 32) - 1
 _MESHOPT_COUNT_LIMIT = 1 << 28
 _SOURCE_VERTEX_LIMIT = 65536
 _SOURCE_TRIANGLE_LIMIT = 65536
-_DISTANCE_FIELD_CELL_LIMIT = 1 << 28
 _DLL_CACHE: dict[Path, ctypes.WinDLL] = {}
 
 
@@ -198,125 +197,13 @@ def load_library(*, cache: bool = True) -> ctypes.WinDLL:
     dll.maximum_meshopt_simplify.restype = ctypes.c_int
     dll.maximum_meshopt_destroy.argtypes = [ctypes.POINTER(_MaximumMeshOutput)]
     dll.maximum_meshopt_destroy.restype = None
-    dll.maximum_squared_euclidean_distance_field.argtypes = [
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.POINTER(ctypes.c_uint32),
-        ctypes.c_size_t,
-        ctypes.POINTER(ctypes.c_uint32),
-        ctypes.c_size_t,
-    ]
-    dll.maximum_squared_euclidean_distance_field.restype = ctypes.c_int
-    dll.maximum_silhouette_boundary_distances_squared.argtypes = [
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.POINTER(ctypes.c_uint32),
-        ctypes.c_size_t,
-        ctypes.POINTER(ctypes.c_uint32),
-        ctypes.c_size_t,
-        ctypes.POINTER(ctypes.c_uint32),
-        ctypes.c_size_t,
-    ]
-    dll.maximum_silhouette_boundary_distances_squared.restype = ctypes.c_int
     if dll.maximum_meshopt_version() != 10200:
         raise RuntimeError(f"unsupported meshopt bridge version in {path}")
-    if dll.maximum_meshopt_abi_version() != 4:
+    if dll.maximum_meshopt_abi_version() != 3:
         raise RuntimeError(f"unsupported meshopt bridge ABI in {path}")
     if cache:
         _DLL_CACHE[path] = dll
     return dll
-
-
-def squared_euclidean_distance_field(
-    width: int,
-    height: int,
-    points: Sequence[tuple[int, int]],
-) -> tuple[int, ...]:
-    if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
-        raise ValueError("distance-field dimensions must be positive integers")
-    cell_count = width * height
-    if width > _UINT32_MAX or height > _UINT32_MAX or cell_count >= _DISTANCE_FIELD_CELL_LIMIT:
-        raise ValueError("distance-field dimensions are out of range")
-    point_rows = tuple(points)
-    if not point_rows:
-        raise ValueError("distance-field points must not be empty")
-    if any(
-        len(point) != 2
-        or type(point[0]) is not int
-        or type(point[1]) is not int
-        or point[0] < 0
-        or point[0] >= width
-        or point[1] < 0
-        or point[1] >= height
-        for point in point_rows
-    ):
-        raise ValueError("distance-field point is outside the grid")
-
-    point_buffer = (ctypes.c_uint32 * (len(point_rows) * 2))(
-        *(coordinate for point in point_rows for coordinate in point)
-    )
-    output_buffer = (ctypes.c_uint32 * cell_count)()
-    code = load_library().maximum_squared_euclidean_distance_field(
-        width,
-        height,
-        point_buffer,
-        len(point_rows),
-        output_buffer,
-        cell_count,
-    )
-    if code != 0:
-        raise RuntimeError(f"distance field failed with native error {code}")
-    return tuple(output_buffer)
-
-
-def silhouette_boundary_distances_squared(
-    width: int,
-    height: int,
-    original: Sequence[tuple[int, int]],
-    candidate: Sequence[tuple[int, int]],
-) -> tuple[int, ...]:
-    if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
-        raise ValueError("silhouette dimensions must be positive integers")
-    cell_count = width * height
-    if width > _UINT32_MAX or height > _UINT32_MAX or cell_count >= _DISTANCE_FIELD_CELL_LIMIT:
-        raise ValueError("silhouette dimensions are out of range")
-    original_points = tuple(original)
-    candidate_points = tuple(candidate)
-    if not original_points or not candidate_points:
-        raise ValueError("silhouette boundaries must not be empty")
-    if any(
-        len(point) != 2
-        or type(point[0]) is not int
-        or type(point[1]) is not int
-        or point[0] < 0
-        or point[0] >= width
-        or point[1] < 0
-        or point[1] >= height
-        for point in (*original_points, *candidate_points)
-    ):
-        raise ValueError("silhouette boundary point is outside the grid")
-
-    original_buffer = (ctypes.c_uint32 * (len(original_points) * 2))(
-        *(coordinate for point in original_points for coordinate in point)
-    )
-    candidate_buffer = (ctypes.c_uint32 * (len(candidate_points) * 2))(
-        *(coordinate for point in candidate_points for coordinate in point)
-    )
-    output_count = len(original_points) + len(candidate_points)
-    output_buffer = (ctypes.c_uint32 * output_count)()
-    code = load_library().maximum_silhouette_boundary_distances_squared(
-        width,
-        height,
-        original_buffer,
-        len(original_points),
-        candidate_buffer,
-        len(candidate_points),
-        output_buffer,
-        output_count,
-    )
-    if code != 0:
-        raise RuntimeError(f"silhouette boundary distance failed with native error {code}")
-    return tuple(output_buffer)
 
 
 def _finite_rows(name: str, rows: Iterable[tuple[float, ...]], width: int) -> None:

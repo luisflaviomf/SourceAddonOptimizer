@@ -11,10 +11,6 @@ from typing import Iterable, Sequence
 from PIL import Image, ImageChops, ImageDraw
 
 from .contracts import RegionBudget, RegionMetrics, ValidationDecision
-from .meshopt_bridge import (
-    silhouette_boundary_distances_squared,
-    squared_euclidean_distance_field,
-)
 from .regions import SmdRegion
 from .smd import SmdTriangle, SmdVertex
 
@@ -88,6 +84,7 @@ class _SilhouetteReference:
     frame: tuple[float, float, float, float]
     mask: Image.Image
     boundary: tuple[tuple[int, int], ...]
+    boundary_tree: "_KdNode | None"
 
 
 @dataclass(frozen=True)
@@ -398,12 +395,39 @@ def _boundary_points(image: Image.Image) -> tuple[tuple[int, int], ...]:
     return tuple(points)
 
 
-def _squared_euclidean_distance_field(
-    width: int,
-    height: int,
-    points: Sequence[tuple[int, int]],
-) -> tuple[int, ...]:
-    return squared_euclidean_distance_field(width, height, points)
+@dataclass(frozen=True)
+class _KdNode:
+    point: tuple[int, int]
+    axis: int
+    left: "_KdNode | None"
+    right: "_KdNode | None"
+
+
+def _kd_tree(points: Sequence[tuple[int, int]], depth: int = 0) -> _KdNode | None:
+    if not points:
+        return None
+    axis = depth % 2
+    ordered = sorted(points, key=lambda point: (point[axis], point[1 - axis]))
+    midpoint = len(ordered) // 2
+    return _KdNode(
+        ordered[midpoint],
+        axis,
+        _kd_tree(ordered[:midpoint], depth + 1),
+        _kd_tree(ordered[midpoint + 1 :], depth + 1),
+    )
+
+
+def _kd_distance(point: tuple[int, int], node: _KdNode | None, best: float = math.inf) -> float:
+    if node is None:
+        return best
+    distance = (point[0] - node.point[0]) ** 2 + (point[1] - node.point[1]) ** 2
+    best = min(best, float(distance))
+    delta = point[node.axis] - node.point[node.axis]
+    near, far = (node.left, node.right) if delta < 0 else (node.right, node.left)
+    best = _kd_distance(point, near, best)
+    if delta * delta < best:
+        best = _kd_distance(point, far, best)
+    return best
 
 
 def _prepare_silhouettes(original: SmdRegion, contract: MetricContract) -> tuple[_SilhouetteReference, ...]:
@@ -420,13 +444,7 @@ def _prepare_silhouettes(original: SmdRegion, contract: MetricContract) -> tuple
         original_mask = _project_region(original, right, up, frame, contract.silhouette_resolution)
         boundary = _boundary_points(original_mask)
         references.append(
-            _SilhouetteReference(
-                right,
-                up,
-                frame,
-                original_mask,
-                boundary,
-            )
+            _SilhouetteReference(right, up, frame, original_mask, boundary, _kd_tree(boundary))
         )
     return tuple(references)
 
@@ -455,16 +473,9 @@ def _silhouette_metrics_prepared(
         if not item.boundary or not candidate_boundary:
             boundary_distances.append(float(reference.contract.silhouette_resolution))
             continue
-        resolution = reference.contract.silhouette_resolution
-        boundary_distances.extend(
-            math.sqrt(distance_squared)
-            for distance_squared in silhouette_boundary_distances_squared(
-                resolution,
-                resolution,
-                item.boundary,
-                candidate_boundary,
-            )
-        )
+        candidate_tree = _kd_tree(candidate_boundary)
+        boundary_distances.extend(math.sqrt(_kd_distance(point, candidate_tree)) for point in item.boundary)
+        boundary_distances.extend(math.sqrt(_kd_distance(point, item.boundary_tree)) for point in candidate_boundary)
     return worst_iou_loss, _percentile(boundary_distances, 0.95)
 
 

@@ -87,44 +87,7 @@ def make_disc(
     return graph.regions[0]
 
 
-def _brute_squared_distance(
-    width: int,
-    height: int,
-    points: tuple[tuple[int, int], ...],
-) -> tuple[int, ...]:
-    return tuple(
-        min((x - point_x) ** 2 + (y - point_y) ** 2 for point_x, point_y in points)
-        for y in range(height)
-        for x in range(width)
-    )
-
-
 class RegionMetricsTests(unittest.TestCase):
-    def test_squared_distance_field_matches_exact_brute_force(self) -> None:
-        for width, height, points in (
-            (7, 5, ((0, 0), (5, 1), (2, 4))),
-            (4, 6, ((3, 5),)),
-            (9, 3, ((0, 1), (8, 1))),
-        ):
-            with self.subTest(width=width, height=height, points=points):
-                self.assertEqual(
-                    metrics_module._squared_euclidean_distance_field(width, height, points),
-                    _brute_squared_distance(width, height, points),
-                )
-
-    def test_squared_distance_field_rejects_invalid_contract(self) -> None:
-        invalid_contracts = (
-            (0, 5, ((0, 0),)),
-            (5, 0, ((0, 0),)),
-            (5, 5, ()),
-            (5, 5, ((5, 0),)),
-            (5, 5, ((0, -1),)),
-        )
-        for width, height, points in invalid_contracts:
-            with self.subTest(width=width, height=height, points=points):
-                with self.assertRaises(ValueError):
-                    metrics_module._squared_euclidean_distance_field(width, height, points)
-
     def test_sampled_max_uses_p99_to_ignore_one_unstable_nearest_point(self) -> None:
         values = [0.0] * 99 + [100.0]
 
@@ -214,20 +177,6 @@ class RegionMetricsTests(unittest.TestCase):
 
         self.assertEqual(actual, expected)
         self.assertEqual(triangle_data.call_count, 3)
-
-    def test_silhouette_field_preserves_exact_metric_without_kd_queries(self) -> None:
-        original = make_disc(64)
-        candidate = make_disc(6)
-
-        with mock.patch(
-            "maximum_optimizer.metrics._kd_tree",
-            side_effect=AssertionError("silhouette path still used the KD tree"),
-            create=True,
-        ):
-            actual = measure_region(original, candidate, CONTRACT)
-
-        self.assertEqual(actual.silhouette_iou_loss, 0.17125728716750455)
-        self.assertEqual(actual.silhouette_boundary_p95_px, 15.0)
 
 
 if __name__ == "__main__":
