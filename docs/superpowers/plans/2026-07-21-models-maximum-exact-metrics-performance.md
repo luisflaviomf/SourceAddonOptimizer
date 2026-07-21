@@ -196,6 +196,77 @@ git add maximum_optimizer/metrics.py tests/maximum_optimizer/test_metrics.py
 git commit -m "perf(maximum): replace silhouette kd queries with exact edt"
 ```
 
+> **Fallback gate triggered 2026-07-21:** The exact Python EDT preserved every
+> semantic output, but measured 39.733s for adaptive simplification and 69.603s
+> total. A focused measurement attributed 0.075s of 0.377s (19.91%) to only two
+> Python EDT calls. At 16 fields per validated region, interpreter loops explain
+> the 12.616s stage regression. Execute Task 2A before repeating Task 3.
+
+### Task 2A: Move the exact transform into the existing native bridge
+
+**Files:**
+- Modify: `tests/maximum_optimizer/test_meshopt_bridge.py`
+- Modify: `maximum_optimizer/meshopt_bridge.py`
+- Modify: `maximum_optimizer/native/meshopt_bridge.cpp`
+- Modify: `maximum_optimizer/metrics.py`
+- Regenerate: `maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll`
+
+**Interfaces:**
+- Produces native export: `maximum_squared_euclidean_distance_field(...) -> int`
+- Produces Python wrapper: `squared_euclidean_distance_field(width, height, points) -> tuple[int, ...]`
+- Bumps the reviewed bridge ABI from 3 to 4.
+
+- [ ] **Step 1: Write a failing native bridge contract test**
+
+Import `squared_euclidean_distance_field` from `maximum_optimizer.meshopt_bridge`
+and compare asymmetric, edge, and single-point grids with the brute-force oracle.
+Also require `ValueError` for zero dimensions, empty points, and out-of-range points.
+
+- [ ] **Step 2: Run the focused test and verify RED**
+
+Run: `python -m unittest tests.maximum_optimizer.test_meshopt_bridge.MeshoptBridgeTests.test_native_squared_distance_field_matches_brute_force -v`
+
+Expected: import failure because the wrapper does not exist.
+
+- [ ] **Step 3: Implement and bind the exact native transform**
+
+Add an `extern "C"` x64 export taking width, height, packed uint32 point pairs,
+point count, a caller-owned uint32 output buffer, and output count. Validate every
+count, pointer, coordinate, and multiplication before writing. Apply the same
+integer-cost lower-envelope transform to rows then columns. Bind it through
+`ctypes`, return an immutable tuple, and update both ABI checks to 4.
+
+- [ ] **Step 4: Rebuild the bridge and verify the native contract**
+
+Run:
+
+```powershell
+.\maximum_optimizer\native\build.ps1
+python -m unittest tests.maximum_optimizer.test_meshopt_bridge.MeshoptBridgeTests.test_native_squared_distance_field_matches_brute_force -v
+python -m unittest tests.maximum_optimizer.test_meshopt_bridge -v
+```
+
+Expected: the exact native test and all bridge tests pass.
+
+- [ ] **Step 5: Route metrics through the native wrapper**
+
+Keep `_squared_euclidean_distance_field` as the metrics-local validation seam,
+but delegate valid inputs to the native bridge. Remove the production Python
+row/column transform after the native oracle tests are green.
+
+- [ ] **Step 6: Verify exact metrics and the focused speed hypothesis**
+
+Run the full metrics and Maximum suites. Repeat the 128-to-72 disc timing and
+require the two native EDT calls to use at most 0.019s, one quarter of the
+measured 0.075s Python time, without changing either silhouette value.
+
+- [ ] **Step 7: Commit the native fallback**
+
+```powershell
+git add maximum_optimizer/meshopt_bridge.py maximum_optimizer/metrics.py maximum_optimizer/native/meshopt_bridge.cpp maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll tests/maximum_optimizer/test_meshopt_bridge.py
+git commit -m "perf(maximum): run exact silhouette edt in native bridge"
+```
+
 ### Task 3: Real Pontiac equivalence and timing gate
 
 **Files:**
