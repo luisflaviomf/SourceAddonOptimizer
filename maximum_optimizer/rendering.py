@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 
 from PIL import Image, ImageChops, ImageFilter
@@ -27,6 +27,7 @@ class RenderRequest:
     blender: Path
     pose: str
     material_roots: tuple[Path, ...] = ()
+    material_directories: tuple[PurePosixPath, ...] = ()
     size: int = 1024
     rgb_mae_limit: float = 0.035
     edge_error_limit: float = 1.5
@@ -37,6 +38,10 @@ class RenderRequest:
         for name in ("original_region_smd", "candidate_region_smd", "camera_json", "output_dir", "blender", "render_script"):
             object.__setattr__(self, name, Path(getattr(self, name)))
         object.__setattr__(self, "material_roots", tuple(Path(path) for path in self.material_roots))
+        directories = tuple(PurePosixPath(str(path).replace("\\", "/").strip("/")) for path in self.material_directories)
+        if any(path.is_absolute() or ".." in path.parts for path in directories):
+            raise ValueError("material directories must be relative")
+        object.__setattr__(self, "material_directories", directories)
         if type(self.pose) is not str or not self.pose.strip():
             raise ValueError("render pose must be non-empty")
         if isinstance(self.size, bool) or not isinstance(self.size, int) or not 64 <= self.size <= 4096:
@@ -92,6 +97,8 @@ def build_render_command(request: RenderRequest) -> list[str]:
     ]
     for root in request.material_roots:
         command.extend(("--material-root", str(root)))
+    for directory in request.material_directories:
+        command.extend(("--material-directory", directory.as_posix()))
     return command
 
 
@@ -111,10 +118,14 @@ def _referenced_material_files(request: RenderRequest) -> Iterable[Path]:
     for material in sorted(materials, key=str.casefold):
         relative = Path(*material.split("/")).with_suffix(".vmt")
         for root in request.material_roots:
-            candidate = root / "materials" / relative
-            if candidate.is_file():
-                yield candidate
-                break
+            for directory in (PurePosixPath(),) + request.material_directories:
+                candidate = root / "materials" / Path(*directory.parts) / relative
+                if candidate.is_file():
+                    yield candidate
+                    break
+            else:
+                continue
+            break
 
 
 def _detect_blender_version(blender: Path) -> str:
@@ -147,6 +158,7 @@ def _cache_key(request: RenderRequest) -> str:
         "pose": request.pose,
         "size": request.size,
         "materials": material_hashes,
+        "material_directories": [path.as_posix() for path in request.material_directories],
         "blender_version": version,
         "render_script_sha256": _sha256_file(request.render_script),
         "rgb_mae_limit": request.rgb_mae_limit,

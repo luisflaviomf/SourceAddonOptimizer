@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import tempfile
 import unittest
 
@@ -46,6 +46,8 @@ class TargetedRenderingTests(unittest.TestCase):
                 blender=Path("C:/Blender/blender.exe"),
                 pose="reference",
                 blender_version="Blender 5.0.1",
+                material_roots=(root / "addon",),
+                material_directories=(PurePosixPath("models/Cars/Vehicle"),),
             )
             command = build_render_command(request)
 
@@ -54,6 +56,10 @@ class TargetedRenderingTests(unittest.TestCase):
         self.assertNotIn("--all-bodygroups", command)
         self.assertIn("--camera-json", command)
         self.assertEqual(command[command.index("--size") + 1], "1024")
+        self.assertEqual(
+            command[command.index("--material-directory") + 1],
+            "models/Cars/Vehicle",
+        )
 
     def test_identical_cached_render_is_reused_without_second_blender_run(self) -> None:
         calls = []

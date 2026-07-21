@@ -14,6 +14,7 @@ class QcOccurrence:
     directive: str
     line: int
     source_path: PurePosixPath
+    material_directories: tuple[PurePosixPath, ...] = ()
 
 
 def _tokens(line: str) -> tuple[str, ...]:
@@ -39,24 +40,51 @@ def scan_qc_occurrences(root: Path) -> tuple[QcOccurrence, ...]:
     occurrences: list[QcOccurrence] = []
     for qc_path in sorted(source_root.rglob("*.qc"), key=lambda path: path.as_posix().casefold()):
         relative_qc = PurePosixPath(qc_path.relative_to(source_root).as_posix())
+        lines = qc_path.read_text(encoding="utf-8", errors="strict").splitlines()
+        material_directories: list[PurePosixPath] = []
+        for raw in lines:
+            values = _tokens(raw)
+            if values and values[0].casefold() == "$cdmaterials" and len(values) >= 2:
+                normalized = values[1].replace("\\", "/").strip("/")
+                path = PurePosixPath(normalized)
+                if normalized and not path.is_absolute() and ".." not in path.parts and path not in material_directories:
+                    material_directories.append(path)
         bodygroup_depth: int | None = None
         brace_depth = 0
-        for line_number, raw in enumerate(qc_path.read_text(encoding="utf-8", errors="strict").splitlines(), start=1):
+        for line_number, raw in enumerate(lines, start=1):
             values = _tokens(raw)
             folded = values[0].casefold() if values else ""
             if folded == "$bodygroup":
                 bodygroup_depth = brace_depth
             if folded in {"$body", "$model"} and len(values) >= 3:
                 occurrences.append(
-                    QcOccurrence(relative_qc, folded, line_number, _source_path(source_root, qc_path, values[2]))
+                    QcOccurrence(
+                        relative_qc,
+                        folded,
+                        line_number,
+                        _source_path(source_root, qc_path, values[2]),
+                        tuple(material_directories),
+                    )
                 )
             elif bodygroup_depth is not None and folded == "studio" and len(values) >= 2:
                 occurrences.append(
-                    QcOccurrence(relative_qc, "$bodygroup/studio", line_number, _source_path(source_root, qc_path, values[1]))
+                    QcOccurrence(
+                        relative_qc,
+                        "$bodygroup/studio",
+                        line_number,
+                        _source_path(source_root, qc_path, values[1]),
+                        tuple(material_directories),
+                    )
                 )
             elif folded == "replacemodel" and len(values) >= 3:
                 occurrences.append(
-                    QcOccurrence(relative_qc, "$lod/replacemodel", line_number, _source_path(source_root, qc_path, values[2]))
+                    QcOccurrence(
+                        relative_qc,
+                        "$lod/replacemodel",
+                        line_number,
+                        _source_path(source_root, qc_path, values[2]),
+                        tuple(material_directories),
+                    )
                 )
             brace_depth += raw.count("{") - raw.count("}")
             if bodygroup_depth is not None and brace_depth <= bodygroup_depth and "}" in raw:

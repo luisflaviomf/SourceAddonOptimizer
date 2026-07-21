@@ -5,9 +5,17 @@ import math
 from pathlib import PurePosixPath
 import time
 import unittest
+from unittest import mock
 
 from maximum_optimizer.contracts import RegionBudget
-from maximum_optimizer.metrics import MetricContract, measure_region, validate_region
+from maximum_optimizer import metrics as metrics_module
+from maximum_optimizer.metrics import (
+    MetricContract,
+    measure_region,
+    measure_region_prepared,
+    prepare_region_reference,
+    validate_region,
+)
 from maximum_optimizer.qc_graph import QcOccurrence
 from maximum_optimizer.regions import SmdRegion, build_region_graph
 from maximum_optimizer.smd import SmdDocument, SmdInfluence, SmdTriangle, SmdVertex
@@ -147,6 +155,23 @@ class RegionMetricsTests(unittest.TestCase):
 
         self.assertEqual(first, second)
         self.assertLess(elapsed, 5.0)
+
+    def test_prepared_reference_is_exact_and_reused_between_candidates(self) -> None:
+        original = make_disc(64)
+        dense = make_disc(48)
+        lighter = make_disc(56)
+
+        expected = measure_region(original, dense, CONTRACT)
+        with mock.patch(
+            "maximum_optimizer.metrics._triangle_data",
+            wraps=metrics_module._triangle_data,
+        ) as triangle_data:
+            reference = prepare_region_reference(original, CONTRACT)
+            actual = measure_region_prepared(reference, dense)
+            measure_region_prepared(reference, lighter)
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(triangle_data.call_count, 3)
 
 
 if __name__ == "__main__":

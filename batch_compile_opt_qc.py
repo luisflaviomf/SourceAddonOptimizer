@@ -14,7 +14,9 @@ import hashlib
 import traceback
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
+import tempfile
 import threading
 from _thread import LockType
 
@@ -382,6 +384,51 @@ def _safe_log_id(qc: Path, idx: int, suffix: str) -> str:
     return f"{idx:05d}_{short}_{h}{suffix}"
 
 
+@contextmanager
+def _studiomdl_execution_paths(source_dir: Path, game_dir: Path):
+    """Give legacy StudioMDL short paths without copying either working tree."""
+    source_dir = source_dir.resolve()
+    game_dir = game_dir.resolve()
+    if os.name != "nt" or max(len(str(source_dir)), len(str(game_dir))) < 160:
+        yield source_dir, game_dir
+        return
+
+    alias_root = Path(tempfile.gettempdir()) / "gaco-mdl"
+    token = hashlib.sha1(
+        f"{os.getpid()}:{threading.get_ident()}:{time.time_ns()}".encode("ascii")
+    ).hexdigest()[:12]
+    container = alias_root / token
+    source_alias = container / "s"
+    game_alias = container / "g"
+    container.mkdir(parents=True, exist_ok=False)
+    aliases: list[Path] = []
+    try:
+        for alias, target in ((source_alias, source_dir), (game_alias, game_dir)):
+            completed = subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(target)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if completed.returncode != 0 or not alias.is_dir():
+                detail = (completed.stdout or "").strip()
+                raise RuntimeError(f"Could not create short StudioMDL path {alias}: {detail}")
+            aliases.append(alias)
+        yield source_alias, game_alias
+    finally:
+        for alias in reversed(aliases):
+            try:
+                os.rmdir(alias)
+            except FileNotFoundError:
+                pass
+        try:
+            container.rmdir()
+        except FileNotFoundError:
+            pass
+
+
 def _merge_job_outputs(job_dirs: list[Path], out_models_dir: Path):
     conflicts = []
     out_models_dir.mkdir(parents=True, exist_ok=True)
@@ -411,6 +458,28 @@ def run_studiomdl(
     verbose: bool,
     log_detail: str,
 ):
+    with _studiomdl_execution_paths(qc_path.parent, game_dir) as (source_dir, effective_game_dir):
+        return _run_studiomdl_with_paths(
+            qc_path,
+            source_dir,
+            studiomdl,
+            effective_game_dir,
+            log_path,
+            verbose=verbose,
+            log_detail=log_detail,
+        )
+
+
+def _run_studiomdl_with_paths(
+    qc_path: Path,
+    source_dir: Path,
+    studiomdl: Path,
+    game_dir: Path,
+    log_path: Path,
+    *,
+    verbose: bool,
+    log_detail: str,
+):
     cmd = [
         str(studiomdl),
         "-game",
@@ -425,7 +494,7 @@ def run_studiomdl(
 
     proc = subprocess.Popen(
         cmd,
-        cwd=str(qc_path.parent),
+        cwd=str(source_dir),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -438,7 +507,7 @@ def run_studiomdl(
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("w", encoding="utf-8", errors="replace") as log:
             log.write(f"QC: {qc_path}\n")
-            log.write(f"CWD: {qc_path.parent}\n")
+            log.write(f"CWD: {source_dir}\n")
             log.write("CMD: " + " ".join(cmd) + "\n\n")
 
             for line in proc.stdout:
@@ -462,7 +531,7 @@ def run_studiomdl(
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("w", encoding="utf-8", errors="replace") as log:
             log.write(f"QC: {qc_path}\n")
-            log.write(f"CWD: {qc_path.parent}\n")
+            log.write(f"CWD: {source_dir}\n")
             log.write("CMD: " + " ".join(cmd) + "\n\n")
             if error_lines:
                 log.write("[ERROR_LINES]\n")

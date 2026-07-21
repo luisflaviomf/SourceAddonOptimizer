@@ -296,6 +296,14 @@ def copy_family_input(addon_root: Path, family: BenchmarkFamily, destination: Pa
     if addon_json.is_file():
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copy2(addon_json, destination / "addon.json")
+    materials_root = source / "materials"
+    if materials_root.is_dir():
+        for path in sorted(materials_root.rglob("*"), key=lambda value: value.as_posix().casefold()):
+            if not path.is_file() or path.suffix.casefold() != ".vmt":
+                continue
+            target = destination / path.relative_to(source)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
 
 
 def _resolved_key(path: Path) -> str:

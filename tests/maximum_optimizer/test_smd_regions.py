@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
+import tempfile
 import unittest
 
 from maximum_optimizer.qc_graph import QcOccurrence, scan_qc_occurrences
@@ -48,6 +49,23 @@ class QcGraphTests(unittest.TestCase):
         self.assertEqual(occurrences[0].source_path, PurePosixPath("two_components.smd"))
         self.assertEqual(occurrences[1].directive, "$bodygroup/studio")
         self.assertEqual(occurrences[1].line, 5)
+
+    def test_qc_scanner_attaches_all_cdmaterials_to_earlier_occurrences(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "vehicle.qc").write_text(
+                '$body "body" "vehicle.smd"\n'
+                '$cdmaterials "models\\Cars\\Vehicle\\"\n'
+                '$cdmaterials "models/Cars/shared"\n',
+                encoding="utf-8",
+            )
+
+            occurrence = scan_qc_occurrences(root)[0]
+
+        self.assertEqual(
+            occurrence.material_directories,
+            (PurePosixPath("models/Cars/Vehicle"), PurePosixPath("models/Cars/shared")),
+        )
 
 
 class RegionGraphTests(unittest.TestCase):

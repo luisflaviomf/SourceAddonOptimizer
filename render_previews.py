@@ -38,6 +38,7 @@ def _parse_args(argv: list[str]):
     ap.add_argument("--camera-json", default=None, help="Optional deterministic camera description")
     ap.add_argument("--pose", default="reference", help="Pose identity recorded by the caller")
     ap.add_argument("--material-root", action="append", default=[], help="Addon/framework material root")
+    ap.add_argument("--material-directory", action="append", default=[], help="QC $cdmaterials directory")
     ap.add_argument(
         "--view-mode",
         choices=("preview", "clay", "uv", "normal", "silhouette"),
@@ -140,27 +141,28 @@ def _color_from_name(name: str):
     return (r, g, b, 1.0)
 
 
-def _material_semantics(name: str, material_roots: list[Path]):
+def _material_semantics(name: str, material_roots: list[Path], material_directories: list[Path]):
     relative = Path(*name.replace("\\", "/").removesuffix(".vmt").split("/")).with_suffix(".vmt")
     for root in material_roots:
-        candidate = root / "materials" / relative
-        if not candidate.is_file():
-            continue
-        text = candidate.read_text(encoding="utf-8", errors="replace")
-        text = "\n".join(line.split("//", 1)[0] for line in text.splitlines())
-        enabled = lambda key: re.search(rf'(?i)"?{re.escape(key)}"?\s+"?(?:1|true|yes)"?', text) is not None
-        return {
-            "transparent": enabled("$translucent") or enabled("$alphatest") or enabled("$additive"),
-            "refractive": re.search(r"(?i)refract", text) is not None,
-            "two_sided": enabled("$nocull"),
-        }
+        for directory in [Path()] + material_directories:
+            candidate = root / "materials" / directory / relative
+            if not candidate.is_file():
+                continue
+            text = candidate.read_text(encoding="utf-8", errors="replace")
+            text = "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+            enabled = lambda key: re.search(rf'(?i)"?{re.escape(key)}"?\s+"?(?:1|true|yes)"?', text) is not None
+            return {
+                "transparent": enabled("$translucent") or enabled("$alphatest") or enabled("$additive"),
+                "refractive": re.search(r"(?i)refract", text) is not None,
+                "two_sided": enabled("$nocull"),
+            }
     return {"transparent": False, "refractive": False, "two_sided": False}
 
 
-def _make_preview_material(name: str, material_roots: list[Path], view_mode: str = "preview"):
+def _make_preview_material(name: str, material_roots: list[Path], material_directories: list[Path], view_mode: str = "preview"):
     mat = bpy.data.materials.new(name=f"Preview_{name}")
     mat.use_nodes = True
-    semantics = _material_semantics(name, material_roots)
+    semantics = _material_semantics(name, material_roots, material_directories)
     if view_mode != "preview":
         semantics = {"transparent": False, "refractive": False, "two_sided": True}
     nodes = mat.node_tree.nodes
@@ -211,7 +213,7 @@ def _make_preview_material(name: str, material_roots: list[Path], view_mode: str
     return mat
 
 
-def _apply_preview_materials(objs, material_roots: list[Path], view_mode: str = "preview"):
+def _apply_preview_materials(objs, material_roots: list[Path], material_directories: list[Path], view_mode: str = "preview"):
     cache = {}
     for obj in objs:
         if not hasattr(obj.data, "materials"):
@@ -221,14 +223,14 @@ def _apply_preview_materials(objs, material_roots: list[Path], view_mode: str = 
                 key = mat.name if mat else f"{obj.name}_{idx}"
                 preview = cache.get(key)
                 if preview is None:
-                    preview = _make_preview_material(key, material_roots, view_mode)
+                    preview = _make_preview_material(key, material_roots, material_directories, view_mode)
                     cache[key] = preview
                 obj.data.materials[idx] = preview
         else:
             key = f"{obj.name}_mat"
             preview = cache.get(key)
             if preview is None:
-                preview = _make_preview_material(key, material_roots, view_mode)
+                preview = _make_preview_material(key, material_roots, material_directories, view_mode)
                 cache[key] = preview
             obj.data.materials.append(preview)
 
@@ -345,6 +347,7 @@ def _render_set(
     size: int,
     fit=None,
     material_roots=None,
+    material_directories=None,
     view_mode="preview",
 ):
     _clear_scene()
@@ -357,7 +360,7 @@ def _render_set(
     if not objs:
         raise RuntimeError(f"No mesh objects found for {label}: {src_paths}")
 
-    _apply_preview_materials(objs, material_roots or [], view_mode)
+    _apply_preview_materials(objs, material_roots or [], material_directories or [], view_mode)
     tris = _count_tris(objs)
 
     center, ortho_scale, dist = _fit_camera(objs, cam_obj, fit=fit)
@@ -388,6 +391,7 @@ def main():
     out_dir = Path(args.out).resolve()
     angles = [a.strip() for a in args.angles.split(",") if a.strip()]
     material_roots = [Path(value).resolve() for value in args.material_root]
+    material_directories = [Path(value.replace("\\", "/")) for value in args.material_directory]
     camera_fit = None
     if args.camera_json:
         camera_path = Path(args.camera_json).resolve()
@@ -419,10 +423,12 @@ def main():
 
     before_tris, fit = _render_set(
         "before", before, original_dir, angles, args.size, fit=camera_fit, material_roots=material_roots,
+        material_directories=material_directories,
         view_mode=args.view_mode
     )
     after_tris, _ = _render_set(
         "after", after, optimized_dir, angles, args.size, fit=fit, material_roots=material_roots,
+        material_directories=material_directories,
         view_mode=args.view_mode
     )
 

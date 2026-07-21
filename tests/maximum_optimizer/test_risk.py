@@ -147,6 +147,24 @@ class MaterialTests(unittest.TestCase):
         self.assertEqual(unresolved.resolver, "missing")
         self.assertLess(unresolved.confidence, resolved.confidence)
 
+    def test_bare_smd_material_resolves_through_qc_cdmaterials(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            addon = Path(raw) / "addon"
+            vmt = addon / "materials" / "models" / "Cars" / "Vehicle" / "glass.vmt"
+            vmt.parent.mkdir(parents=True)
+            vmt.write_text('"VertexLitGeneric" { "$translucent" "1" }', encoding="utf-8")
+
+            semantics = resolve_material_semantics(
+                "glass",
+                addon,
+                None,
+                (PurePosixPath("models/Cars/Vehicle"),),
+            )
+
+        self.assertTrue(semantics.translucent)
+        self.assertEqual(semantics.resolver, "addon")
+        self.assertEqual(semantics.confidence, 1.0)
+
 
 class RiskTests(unittest.TestCase):
     def test_uv_and_hard_normal_discontinuities_are_measured_at_either_edge_endpoint(self) -> None:

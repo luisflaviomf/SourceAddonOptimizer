@@ -6,11 +6,14 @@ import tempfile
 import unittest
 
 from maximum_optimizer.benchmarking import (
+    BenchmarkFamily,
     FamilyResult,
     aggregate_results,
     assert_isolated_lane_paths,
+    copy_family_input,
     load_corpus,
     scan_compiled_models,
+    tree_fingerprint,
     verify_family_input,
 )
 
@@ -85,6 +88,28 @@ class BenchmarkingTests(unittest.TestCase):
             assert_isolated_lane_paths(root / "input", root / "work", root / "output")
             with self.assertRaisesRegex(ValueError, "overlap"):
                 assert_isolated_lane_paths(root / "input", root / "input" / "work", root / "output")
+
+    def test_family_fixture_includes_small_vmt_resolver_without_changing_frozen_model_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            model = source / "models" / "cars" / "wheel.mdl"
+            material = source / "materials" / "models" / "cars" / "rubber.vmt"
+            model.parent.mkdir(parents=True)
+            material.parent.mkdir(parents=True)
+            model.write_bytes(b"model")
+            material.write_text('"VertexLitGeneric" {}\n', encoding="utf-8")
+            count, total, digest = tree_fingerprint(source, (model,))
+            family = BenchmarkFamily(
+                "wheel", "development", ("models/cars/wheel",), ("wheels_tires",),
+                count, total, digest,
+            )
+            destination = root / "fixture"
+
+            copy_family_input(source, family, destination)
+
+            self.assertTrue((destination / "models" / "cars" / "wheel.mdl").is_file())
+            self.assertTrue((destination / "materials" / "models" / "cars" / "rubber.vmt").is_file())
 
 
 if __name__ == "__main__":

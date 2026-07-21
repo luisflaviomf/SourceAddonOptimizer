@@ -77,6 +77,27 @@ class _Nearest:
     triangle_index: int
 
 
+@dataclass(frozen=True)
+class _SilhouetteReference:
+    right: Vector3
+    up: Vector3
+    frame: tuple[float, float, float, float]
+    mask: Image.Image
+    boundary: tuple[tuple[int, int], ...]
+    boundary_tree: "_KdNode | None"
+
+
+@dataclass(frozen=True)
+class PreparedRegionReference:
+    original: SmdRegion
+    contract: MetricContract
+    diagonal: float
+    triangle_data: tuple[_TriangleData, ...]
+    bvh: _BvhNode
+    samples: tuple[_Sample, ...]
+    silhouettes: tuple[_SilhouetteReference, ...]
+
+
 def _add(left: Vector3, right: Vector3) -> Vector3:
     return tuple(left[index] + right[index] for index in range(3))  # type: ignore[return-value]
 
@@ -409,9 +430,8 @@ def _kd_distance(point: tuple[int, int], node: _KdNode | None, best: float = mat
     return best
 
 
-def _silhouette_metrics(original: SmdRegion, candidate: SmdRegion, contract: MetricContract) -> tuple[float, float]:
-    worst_iou_loss = 0.0
-    boundary_distances: list[float] = []
+def _prepare_silhouettes(original: SmdRegion, contract: MetricContract) -> tuple[_SilhouetteReference, ...]:
+    references = []
     for view in contract.canonical_views:
         right, up = _project_basis(view)
         original_projection = tuple((_dot(vertex.position, right), _dot(vertex.position, up)) for triangle in original.triangles for vertex in triangle.vertices)
@@ -422,22 +442,40 @@ def _silhouette_metrics(original: SmdRegion, candidate: SmdRegion, contract: Met
         padding = max(maximum_x - minimum_x, maximum_y - minimum_y, 1e-6) * 0.05
         frame = (minimum_x - padding, maximum_x + padding, minimum_y - padding, maximum_y + padding)
         original_mask = _project_region(original, right, up, frame, contract.silhouette_resolution)
-        candidate_mask = _project_region(candidate, right, up, frame, contract.silhouette_resolution)
-        intersection = ImageChops.multiply(original_mask, candidate_mask).histogram()[255]
-        union = ImageChops.lighter(original_mask, candidate_mask).histogram()[255]
+        boundary = _boundary_points(original_mask)
+        references.append(
+            _SilhouetteReference(right, up, frame, original_mask, boundary, _kd_tree(boundary))
+        )
+    return tuple(references)
+
+
+def _silhouette_metrics_prepared(
+    reference: PreparedRegionReference,
+    candidate: SmdRegion,
+) -> tuple[float, float]:
+    worst_iou_loss = 0.0
+    boundary_distances: list[float] = []
+    for item in reference.silhouettes:
+        candidate_mask = _project_region(
+            candidate,
+            item.right,
+            item.up,
+            item.frame,
+            reference.contract.silhouette_resolution,
+        )
+        intersection = ImageChops.multiply(item.mask, candidate_mask).histogram()[255]
+        union = ImageChops.lighter(item.mask, candidate_mask).histogram()[255]
         iou_loss = 0.0 if union == 0 else 1.0 - intersection / union
         worst_iou_loss = max(worst_iou_loss, iou_loss)
-        original_boundary = _boundary_points(original_mask)
         candidate_boundary = _boundary_points(candidate_mask)
-        if not original_boundary and not candidate_boundary:
+        if not item.boundary and not candidate_boundary:
             continue
-        if not original_boundary or not candidate_boundary:
-            boundary_distances.append(float(contract.silhouette_resolution))
+        if not item.boundary or not candidate_boundary:
+            boundary_distances.append(float(reference.contract.silhouette_resolution))
             continue
-        original_tree = _kd_tree(original_boundary)
         candidate_tree = _kd_tree(candidate_boundary)
-        boundary_distances.extend(math.sqrt(_kd_distance(point, candidate_tree)) for point in original_boundary)
-        boundary_distances.extend(math.sqrt(_kd_distance(point, original_tree)) for point in candidate_boundary)
+        boundary_distances.extend(math.sqrt(_kd_distance(point, candidate_tree)) for point in item.boundary)
+        boundary_distances.extend(math.sqrt(_kd_distance(point, item.boundary_tree)) for point in candidate_boundary)
     return worst_iou_loss, _percentile(boundary_distances, 0.95)
 
 
@@ -460,24 +498,38 @@ def _validate_structure(original: SmdRegion, candidate: SmdRegion) -> None:
         raise ValueError("candidate introduces a new bone")
 
 
-def measure_region(original: SmdRegion, candidate: SmdRegion, contract: MetricContract) -> RegionMetrics:
-    _validate_structure(original, candidate)
+def prepare_region_reference(original: SmdRegion, contract: MetricContract) -> PreparedRegionReference:
+    _validate_structure(original, original)
     bounds_min = original.bounds_min
     bounds_max = original.bounds_max
     diagonal = max(_length(_sub(bounds_max, bounds_min)), 1e-9)
     original_data = _triangle_data(original)
-    candidate_data = _triangle_data(candidate)
     original_bvh = _build_bvh(original_data, tuple(range(len(original_data))))
+    return PreparedRegionReference(
+        original,
+        contract,
+        diagonal,
+        original_data,
+        original_bvh,
+        _samples(original, contract.sample_count, contract.seed + ":original"),
+        _prepare_silhouettes(original, contract),
+    )
+
+
+def measure_region_prepared(reference: PreparedRegionReference, candidate: SmdRegion) -> RegionMetrics:
+    original = reference.original
+    contract = reference.contract
+    _validate_structure(original, candidate)
+    candidate_data = _triangle_data(candidate)
     candidate_bvh = _build_bvh(candidate_data, tuple(range(len(candidate_data))))
-    original_samples = _samples(original, contract.sample_count, contract.seed + ":original")
     candidate_samples = _samples(candidate, contract.sample_count, contract.seed + ":candidate")
-    forward = _direction_metrics(original_samples, candidate_data, candidate_bvh, contract.poses, diagonal)
-    reverse = _direction_metrics(candidate_samples, original_data, original_bvh, contract.poses, diagonal)
+    forward = _direction_metrics(reference.samples, candidate_data, candidate_bvh, contract.poses, reference.diagonal)
+    reverse = _direction_metrics(candidate_samples, reference.triangle_data, reference.bvh, contract.poses, reference.diagonal)
     surfaces = forward[0] + reverse[0]
     normals = forward[1] + reverse[1]
     uvs = forward[2] + reverse[2]
     skinning = forward[3] + reverse[3]
-    silhouette_iou, silhouette_boundary = _silhouette_metrics(original, candidate, contract)
+    silhouette_iou, silhouette_boundary = _silhouette_metrics_prepared(reference, candidate)
     return RegionMetrics(
         surface_p95=_clean(_percentile(surfaces, 0.95)),
         surface_max=_clean(max(surfaces, default=0.0)),
@@ -490,6 +542,10 @@ def measure_region(original: SmdRegion, candidate: SmdRegion, contract: MetricCo
         skinning_p95=_clean(_percentile(skinning, 0.95)),
         skinning_max=_clean(max(skinning, default=0.0)),
     )
+
+
+def measure_region(original: SmdRegion, candidate: SmdRegion, contract: MetricContract) -> RegionMetrics:
+    return measure_region_prepared(prepare_region_reference(original, contract), candidate)
 
 
 def validate_region(metrics: RegionMetrics, budget: RegionBudget) -> ValidationDecision:

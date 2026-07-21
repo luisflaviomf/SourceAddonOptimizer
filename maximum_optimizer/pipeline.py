@@ -17,7 +17,14 @@ from .contracts import MaximumProfile, RegionBudget, RegionKey, ValidationDecisi
 from .materials import MaterialSemantics, resolve_material_semantics
 from .mesh_attributes import classify_position_topology
 from .meshopt_bridge import MeshInput, SimplifyOptions, simplify_mesh
-from .metrics import MetricContract, measure_region, validate_region
+from .metrics import (
+    MetricContract,
+    PreparedRegionReference,
+    measure_region,
+    measure_region_prepared,
+    prepare_region_reference,
+    validate_region,
+)
 from .qc_graph import QcOccurrence, scan_qc_occurrences
 from .regions import RegionPair, SmdRegion, build_region_graph, correspond_graphs
 from .rendering import RenderEvidence, RenderRequest, requires_targeted_render
@@ -444,6 +451,7 @@ def _write_render_request(
         options.blender,
         "reference",
         material_roots=material_roots,
+        material_directories=inventory.occurrence.material_directories,
     )
 
 
@@ -489,21 +497,25 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
                     pair.original.material,
                     options.addon_root,
                     options.framework_resolver_root,
+                    inventory.occurrence.material_directories,
                 )
                 features = measure_risk(pair.original, semantics, _VIEWS)
                 budget = budget_for_risk(options.profile, features)
+                metric_reference: PreparedRegionReference | None = None
 
                 def validator(candidate: SmdRegion) -> ValidationDecision:
+                    nonlocal metric_reference
                     try:
                         if validate_injected is not None:
                             return validate_injected(pair.original, candidate, budget, pair.original.key)
-                        return _default_validate_candidate(
-                            pair.original,
-                            candidate,
-                            budget,
-                            pair.original.key,
-                            options.profile,
-                        )
+                        if pair.original.triangles == candidate.triangles:
+                            return ValidationDecision(True, (), 1.0)
+                        if metric_reference is None:
+                            metric_reference = prepare_region_reference(
+                                pair.original,
+                                _pose_contract(pair.original, options.profile),
+                            )
+                        return validate_region(measure_region_prepared(metric_reference, candidate), budget)
                     except Exception:
                         return ValidationDecision(False, ("validator-error",), 0.0)
 

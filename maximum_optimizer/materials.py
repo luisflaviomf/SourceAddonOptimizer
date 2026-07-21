@@ -78,13 +78,17 @@ def resolve_material_semantics(
     material: str,
     addon_root: Path,
     framework_root: Path | None,
+    material_directories: tuple[PurePosixPath, ...] = (),
 ) -> MaterialSemantics:
     relative = _canonical_material(material)
     roots: tuple[tuple[ResolverKind, Path], ...] = (("addon", Path(addon_root)),) + (
         (("framework", Path(framework_root)),) if framework_root is not None else ()
     )
     for resolver, root in roots:
-        path = root / "materials" / Path(*relative.parts).with_suffix(".vmt")
-        if path.is_file():
-            return _read_semantics(path, resolver, relative)
+        candidates = (PurePosixPath(),) + tuple(material_directories)
+        for directory in candidates:
+            candidate_relative = PurePosixPath(*directory.parts, *relative.parts)
+            path = root / "materials" / Path(*candidate_relative.parts).with_suffix(".vmt")
+            if path.is_file():
+                return _read_semantics(path, resolver, candidate_relative)
     return MaterialSemantics()
