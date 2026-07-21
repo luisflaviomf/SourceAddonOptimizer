@@ -117,6 +117,8 @@ def optimize_region(
             cache.put(key, candidate)
         else:
             cache_hits += 1
+        if len(candidate.triangles) >= len(base.triangles):
+            continue
         decision = validate(candidate)
         if decision.passed:
             return RegionDecision(

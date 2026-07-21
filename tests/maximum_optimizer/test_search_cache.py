@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 import tempfile
 import unittest
@@ -24,6 +25,7 @@ NORMAL = build_region_graph(
     parse_smd((FIXTURES / "two_components_OPT.smd").read_text(encoding="utf-8")),
     OCCURRENCE,
 ).regions[1]
+REDUCED = replace(NORMAL, triangles=NORMAL.triangles[:1])
 PASS = ValidationDecision(True, (), 0.5)
 NEAR_PASS = ValidationDecision(True, (), 0.10)
 FAIL = ValidationDecision(False, ("silhouette",), 0.0)
@@ -101,7 +103,7 @@ class AdaptiveSearchTests(unittest.TestCase):
             cache = FileRegionCache(Path(raw))
             body = optimize_region(
                 request(normal_validation=PASS, region_suffix="body"),
-                lambda _region, _ratio: NORMAL,
+                lambda _region, _ratio: REDUCED,
                 lambda _candidate: PASS,
                 cache,
             )
@@ -114,7 +116,7 @@ class AdaptiveSearchTests(unittest.TestCase):
 
         self.assertEqual(body.representation, "aggressive")
         self.assertEqual(wheel.representation, "original")
-        self.assertIs(body.selected, NORMAL)
+        self.assertIs(body.selected, REDUCED)
         self.assertIs(wheel.selected, ORIGINAL)
 
     def test_near_limit_normal_uses_zero_simplifier_evaluations(self) -> None:
@@ -129,13 +131,25 @@ class AdaptiveSearchTests(unittest.TestCase):
         self.assertEqual(decision.representation, "normal")
         self.assertEqual(decision.evaluations, 0)
 
+    def test_no_op_simplifier_result_is_not_reported_as_aggressive(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            decision = optimize_region(
+                request(normal_validation=PASS),
+                lambda _region, _ratio: NORMAL,
+                lambda _candidate: PASS,
+                FileRegionCache(Path(raw)),
+            )
+
+        self.assertEqual(decision.representation, "normal")
+        self.assertIs(decision.selected, NORMAL)
+
     def test_cache_hit_skips_native_evaluation_and_is_profile_versioned(self) -> None:
         calls = []
         with tempfile.TemporaryDirectory() as raw:
             cache = FileRegionCache(Path(raw))
             first = optimize_region(
                 request(normal_validation=PASS),
-                lambda _region, ratio: calls.append(ratio) or NORMAL,
+                lambda _region, ratio: calls.append(ratio) or REDUCED,
                 lambda _candidate: PASS,
                 cache,
             )
@@ -147,7 +161,7 @@ class AdaptiveSearchTests(unittest.TestCase):
             )
             changed_engine = optimize_region(
                 request(normal_validation=PASS, engine_version=10201),
-                lambda _region, ratio: calls.append(ratio) or NORMAL,
+                lambda _region, ratio: calls.append(ratio) or REDUCED,
                 lambda _candidate: PASS,
                 cache,
             )

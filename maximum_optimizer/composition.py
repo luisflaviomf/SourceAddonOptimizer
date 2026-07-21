@@ -72,6 +72,8 @@ def compose_source_tree(
     normal_tree: Path,
     replacements: tuple[RegionReplacement, ...],
     output_tree: Path,
+    *,
+    normal_source_fallbacks: tuple[PurePosixPath, ...] = (),
 ) -> CompositionResult:
     original_root = Path(original_tree).resolve()
     normal_root = Path(normal_tree).resolve()
@@ -85,10 +87,23 @@ def compose_source_tree(
     by_source: dict[PurePosixPath, list[RegionReplacement]] = {}
     for replacement in replacements:
         by_source.setdefault(replacement.source_path, []).append(replacement)
+    fallback_sources = tuple(sorted(set(normal_source_fallbacks), key=lambda path: path.as_posix().casefold()))
+    if any(path in by_source for path in fallback_sources):
+        raise ValueError("a source cannot have regional and whole-source replacements")
     temporary = Path(tempfile.mkdtemp(prefix=f".{output_root.name}.", dir=output_root.parent)).resolve()
     try:
         shutil.copytree(original_root, temporary, dirs_exist_ok=True)
         sources: dict[PurePosixPath, Path] = {}
+        for relative in fallback_sources:
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError("normal fallback source must be relative")
+            normal_source = normal_root / Path(*relative.parts)
+            if not normal_source.is_file():
+                raise FileNotFoundError(relative.as_posix())
+            destination = temporary / Path(*relative.parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(normal_source, destination)
+            sources[relative] = output_root / Path(*relative.parts)
         for relative, source_replacements in sorted(by_source.items(), key=lambda item: item[0].as_posix().casefold()):
             original_source = original_root / Path(*relative.parts)
             normal_source = normal_root / Path(*relative.parts)
