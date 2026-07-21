@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("VtfMaximumLab")]
 [assembly: InternalsVisibleTo("VtfMaximumLab.Tests")]
+[assembly: InternalsVisibleTo("GmodAddonOptimizer.ContractTests")]
 
 [assembly: ThemeInfo(
     ResourceDictionaryLocation.None, //where theme specific resource dictionaries are located

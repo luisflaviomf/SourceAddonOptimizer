@@ -16,6 +16,7 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal int? BatchAddonIndex { get; init; }
         internal int? BatchAddonTotal { get; init; }
         internal string? BatchAddonName { get; init; }
+        internal string? MaximumStage { get; init; }
         internal bool IsPackaging { get; init; }
         internal bool IsFinalize { get; init; }
         internal bool IsItemCompletion { get; init; }
@@ -31,13 +32,37 @@ namespace GmodAddonCompressor.Systems.Optimizer
         private readonly Regex _batchAddon = new Regex(@"^== Batch addon (\d+)/(\d+): (.+) ==$", RegexOptions.Compiled);
         private readonly Regex _output = new Regex(@"^Output addon:\s+(.+)$", RegexOptions.Compiled);
         private readonly Regex _workDir = new Regex(@"^Work dir:\s+(.+)$", RegexOptions.Compiled);
+        private readonly Regex _maximum = new Regex(
+            @"^\[MAXIMUM\] stage=(normal-seed|regional-inventory|adaptive-simplification|targeted-validation|compile-fallback|packaging) current=(\d+) total=(\d+) detail=(.*)$",
+            RegexOptions.Compiled);
 
         internal SourceAddonOptimizerProgressUpdate? Parse(string line)
         {
             if (string.IsNullOrWhiteSpace(line))
                 return null;
 
-            var match = _step.Match(line);
+            var match = _maximum.Match(line);
+            if (match.Success)
+            {
+                if (!int.TryParse(match.Groups[2].Value, out int current) ||
+                    !int.TryParse(match.Groups[3].Value, out int total) ||
+                    current < 0 || total <= 0 || current > total)
+                {
+                    return null;
+                }
+
+                return new SourceAddonOptimizerProgressUpdate
+                {
+                    MaximumStage = match.Groups[1].Value,
+                    Phase = $"Maximum: {match.Groups[1].Value}",
+                    ItemIndex = current,
+                    ItemTotal = total,
+                    ItemType = "MAXIMUM",
+                    ItemPath = match.Groups[4].Value
+                };
+            }
+
+            match = _step.Match(line);
             if (match.Success)
             {
                 return new SourceAddonOptimizerProgressUpdate

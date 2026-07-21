@@ -752,7 +752,10 @@
                                                   Margin="0,0,16,0"
                                                   IsChecked="{Binding OptimizerModeNormalChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         <CheckBox Content="Fidelity"
+                                                  Margin="0,0,16,0"
                                                   IsChecked="{Binding OptimizerModeFidelityChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        <CheckBox Content="Maximum"
+                                                  IsChecked="{Binding OptimizerModeMaximumChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                     </StackPanel>
                                     <TextBlock Style="{StaticResource MutedText}"
                                                Margin="0,8,0,0"

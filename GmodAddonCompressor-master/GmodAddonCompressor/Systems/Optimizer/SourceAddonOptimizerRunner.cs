@@ -1,6 +1,5 @@
 using System;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -68,119 +67,8 @@ namespace GmodAddonCompressor.Systems.Optimizer
                 WorkingDirectory = Path.GetDirectoryName(options.WorkerExePath) ?? string.Empty
             };
 
-            startInfo.ArgumentList.Add(options.AddonPath);
-            startInfo.ArgumentList.Add("--work");
-            startInfo.ArgumentList.Add(options.WorkDir);
-
-            if (!string.IsNullOrWhiteSpace(options.Suffix))
-            {
-                startInfo.ArgumentList.Add("--suffix");
-                startInfo.ArgumentList.Add(options.Suffix);
-            }
-
-            if (!string.IsNullOrWhiteSpace(options.OptimizerMode))
-            {
-                startInfo.ArgumentList.Add("--optimizer-mode");
-                startInfo.ArgumentList.Add(options.OptimizerMode);
-            }
-
-            if (!string.IsNullOrWhiteSpace(options.BlenderPath))
-            {
-                startInfo.ArgumentList.Add("--blender");
-                startInfo.ArgumentList.Add(options.BlenderPath);
-            }
-
-            if (!string.IsNullOrWhiteSpace(options.StudioMdlPath))
-            {
-                startInfo.ArgumentList.Add("--studiomdl");
-                startInfo.ArgumentList.Add(options.StudioMdlPath);
-            }
-
-            if (options.Ratio.HasValue)
-            {
-                startInfo.ArgumentList.Add("--ratio");
-                startInfo.ArgumentList.Add(options.Ratio.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (options.Merge.HasValue)
-            {
-                startInfo.ArgumentList.Add("--merge");
-                startInfo.ArgumentList.Add(options.Merge.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (options.AutoSmooth.HasValue)
-            {
-                startInfo.ArgumentList.Add("--autosmooth");
-                startInfo.ArgumentList.Add(options.AutoSmooth.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (options.UsePlanar)
-            {
-                startInfo.ArgumentList.Add("--use-planar");
-
-                if (options.PlanarAngle.HasValue)
-                {
-                    startInfo.ArgumentList.Add("--planar-angle");
-                    startInfo.ArgumentList.Add(options.PlanarAngle.Value.ToString(CultureInfo.InvariantCulture));
-                }
-            }
-
-            if (options.ExperimentalGroundPolicy)
-                startInfo.ArgumentList.Add("--experimental-ground-policy");
-
-            if (options.ExperimentalRoundPartsPolicy)
-                startInfo.ArgumentList.Add("--experimental-round-parts-policy");
-
-            if (options.ExperimentalSteerTurnBasisFix)
-                startInfo.ArgumentList.Add("--experimental-steer-turn-basis-fix");
-
-            if (!string.IsNullOrWhiteSpace(options.Format))
-            {
-                startInfo.ArgumentList.Add("--format");
-                startInfo.ArgumentList.Add(options.Format);
-            }
-
-            if (options.Jobs.HasValue)
-            {
-                startInfo.ArgumentList.Add("--jobs");
-                startInfo.ArgumentList.Add(options.Jobs.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (options.DecompileJobs.HasValue)
-            {
-                startInfo.ArgumentList.Add("--decompile-jobs");
-                startInfo.ArgumentList.Add(options.DecompileJobs.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (options.CompileJobs.HasValue)
-            {
-                startInfo.ArgumentList.Add("--compile-jobs");
-                startInfo.ArgumentList.Add(options.CompileJobs.Value.ToString(CultureInfo.InvariantCulture));
-            }
-
-            if (options.Strict)
-                startInfo.ArgumentList.Add("--strict");
-
-            if (options.ResumeOpt)
-                startInfo.ArgumentList.Add("--resume-opt");
-
-            if (options.Overwrite)
-                startInfo.ArgumentList.Add("--overwrite");
-
-            if (options.OverwriteWork)
-                startInfo.ArgumentList.Add("--overwrite-work");
-
-            if (!options.RestoreSkins)
-                startInfo.ArgumentList.Add("--no-restore-skins");
-
-            if (options.CompileVerbose)
-                startInfo.ArgumentList.Add("--compile-verbose");
-
-            if (options.CleanupWorkModelArtifacts)
-                startInfo.ArgumentList.Add("--cleanup-work-model-artifacts");
-
-            if (options.SingleAddonOnly)
-                startInfo.ArgumentList.Add("--single-addon-only");
+            foreach (string argument in SourceAddonOptimizerCommandBuilder.BuildArguments(options))
+                startInfo.ArgumentList.Add(argument);
 
             using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
 

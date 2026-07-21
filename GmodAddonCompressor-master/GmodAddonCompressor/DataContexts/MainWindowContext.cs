@@ -167,7 +167,8 @@ namespace GmodAddonCompressor.DataContexts
         private string[] _optimizerModeList = new string[]
         {
             "Normal",
-            "Fidelity"
+            "Fidelity",
+            "Maximum"
         };
         private string[] _compressModeList = new string[]
         {
@@ -240,6 +241,7 @@ namespace GmodAddonCompressor.DataContexts
 
         public bool OptimizerModeIsNormal => _optimizerModeIndex == 0;
         public bool OptimizerModeIsFidelity => _optimizerModeIndex == 1;
+        public bool OptimizerModeIsMaximum => _optimizerModeIndex == 2;
         public bool OptimizerModeNormalChecked
         {
             get { return _optimizerModeIndex == 0; }
@@ -272,8 +274,26 @@ namespace GmodAddonCompressor.DataContexts
             }
         }
 
+        public bool OptimizerModeMaximumChecked
+        {
+            get { return _optimizerModeIndex == 2; }
+            set
+            {
+                if (value)
+                {
+                    OptimizerModeIndex = 2;
+                    return;
+                }
+
+                if (_optimizerModeIndex == 2)
+                    OnPropertyChanged();
+            }
+        }
+
         public string OptimizerModeDescriptionText =>
-            OptimizerModeIsFidelity
+            OptimizerModeIsMaximum
+                ? "Maximum starts from the aggressive Normal result, validates curvature, silhouette, normals, UVs, materials and skinning by region, then restores only regions that fail. Blender renders are reserved for uncertain regions."
+                : OptimizerModeIsFidelity
                 ? "Fidelity mode keeps the current outer run settings such as ratio/jobs, but routes optimization through the validated sandbox stack: selective ground policy, round-parts wheel handling, and the steer turn-basis fix."
                 : "Normal mode keeps the current Models pipeline exactly as it works today. The existing presets, tuning fields, and opt-in experimental toggles behave the same as before.";
 
@@ -1195,8 +1215,10 @@ namespace GmodAddonCompressor.DataContexts
         {
             OnPropertyChanged(nameof(OptimizerModeIsNormal));
             OnPropertyChanged(nameof(OptimizerModeIsFidelity));
+            OnPropertyChanged(nameof(OptimizerModeIsMaximum));
             OnPropertyChanged(nameof(OptimizerModeNormalChecked));
             OnPropertyChanged(nameof(OptimizerModeFidelityChecked));
+            OnPropertyChanged(nameof(OptimizerModeMaximumChecked));
             OnPropertyChanged(nameof(OptimizerModeDescriptionText));
         }
 

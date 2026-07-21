@@ -121,6 +121,7 @@ namespace GmodAddonCompressor
         private const int PresetAggressiveIndex = 1;
         private const int PresetCustomIndex = 2;
         private const int OptimizerModeFidelityIndex = 1;
+        private const int OptimizerModeMaximumIndex = 2;
 
         private enum PipelineStage
         {
@@ -2307,36 +2308,7 @@ namespace GmodAddonCompressor
             _context.ModelsProgressValue = 0;
             _context.UnlockedUI = false;
 
-            var options = new SourceAddonOptimizerRunOptions
-            {
-                WorkerExePath = ToolPaths.WorkerExePath,
-                AddonPath = addonDirectoryPath,
-                WorkDir = _modelsWorkDir,
-                Suffix = _context.OptimizerSuffix,
-                OptimizerMode = GetOptimizerModeArgument(),
-                BlenderPath = string.IsNullOrWhiteSpace(_context.BlenderPath) ? null : _context.BlenderPath.Trim(),
-                StudioMdlPath = string.IsNullOrWhiteSpace(_context.StudioMdlPath) ? null : _context.StudioMdlPath.Trim(),
-                Ratio = _context.OptimizerRatio,
-                Merge = _context.OptimizerMerge,
-                AutoSmooth = _context.OptimizerAutoSmooth,
-                UsePlanar = _context.OptimizerUsePlanar,
-                PlanarAngle = _context.OptimizerPlanarAngle,
-                ExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
-                ExperimentalRoundPartsPolicy = _context.OptimizerUseExperimentalRoundPartsPolicy,
-                ExperimentalSteerTurnBasisFix = _context.OptimizerUseExperimentalSteerTurnBasisFix,
-                Format = GetOptimizerFormat(),
-                Jobs = _context.OptimizerJobs,
-                DecompileJobs = _context.OptimizerDecompileJobs,
-                CompileJobs = _context.OptimizerCompileJobs,
-                Strict = _context.OptimizerStrict,
-                ResumeOpt = _context.OptimizerResumeOpt,
-                Overwrite = _context.OptimizerOverwrite,
-                OverwriteWork = _context.OptimizerOverwriteWork,
-                RestoreSkins = _context.OptimizerRestoreSkins,
-                CompileVerbose = _context.OptimizerCompileVerbose,
-                CleanupWorkModelArtifacts = _context.OptimizerCleanupWorkModelArtifacts,
-                SingleAddonOnly = false
-            };
+            var options = BuildSourceAddonOptimizerOptions(addonDirectoryPath, _modelsWorkDir, false);
 
             _optimizerCts?.Cancel();
             _optimizerCts = new CancellationTokenSource();
@@ -2498,36 +2470,8 @@ namespace GmodAddonCompressor
                 _context.PipelineStatusText = "Models Phase: Running";
                 _context.PipelineSizeReportText = "Size report: computing (models before)...";
                 _pipelineModelsSizeBefore = await TryScanSizeAsync(addonDirectoryPath, token);
-                var options = new SourceAddonOptimizerRunOptions
-                {
-                    WorkerExePath = ToolPaths.WorkerExePath,
-                    AddonPath = addonDirectoryPath,
-                    WorkDir = _modelsWorkDir ?? ToolPaths.GetWorkDir(addonDirectoryPath, _context.OptimizerSuffix),
-                    Suffix = _context.OptimizerSuffix,
-                    OptimizerMode = GetOptimizerModeArgument(),
-                    BlenderPath = string.IsNullOrWhiteSpace(_context.BlenderPath) ? null : _context.BlenderPath.Trim(),
-                    StudioMdlPath = string.IsNullOrWhiteSpace(_context.StudioMdlPath) ? null : _context.StudioMdlPath.Trim(),
-                    Ratio = _context.OptimizerRatio,
-                    Merge = _context.OptimizerMerge,
-                    AutoSmooth = _context.OptimizerAutoSmooth,
-                    UsePlanar = _context.OptimizerUsePlanar,
-                    PlanarAngle = _context.OptimizerPlanarAngle,
-                    ExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
-                    ExperimentalRoundPartsPolicy = _context.OptimizerUseExperimentalRoundPartsPolicy,
-                    ExperimentalSteerTurnBasisFix = _context.OptimizerUseExperimentalSteerTurnBasisFix,
-                    Format = GetOptimizerFormat(),
-                    Jobs = _context.OptimizerJobs,
-                    DecompileJobs = _context.OptimizerDecompileJobs,
-                    CompileJobs = _context.OptimizerCompileJobs,
-                    Strict = _context.OptimizerStrict,
-                    ResumeOpt = _context.OptimizerResumeOpt,
-                    Overwrite = _context.OptimizerOverwrite,
-                    OverwriteWork = _context.OptimizerOverwriteWork,
-                    RestoreSkins = _context.OptimizerRestoreSkins,
-                    CompileVerbose = _context.OptimizerCompileVerbose,
-                    CleanupWorkModelArtifacts = _context.OptimizerCleanupWorkModelArtifacts,
-                    SingleAddonOnly = true
-                };
+                string modelsWorkDir = _modelsWorkDir ?? ToolPaths.GetWorkDir(addonDirectoryPath, _context.OptimizerSuffix);
+                var options = BuildSourceAddonOptimizerOptions(addonDirectoryPath, modelsWorkDir, true);
 
                 int exitCode = await _optimizerRunner.RunAsync(options, token);
                 _pipelineModelsExitCode = exitCode;
@@ -2689,6 +2633,28 @@ namespace GmodAddonCompressor
                         _context.ModelsProgressText = batchLabel;
                         if (_pipelineRunning && _pipelineStage == PipelineStage.Models)
                             _context.PipelineProgressText = batchLabel;
+                    }
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(update.MaximumStage) &&
+                    update.ItemIndex.HasValue && update.ItemTotal.HasValue)
+                {
+                    string stage = update.MaximumStage!;
+                    string detail = string.IsNullOrWhiteSpace(update.ItemPath) ? stage : update.ItemPath!;
+                    _context.ModelsStatusText = AppendModelsBatchLabel($"Maximum: {stage}");
+                    _context.ModelsProgressMinValue = 0;
+                    _context.ModelsProgressMaxValue = update.ItemTotal.Value;
+                    _context.ModelsProgressValue = update.ItemIndex.Value;
+                    _context.ModelsProgressText = AppendModelsBatchLabel(detail);
+
+                    if (_pipelineRunning && _pipelineStage == PipelineStage.Models)
+                    {
+                        _context.PipelineStatusText = AppendModelsBatchLabel($"Models Maximum: {stage}");
+                        _context.PipelineProgressMinValue = 0;
+                        _context.PipelineProgressMaxValue = update.ItemTotal.Value;
+                        _context.PipelineProgressValue = update.ItemIndex.Value;
+                        _context.PipelineProgressText = AppendModelsBatchLabel(detail);
                     }
                     return;
                 }
@@ -3404,9 +3370,49 @@ namespace GmodAddonCompressor
 
         private string GetOptimizerModeArgument()
         {
-            return _context.OptimizerModeIndex == OptimizerModeFidelityIndex
-                ? "fidelity"
-                : "normal";
+            return _context.OptimizerModeIndex switch
+            {
+                OptimizerModeFidelityIndex => "fidelity",
+                OptimizerModeMaximumIndex => "maximum",
+                _ => "normal"
+            };
+        }
+
+        private SourceAddonOptimizerRunOptions BuildSourceAddonOptimizerOptions(
+            string addonPath,
+            string workDir,
+            bool singleAddonOnly)
+        {
+            return new SourceAddonOptimizerRunOptions
+            {
+                WorkerExePath = ToolPaths.WorkerExePath,
+                AddonPath = addonPath,
+                WorkDir = workDir,
+                Suffix = _context.OptimizerSuffix,
+                OptimizerMode = GetOptimizerModeArgument(),
+                BlenderPath = string.IsNullOrWhiteSpace(_context.BlenderPath) ? null : _context.BlenderPath.Trim(),
+                StudioMdlPath = string.IsNullOrWhiteSpace(_context.StudioMdlPath) ? null : _context.StudioMdlPath.Trim(),
+                Ratio = _context.OptimizerRatio,
+                Merge = _context.OptimizerMerge,
+                AutoSmooth = _context.OptimizerAutoSmooth,
+                UsePlanar = _context.OptimizerUsePlanar,
+                PlanarAngle = _context.OptimizerPlanarAngle,
+                ExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
+                ExperimentalRoundPartsPolicy = _context.OptimizerUseExperimentalRoundPartsPolicy,
+                ExperimentalSteerTurnBasisFix = _context.OptimizerUseExperimentalSteerTurnBasisFix,
+                Format = GetOptimizerFormat(),
+                Jobs = _context.OptimizerJobs,
+                DecompileJobs = _context.OptimizerDecompileJobs,
+                CompileJobs = _context.OptimizerCompileJobs,
+                Strict = _context.OptimizerStrict,
+                ResumeOpt = _context.OptimizerResumeOpt,
+                Overwrite = _context.OptimizerOverwrite,
+                OverwriteWork = _context.OptimizerOverwriteWork,
+                RestoreSkins = _context.OptimizerRestoreSkins,
+                CompileVerbose = _context.OptimizerCompileVerbose,
+                CleanupWorkModelArtifacts = _context.OptimizerCleanupWorkModelArtifacts,
+                SingleAddonOnly = singleAddonOnly
+            };
         }
 
         private void ApplyCustomParams(OptimizerCustomParams custom)
