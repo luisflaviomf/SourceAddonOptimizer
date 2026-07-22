@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import random
+import subprocess
 import struct
 import sys
 import time
@@ -327,7 +328,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
     args.cache_root.mkdir(parents=True, exist_ok=True)
     metrics_module._reset_silhouette_experiment_diagnostics()
     silhouette_ns = 0
+    nearest_ns = 0
+    nearest_calls = 0
     original_prepare = metrics_module._prepare_silhouettes
+    original_nearest = metrics_module._nearest
     candidate_function_name = (
         "_silhouette_metrics_native_prepared" if args.lane == "experiment"
         else "_silhouette_metrics_prepared"
@@ -352,8 +356,20 @@ def run_pipeline(args: argparse.Namespace) -> None:
         finally:
             silhouette_ns += time.perf_counter_ns() - started
 
+    @functools.wraps(original_nearest)
+    def timed_nearest(*positional, **keywords):
+        nonlocal nearest_ns, nearest_calls
+        nearest_calls += 1
+        started = time.perf_counter_ns()
+        try:
+            return original_nearest(*positional, **keywords)
+        finally:
+            nearest_ns += time.perf_counter_ns() - started
+
     metrics_module._prepare_silhouettes = timed_prepare
     setattr(metrics_module, candidate_function_name, timed_candidate)
+    if args.time_nearest:
+        metrics_module._nearest = timed_nearest
 
     compile_log = args.staging_root / "compile-stub.json"
 
@@ -388,6 +404,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     finally:
         metrics_module._prepare_silhouettes = original_prepare
         setattr(metrics_module, candidate_function_name, original_candidate)
+        metrics_module._nearest = original_nearest
     wall_seconds = time.perf_counter() - started
     cpu_seconds = time.process_time() - before_cpu
     after_blocks = sys.getallocatedblocks()
@@ -408,6 +425,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
         "cpu_seconds": cpu_seconds,
         "adaptive_wall_seconds": adaptive_seconds,
         "silhouette_wall_seconds": silhouette_ns / 1_000_000_000.0,
+        "nearest_wall_seconds": nearest_ns / 1_000_000_000.0,
+        "nearest_calls": nearest_calls,
         "allocated_blocks_before": before_blocks,
         "allocated_blocks_after": after_blocks,
         "allocated_blocks_delta": after_blocks - before_blocks,
@@ -626,6 +645,340 @@ def verify_full_compile(models_root: Path, report_path: Path, output: Path) -> N
     print(json.dumps({"status": "exact", "checks": checks}, sort_keys=True), flush=True)
 
 
+def run_monitored(command: list[str], output_path: Path) -> dict[str, object]:
+    try:
+        import psutil
+    except ImportError as exc:
+        raise RuntimeError("psutil is required for benchmark memory sampling") from exc
+    process = subprocess.Popen(command, cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    monitored = psutil.Process(process.pid)
+    peak = 0
+    lines = []
+    while process.poll() is None:
+        try:
+            residents = monitored.memory_info().rss
+            for child in monitored.children(recursive=True):
+                try:
+                    residents += child.memory_info().rss
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            peak = max(peak, residents)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        time.sleep(0.02)
+    assert process.stdout is not None
+    lines.extend(process.stdout.read().splitlines())
+    if process.returncode != 0:
+        raise RuntimeError(f"benchmark subprocess failed ({process.returncode}): {' | '.join(lines[-20:])}")
+    payload = json.loads(Path(output_path).read_text(encoding="utf-8"))
+    payload["peak_working_set_bytes"] = peak
+    payload["subprocess_tail"] = lines[-5:]
+    write_json(output_path, payload)
+    return payload
+
+
+def run_benchmark_suite(root: Path, dll: Path) -> None:
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=False)
+    runs_root = root / "runs"
+    runs_root.mkdir()
+    script = Path(__file__).resolve()
+    python = Path(sys.executable).resolve()
+    records = []
+
+    cold_schedule = ("baseline", "experiment", "experiment", "baseline", "baseline",
+                     "experiment", "experiment", "baseline", "baseline", "experiment")
+    cold_counts = {"baseline": 0, "experiment": 0}
+    warm_cache: Path | None = None
+    for lane in cold_schedule:
+        cold_counts[lane] += 1
+        number = cold_counts[lane]
+        run_id = f"cold-{lane}-{number:02d}"
+        cache = root / "cache" / run_id
+        staging = root / "staging" / run_id
+        output = runs_root / f"{run_id}.json"
+        command = [
+            str(python), str(script), "run-pipeline",
+            "--run-id", run_id,
+            "--lane", lane,
+            "--cache-root", str(cache),
+            "--staging-root", str(staging),
+            "--out", str(output),
+        ]
+        if lane == "experiment":
+            command.extend(("--dll", str(Path(dll).resolve())))
+        print(f"starting {run_id}", flush=True)
+        record = run_monitored(command, output)
+        records.append(record)
+        if warm_cache is None and lane == "baseline":
+            warm_cache = cache
+        print(
+            f"finished {run_id}: adaptive={record['adaptive_wall_seconds']:.6f}s "
+            f"silhouette={record['silhouette_wall_seconds']:.6f}s peak={record['peak_working_set_bytes']}",
+            flush=True,
+        )
+    assert warm_cache is not None
+
+    warm_schedule = ("baseline", "experiment", "experiment", "baseline") * 5
+    warm_counts = {"baseline": 0, "experiment": 0}
+    for lane in warm_schedule:
+        warm_counts[lane] += 1
+        number = warm_counts[lane]
+        run_id = f"warm-{lane}-{number:02d}"
+        staging = root / "staging" / run_id
+        output = runs_root / f"{run_id}.json"
+        command = [
+            str(python), str(script), "run-pipeline",
+            "--run-id", run_id,
+            "--lane", lane,
+            "--cache-root", str(warm_cache),
+            "--staging-root", str(staging),
+            "--out", str(output),
+        ]
+        if lane == "experiment":
+            command.extend(("--dll", str(Path(dll).resolve())))
+        print(f"starting {run_id}", flush=True)
+        record = run_monitored(command, output)
+        records.append(record)
+        print(
+            f"finished {run_id}: adaptive={record['adaptive_wall_seconds']:.6f}s "
+            f"silhouette={record['silhouette_wall_seconds']:.6f}s peak={record['peak_working_set_bytes']}",
+            flush=True,
+        )
+    summary = {
+        "schema": 1,
+        "cold_schedule": cold_schedule,
+        "warm_schedule": warm_schedule,
+        "warm_cache": str(warm_cache.resolve()),
+        "run_count": len(records),
+        "runs": [
+            {
+                "run_id": record["run_id"],
+                "lane": record["lane"],
+                "adaptive_wall_seconds": record["adaptive_wall_seconds"],
+                "silhouette_wall_seconds": record["silhouette_wall_seconds"],
+                "wall_seconds": record["wall_seconds"],
+                "peak_working_set_bytes": record["peak_working_set_bytes"],
+                "semantic_sha256": record["semantic_sha256"],
+            }
+            for record in records
+        ],
+    }
+    write_json(root / "run-index.json", summary)
+    print(json.dumps({"status": "complete", "run_count": len(records)}, sort_keys=True), flush=True)
+
+
+def measure_cross_once(original, candidate, contract, lane: str, dll: Path) -> dict[str, object]:
+    if lane == "experiment":
+        os.environ["MAXIMUM_SILHOUETTE_EXPERIMENT_DLL"] = str(Path(dll).resolve())
+        candidate_name = "_silhouette_metrics_native_prepared"
+    else:
+        os.environ.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
+        candidate_name = "_silhouette_metrics_prepared"
+    metrics_module._reset_silhouette_experiment_diagnostics()
+    silhouette_ns = 0
+    original_prepare = metrics_module._prepare_silhouettes
+    original_candidate = getattr(metrics_module, candidate_name)
+
+    @functools.wraps(original_prepare)
+    def timed_prepare(*positional, **keywords):
+        nonlocal silhouette_ns
+        started = time.perf_counter_ns()
+        try:
+            return original_prepare(*positional, **keywords)
+        finally:
+            silhouette_ns += time.perf_counter_ns() - started
+
+    @functools.wraps(original_candidate)
+    def timed_candidate(*positional, **keywords):
+        nonlocal silhouette_ns
+        started = time.perf_counter_ns()
+        try:
+            return original_candidate(*positional, **keywords)
+        finally:
+            silhouette_ns += time.perf_counter_ns() - started
+
+    metrics_module._prepare_silhouettes = timed_prepare
+    setattr(metrics_module, candidate_name, timed_candidate)
+    started = time.perf_counter()
+    try:
+        reference = metrics_module.prepare_region_reference(original, contract)
+        result = metrics_module.measure_region_prepared(reference, candidate)
+    finally:
+        metrics_module._prepare_silhouettes = original_prepare
+        setattr(metrics_module, candidate_name, original_candidate)
+    return {
+        "lane": lane,
+        "wall_seconds": time.perf_counter() - started,
+        "silhouette_seconds": silhouette_ns / 1_000_000_000.0,
+        "metrics": asdict(result),
+        "metrics_sha256": hashlib.sha256(
+            json.dumps(asdict(result), sort_keys=True, separators=(",", ":")).encode("ascii")
+        ).hexdigest(),
+        "diagnostics": metrics_module._get_silhouette_experiment_diagnostics(),
+    }
+
+
+def run_cross_performance(dll: Path, output: Path) -> None:
+    frozen = json.loads(
+        Path(r"D:\gaco-max-v2-rigorous-profile-20260721\cross-checks.json").read_text(encoding="utf-8")
+    )
+    profile = load_profile(REPO_ROOT / "maximum_optimizer" / "profiles" / "maximum-adaptive-v2.json")
+    schedule = ("baseline", "experiment", "experiment", "baseline", "baseline",
+                "experiment", "experiment", "baseline", "baseline", "experiment")
+    results = []
+    for expected in frozen["checks"]:
+        original, serialized_candidate = load_cross_regions(
+            expected["family"], expected["source"], expected["region_key"]
+        )
+        budget = RegionBudget(**expected["budget"])
+        candidate = cached_cross_candidate(
+            expected["family"], expected["region_key"], expected["candidate_triangles"]
+        )
+        if candidate is None and expected["label"] == "skinned-mixed-weights":
+            candidate = simplify_smd_region(original, 0.85, budget)
+        if candidate is None:
+            candidate = serialized_candidate
+        contract = _pose_contract(original, profile)
+        runs = []
+        for sequence, lane in enumerate(schedule, start=1):
+            record = measure_cross_once(original, candidate, contract, lane, dll)
+            if record["metrics"] != expected["metrics"]:
+                raise AssertionError(f"{expected['label']}:{sequence}: frozen metrics changed")
+            record["sequence"] = sequence
+            runs.append(record)
+            print(
+                f"{expected['label']} {sequence:02d} {lane}: "
+                f"wall={record['wall_seconds']:.6f}s silhouette={record['silhouette_seconds']:.6f}s",
+                flush=True,
+            )
+        results.append({
+            "label": expected["label"],
+            "family": expected["family"],
+            "source": expected["source"],
+            "region_key": expected["region_key"],
+            "schedule": schedule,
+            "runs": runs,
+        })
+    os.environ.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
+    write_json(output, {"schema": 1, "status": "exact", "results": results})
+
+
+def run_full_worker_once(lane: str, addon_root: Path, work_root: Path, dll: Path) -> dict[str, object]:
+    try:
+        import psutil
+    except ImportError as exc:
+        raise RuntimeError("psutil is required for full-worker memory sampling") from exc
+    suffix = f"_full_ab_{lane}"
+    command = [
+        str(Path(sys.executable).resolve()),
+        str(REPO_ROOT / "build_optimized_addon.py"),
+        str(Path(addon_root).resolve()),
+        "--suffix", suffix,
+        "--overwrite",
+        "--work", str(Path(work_root).resolve()),
+        "--overwrite-work",
+        "--optimizer-mode", "maximum",
+        "--blender", r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe",
+        "--studiomdl", r"D:\SteamLibrary\steamapps\common\GarrysMod\bin\studiomdl.exe",
+        "--format", "smd",
+        "--merge", "0",
+        "--autosmooth", "45",
+        "--jobs", "2",
+        "--decompile-jobs", "2",
+        "--compile-jobs", "2",
+        "--restore-skins",
+        "--strict",
+        "--single-addon-only",
+        "--maximum-framework-resolver",
+        r"C:\WorkshopDL\steamcmd\steamapps\workshop\content\4000\2912816023\lvs_framework",
+    ]
+    environment = dict(os.environ)
+    environment.pop("MAXIMUM_MESHOPT_DLL", None)
+    if lane == "experiment":
+        environment["MAXIMUM_SILHOUETTE_EXPERIMENT_DLL"] = str(Path(dll).resolve())
+    else:
+        environment.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
+    started = time.perf_counter()
+    process = subprocess.Popen(
+        command,
+        cwd=REPO_ROOT,
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    monitored = psutil.Process(process.pid)
+    peak = 0
+    cpu_seconds = 0.0
+    while process.poll() is None:
+        residents = 0
+        cpu = 0.0
+        try:
+            active = (monitored, *monitored.children(recursive=True))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            active = ()
+        for item in active:
+            try:
+                residents += item.memory_info().rss
+                times = item.cpu_times()
+                cpu += times.user + times.system
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        peak = max(peak, residents)
+        cpu_seconds = max(cpu_seconds, cpu)
+        time.sleep(0.02)
+    wall_seconds = time.perf_counter() - started
+    if process.returncode != 0:
+        raise RuntimeError(f"full {lane} worker failed with exit code {process.returncode}")
+    output_root = Path(addon_root).with_name(Path(addon_root).name + suffix)
+    models_root = output_root / "models"
+    report_path = Path(work_root) / "logs" / "maximum_adaptive_report.json"
+    compiled = tree_contract(models_root)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if (
+        compiled["sha256"] != "fb83a6b549963073245a9bb637be0de733c2fd6eba74328c322f323addf3d04b"
+        or compiled["bytes"] != 833184
+        or report["final_triangles"] != 13530
+        or report["failures"]
+        or any(path.name.casefold().endswith(".dx80.vtx") for path in models_root.rglob("*"))
+    ):
+        raise AssertionError(f"full {lane} output changed")
+    adaptive = next(
+        stage["wall_seconds"] for stage in report["stages"] if stage["stage"] == "adaptive-simplification"
+    )
+    return {
+        "lane": lane,
+        "wall_seconds": wall_seconds,
+        "cpu_seconds_sampled": cpu_seconds,
+        "peak_working_set_bytes": peak,
+        "adaptive_wall_seconds": adaptive,
+        "output_root": str(output_root.resolve()),
+        "work_root": str(Path(work_root).resolve()),
+        "compiled": compiled,
+        "report": report,
+    }
+
+
+def run_full_ab(root: Path, dll: Path) -> None:
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=False)
+    addon_root = Path(
+        r"D:\gaco-max-v2-raw-mask-silhouette-20260721\full-compile-source\pontiac_transam_wheel"
+    )
+    runs = []
+    for lane in ("baseline", "experiment"):
+        print(f"starting full-{lane}", flush=True)
+        record = run_full_worker_once(lane, addon_root, root / f"work-{lane}", dll)
+        runs.append(record)
+        write_json(root / f"full-{lane}.json", record)
+        print(
+            f"finished full-{lane}: wall={record['wall_seconds']:.6f}s "
+            f"adaptive={record['adaptive_wall_seconds']:.6f}s peak={record['peak_working_set_bytes']}",
+            flush=True,
+        )
+    write_json(root / "full-ab.json", {"schema": 1, "status": "exact", "runs": runs})
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -640,6 +993,7 @@ def parse_args() -> argparse.Namespace:
     pipeline.add_argument("--cache-root", type=Path, required=True)
     pipeline.add_argument("--staging-root", type=Path, required=True)
     pipeline.add_argument("--out", type=Path, required=True)
+    pipeline.add_argument("--time-nearest", action="store_true")
     cross = subparsers.add_parser("cross-equivalence")
     cross.add_argument("--dll", type=Path, required=True)
     cross.add_argument("--out", type=Path, required=True)
@@ -647,6 +1001,15 @@ def parse_args() -> argparse.Namespace:
     compile_check.add_argument("--models-root", type=Path, required=True)
     compile_check.add_argument("--report", type=Path, required=True)
     compile_check.add_argument("--out", type=Path, required=True)
+    suite = subparsers.add_parser("benchmark-suite")
+    suite.add_argument("--root", type=Path, required=True)
+    suite.add_argument("--dll", type=Path, required=True)
+    cross_performance = subparsers.add_parser("cross-performance")
+    cross_performance.add_argument("--dll", type=Path, required=True)
+    cross_performance.add_argument("--out", type=Path, required=True)
+    full_ab = subparsers.add_parser("full-ab")
+    full_ab.add_argument("--root", type=Path, required=True)
+    full_ab.add_argument("--dll", type=Path, required=True)
     return parser.parse_args()
 
 
@@ -663,6 +1026,15 @@ def main() -> int:
         return 0
     if args.command == "verify-compile":
         verify_full_compile(args.models_root, args.report, args.out)
+        return 0
+    if args.command == "benchmark-suite":
+        run_benchmark_suite(args.root, args.dll)
+        return 0
+    if args.command == "cross-performance":
+        run_cross_performance(args.dll, args.out)
+        return 0
+    if args.command == "full-ab":
+        run_full_ab(args.root, args.dll)
         return 0
     raise AssertionError(args.command)
 
