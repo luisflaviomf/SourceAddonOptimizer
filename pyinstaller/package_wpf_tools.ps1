@@ -196,6 +196,7 @@ function Assert-PackageZip {
         "_internal/base_library.zip",
         "_internal/python311.dll",
         "_internal/maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll",
+        "_internal/maximum_optimizer/native/tool-package-manifest.json",
         "_internal/maximum_optimizer/profiles/maximum-adaptive-v2.json"
     )
 
@@ -216,14 +217,13 @@ function New-PackageZip {
     )
 
     $destinationDir = Split-Path -Parent $DestinationZip
-    $tempZip = Join-Path $destinationDir ([System.IO.Path]::GetFileNameWithoutExtension($DestinationZip) + ".tmp.zip")
+    $tempZip = Join-Path $destinationDir (
+        [System.IO.Path]::GetFileNameWithoutExtension($DestinationZip) + ".$PID.$([Guid]::NewGuid().ToString('N')).tmp.zip"
+    )
+    $backupZip = "$DestinationZip.$PID.bak"
 
     if (Test-Path $tempZip) {
         Remove-Item $tempZip -Force
-    }
-
-    if (Test-Path $DestinationZip) {
-        Remove-Item $DestinationZip -Force
     }
 
     $maxAttempts = 5
@@ -237,7 +237,17 @@ function New-PackageZip {
             )
 
             Assert-PackageZip -ZipFile $tempZip
-            Move-Item $tempZip $DestinationZip -Force
+            & python -m maximum_optimizer.tool_package_manifest $tempZip --zip
+            if ($LASTEXITCODE -ne 0) {
+                throw "Package ZIP manifest validation failed with exit code $LASTEXITCODE."
+            }
+            if (Test-Path -LiteralPath $DestinationZip) {
+                [System.IO.File]::Replace($tempZip, $DestinationZip, $backupZip, $true)
+                Remove-Item -LiteralPath $backupZip -Force -ErrorAction SilentlyContinue
+            }
+            else {
+                [System.IO.File]::Move($tempZip, $DestinationZip)
+            }
             Assert-PackageZip -ZipFile $DestinationZip
             return
         }
@@ -245,6 +255,7 @@ function New-PackageZip {
             if (Test-Path $tempZip) {
                 Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
             }
+            Remove-Item -LiteralPath $backupZip -Force -ErrorAction SilentlyContinue
 
             if ($attempt -eq $maxAttempts) {
                 throw "Failed to build package zip after $maxAttempts attempts. $($_.Exception.Message)"
@@ -289,6 +300,13 @@ New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 Copy-Item $workerExe (Join-Path $stagingRoot "SourceAddonOptimizerWorker.exe") -Force
 Copy-Item $crowbarExe (Join-Path $stagingRoot "CrowbarCommandLineDecomp.exe") -Force
 Copy-Item $internalDir (Join-Path $stagingRoot "_internal") -Recurse -Force
+
+$manifestScript = Join-Path $PWD "pyinstaller\New-SourceAddonOptimizerManifest.ps1"
+& $manifestScript -PackageRoot $stagingRoot
+& python -m maximum_optimizer.tool_package_manifest $stagingRoot --verify-native-abi
+if ($LASTEXITCODE -ne 0) {
+    throw "Package staging manifest validation failed with exit code $LASTEXITCODE."
+}
 
 New-PackageZip -SourceDirectory $stagingRoot -DestinationZip $zipPath
 
