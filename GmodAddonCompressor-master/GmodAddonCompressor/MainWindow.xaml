@@ -511,7 +511,7 @@
                         </StackPanel>
                         <TextBlock Style="{StaticResource MutedText}"
                                    Margin="0,6,0,0"
-                                   Text="These settings control Standard/Magick and non-VTF files. Maximum evaluates VTF resolution independently at original, 2x and 4x, never below 8x8."
+                                   Text="These settings control Standard, Magick, Magick+ and non-VTF files. Maximum evaluates VTF resolution independently at original, 2x and 4x, never below 8x8."
                                    TextWrapping="Wrap" />
                         <ComboBox ItemsSource="{Binding ImageReducingResolutionList, Mode=OneTime}"
                                   Margin="0,10,0,0"
@@ -568,7 +568,7 @@
 
                         <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0" Visibility="{Binding CompressMagickOptionsVisibility}">
                             <StackPanel>
-                            <TextBlock Style="{StaticResource LabelText}" Text="Magick mode extras" />
+                            <TextBlock Style="{StaticResource LabelText}" Text="Magick / Magick+ extras" />
                             <CheckBox Margin="0,8,0,0"
                                       IsChecked="{Binding CompressMagickUseAggressivePng}"
                                       IsEnabled="{Binding CompressPNG}">
@@ -577,7 +577,7 @@
                             </CheckBox>
                             <TextBlock Style="{StaticResource MutedText}"
                                        Margin="0,6,0,0"
-                                       Text="VTF uses the same unified pipeline in both modes: raw-split first, export-split fallback when needed, then preserve unchanged on no gain or out-of-scope cases. JPG/JPEG and audio stay on Standard."
+                                       Text="Magick keeps the unified VTF pipeline. Magick+ additionally applies an exact BC3-to-BC1 post-pass for textures whose alpha is proven unused; otherwise it keeps the Magick result. JPG/JPEG and audio stay on Standard."
                                        TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>

@@ -98,6 +98,10 @@ namespace GmodAddonCompressor.Systems
                 maximum.ProgressChanged += progress => e_MaximumProgress?.Invoke(progress);
                 _compressServices.Add(extension, maximum);
             }
+            else if (_pipelineOptions.IsMagickPlusMode)
+            {
+                _compressServices.Add(extension, new MagickPlusVTFEdit(_directoryPath));
+            }
             else
             {
                 _compressServices.Add(extension, new VTFEdit(_directoryPath));

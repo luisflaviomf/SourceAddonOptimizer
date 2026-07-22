@@ -50,15 +50,17 @@ static async Task<int> RunFullCompressAsync(string[] args)
     if (!options.TryGetValue("--root", out string? addonRoot) ||
         !options.TryGetValue("--mode", out string? modeText))
     {
-        Console.Error.WriteLine("full-compress requires --root and --mode magick|maximum.");
+        Console.Error.WriteLine("full-compress requires --root and --mode magick|magick-plus|maximum.");
         return 2;
     }
 
     CompressPipelineMode mode = modeText.Equals("maximum", StringComparison.OrdinalIgnoreCase)
         ? CompressPipelineMode.Maximum
-        : modeText.Equals("magick", StringComparison.OrdinalIgnoreCase)
-            ? CompressPipelineMode.Magick
-            : throw new ArgumentException("full-compress mode must be magick or maximum.");
+        : modeText.Equals("magick-plus", StringComparison.OrdinalIgnoreCase)
+            ? CompressPipelineMode.MagickPlus
+            : modeText.Equals("magick", StringComparison.OrdinalIgnoreCase)
+                ? CompressPipelineMode.Magick
+                : throw new ArgumentException("full-compress mode must be magick, magick-plus or maximum.");
     string root = Path.GetFullPath(addonRoot);
     if (!Directory.Exists(root))
         throw new DirectoryNotFoundException(root);
@@ -640,6 +642,7 @@ static void PrintUsage()
     Console.WriteLine("  encoder-smoke --root <experiment-root>");
     Console.WriteLine("  maximum --root <experiment-root>");
     Console.WriteLine("  validate --root <experiment-root>");
+    Console.WriteLine("  full-compress --root <isolated-addon-root> --mode magick|magick-plus|maximum");
 }
 
 internal sealed record ExistingMetricRecord(

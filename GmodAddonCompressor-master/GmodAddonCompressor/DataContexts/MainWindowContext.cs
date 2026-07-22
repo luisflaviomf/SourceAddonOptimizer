@@ -174,7 +174,8 @@ namespace GmodAddonCompressor.DataContexts
         {
             "Padrao",
             "Magick",
-            "Maximum"
+            "Maximum",
+            "Magick+"
         };
 
         public uint ImageSkipHeight
@@ -300,8 +301,9 @@ namespace GmodAddonCompressor.DataContexts
         public bool CompressModeIsStandard => _compressModeIndex == 0;
         public bool CompressModeIsMagick => _compressModeIndex == 1;
         public bool CompressModeIsMaximum => _compressModeIndex == 2;
+        public bool CompressModeIsMagickPlus => _compressModeIndex == 3;
         public Visibility CompressStandardOptionsVisibility => CompressModeIsStandard ? Visibility.Visible : Visibility.Collapsed;
-        public Visibility CompressMagickOptionsVisibility => CompressModeIsMagick ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility CompressMagickOptionsVisibility => CompressModeIsMagick || CompressModeIsMagickPlus ? Visibility.Visible : Visibility.Collapsed;
         public Visibility CompressMaximumOptionsVisibility => CompressModeIsMaximum ? Visibility.Visible : Visibility.Collapsed;
 
         public bool CompressMagickUseAggressivePng
@@ -318,6 +320,8 @@ namespace GmodAddonCompressor.DataContexts
         public string CompressModeDescriptionText =>
             CompressModeIsMaximum
                 ? "Maximum is the validated experimental VTF mode: it tries original, 2x and 4x resolution per texture and keeps only decoded candidates that pass semantic and visual quality gates."
+                : CompressModeIsMagickPlus
+                ? "Magick+ keeps every current Magick setting and adds an exact BC3-to-BC1 repack when shader analysis proves the alpha channel is unused. Decoded RGB, resolution and mipmaps remain identical."
                 : CompressModeIsMagick
                 ? "Magick mode keeps the same unified VTF pipeline as Standard and only extends PNG when aggressive q256 is enabled."
                 : "Standard mode now uses the unified VTF pipeline by default: raw-split first, export-split fallback when needed, selective FX-safe guardrails for sensitive particles, then preserve unchanged when no gain or unsafe.";
@@ -331,6 +335,14 @@ namespace GmodAddonCompressor.DataContexts
 
                 if (CompressModeIsMaximum)
                     return "VTF uses adaptive per-file candidates with exact original VTF version, semantic alpha/normal/cutout handling, decoded-output metrics, safe parallelism and original fallback. Other selected types keep Standard routing.";
+
+                if (CompressModeIsMagickPlus)
+                {
+                    string plusPngText = CompressMagickUseAggressivePng
+                        ? "PNG: Magick q256 aggressive path first, with Standard fallback on failure or no gain."
+                        : "PNG: Standard path only.";
+                    return $"VTF first uses the same unified Magick pipeline and user resolution limits. A lossless post-pass removes only proven-unused BC3 alpha blocks when that beats Magick; all decoded RGB pixels and mipmaps are verified before replacement. {plusPngText}";
+                }
 
                 string pngText = CompressMagickUseAggressivePng
                     ? "PNG: Magick q256 aggressive path first, with Standard fallback on failure or no gain."
@@ -1204,6 +1216,7 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(CompressModeIsStandard));
             OnPropertyChanged(nameof(CompressModeIsMagick));
             OnPropertyChanged(nameof(CompressModeIsMaximum));
+            OnPropertyChanged(nameof(CompressModeIsMagickPlus));
             OnPropertyChanged(nameof(CompressStandardOptionsVisibility));
             OnPropertyChanged(nameof(CompressMagickOptionsVisibility));
             OnPropertyChanged(nameof(CompressMaximumOptionsVisibility));

@@ -16,11 +16,33 @@ public sealed class CompressMaximumIntegrationTests
 
         context.CompressModeIndex = 2;
 
-        Assert.Equal(new[] { "Padrao", "Magick", "Maximum" }, context.CompressModeList);
+        Assert.Equal(new[] { "Padrao", "Magick", "Maximum", "Magick+" }, context.CompressModeList);
         Assert.True(context.CompressModeIsMaximum);
         Assert.False(context.CompressModeIsStandard);
         Assert.False(context.CompressModeIsMagick);
         Assert.Equal(modelsMode, context.OptimizerModeIndex);
+    }
+
+    [Fact]
+    public void MagickPlusIsAppendedWithoutChangingSavedMaximumIndex()
+    {
+        var context = new MainWindowContext();
+
+        context.CompressModeIndex = 3;
+
+        Assert.True(context.CompressModeIsMagickPlus);
+        Assert.False(context.CompressModeIsMaximum);
+        Assert.Equal(System.Windows.Visibility.Visible, context.CompressMagickOptionsVisibility);
+
+        var options = new CompressPipelineOptions
+        {
+            Mode = CompressPipelineMode.MagickPlus,
+            UseMagickForAggressivePng = true
+        };
+        Assert.True(options.IsMagickPlusMode);
+        Assert.True(options.ShouldUseMagickForAggressivePng);
+        Assert.Equal("Magick+", options.ModeLabel);
+        Assert.Contains("lossless", options.BuildRoutingSummary(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

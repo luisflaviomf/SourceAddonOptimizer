@@ -3913,13 +3913,16 @@ namespace GmodAddonCompressor
         {
             bool isMagickMode = _context.CompressModeIsMagick;
             bool isMaximumMode = _context.CompressModeIsMaximum;
+            bool isMagickPlusMode = _context.CompressModeIsMagickPlus;
 
             return new CompressPipelineOptions
             {
                 Mode = isMaximumMode
                     ? CompressPipelineMode.Maximum
-                    : isMagickMode ? CompressPipelineMode.Magick : CompressPipelineMode.Standard,
-                UseMagickForAggressivePng = isMagickMode && _context.CompressMagickUseAggressivePng
+                    : isMagickPlusMode
+                        ? CompressPipelineMode.MagickPlus
+                        : isMagickMode ? CompressPipelineMode.Magick : CompressPipelineMode.Standard,
+                UseMagickForAggressivePng = (isMagickMode || isMagickPlusMode) && _context.CompressMagickUseAggressivePng
             };
         }
 
