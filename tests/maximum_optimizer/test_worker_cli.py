@@ -28,6 +28,14 @@ class WorkerCliTests(unittest.TestCase):
         self.assertLess(assignment, first_packaged_import)
         self.assertLess(child_environment, first_packaged_import)
 
+    def test_worker_configures_utf8_stdio_before_loading_packaged_sources(self) -> None:
+        source = (Path(__file__).resolve().parents[2] / "worker/worker_main.py").read_text(
+            encoding="utf-8"
+        )
+        utf8_bootstrap = source.index('encoding="utf-8", errors="replace", line_buffering=True')
+        first_packaged_import = source.index("import batch_decompile_organize")
+        self.assertLess(utf8_bootstrap, first_packaged_import)
+
     def test_blender_wrappers_disable_bytecode_before_local_imports(self) -> None:
         root = Path(__file__).resolve().parents[2]
         wrappers = {
