@@ -286,6 +286,228 @@ private:
     MaximumMeshOutput* output_;
     bool active_ = false;
 };
+
+struct MaximumSilhouetteBatchInput
+{
+    std::uint32_t struct_size;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t view_count;
+    std::uint32_t empty_distance;
+    const unsigned char* original_masks;
+    std::size_t original_row_stride;
+    std::size_t original_view_stride;
+    const unsigned char* candidate_masks;
+    std::size_t candidate_row_stride;
+    std::size_t candidate_view_stride;
+};
+
+struct MaximumSilhouetteBatchOutput
+{
+    std::uint32_t struct_size;
+    std::uint32_t p95_distance_squared;
+    std::uint64_t distance_count;
+    std::uint64_t* intersections;
+    std::uint64_t* unions;
+    std::size_t view_capacity;
+    std::uint32_t* original_boundary_xy;
+    std::size_t original_boundary_capacity;
+    std::size_t original_boundary_count;
+    std::uint32_t* candidate_boundary_xy;
+    std::size_t candidate_boundary_capacity;
+    std::size_t candidate_boundary_count;
+    std::uint32_t* distances_squared;
+    std::size_t distance_capacity;
+    std::size_t distances_written;
+    std::uint64_t* original_boundary_offsets;
+    std::uint64_t* candidate_boundary_offsets;
+    std::uint64_t* distance_offsets;
+    std::size_t offset_capacity;
+    std::uint64_t boundary_extraction_ns;
+    std::uint64_t distance_calculation_ns;
+    std::uint64_t metric_production_ns;
+    std::uint64_t allocation_count;
+    std::uint64_t allocation_bytes;
+    std::uint64_t peak_scratch_bytes;
+};
+
+struct SilhouetteScratch
+{
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> original_boundary;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> candidate_boundary;
+    std::vector<std::uint32_t> field;
+    std::vector<std::uint32_t> line;
+    std::vector<std::uint32_t> transformed;
+    std::vector<std::size_t> sites;
+    std::vector<double> intersections;
+    std::vector<std::uint32_t> distances;
+};
+
+thread_local SilhouetteScratch g_silhouette_scratch;
+
+template <typename T>
+void reserve_silhouette_buffer(
+    std::vector<T>& buffer,
+    std::size_t count,
+    std::uint64_t& allocation_count,
+    std::uint64_t& allocation_bytes)
+{
+    if (buffer.capacity() >= count)
+        return;
+    const std::size_t previous = buffer.capacity();
+    buffer.reserve(count);
+    ++allocation_count;
+    allocation_bytes += static_cast<std::uint64_t>(buffer.capacity() - previous) * sizeof(T);
+}
+
+std::uint64_t silhouette_scratch_bytes(const SilhouetteScratch& scratch)
+{
+    return
+        static_cast<std::uint64_t>(scratch.original_boundary.capacity()) * sizeof(scratch.original_boundary[0]) +
+        static_cast<std::uint64_t>(scratch.candidate_boundary.capacity()) * sizeof(scratch.candidate_boundary[0]) +
+        static_cast<std::uint64_t>(scratch.field.capacity()) * sizeof(scratch.field[0]) +
+        static_cast<std::uint64_t>(scratch.line.capacity()) * sizeof(scratch.line[0]) +
+        static_cast<std::uint64_t>(scratch.transformed.capacity()) * sizeof(scratch.transformed[0]) +
+        static_cast<std::uint64_t>(scratch.sites.capacity()) * sizeof(scratch.sites[0]) +
+        static_cast<std::uint64_t>(scratch.intersections.capacity()) * sizeof(scratch.intersections[0]) +
+        static_cast<std::uint64_t>(scratch.distances.capacity()) * sizeof(scratch.distances[0]);
+}
+
+void squared_distance_transform_1d(
+    const std::uint32_t* values,
+    std::size_t count,
+    std::uint32_t infinity,
+    std::uint32_t* result,
+    std::vector<std::size_t>& sites,
+    std::vector<double>& intersections)
+{
+    std::size_t first = 0;
+    while (first < count && values[first] >= infinity)
+        ++first;
+    if (first == count)
+    {
+        std::fill_n(result, count, infinity);
+        return;
+    }
+
+    std::size_t envelope = 0;
+    sites[0] = first;
+    intersections[0] = -std::numeric_limits<double>::infinity();
+    intersections[1] = std::numeric_limits<double>::infinity();
+    for (std::size_t coordinate = first + 1; coordinate < count; ++coordinate)
+    {
+        if (values[coordinate] >= infinity)
+            continue;
+        std::size_t site = sites[envelope];
+        double crossing =
+            (static_cast<double>(values[coordinate]) + static_cast<double>(coordinate) * coordinate -
+             static_cast<double>(values[site]) - static_cast<double>(site) * site) /
+            (2.0 * static_cast<double>(coordinate - site));
+        while (crossing <= intersections[envelope])
+        {
+            --envelope;
+            site = sites[envelope];
+            crossing =
+                (static_cast<double>(values[coordinate]) + static_cast<double>(coordinate) * coordinate -
+                 static_cast<double>(values[site]) - static_cast<double>(site) * site) /
+                (2.0 * static_cast<double>(coordinate - site));
+        }
+        ++envelope;
+        sites[envelope] = coordinate;
+        intersections[envelope] = crossing;
+        intersections[envelope + 1] = std::numeric_limits<double>::infinity();
+    }
+
+    envelope = 0;
+    for (std::size_t coordinate = 0; coordinate < count; ++coordinate)
+    {
+        while (intersections[envelope + 1] < static_cast<double>(coordinate))
+            ++envelope;
+        const std::size_t site = sites[envelope];
+        const std::size_t delta = coordinate > site ? coordinate - site : site - coordinate;
+        const std::uint64_t squared = static_cast<std::uint64_t>(delta) * delta;
+        result[coordinate] = static_cast<std::uint32_t>(values[site] + squared);
+    }
+}
+
+void build_squared_distance_field(
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t infinity,
+    const std::vector<std::pair<std::uint32_t, std::uint32_t>>& boundary,
+    SilhouetteScratch& scratch)
+{
+    const std::size_t cell_count = static_cast<std::size_t>(width) * height;
+    scratch.field.resize(cell_count);
+    std::fill(scratch.field.begin(), scratch.field.end(), infinity);
+    for (const auto& point : boundary)
+        scratch.field[static_cast<std::size_t>(point.second) * width + point.first] = 0;
+
+    for (std::size_t y = 0; y < height; ++y)
+    {
+        const std::size_t start = y * width;
+        squared_distance_transform_1d(
+            scratch.field.data() + start,
+            width,
+            infinity,
+            scratch.transformed.data(),
+            scratch.sites,
+            scratch.intersections);
+        std::copy_n(scratch.transformed.data(), width, scratch.field.data() + start);
+    }
+    for (std::size_t x = 0; x < width; ++x)
+    {
+        for (std::size_t y = 0; y < height; ++y)
+            scratch.line[y] = scratch.field[y * width + x];
+        squared_distance_transform_1d(
+            scratch.line.data(),
+            height,
+            infinity,
+            scratch.transformed.data(),
+            scratch.sites,
+            scratch.intersections);
+        for (std::size_t y = 0; y < height; ++y)
+            scratch.field[y * width + x] = scratch.transformed[y];
+    }
+}
+
+bool binary_mask_and_boundary(
+    const unsigned char* mask,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::size_t row_stride,
+    std::vector<std::pair<std::uint32_t, std::uint32_t>>& boundary)
+{
+    boundary.clear();
+    for (std::uint32_t y = 0; y < height; ++y)
+    {
+        const unsigned char* row = mask + static_cast<std::size_t>(y) * row_stride;
+        for (std::uint32_t x = 0; x < width; ++x)
+        {
+            const unsigned char value = row[x];
+            if (value != 0 && value != 255)
+                return false;
+            if (value == 0)
+                continue;
+            const bool edge =
+                x == 0 || y == 0 || x + 1 == width || y + 1 == height ||
+                row[x - 1] == 0 || row[x + 1] == 0 ||
+                mask[static_cast<std::size_t>(y - 1) * row_stride + x] == 0 ||
+                mask[static_cast<std::size_t>(y + 1) * row_stride + x] == 0;
+            if (edge)
+                boundary.emplace_back(x, y);
+        }
+    }
+    return true;
+}
+
+std::uint64_t elapsed_nanoseconds(
+    std::chrono::steady_clock::time_point start,
+    std::chrono::steady_clock::time_point end)
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+}
 } // namespace
 
 extern "C" __declspec(dllexport) int maximum_meshopt_version() noexcept
@@ -296,6 +518,236 @@ extern "C" __declspec(dllexport) int maximum_meshopt_version() noexcept
 extern "C" __declspec(dllexport) int maximum_meshopt_abi_version() noexcept
 {
     return 3;
+}
+
+extern "C" __declspec(dllexport) int maximum_silhouette_metrics_raw_batch_v1(
+    const MaximumSilhouetteBatchInput* input,
+    MaximumSilhouetteBatchOutput* output) noexcept
+{
+    try
+    {
+        constexpr std::size_t kCellLimit = std::size_t(1) << 28;
+        if (input == nullptr || output == nullptr)
+            return ErrorNullPointer;
+        if (input->struct_size != sizeof(MaximumSilhouetteBatchInput) ||
+            output->struct_size != sizeof(MaximumSilhouetteBatchOutput))
+            return ErrorStructSize;
+        if (input->width == 0 || input->height == 0 || input->view_count == 0 ||
+            input->original_masks == nullptr || input->candidate_masks == nullptr ||
+            output->intersections == nullptr || output->unions == nullptr)
+            return ErrorNullPointer;
+        if (!can_multiply(input->width, input->height) ||
+            !can_multiply(input->view_count, static_cast<std::size_t>(input->width) * input->height) ||
+            !can_multiply(input->empty_distance, input->empty_distance))
+            return ErrorCount;
+        const std::size_t cell_count = static_cast<std::size_t>(input->width) * input->height;
+        const std::size_t all_cells = cell_count * input->view_count;
+        const std::uint64_t maximum_distance =
+            static_cast<std::uint64_t>(input->width - 1) * (input->width - 1) +
+            static_cast<std::uint64_t>(input->height - 1) * (input->height - 1);
+        const std::uint64_t empty_distance_squared =
+            static_cast<std::uint64_t>(input->empty_distance) * input->empty_distance;
+        if (cell_count >= kCellLimit || maximum_distance >= std::numeric_limits<std::uint32_t>::max() ||
+            empty_distance_squared > std::numeric_limits<std::uint32_t>::max() ||
+            input->original_row_stride < input->width || input->candidate_row_stride < input->width ||
+            input->original_view_stride < input->original_row_stride * input->height ||
+            input->candidate_view_stride < input->candidate_row_stride * input->height ||
+            output->view_capacity < input->view_count)
+            return ErrorCount;
+        if (!can_multiply(input->view_count - 1, input->original_view_stride) ||
+            !can_multiply(input->view_count - 1, input->candidate_view_stride))
+            return ErrorCount;
+
+        const bool debug_offsets = output->original_boundary_offsets != nullptr ||
+            output->candidate_boundary_offsets != nullptr || output->distance_offsets != nullptr;
+        if (debug_offsets &&
+            (output->original_boundary_offsets == nullptr || output->candidate_boundary_offsets == nullptr ||
+             output->distance_offsets == nullptr || output->offset_capacity < input->view_count + 1))
+            return ErrorNullPointer;
+        if ((output->original_boundary_xy == nullptr) != (output->original_boundary_capacity == 0) ||
+            (output->candidate_boundary_xy == nullptr) != (output->candidate_boundary_capacity == 0) ||
+            (output->distances_squared == nullptr) != (output->distance_capacity == 0))
+            return ErrorNullPointer;
+        if ((output->original_boundary_xy != nullptr || output->candidate_boundary_xy != nullptr ||
+             output->distances_squared != nullptr) && !debug_offsets)
+            return ErrorNullPointer;
+
+        output->p95_distance_squared = 0;
+        output->distance_count = 0;
+        output->original_boundary_count = 0;
+        output->candidate_boundary_count = 0;
+        output->distances_written = 0;
+        output->boundary_extraction_ns = 0;
+        output->distance_calculation_ns = 0;
+        output->metric_production_ns = 0;
+        output->allocation_count = 0;
+        output->allocation_bytes = 0;
+        output->peak_scratch_bytes = 0;
+        if (debug_offsets)
+        {
+            output->original_boundary_offsets[0] = 0;
+            output->candidate_boundary_offsets[0] = 0;
+            output->distance_offsets[0] = 0;
+        }
+
+        SilhouetteScratch& scratch = g_silhouette_scratch;
+        reserve_silhouette_buffer(
+            scratch.original_boundary, cell_count, output->allocation_count, output->allocation_bytes);
+        reserve_silhouette_buffer(
+            scratch.candidate_boundary, cell_count, output->allocation_count, output->allocation_bytes);
+        reserve_silhouette_buffer(scratch.field, cell_count, output->allocation_count, output->allocation_bytes);
+        const std::size_t maximum_dimension = std::max<std::size_t>(input->width, input->height);
+        reserve_silhouette_buffer(scratch.line, maximum_dimension, output->allocation_count, output->allocation_bytes);
+        reserve_silhouette_buffer(
+            scratch.transformed, maximum_dimension, output->allocation_count, output->allocation_bytes);
+        reserve_silhouette_buffer(scratch.sites, maximum_dimension, output->allocation_count, output->allocation_bytes);
+        reserve_silhouette_buffer(
+            scratch.intersections, maximum_dimension + 1, output->allocation_count, output->allocation_bytes);
+        reserve_silhouette_buffer(
+            scratch.distances, all_cells * 2, output->allocation_count, output->allocation_bytes);
+        scratch.line.resize(maximum_dimension);
+        scratch.transformed.resize(maximum_dimension);
+        scratch.sites.resize(maximum_dimension);
+        scratch.intersections.resize(maximum_dimension + 1);
+        scratch.distances.clear();
+        output->peak_scratch_bytes = silhouette_scratch_bytes(scratch);
+
+        const std::uint32_t infinity = static_cast<std::uint32_t>(maximum_distance + 1);
+        for (std::uint32_t view = 0; view < input->view_count; ++view)
+        {
+            const unsigned char* original = input->original_masks +
+                static_cast<std::size_t>(view) * input->original_view_stride;
+            const unsigned char* candidate = input->candidate_masks +
+                static_cast<std::size_t>(view) * input->candidate_view_stride;
+
+            const auto boundary_start = std::chrono::steady_clock::now();
+            if (!binary_mask_and_boundary(
+                    original,
+                    input->width,
+                    input->height,
+                    input->original_row_stride,
+                    scratch.original_boundary) ||
+                !binary_mask_and_boundary(
+                    candidate,
+                    input->width,
+                    input->height,
+                    input->candidate_row_stride,
+                    scratch.candidate_boundary))
+                return ErrorData;
+            std::uint64_t intersection = 0;
+            std::uint64_t union_count = 0;
+            for (std::uint32_t y = 0; y < input->height; ++y)
+            {
+                const unsigned char* original_row = original + static_cast<std::size_t>(y) * input->original_row_stride;
+                const unsigned char* candidate_row = candidate + static_cast<std::size_t>(y) * input->candidate_row_stride;
+                for (std::uint32_t x = 0; x < input->width; ++x)
+                {
+                    intersection += original_row[x] == 255 && candidate_row[x] == 255;
+                    union_count += original_row[x] == 255 || candidate_row[x] == 255;
+                }
+            }
+            output->intersections[view] = intersection;
+            output->unions[view] = union_count;
+
+            if (output->original_boundary_xy != nullptr)
+            {
+                if (scratch.original_boundary.size() >
+                    output->original_boundary_capacity - output->original_boundary_count)
+                    return ErrorCount;
+                for (const auto& point : scratch.original_boundary)
+                {
+                    output->original_boundary_xy[output->original_boundary_count * 2] = point.first;
+                    output->original_boundary_xy[output->original_boundary_count * 2 + 1] = point.second;
+                    ++output->original_boundary_count;
+                }
+            }
+            if (output->candidate_boundary_xy != nullptr)
+            {
+                if (scratch.candidate_boundary.size() >
+                    output->candidate_boundary_capacity - output->candidate_boundary_count)
+                    return ErrorCount;
+                for (const auto& point : scratch.candidate_boundary)
+                {
+                    output->candidate_boundary_xy[output->candidate_boundary_count * 2] = point.first;
+                    output->candidate_boundary_xy[output->candidate_boundary_count * 2 + 1] = point.second;
+                    ++output->candidate_boundary_count;
+                }
+            }
+            const auto boundary_end = std::chrono::steady_clock::now();
+            output->boundary_extraction_ns += elapsed_nanoseconds(boundary_start, boundary_end);
+
+            const auto distance_start = std::chrono::steady_clock::now();
+            const std::size_t distance_start_index = scratch.distances.size();
+            if (!scratch.original_boundary.empty() || !scratch.candidate_boundary.empty())
+            {
+                if (scratch.original_boundary.empty() || scratch.candidate_boundary.empty())
+                {
+                    scratch.distances.push_back(static_cast<std::uint32_t>(empty_distance_squared));
+                }
+                else
+                {
+                    build_squared_distance_field(
+                        input->width, input->height, infinity, scratch.candidate_boundary, scratch);
+                    for (const auto& point : scratch.original_boundary)
+                        scratch.distances.push_back(
+                            scratch.field[static_cast<std::size_t>(point.second) * input->width + point.first]);
+                    build_squared_distance_field(
+                        input->width, input->height, infinity, scratch.original_boundary, scratch);
+                    for (const auto& point : scratch.candidate_boundary)
+                        scratch.distances.push_back(
+                            scratch.field[static_cast<std::size_t>(point.second) * input->width + point.first]);
+                }
+            }
+            if (output->distances_squared != nullptr)
+            {
+                const std::size_t added = scratch.distances.size() - distance_start_index;
+                if (added > output->distance_capacity - output->distances_written)
+                    return ErrorCount;
+                std::copy(
+                    scratch.distances.begin() + static_cast<std::ptrdiff_t>(distance_start_index),
+                    scratch.distances.end(),
+                    output->distances_squared + output->distances_written);
+                output->distances_written += added;
+            }
+            const auto distance_end = std::chrono::steady_clock::now();
+            output->distance_calculation_ns += elapsed_nanoseconds(distance_start, distance_end);
+
+            if (debug_offsets)
+            {
+                output->original_boundary_offsets[view + 1] = output->original_boundary_count;
+                output->candidate_boundary_offsets[view + 1] = output->candidate_boundary_count;
+                output->distance_offsets[view + 1] = output->distances_written;
+            }
+        }
+
+        const auto metric_start = std::chrono::steady_clock::now();
+        output->distance_count = scratch.distances.size();
+        if (!scratch.distances.empty())
+        {
+            const std::size_t index = std::min(
+                scratch.distances.size() - 1,
+                std::max<std::size_t>(
+                    0,
+                    static_cast<std::size_t>(
+                        std::ceil(static_cast<double>(scratch.distances.size()) * 0.95)) - 1));
+            std::nth_element(
+                scratch.distances.begin(),
+                scratch.distances.begin() + static_cast<std::ptrdiff_t>(index),
+                scratch.distances.end());
+            output->p95_distance_squared = scratch.distances[index];
+        }
+        const auto metric_end = std::chrono::steady_clock::now();
+        output->metric_production_ns = elapsed_nanoseconds(metric_start, metric_end);
+        return 0;
+    }
+    catch (const std::bad_alloc&)
+    {
+        return ErrorAllocation;
+    }
+    catch (...)
+    {
+        return ErrorException;
+    }
 }
 
 extern "C" __declspec(dllexport) int maximum_meshopt_test_pause_at(std::uint32_t point) noexcept
