@@ -2,12 +2,48 @@ from __future__ import annotations
 
 import ctypes
 from dataclasses import dataclass
+import hashlib
 import math
 from pathlib import Path
+import struct
 import time
 
 
 _CELL_LIMIT = 1 << 28
+EXPECTED_SILHOUETTE_API_VERSION = "1.0.0"
+EXPECTED_SILHOUETTE_BUILD_ID = "maximum-silhouette-raw-v1-20260722"
+_PE_MACHINE_AMD64 = 0x8664
+_CAPABILITY_RAW_MASK_BATCH = 1
+_CANONICAL_VIEW_COUNT = 8
+_MASK_FORMAT_BINARY_L = 1
+_CALLING_CONVENTION_WINDOWS_X64 = 1
+_BUILD_ID_CAPACITY = 64
+_LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x00000100
+_LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
+
+
+@dataclass(frozen=True)
+class NativeSilhouettePackage:
+    dll_path: Path
+    sha256: str
+    size: int
+    api_version: str
+    build_id: str
+    architecture: str
+
+    @classmethod
+    def from_file_for_test(cls, dll_path: Path) -> "NativeSilhouettePackage":
+        """Build an explicit source/test contract; production must use its package manifest."""
+        path = Path(dll_path)
+        payload = path.read_bytes()
+        return cls(
+            path.resolve(),
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+            EXPECTED_SILHOUETTE_API_VERSION,
+            EXPECTED_SILHOUETTE_BUILD_ID,
+            "x64",
+        )
 
 
 @dataclass(frozen=True)
@@ -100,6 +136,61 @@ class _NativeOutput(ctypes.Structure):
     ]
 
 
+class _NativeAbiInfo(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("api_major", ctypes.c_uint32),
+        ("api_minor", ctypes.c_uint32),
+        ("api_patch", ctypes.c_uint32),
+        ("architecture", ctypes.c_uint32),
+        ("canonical_view_count", ctypes.c_uint32),
+        ("mask_format", ctypes.c_uint32),
+        ("calling_convention", ctypes.c_uint32),
+        ("pointer_size", ctypes.c_uint32),
+        ("size_t_size", ctypes.c_uint32),
+        ("uint32_size", ctypes.c_uint32),
+        ("uint64_size", ctypes.c_uint32),
+        ("input_struct_size", ctypes.c_uint32),
+        ("input_struct_alignment", ctypes.c_uint32),
+        ("output_struct_size", ctypes.c_uint32),
+        ("output_struct_alignment", ctypes.c_uint32),
+        ("abi_struct_size", ctypes.c_uint32),
+        ("abi_struct_alignment", ctypes.c_uint32),
+        ("capabilities", ctypes.c_uint64),
+        ("build_id", ctypes.c_char * _BUILD_ID_CAPACITY),
+    ]
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _pe_machine(path: Path) -> int:
+    with path.open("rb") as stream:
+        if stream.read(2) != b"MZ":
+            raise RuntimeError(f"silhouette DLL is not a PE file: {path}")
+        stream.seek(0x3C)
+        offset_data = stream.read(4)
+        if len(offset_data) != 4:
+            raise RuntimeError(f"silhouette DLL has a truncated DOS header: {path}")
+        pe_offset = struct.unpack("<I", offset_data)[0]
+        stream.seek(pe_offset)
+        if stream.read(4) != b"PE\0\0":
+            raise RuntimeError(f"silhouette DLL has an invalid PE signature: {path}")
+        machine_data = stream.read(2)
+        if len(machine_data) != 2:
+            raise RuntimeError(f"silhouette DLL has a truncated PE header: {path}")
+        return struct.unpack("<H", machine_data)[0]
+
+
+def _alignment(structure: type[ctypes.Structure]) -> int:
+    return ctypes.alignment(structure)
+
+
 def _validate_batch(batch: MaskBatch, name: str) -> None:
     if not isinstance(batch.buffer, bytearray):
         raise TypeError(f"{name} buffer must be a bytearray")
@@ -169,21 +260,100 @@ def _split_values(
 
 
 class RawMaskSilhouetteKernel:
-    def __init__(self, dll_path: Path) -> None:
-        path = Path(dll_path).expanduser().resolve()
+    def __init__(self, package: NativeSilhouettePackage) -> None:
+        if not isinstance(package, NativeSilhouettePackage):
+            raise TypeError("silhouette native loading requires a package contract")
+        configured = Path(package.dll_path).expanduser()
+        if not configured.is_absolute():
+            raise ValueError("silhouette DLL path must be absolute")
+        path = configured.resolve()
         if not path.is_file():
-            raise RuntimeError(f"experimental silhouette DLL not built: {path}")
+            raise RuntimeError(f"silhouette DLL is missing: {path}")
+        actual_size = path.stat().st_size
+        if type(package.size) is not int or package.size < 1 or actual_size != package.size:
+            raise RuntimeError(
+                f"silhouette DLL size mismatch at {path}: expected {package.size}, got {actual_size}"
+            )
+        actual_hash = _sha256_file(path)
+        if actual_hash.lower() != package.sha256.lower():
+            raise RuntimeError(
+                f"silhouette DLL SHA-256 mismatch at {path}: expected {package.sha256}, got {actual_hash}"
+            )
+        if package.architecture != "x64":
+            raise RuntimeError(f"unsupported silhouette package architecture: {package.architecture}")
+        if struct.calcsize("P") != 8:
+            raise RuntimeError("silhouette backend requires a 64-bit Python process")
+        machine = _pe_machine(path)
+        if machine != _PE_MACHINE_AMD64:
+            raise RuntimeError(
+                f"silhouette DLL is not AMD64 at {path}: PE machine 0x{machine:04x}"
+            )
         try:
-            self._dll = ctypes.WinDLL(str(path), winmode=0)
+            self._dll = ctypes.WinDLL(
+                str(path),
+                winmode=_LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | _LOAD_LIBRARY_SEARCH_SYSTEM32,
+            )
         except OSError as exc:
-            raise RuntimeError(f"cannot load experimental silhouette DLL at {path}: {exc}") from exc
+            raise RuntimeError(f"cannot load silhouette DLL at {path}: {exc}") from exc
+        try:
+            abi_function = self._dll.maximum_silhouette_get_abi_info_v1
+        except AttributeError as exc:
+            raise RuntimeError(f"silhouette ABI export missing from {path}") from exc
+        abi_function.argtypes = [ctypes.POINTER(_NativeAbiInfo)]
+        abi_function.restype = ctypes.c_int
+        abi = _NativeAbiInfo(struct_size=ctypes.sizeof(_NativeAbiInfo))
+        abi_code = abi_function(ctypes.byref(abi))
+        if abi_code != 0:
+            raise RuntimeError(f"silhouette ABI query failed with native error {abi_code}")
+        self._validate_abi(package, abi, path)
         try:
             function = self._dll.maximum_silhouette_metrics_raw_batch_v1
         except AttributeError as exc:
-            raise RuntimeError(f"experimental silhouette export missing from {path}") from exc
+            raise RuntimeError(f"silhouette metric export missing from {path}") from exc
         function.argtypes = [ctypes.POINTER(_NativeInput), ctypes.POINTER(_NativeOutput)]
         function.restype = ctypes.c_int
         self._measure = function
+        self.dll_path = path
+        self.api_version = f"{abi.api_major}.{abi.api_minor}.{abi.api_patch}"
+        self.build_id = bytes(abi.build_id).split(b"\0", 1)[0].decode("ascii")
+        self.architecture = "x64"
+
+    @staticmethod
+    def _validate_abi(
+        package: NativeSilhouettePackage, abi: _NativeAbiInfo, path: Path
+    ) -> None:
+        actual_version = f"{abi.api_major}.{abi.api_minor}.{abi.api_patch}"
+        actual_build = bytes(abi.build_id).split(b"\0", 1)[0].decode("ascii", "strict")
+        expected_values = {
+            "API version": (package.api_version, actual_version),
+            "build ID": (package.build_id, actual_build),
+            "architecture": (_PE_MACHINE_AMD64, abi.architecture),
+            "canonical view count": (_CANONICAL_VIEW_COUNT, abi.canonical_view_count),
+            "mask format": (_MASK_FORMAT_BINARY_L, abi.mask_format),
+            "calling convention": (
+                _CALLING_CONVENTION_WINDOWS_X64,
+                abi.calling_convention,
+            ),
+            "pointer size": (ctypes.sizeof(ctypes.c_void_p), abi.pointer_size),
+            "size_t size": (ctypes.sizeof(ctypes.c_size_t), abi.size_t_size),
+            "uint32 size": (ctypes.sizeof(ctypes.c_uint32), abi.uint32_size),
+            "uint64 size": (ctypes.sizeof(ctypes.c_uint64), abi.uint64_size),
+            "input struct size": (ctypes.sizeof(_NativeInput), abi.input_struct_size),
+            "input struct alignment": (_alignment(_NativeInput), abi.input_struct_alignment),
+            "output struct size": (ctypes.sizeof(_NativeOutput), abi.output_struct_size),
+            "output struct alignment": (_alignment(_NativeOutput), abi.output_struct_alignment),
+            "ABI struct size": (ctypes.sizeof(_NativeAbiInfo), abi.abi_struct_size),
+            "ABI struct alignment": (_alignment(_NativeAbiInfo), abi.abi_struct_alignment),
+        }
+        for name, (expected, actual) in expected_values.items():
+            if expected != actual:
+                raise RuntimeError(
+                    f"silhouette {name} mismatch in {path}: expected {expected}, got {actual}"
+                )
+        if abi.struct_size != ctypes.sizeof(_NativeAbiInfo):
+            raise RuntimeError(f"silhouette ABI response struct size mismatch in {path}")
+        if abi.capabilities & _CAPABILITY_RAW_MASK_BATCH != _CAPABILITY_RAW_MASK_BATCH:
+            raise RuntimeError(f"silhouette raw-mask capability missing from {path}")
 
     def measure(
         self,

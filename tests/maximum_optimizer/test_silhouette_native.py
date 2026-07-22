@@ -4,16 +4,96 @@ import math
 import os
 from pathlib import Path
 import struct
+import tempfile
 import unittest
 from unittest import mock
 
 from PIL import Image, ImageChops
 
 from maximum_optimizer import metrics as metrics_module
-from maximum_optimizer.silhouette_native import MaskBatch, RawMaskSilhouetteKernel
+from maximum_optimizer.silhouette_native import (
+    EXPECTED_SILHOUETTE_BUILD_ID,
+    MaskBatch,
+    NativeSilhouettePackage,
+    RawMaskSilhouetteKernel,
+)
 
 
-EXPERIMENT_DLL = Path(os.environ.get("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", ""))
+PROMOTED_DLL = (
+    Path(__file__).resolve().parents[2]
+    / "maximum_optimizer"
+    / "native"
+    / "bin"
+    / "win-x64"
+    / "meshopt_bridge.dll"
+)
+
+
+def promoted_package(path: Path = PROMOTED_DLL) -> NativeSilhouettePackage:
+    import hashlib
+
+    payload = path.read_bytes()
+    return NativeSilhouettePackage(
+        dll_path=path.resolve(),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+        api_version="1.0.0",
+        build_id=EXPECTED_SILHOUETTE_BUILD_ID,
+        architecture="x64",
+    )
+
+
+class NativeContractTests(unittest.TestCase):
+    def test_requires_an_absolute_manifest_path(self) -> None:
+        package = NativeSilhouettePackage(
+            Path("meshopt_bridge.dll"), "0" * 64, 1, "1.0.0", EXPECTED_SILHOUETTE_BUILD_ID, "x64"
+        )
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            RawMaskSilhouetteKernel(package)
+
+    @unittest.skipUnless(PROMOTED_DLL.is_file(), "promoted silhouette DLL not built")
+    def test_reports_and_validates_the_complete_promoted_abi(self) -> None:
+        kernel = RawMaskSilhouetteKernel(promoted_package())
+        self.assertEqual(kernel.api_version, "1.0.0")
+        self.assertEqual(kernel.build_id, EXPECTED_SILHOUETTE_BUILD_ID)
+        self.assertEqual(kernel.architecture, "x64")
+
+    @unittest.skipUnless(PROMOTED_DLL.is_file(), "promoted silhouette DLL not built")
+    def test_rejects_wrong_hash_and_size_before_loading(self) -> None:
+        package = promoted_package()
+        with self.assertRaisesRegex(RuntimeError, "SHA-256"):
+            RawMaskSilhouetteKernel(
+                NativeSilhouettePackage(
+                    package.dll_path,
+                    "0" * 64,
+                    package.size,
+                    package.api_version,
+                    package.build_id,
+                    package.architecture,
+                )
+            )
+        with self.assertRaisesRegex(RuntimeError, "size"):
+            RawMaskSilhouetteKernel(
+                NativeSilhouettePackage(
+                    package.dll_path,
+                    package.sha256,
+                    package.size + 1,
+                    package.api_version,
+                    package.build_id,
+                    package.architecture,
+                )
+            )
+
+    @unittest.skipUnless(PROMOTED_DLL.is_file(), "promoted silhouette DLL not built")
+    def test_rejects_non_amd64_pe_before_loading(self) -> None:
+        payload = bytearray(PROMOTED_DLL.read_bytes())
+        pe_offset = struct.unpack_from("<I", payload, 0x3C)[0]
+        struct.pack_into("<H", payload, pe_offset + 4, 0x014C)
+        with tempfile.TemporaryDirectory() as temporary:
+            fake = Path(temporary) / "meshopt_bridge.dll"
+            fake.write_bytes(payload)
+            with self.assertRaisesRegex(RuntimeError, "AMD64"):
+                RawMaskSilhouetteKernel(promoted_package(fake))
 
 
 def mask(width: int, height: int, points: set[tuple[int, int]]) -> Image.Image:
@@ -98,11 +178,11 @@ def oracle(
     }
 
 
-@unittest.skipUnless(EXPERIMENT_DLL.is_file(), "experimental silhouette DLL not configured")
+@unittest.skipUnless(PROMOTED_DLL.is_file(), "promoted silhouette DLL not built")
 class RawMaskSilhouetteKernelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.kernel = RawMaskSilhouetteKernel(EXPERIMENT_DLL)
+        cls.kernel = RawMaskSilhouetteKernel(promoted_package())
 
     def assert_exact_case(
         self,
@@ -257,7 +337,7 @@ class RawMaskSilhouetteKernelTests(unittest.TestCase):
 
         with mock.patch.dict(
             os.environ,
-            {"MAXIMUM_SILHOUETTE_EXPERIMENT_DLL": str(EXPERIMENT_DLL)},
+            {"MAXIMUM_SILHOUETTE_EXPERIMENT_DLL": str(PROMOTED_DLL)},
             clear=False,
         ):
             metrics_module._reset_silhouette_experiment_diagnostics()

@@ -331,6 +331,30 @@ struct MaximumSilhouetteBatchOutput
     std::uint64_t peak_scratch_bytes;
 };
 
+struct MaximumSilhouetteAbiInfo
+{
+    std::uint32_t struct_size;
+    std::uint32_t api_major;
+    std::uint32_t api_minor;
+    std::uint32_t api_patch;
+    std::uint32_t architecture;
+    std::uint32_t canonical_view_count;
+    std::uint32_t mask_format;
+    std::uint32_t calling_convention;
+    std::uint32_t pointer_size;
+    std::uint32_t size_t_size;
+    std::uint32_t uint32_size;
+    std::uint32_t uint64_size;
+    std::uint32_t input_struct_size;
+    std::uint32_t input_struct_alignment;
+    std::uint32_t output_struct_size;
+    std::uint32_t output_struct_alignment;
+    std::uint32_t abi_struct_size;
+    std::uint32_t abi_struct_alignment;
+    std::uint64_t capabilities;
+    char build_id[64];
+};
+
 struct SilhouetteScratch
 {
     std::vector<std::pair<std::uint32_t, std::uint32_t>> original_boundary;
@@ -518,6 +542,48 @@ extern "C" __declspec(dllexport) int maximum_meshopt_version() noexcept
 extern "C" __declspec(dllexport) int maximum_meshopt_abi_version() noexcept
 {
     return 3;
+}
+
+extern "C" __declspec(dllexport) int maximum_silhouette_get_abi_info_v1(
+    MaximumSilhouetteAbiInfo* output) noexcept
+{
+    try
+    {
+        if (output == nullptr)
+            return ErrorNullPointer;
+        if (output->struct_size != sizeof(MaximumSilhouetteAbiInfo))
+            return ErrorStructSize;
+
+        MaximumSilhouetteAbiInfo value{};
+        value.struct_size = sizeof(MaximumSilhouetteAbiInfo);
+        value.api_major = 1;
+        value.api_minor = 0;
+        value.api_patch = 0;
+        value.architecture = 0x8664;
+        value.canonical_view_count = 8;
+        value.mask_format = 1;
+        value.calling_convention = 1;
+        value.pointer_size = sizeof(void*);
+        value.size_t_size = sizeof(std::size_t);
+        value.uint32_size = sizeof(std::uint32_t);
+        value.uint64_size = sizeof(std::uint64_t);
+        value.input_struct_size = sizeof(MaximumSilhouetteBatchInput);
+        value.input_struct_alignment = alignof(MaximumSilhouetteBatchInput);
+        value.output_struct_size = sizeof(MaximumSilhouetteBatchOutput);
+        value.output_struct_alignment = alignof(MaximumSilhouetteBatchOutput);
+        value.abi_struct_size = sizeof(MaximumSilhouetteAbiInfo);
+        value.abi_struct_alignment = alignof(MaximumSilhouetteAbiInfo);
+        value.capabilities = 1;
+        constexpr char kBuildId[] = "maximum-silhouette-raw-v1-20260722";
+        static_assert(sizeof(kBuildId) <= sizeof(value.build_id));
+        std::copy_n(kBuildId, sizeof(kBuildId), value.build_id);
+        *output = value;
+        return 0;
+    }
+    catch (...)
+    {
+        return ErrorException;
+    }
 }
 
 extern "C" __declspec(dllexport) int maximum_silhouette_metrics_raw_batch_v1(

@@ -16,7 +16,12 @@ from PIL import Image, ImageChops, ImageDraw
 
 from .contracts import RegionBudget, RegionMetrics, ValidationDecision
 from .regions import SmdRegion
-from .silhouette_native import MaskBatch, RawMaskSilhouetteKernel, pack_masks
+from .silhouette_native import (
+    MaskBatch,
+    NativeSilhouettePackage,
+    RawMaskSilhouetteKernel,
+    pack_masks,
+)
 from .smd import SmdTriangle, SmdVertex
 
 
@@ -161,7 +166,7 @@ def _silhouette_experiment_kernel(path: Path) -> RawMaskSilhouetteKernel:
     with _SILHOUETTE_EXPERIMENT_LOCK:
         kernel = _SILHOUETTE_EXPERIMENT_KERNELS.get(path)
         if kernel is None:
-            kernel = RawMaskSilhouetteKernel(path)
+            kernel = RawMaskSilhouetteKernel(NativeSilhouettePackage.from_file_for_test(path))
             _SILHOUETTE_EXPERIMENT_KERNELS[path] = kernel
         return kernel
 
