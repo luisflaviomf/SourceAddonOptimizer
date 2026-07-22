@@ -14,21 +14,14 @@ namespace GmodAddonCompressor.Systems.Tools
     {
         internal static void EnsureSourceAddonOptimizerExtracted()
         {
-            Directory.CreateDirectory(ToolPaths.ToolRoot);
             Directory.CreateDirectory(ToolPaths.WorkRoot);
-
-            EnsureExtracted(
-                ToolPaths.ToolName,
-                ToolPaths.ToolVersion,
+            string installedRoot = SourceAddonOptimizerPackageInstaller.Install(
                 Resources.SourceAddonOptimizer_win_x64,
-                new[]
-                {
-                    "SourceAddonOptimizerWorker.exe",
-                    "CrowbarCommandLineDecomp.exe",
-                    "_internal/base_library.zip",
-                    "_internal/python311.dll"
-                }
+                ToolPaths.ToolsRoot,
+                ToolPaths.ToolName,
+                ToolPaths.ToolVersion
             );
+            ToolPaths.ActivateToolRoot(installedRoot);
         }
 
         internal static string EnsureExtracted(string toolName, string toolVersion, byte[] zipBytes, IReadOnlyCollection<string> expectedFiles)
