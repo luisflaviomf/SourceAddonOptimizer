@@ -16,7 +16,9 @@
 - Do not use subagents.
 - Do not implement an optimization in this investigation.
 - Keep temporary instrumentation under `benchmarks/lvs_models_adaptive/_profile_maximum_v2_temp.py` and delete it after producing evidence.
-- Store raw evidence under `C:\gaco-max-v2-rigorous-profile-20260721`.
+- Store raw evidence under `D:\gaco-max-v2-rigorous-profile-20260721`. The
+  planned `C:` root could not be used because that volume had zero free bytes
+  at measurement time; the evidence volume had 371 GB free.
 - Treat cache-empty fresh-process runs as cold at the application level; state explicitly that Windows page cache cannot be force-cleared with the available tools.
 - Treat persistent-region-cache fresh-process runs as warm; DLL and Python interpreter reload in every run, and Blender is not part of the adaptive stage.
 - Close at least 95% of adaptive wall time with mutually exclusive top-level categories. Report GC and I/O again only as marked cross-cut overlays.
