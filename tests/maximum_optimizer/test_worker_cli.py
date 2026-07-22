@@ -23,8 +23,10 @@ class WorkerCliTests(unittest.TestCase):
             encoding="utf-8"
         )
         assignment = source.index("sys.dont_write_bytecode = True")
+        child_environment = source.index('os.environ["PYTHONDONTWRITEBYTECODE"] = "1"')
         first_packaged_import = source.index("import batch_decompile_organize")
         self.assertLess(assignment, first_packaged_import)
+        self.assertLess(child_environment, first_packaged_import)
 
     def test_maximum_is_public_mode_and_starts_from_profiled_normal_seed(self) -> None:
         args = build_optimized_addon.parse_args(
