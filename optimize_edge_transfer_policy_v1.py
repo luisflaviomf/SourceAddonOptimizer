@@ -9,6 +9,8 @@ from pathlib import Path
 
 import bmesh
 
+sys.dont_write_bytecode = True
+
 
 REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:

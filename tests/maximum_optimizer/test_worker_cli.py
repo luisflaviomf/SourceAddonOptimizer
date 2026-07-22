@@ -28,6 +28,19 @@ class WorkerCliTests(unittest.TestCase):
         self.assertLess(assignment, first_packaged_import)
         self.assertLess(child_environment, first_packaged_import)
 
+    def test_blender_wrappers_disable_bytecode_before_local_imports(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        wrappers = {
+            "batch_optimize_selective_policy.py": "import batch_optimize_qc as base",
+            "batch_optimize_round_parts_policy.py": "import batch_optimize_qc as base",
+            "optimize_edge_transfer_policy_v1.py": "import batch_optimize_qc as base",
+            "optimize_fidelity_partition_policy_v1.py": "import batch_optimize_qc as base",
+        }
+        for relative, local_import in wrappers.items():
+            with self.subTest(wrapper=relative):
+                source = (root / relative).read_text(encoding="utf-8")
+                self.assertLess(source.index("sys.dont_write_bytecode = True"), source.index(local_import))
+
     def test_maximum_is_public_mode_and_starts_from_profiled_normal_seed(self) -> None:
         args = build_optimized_addon.parse_args(
             ["addon", "--optimizer-mode", "maximum", "--ratio", "0.75"]

@@ -12,6 +12,8 @@ from pathlib import Path
 import bmesh
 from mathutils import kdtree
 
+sys.dont_write_bytecode = True
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR
