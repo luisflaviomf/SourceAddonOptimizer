@@ -18,6 +18,14 @@ class WorkerCliTests(unittest.TestCase):
     def tearDown(self) -> None:
         reset_silhouette_backend()
 
+    def test_worker_disables_bytecode_before_loading_packaged_sources(self) -> None:
+        source = (Path(__file__).resolve().parents[2] / "worker/worker_main.py").read_text(
+            encoding="utf-8"
+        )
+        assignment = source.index("sys.dont_write_bytecode = True")
+        first_packaged_import = source.index("import batch_decompile_organize")
+        self.assertLess(assignment, first_packaged_import)
+
     def test_maximum_is_public_mode_and_starts_from_profiled_normal_seed(self) -> None:
         args = build_optimized_addon.parse_args(
             ["addon", "--optimizer-mode", "maximum", "--ratio", "0.75"]

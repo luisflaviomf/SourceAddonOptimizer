@@ -4,6 +4,9 @@ import os
 import re
 import subprocess
 import sys
+
+sys.dont_write_bytecode = True
+
 import traceback
 from datetime import datetime
 from pathlib import Path
