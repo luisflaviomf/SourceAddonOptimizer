@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import gc
 import json
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
+import weakref
 
+import maximum_optimizer.pipeline as pipeline_module
 from maximum_optimizer.contracts import ValidationDecision
 from maximum_optimizer.pipeline import (
     CompileResult,
     MaximumRunOptions,
     _pose_contract,
+    _write_region_smd,
     run_maximum_adaptive,
     simplify_smd_region,
 )
@@ -19,7 +24,7 @@ from maximum_optimizer.profile import load_profile
 from maximum_optimizer.qc_graph import QcOccurrence
 from maximum_optimizer.regions import build_region_graph
 from maximum_optimizer.rendering import RenderEvidence
-from maximum_optimizer.smd import SmdDocument, SmdInfluence, SmdTriangle, SmdVertex, parse_smd
+from maximum_optimizer.smd import SmdDocument, SmdInfluence, SmdTriangle, SmdVertex, parse_smd, serialize_smd
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -70,6 +75,29 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertLess(len(simplified.triangles), len(region.triangles))
         self.assertEqual(simplified.material, region.material)
         self.assertEqual(simplified.bone_ids, region.bone_ids)
+
+    def test_region_spool_does_not_renormalize_skin_weights_before_final_serialization(self) -> None:
+        weights = (0.48236792663216077, 0.07435777584206046, 0.44327429752577874)
+        vertex = SmdVertex(
+            0,
+            (0.123456789123456, 2.34567891234567, 3.45678912345678),
+            (0.123456789123, 0.234567891234, 0.967890123456),
+            (0.123456789123, 0.987654321987),
+            tuple(SmdInfluence(index, weight) for index, weight in enumerate(weights)),
+        )
+        triangle = SmdTriangle("paint", (vertex, vertex, vertex), 0)
+        template = build_region_graph(
+            parse_smd((FIXTURES / "two_components.smd").read_text(encoding="utf-8")),
+            OCCURRENCE,
+        ).regions[0]
+        region = replace(template, triangle_ordinals=(0,), triangles=(triangle,))
+        expected = serialize_smd(SmdDocument(("version 1",), region.triangles))
+
+        with tempfile.TemporaryDirectory() as raw:
+            spool = _write_region_smd(Path(raw) / "region.smd", ("version 1",), region)
+            actual = serialize_smd(parse_smd(spool.read_text(encoding="utf-8")))
+
+        self.assertEqual(actual, expected)
 
     def _fixture_options(self, root: Path, *, reject_key: str | None = None) -> MaximumRunOptions:
         addon = root / "addon"
@@ -215,6 +243,45 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertEqual(report.final_triangles, selected_regions)
         self.assertEqual(report.regions.ambiguous, 0)
         self.assertLessEqual(report.final_triangles, report.original_triangles)
+
+    def test_pipeline_releases_source_geometry_before_loading_later_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            options = self._fixture_options(root)
+            original_fixture = FIXTURES / "two_components.smd"
+            normal_fixture = FIXTURES / "two_components_OPT.smd"
+            qc_lines = ['$body "body" "vehicle.smd"']
+            for index in range(1, 8):
+                source = f"vehicle-{index}.smd"
+                shutil.copy2(original_fixture, options.original_source_root / source)
+                shutil.copy2(normal_fixture, options.normal_source_root / source)
+                qc_lines.append(f'$body "body-{index}" "{source}"')
+            qc = "\n".join(qc_lines) + "\n"
+            (options.original_source_root / "vehicle.qc").write_text(qc, encoding="utf-8")
+            (options.normal_source_root / "vehicle.qc").write_text(qc, encoding="utf-8")
+
+            real_parse = pipeline_module.parse_smd
+            triangle_refs: list[weakref.ReferenceType[SmdTriangle]] = []
+            peak_live_triangles = 0
+
+            def tracking_parse(text: str):
+                nonlocal peak_live_triangles
+                gc.collect()
+                alive_before = sum(reference() is not None for reference in triangle_refs)
+                document = real_parse(text)
+                triangle_refs.append(weakref.ref(document.triangles[0]))
+                peak_live_triangles = max(peak_live_triangles, alive_before + 1)
+                return document
+
+            with patch.object(pipeline_module, "parse_smd", side_effect=tracking_parse):
+                report = run_maximum_adaptive(options)
+
+        self.assertEqual(report.family_status, "optimized")
+        self.assertLessEqual(
+            peak_live_triangles,
+            6,
+            f"pipeline retained geometry from too many sources (peak={peak_live_triangles})",
+        )
 
 
 if __name__ == "__main__":

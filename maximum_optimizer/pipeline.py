@@ -6,13 +6,19 @@ import hashlib
 import json
 import math
 from pathlib import Path, PurePosixPath
+import tempfile
 import time
 from typing import Protocol
 
 from .cache import FileRegionCache
 from .closure import ClosureAudit
 from .compiled_validation import CompiledFamilyExpectation, validate_compiled_family
-from .composition import RegionReplacement, compose_source_tree, isolate_compile_failure
+from .composition import (
+    RegionReplacement,
+    compose_document_regions,
+    compose_precomposed_source_tree,
+    isolate_compile_failure,
+)
 from .contracts import MaximumProfile, RegionBudget, RegionKey, ValidationDecision
 from .materials import MaterialSemantics, resolve_material_semantics
 from .mesh_attributes import classify_position_topology
@@ -137,6 +143,33 @@ class _SelectedRegion:
     semantics: MaterialSemantics
     risk_score: float
     target_ratio: float
+    targeted_render: bool = False
+
+
+@dataclass(frozen=True)
+class _RegionState:
+    source: PurePosixPath
+    key: RegionKey
+    material: str
+    original_ordinals: tuple[int, ...]
+    original_triangles: int
+    original_vertices: int
+    normal_triangles: int
+    selected_triangles: int
+    selected_vertices: int
+    representation: str
+    risk_score: float
+    target_ratio: float
+    evaluations: int
+    cache_hits: int
+    failed_gates: tuple[str, ...]
+    reason: str
+    selected_path: Path | None
+    render_request: RenderRequest | None = None
+    fallback_path: Path | None = None
+    fallback_representation: str | None = None
+    fallback_triangles: int = 0
+    fallback_vertices: int = 0
     targeted_render: bool = False
 
 
@@ -395,40 +428,46 @@ def _run_stage(options: MaximumRunOptions, timings: list[StageTiming], stage: st
     return result
 
 
-def _inventory(options: MaximumRunOptions) -> tuple[tuple[_SourceInventory, ...], tuple[PurePosixPath, ...], int]:
+def _inventory(options: MaximumRunOptions) -> tuple[QcOccurrence, ...]:
     occurrences = scan_qc_occurrences(options.original_source_root)
     first_by_source: dict[PurePosixPath, QcOccurrence] = {}
     for occurrence in occurrences:
         first_by_source.setdefault(occurrence.source_path, occurrence)
-    inventories = []
-    ambiguous = []
-    ambiguous_regions = 0
-    for source, occurrence in sorted(first_by_source.items(), key=lambda item: item[0].as_posix().casefold()):
-        options.cancel.throw_if_cancelled()
-        original_path = options.original_source_root / Path(*source.parts)
-        normal_path = options.normal_source_root / Path(*source.parts)
-        try:
-            original_document = parse_smd(original_path.read_text(encoding="utf-8", errors="strict"))
-            normal_document = parse_smd(normal_path.read_text(encoding="utf-8", errors="strict"))
-            original_graph = build_region_graph(original_document, occurrence)
-            normal_graph = build_region_graph(normal_document, occurrence)
-            correspondence = correspond_graphs(original_graph, normal_graph)
-            if correspondence.status != "mapped":
-                ambiguous.append(source)
-                ambiguous_regions += max(1, len(original_graph.regions))
-                continue
-            inventories.append(
-                _SourceInventory(
-                    occurrence,
-                    original_document,
-                    normal_document,
-                    correspondence.pairs,
-                )
-            )
-        except (OSError, UnicodeError, ValueError):
-            ambiguous.append(source)
-            ambiguous_regions += 1
-    return tuple(inventories), tuple(ambiguous), ambiguous_regions
+    return tuple(
+        occurrence
+        for _source, occurrence in sorted(
+            first_by_source.items(),
+            key=lambda item: item[0].as_posix().casefold(),
+        )
+    )
+
+
+def _inventory_source(
+    options: MaximumRunOptions,
+    occurrence: QcOccurrence,
+) -> tuple[_SourceInventory | None, int]:
+    source = occurrence.source_path
+    original_path = options.original_source_root / Path(*source.parts)
+    normal_path = options.normal_source_root / Path(*source.parts)
+    try:
+        original_document = parse_smd(original_path.read_text(encoding="utf-8", errors="strict"))
+        normal_document = parse_smd(normal_path.read_text(encoding="utf-8", errors="strict"))
+        original_graph = build_region_graph(original_document, occurrence)
+        normal_graph = build_region_graph(normal_document, occurrence)
+        correspondence = correspond_graphs(original_graph, normal_graph)
+        if correspondence.status != "mapped":
+            return None, max(1, len(original_graph.regions))
+        return (
+            _SourceInventory(
+                occurrence,
+                original_document,
+                normal_document,
+                correspondence.pairs,
+            ),
+            0,
+        )
+    except (OSError, UnicodeError, ValueError):
+        return None, 1
 
 
 def _write_render_request(
@@ -467,8 +506,8 @@ def _write_render_request(
     )
 
 
-def _representation_counts(selected: list[_SelectedRegion], ambiguous: int, failed: int) -> RegionStatusCounts:
-    values = [item.decision.representation for item in selected]
+def _representation_counts(selected: list[_RegionState], ambiguous: int, failed: int) -> RegionStatusCounts:
+    values = [item.representation for item in selected]
     return RegionStatusCounts(
         values.count("aggressive"),
         values.count("lighter"),
@@ -479,12 +518,378 @@ def _representation_counts(selected: list[_SelectedRegion], ambiguous: int, fail
     )
 
 
+def _vertex_count(region: SmdRegion) -> int:
+    return len(
+        {
+            (vertex.position, vertex.normal, vertex.uv, vertex.influences)
+            for triangle in region.triangles
+            for vertex in triangle.vertices
+        }
+    )
+
+
+def _write_region_smd(path: Path, header_lines: tuple[str, ...], region: SmdRegion) -> Path:
+    lines = [*header_lines, "triangles"]
+    for triangle in region.triangles:
+        lines.append(triangle.material)
+        for vertex in triangle.vertices:
+            values = [
+                str(vertex.primary_bone),
+                *(repr(float(value)) for value in vertex.position),
+                *(repr(float(value)) for value in vertex.normal),
+                *(repr(float(value)) for value in vertex.uv),
+                str(len(vertex.influences)),
+            ]
+            for influence in vertex.influences:
+                values.extend((str(influence.bone), repr(float(influence.weight))))
+            lines.append(" ".join(values))
+    lines.append("end")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return path
+
+
+def _selected_requires_render(selected: _SelectedRegion) -> bool:
+    decision = selected.decision
+    return decision.representation != "original" and requires_targeted_render(
+        selected.semantics,
+        decision.validation.margin_fraction,
+        selected.semantics.confidence,
+        1.0 - len(decision.selected.triangles) / len(selected.original.triangles),
+    )
+
+
+def _region_state_without_spool(selected: _SelectedRegion) -> _RegionState:
+    decision = selected.decision
+    return _RegionState(
+        selected.source,
+        selected.original.key,
+        selected.original.material,
+        selected.original.triangle_ordinals,
+        len(selected.original.triangles),
+        _vertex_count(selected.original),
+        len(selected.normal.triangles),
+        len(decision.selected.triangles),
+        _vertex_count(decision.selected),
+        decision.representation,
+        selected.risk_score,
+        selected.target_ratio,
+        decision.evaluations,
+        decision.cache_hits,
+        decision.validation.failed_gates,
+        decision.reason,
+        None,
+    )
+
+
+def _persist_region_state(
+    options: MaximumRunOptions,
+    inventory: _SourceInventory,
+    selected: _SelectedRegion,
+    regions_root: Path,
+) -> _RegionState:
+    decision = selected.decision
+    render_request: RenderRequest | None = None
+    fallback_path: Path | None = None
+    fallback_representation: str | None = None
+    fallback_triangles = 0
+    fallback_vertices = 0
+    region_root = regions_root / selected.original.key.value
+    selected_path = _write_region_smd(
+        region_root / "selected-region.smd",
+        inventory.original_document.header_lines,
+        decision.selected,
+    )
+    should_render = _selected_requires_render(selected)
+    if should_render:
+        render_request = _write_render_request(options, inventory, selected)
+        fallback_region = selected.normal if decision.representation == "aggressive" else selected.original
+        fallback_representation = "normal" if fallback_region is selected.normal else "original"
+        fallback_path = _write_region_smd(
+            region_root / "fallback-region.smd",
+            inventory.original_document.header_lines,
+            fallback_region,
+        )
+        fallback_triangles = len(fallback_region.triangles)
+        fallback_vertices = _vertex_count(fallback_region)
+    return _RegionState(
+        selected.source,
+        selected.original.key,
+        selected.original.material,
+        selected.original.triangle_ordinals,
+        len(selected.original.triangles),
+        _vertex_count(selected.original),
+        len(selected.normal.triangles),
+        len(decision.selected.triangles),
+        _vertex_count(decision.selected),
+        decision.representation,
+        selected.risk_score,
+        selected.target_ratio,
+        decision.evaluations,
+        decision.cache_hits,
+        decision.validation.failed_gates,
+        decision.reason,
+        selected_path,
+        render_request,
+        fallback_path,
+        fallback_representation,
+        fallback_triangles,
+        fallback_vertices,
+    )
+
+
+def _optimize_source(
+    options: MaximumRunOptions,
+    occurrence: QcOccurrence,
+    simplify: SimplifyRegion,
+    validate_injected: ValidateCandidate | None,
+    cache: FileRegionCache,
+    attribute_hash: str,
+) -> tuple[_SourceInventory | None, tuple[_SelectedRegion, ...], int]:
+    inventory, ambiguous_regions = _inventory_source(options, occurrence)
+    if inventory is None:
+        return None, (), ambiguous_regions
+    source = inventory.occurrence.source_path
+    source_path = options.original_source_root / Path(*source.parts)
+    source_hash = _sha256(source_path)
+    selected: list[_SelectedRegion] = []
+    for pair in inventory.pairs:
+        options.cancel.throw_if_cancelled()
+        semantics = resolve_material_semantics(
+            pair.original.material,
+            options.addon_root,
+            options.framework_resolver_root,
+            inventory.occurrence.material_directories,
+        )
+        features = measure_risk(pair.original, semantics, _VIEWS)
+        budget = budget_for_risk(options.profile, features)
+        metric_reference: PreparedRegionReference | None = None
+
+        if not pair.confident:
+            decision = RegionDecision(
+                pair.original,
+                "original",
+                1.0,
+                0,
+                0,
+                (),
+                ValidationDecision(True, (), 1.0),
+                f"uncertain regional correspondence; restored original region: {pair.reason}",
+            )
+            selected.append(
+                _SelectedRegion(
+                    source,
+                    pair.original,
+                    pair.normal,
+                    decision,
+                    semantics,
+                    features.score,
+                    features.target_ratio,
+                )
+            )
+            continue
+
+        needs_validation = validate_injected is not None or requires_adaptive_validation(
+            source.as_posix(),
+            pair.original.material,
+            len(pair.original.triangles),
+            features,
+            semantics,
+        )
+        if not needs_validation:
+            selected_region = pair.normal if len(pair.normal.triangles) <= len(pair.original.triangles) else pair.original
+            representation = "normal" if selected_region is pair.normal else "original"
+            decision = RegionDecision(
+                selected_region,
+                representation,  # type: ignore[arg-type]
+                len(selected_region.triangles) / len(pair.original.triangles),
+                0,
+                0,
+                (),
+                ValidationDecision(True, (), 1.0),
+                "aggressive Normal seed accepted by low-risk classifier",
+            )
+            selected.append(
+                _SelectedRegion(
+                    source,
+                    pair.original,
+                    pair.normal,
+                    decision,
+                    semantics,
+                    features.score,
+                    features.target_ratio,
+                )
+            )
+            continue
+
+        def validator(candidate: SmdRegion) -> ValidationDecision:
+            nonlocal metric_reference
+            try:
+                if validate_injected is not None:
+                    return validate_injected(pair.original, candidate, budget, pair.original.key)
+                if pair.original.triangles == candidate.triangles:
+                    return ValidationDecision(True, (), 1.0)
+                if metric_reference is None:
+                    metric_reference = prepare_region_reference(
+                        pair.original,
+                        _pose_contract(pair.original, options.profile),
+                    )
+                return validate_region(measure_region_prepared(metric_reference, candidate), budget)
+            except Exception:
+                return ValidationDecision(False, ("validator-error",), 0.0)
+
+        if len(pair.normal.triangles) > len(pair.original.triangles):
+            decision = RegionDecision(
+                pair.original,
+                "original",
+                1.0,
+                0,
+                0,
+                (),
+                ValidationDecision(True, (), 1.0),
+                "normal region increased triangle count",
+            )
+        else:
+            normal_validation = (
+                validator(pair.normal)
+                if validate_injected is not None
+                else ValidationDecision(False, ("priority-seed-requires-lighter-candidate",), 0.0)
+            )
+            request = RegionRequest(
+                pair.original,
+                pair.normal,
+                features.target_ratio,
+                normal_validation,
+                len(pair.original.triangles),
+                len(pair.normal.triangles),
+                source_hash,
+                options.profile.sha256,
+                attribute_hash,
+                10200,
+            )
+            base_ratio = (
+                len(pair.normal.triangles) / len(pair.original.triangles)
+                if normal_validation.passed
+                else 1.0
+            )
+            decision = optimize_region(
+                request,
+                lambda region, absolute_ratio: simplify(
+                    region,
+                    min(1.0, absolute_ratio / max(base_ratio, 1e-12)),
+                    budget,
+                ),
+                validator,
+                cache,
+            )
+        selected.append(
+            _SelectedRegion(
+                source,
+                pair.original,
+                pair.normal,
+                decision,
+                semantics,
+                features.score,
+                features.target_ratio,
+            )
+        )
+    return inventory, tuple(selected), 0
+
+
+def _composition_region(
+    state: _RegionState,
+    triangles: tuple[SmdTriangle, ...],
+    ordinals: tuple[int, ...],
+) -> SmdRegion:
+    zero = (0.0, 0.0, 0.0)
+    return SmdRegion(
+        state.key,
+        state.material,
+        0,
+        ordinals,
+        triangles,
+        zero,
+        zero,
+        zero,
+        (),
+    )
+
+
+def _compose_candidate_source(
+    options: MaximumRunOptions,
+    source: PurePosixPath,
+    states: tuple[_RegionState, ...],
+    candidate_root: Path,
+) -> None:
+    original_path = options.original_source_root / Path(*source.parts)
+    document = parse_smd(original_path.read_text(encoding="utf-8", errors="strict"))
+    replacements = []
+    for state in states:
+        if state.selected_path is None:
+            raise RuntimeError("deferred candidate region has no spool path")
+        selected_document = parse_smd(state.selected_path.read_text(encoding="utf-8", errors="strict"))
+        original_triangles = tuple(document.triangles[index] for index in state.original_ordinals)
+        replacements.append(
+            RegionReplacement(
+                source,
+                _composition_region(state, original_triangles, state.original_ordinals),
+                _composition_region(state, selected_document.triangles, state.original_ordinals),
+            )
+        )
+    composed = compose_document_regions(document, tuple(replacements))
+    destination = candidate_root / Path(*source.parts)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(serialize_smd(composed), encoding="utf-8", newline="\n")
+
+
+def _compose_selected_source(
+    inventory: _SourceInventory,
+    selected: tuple[_SelectedRegion, ...],
+    candidate_root: Path,
+) -> None:
+    source = inventory.occurrence.source_path
+    replacements = tuple(
+        RegionReplacement(source, item.original, item.decision.selected)
+        for item in selected
+    )
+    composed = compose_document_regions(inventory.original_document, replacements)
+    destination = candidate_root / Path(*source.parts)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(serialize_smd(composed), encoding="utf-8", newline="\n")
+
+
+def _discard_spooled_regions(states: tuple[_RegionState, ...], regions_root: Path) -> None:
+    resolved_root = regions_root.resolve()
+    for state in states:
+        if state.selected_path is None:
+            continue
+        path = state.selected_path.resolve()
+        try:
+            path.relative_to(resolved_root)
+        except ValueError:
+            continue
+        path.unlink(missing_ok=True)
+
+
 def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
+    options.staging_root.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".maximum-regional-",
+        dir=options.staging_root.parent,
+    ) as raw_spool:
+        return _run_maximum_adaptive(options, Path(raw_spool))
+
+
+def _run_maximum_adaptive(options: MaximumRunOptions, spool_root: Path) -> MaximumRunReport:
     timings: list[StageTiming] = []
     failures: list[str] = []
     options.cancel.throw_if_cancelled()
     _run_stage(options, timings, "normal-seed", lambda: None)
-    inventories, _ambiguous_sources, ambiguous_regions = _run_stage(
+    occurrences = _run_stage(
         options,
         timings,
         "regional-inventory",
@@ -495,154 +900,48 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
     validate_injected = options.validate_candidate
     cache = FileRegionCache(options.cache_root / "regions")
     attribute_hash = _attribute_contract_sha256()
-    selected: list[_SelectedRegion] = []
-    inventory_by_source = {item.occurrence.source_path: item for item in inventories}
+    selected: list[_RegionState] = []
+    ambiguous_regions = 0
+    regions_root = spool_root / "regions"
+    candidate_root = spool_root / "candidates"
+    candidate_root.mkdir(parents=True, exist_ok=True)
+    composed_sources: set[PurePosixPath] = set()
 
     def optimize_all() -> None:
-        for inventory in inventories:
-            source = inventory.occurrence.source_path
-            source_path = options.original_source_root / Path(*source.parts)
-            source_hash = _sha256(source_path)
-            for pair in inventory.pairs:
-                options.cancel.throw_if_cancelled()
-                semantics = resolve_material_semantics(
-                    pair.original.material,
-                    options.addon_root,
-                    options.framework_resolver_root,
-                    inventory.occurrence.material_directories,
+        nonlocal ambiguous_regions
+        total = len(occurrences)
+        interval = max(1, total // 100)
+        for index, occurrence in enumerate(occurrences, start=1):
+            options.cancel.throw_if_cancelled()
+            if index == 1 or index == total or index % interval == 0:
+                _emit(
+                    options,
+                    "adaptive-simplification",
+                    3,
+                    f"source={index}/{total} path={occurrence.source_path.as_posix()}",
                 )
-                features = measure_risk(pair.original, semantics, _VIEWS)
-                budget = budget_for_risk(options.profile, features)
-                metric_reference: PreparedRegionReference | None = None
-
-                if not pair.confident:
-                    decision = RegionDecision(
-                        pair.original,
-                        "original",
-                        1.0,
-                        0,
-                        0,
-                        (),
-                        ValidationDecision(True, (), 1.0),
-                        f"uncertain regional correspondence; restored original region: {pair.reason}",
-                    )
-                    selected.append(
-                        _SelectedRegion(
-                            source,
-                            pair.original,
-                            pair.normal,
-                            decision,
-                            semantics,
-                            features.score,
-                            features.target_ratio,
-                        )
-                    )
-                    continue
-
-                needs_validation = validate_injected is not None or requires_adaptive_validation(
-                    source.as_posix(),
-                    pair.original.material,
-                    len(pair.original.triangles),
-                    features,
-                    semantics,
+            inventory, source_selected, source_ambiguous = _optimize_source(
+                options,
+                occurrence,
+                simplify,
+                validate_injected,
+                cache,
+                attribute_hash,
+            )
+            ambiguous_regions += source_ambiguous
+            if inventory is None:
+                continue
+            if any(_selected_requires_render(item) for item in source_selected):
+                source_states = tuple(
+                    _persist_region_state(options, inventory, item, regions_root)
+                    for item in source_selected
                 )
-                if not needs_validation:
-                    selected_region = pair.normal if len(pair.normal.triangles) <= len(pair.original.triangles) else pair.original
-                    representation = "normal" if selected_region is pair.normal else "original"
-                    decision = RegionDecision(
-                        selected_region,
-                        representation,  # type: ignore[arg-type]
-                        len(selected_region.triangles) / len(pair.original.triangles),
-                        0,
-                        0,
-                        (),
-                        ValidationDecision(True, (), 1.0),
-                        "aggressive Normal seed accepted by low-risk classifier",
-                    )
-                    selected.append(
-                        _SelectedRegion(
-                            source,
-                            pair.original,
-                            pair.normal,
-                            decision,
-                            semantics,
-                            features.score,
-                            features.target_ratio,
-                        )
-                    )
-                    continue
-
-                def validator(candidate: SmdRegion) -> ValidationDecision:
-                    nonlocal metric_reference
-                    try:
-                        if validate_injected is not None:
-                            return validate_injected(pair.original, candidate, budget, pair.original.key)
-                        if pair.original.triangles == candidate.triangles:
-                            return ValidationDecision(True, (), 1.0)
-                        if metric_reference is None:
-                            metric_reference = prepare_region_reference(
-                                pair.original,
-                                _pose_contract(pair.original, options.profile),
-                            )
-                        return validate_region(measure_region_prepared(metric_reference, candidate), budget)
-                    except Exception:
-                        return ValidationDecision(False, ("validator-error",), 0.0)
-
-                if len(pair.normal.triangles) > len(pair.original.triangles):
-                    decision = RegionDecision(
-                        pair.original,
-                        "original",
-                        1.0,
-                        0,
-                        0,
-                        (),
-                        ValidationDecision(True, (), 1.0),
-                        "normal region increased triangle count",
-                    )
-                else:
-                    normal_validation = (
-                        validator(pair.normal)
-                        if validate_injected is not None
-                        else ValidationDecision(False, ("priority-seed-requires-lighter-candidate",), 0.0)
-                    )
-                    request = RegionRequest(
-                        pair.original,
-                        pair.normal,
-                        features.target_ratio,
-                        normal_validation,
-                        len(pair.original.triangles),
-                        len(pair.normal.triangles),
-                        source_hash,
-                        options.profile.sha256,
-                        attribute_hash,
-                        10200,
-                    )
-                    base_ratio = (
-                        len(pair.normal.triangles) / len(pair.original.triangles)
-                        if normal_validation.passed
-                        else 1.0
-                    )
-                    decision = optimize_region(
-                        request,
-                        lambda region, absolute_ratio: simplify(
-                            region,
-                            min(1.0, absolute_ratio / max(base_ratio, 1e-12)),
-                            budget,
-                        ),
-                        validator,
-                        cache,
-                    )
-                selected.append(
-                    _SelectedRegion(
-                        source,
-                        pair.original,
-                        pair.normal,
-                        decision,
-                        semantics,
-                        features.score,
-                        features.target_ratio,
-                    )
-                )
+            else:
+                _compose_selected_source(inventory, source_selected, candidate_root)
+                source_states = tuple(_region_state_without_spool(item) for item in source_selected)
+                composed_sources.add(occurrence.source_path)
+            selected.extend(source_states)
+            del inventory, source_selected, source_states
 
     _run_stage(options, timings, "adaptive-simplification", optimize_all)
 
@@ -652,50 +951,49 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
         nonlocal targeted_renders
         for index, item in enumerate(tuple(selected)):
             options.cancel.throw_if_cancelled()
-            if item.decision.representation == "original" or not requires_targeted_render(
-                item.semantics,
-                item.decision.validation.margin_fraction,
-                item.semantics.confidence,
-                1.0 - len(item.decision.selected.triangles) / len(item.original.triangles),
-            ):
+            if item.render_request is None:
                 continue
             targeted_renders += 1
             try:
-                evidence = options.render_region(
-                    _write_render_request(options, inventory_by_source[item.source], item)
-                )
+                evidence = options.render_region(item.render_request)
             except Exception:
                 evidence = None
             if evidence is not None and evidence.passed:
                 selected[index] = replace(item, targeted_render=True)
                 continue
-            fallback_region = item.normal if item.decision.representation == "aggressive" else item.original
-            fallback_name = "normal" if fallback_region is item.normal else "original"
-            fallback = RegionDecision(
-                fallback_region,
-                fallback_name,  # type: ignore[arg-type]
-                len(fallback_region.triangles) / len(item.original.triangles),
-                item.decision.evaluations,
-                item.decision.cache_hits,
-                item.decision.attempted_ratios,
-                ValidationDecision(True, (), 1.0),
-                "targeted render failed; applied local fallback",
+            if item.fallback_path is None or item.fallback_representation is None:
+                raise RuntimeError("targeted region has no local fallback")
+            selected[index] = replace(
+                item,
+                selected_path=item.fallback_path,
+                representation=item.fallback_representation,
+                selected_triangles=item.fallback_triangles,
+                selected_vertices=item.fallback_vertices,
+                failed_gates=(),
+                reason="targeted render failed; applied local fallback",
+                targeted_render=True,
             )
-            selected[index] = replace(item, decision=fallback, targeted_render=True)
+
+        pending_by_source: dict[PurePosixPath, list[_RegionState]] = {}
+        for item in selected:
+            if item.source not in composed_sources:
+                pending_by_source.setdefault(item.source, []).append(item)
+        for source, source_states_list in sorted(
+            pending_by_source.items(),
+            key=lambda value: value[0].as_posix().casefold(),
+        ):
+            options.cancel.throw_if_cancelled()
+            source_states = tuple(source_states_list)
+            _compose_candidate_source(options, source, source_states, candidate_root)
+            composed_sources.add(source)
+            _discard_spooled_regions(source_states, regions_root)
 
     _run_stage(options, timings, "targeted-validation", targeted_validation)
-
-    def replacements_for(active_sources: set[PurePosixPath]) -> tuple[RegionReplacement, ...]:
-        return tuple(
-            RegionReplacement(item.source, item.original, item.decision.selected)
-            for item in selected
-            if item.source in active_sources
-        )
 
     adaptive_sources = {
         item.source
         for item in selected
-        if item.decision.representation in ("aggressive", "lighter", "normal", "original")
+        if item.representation in ("aggressive", "lighter", "normal", "original")
     }
     compile_count = 0
     compiled: CompileResult | None = None
@@ -703,10 +1001,10 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
 
     def compile_with_fallback() -> None:
         nonlocal compile_count, compiled, compiled_source_root, adaptive_sources
-        composition = compose_source_tree(
+        composition = compose_precomposed_source_tree(
             options.original_source_root,
-            options.normal_source_root,
-            replacements_for(adaptive_sources),
+            candidate_root,
+            tuple(adaptive_sources),
             options.staging_root,
         )
         compiled_source_root = composition.root
@@ -728,10 +1026,10 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
                 isolation_index += 1
                 active = {PurePosixPath(value) for value in values}
                 stage = options.staging_root.with_name(f"{options.staging_root.name}.isolate-{isolation_index}")
-                composition_try = compose_source_tree(
+                composition_try = compose_precomposed_source_tree(
                     options.original_source_root,
-                    options.normal_source_root,
-                    replacements_for(active),
+                    candidate_root,
+                    tuple(active),
                     stage,
                 )
                 compiled_source_root = composition_try.root
@@ -750,22 +1048,19 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
         adaptive_sources.remove(bad_source)
         for index, item in enumerate(tuple(selected)):
             if item.source == bad_source:
-                fallback = RegionDecision(
-                    item.original,
-                    "original",
-                    1.0,
-                    item.decision.evaluations,
-                    item.decision.cache_hits,
-                    item.decision.attempted_ratios,
-                    ValidationDecision(True, (), 1.0),
-                    "source-local compile fallback",
+                selected[index] = replace(
+                    item,
+                    representation="original",
+                    selected_triangles=item.original_triangles,
+                    selected_vertices=item.original_vertices,
+                    failed_gates=(),
+                    reason="source-local compile fallback",
                 )
-                selected[index] = replace(item, decision=fallback)
         final_stage = options.staging_root.with_name(f"{options.staging_root.name}.compile-fallback")
-        final_composition = compose_source_tree(
+        final_composition = compose_precomposed_source_tree(
             options.original_source_root,
-            options.normal_source_root,
-            replacements_for(adaptive_sources),
+            candidate_root,
+            tuple(adaptive_sources),
             final_stage,
         )
         compiled_source_root = final_composition.root
@@ -802,34 +1097,23 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
     )
     region_details = tuple(
         RegionReport(
-            item.original.key.value,
+            item.key.value,
             item.source.as_posix(),
-            item.original.material,
-            item.decision.representation,
-            len(item.original.triangles),
-            len(item.normal.triangles),
-            len(item.decision.selected.triangles),
-            len(
-                {
-                    (
-                        vertex.position,
-                        vertex.normal,
-                        vertex.uv,
-                        vertex.influences,
-                    )
-                    for triangle in item.decision.selected.triangles
-                    for vertex in triangle.vertices
-                }
-            ),
+            item.material,
+            item.representation,
+            item.original_triangles,
+            item.normal_triangles,
+            item.selected_triangles,
+            item.selected_vertices,
             item.risk_score,
             item.target_ratio,
-            item.decision.evaluations,
-            item.decision.cache_hits,
+            item.evaluations,
+            item.cache_hits,
             item.targeted_render,
-            item.decision.validation.failed_gates,
-            item.decision.reason,
+            item.failed_gates,
+            item.reason,
         )
-        for item in sorted(selected, key=lambda value: value.original.key.value)
+        for item in sorted(selected, key=lambda value: value.key.value)
     )
     status = "failed" if failures else "optimized"
     report = MaximumRunReport(
@@ -839,8 +1123,8 @@ def run_maximum_adaptive(options: MaximumRunOptions) -> MaximumRunReport:
         0,
         targeted_renders,
         compile_count,
-        sum(item.decision.evaluations for item in selected),
-        sum(item.decision.cache_hits for item in selected),
+        sum(item.evaluations for item in selected),
+        sum(item.cache_hits for item in selected),
         _source_triangle_total(options.original_source_root),
         _source_triangle_total(options.normal_source_root),
         _source_triangle_total(compiled_source_root),

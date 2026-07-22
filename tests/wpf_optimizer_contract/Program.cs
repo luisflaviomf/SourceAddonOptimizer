@@ -100,11 +100,32 @@ var options = new SourceAddonOptimizerRunOptions
     WorkDir = @"C:\work",
     OptimizerMode = "maximum",
     Ratio = 0.75,
-    RestoreSkins = true
+    RestoreSkins = true,
+    ExperimentalGroundPolicy = true,
+    ExperimentalRoundPartsPolicy = true,
+    ExperimentalSteerTurnBasisFix = true
 };
 var arguments = SourceAddonOptimizerCommandBuilder.BuildArguments(options);
 Assert(arguments.Contains("maximum"), "Maximum mode missing from worker arguments.");
 Assert(arguments.Contains("0.75"), "Invariant ratio missing from worker arguments.");
+Assert(!arguments.Contains("--experimental-ground-policy"), "Maximum leaked the experimental ground policy.");
+Assert(!arguments.Contains("--experimental-round-parts-policy"), "Maximum leaked the experimental round-parts policy.");
+Assert(!arguments.Contains("--experimental-steer-turn-basis-fix"), "Maximum leaked the experimental steer policy.");
+
+var normalOptions = new SourceAddonOptimizerRunOptions
+{
+    AddonPath = @"C:\addon",
+    WorkDir = @"C:\work",
+    OptimizerMode = "normal",
+    RestoreSkins = true,
+    ExperimentalGroundPolicy = true,
+    ExperimentalRoundPartsPolicy = true,
+    ExperimentalSteerTurnBasisFix = true
+};
+var normalArguments = SourceAddonOptimizerCommandBuilder.BuildArguments(normalOptions);
+Assert(normalArguments.Contains("--experimental-ground-policy"), "Normal lost the experimental ground policy.");
+Assert(normalArguments.Contains("--experimental-round-parts-policy"), "Normal lost the experimental round-parts policy.");
+Assert(normalArguments.Contains("--experimental-steer-turn-basis-fix"), "Normal lost the experimental steer policy.");
 
 var parser = new SourceAddonOptimizerProgressParser();
 var update = parser.Parse("[MAXIMUM] stage=adaptive-simplification current=3 total=6 detail=wheel")

@@ -67,6 +67,51 @@ def _compose_document(document: SmdDocument, replacements: tuple[RegionReplaceme
     return SmdDocument(document.header_lines, tuple(triangles))
 
 
+def compose_document_regions(
+    document: SmdDocument,
+    replacements: tuple[RegionReplacement, ...],
+) -> SmdDocument:
+    return _compose_document(document, replacements)
+
+
+def compose_precomposed_source_tree(
+    original_tree: Path,
+    candidate_tree: Path,
+    candidate_sources: tuple[PurePosixPath, ...],
+    output_tree: Path,
+) -> CompositionResult:
+    original_root = Path(original_tree).resolve()
+    candidate_root = Path(candidate_tree).resolve()
+    output_root = Path(output_tree).resolve()
+    if not original_root.is_dir() or not candidate_root.is_dir():
+        raise FileNotFoundError("original and precomposed candidate source trees are required")
+    if output_root.exists():
+        raise FileExistsError(output_root)
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    sources = tuple(sorted(set(candidate_sources), key=lambda path: path.as_posix().casefold()))
+    if any(path.is_absolute() or ".." in path.parts or path.suffix.casefold() != ".smd" for path in sources):
+        raise ValueError("precomposed candidate sources must be relative SMD paths")
+
+    temporary = Path(tempfile.mkdtemp(prefix=f".{output_root.name}.", dir=output_root.parent)).resolve()
+    try:
+        shutil.copytree(original_root, temporary, dirs_exist_ok=True)
+        destinations: dict[PurePosixPath, Path] = {}
+        for relative in sources:
+            candidate = candidate_root / Path(*relative.parts)
+            if not candidate.is_file():
+                raise FileNotFoundError(relative.as_posix())
+            destination = temporary / Path(*relative.parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(candidate, destination)
+            destinations[relative] = output_root / Path(*relative.parts)
+        os.replace(temporary, output_root)
+        return CompositionResult(output_root, MappingProxyType(destinations), len(sources))
+    except Exception:
+        if temporary.exists() and temporary.parent == output_root.parent:
+            shutil.rmtree(temporary)
+        raise
+
+
 def compose_source_tree(
     original_tree: Path,
     normal_tree: Path,

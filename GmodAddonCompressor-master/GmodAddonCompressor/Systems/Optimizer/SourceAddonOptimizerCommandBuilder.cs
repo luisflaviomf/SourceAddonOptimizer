@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 
@@ -28,9 +29,10 @@ namespace GmodAddonCompressor.Systems.Optimizer
                 AddNumber(arguments, "--planar-angle", options.PlanarAngle);
             }
 
-            AddFlag(arguments, "--experimental-ground-policy", options.ExperimentalGroundPolicy);
-            AddFlag(arguments, "--experimental-round-parts-policy", options.ExperimentalRoundPartsPolicy);
-            AddFlag(arguments, "--experimental-steer-turn-basis-fix", options.ExperimentalSteerTurnBasisFix);
+            bool normalMode = string.Equals(options.OptimizerMode?.Trim(), "normal", StringComparison.OrdinalIgnoreCase);
+            AddFlag(arguments, "--experimental-ground-policy", normalMode && options.ExperimentalGroundPolicy);
+            AddFlag(arguments, "--experimental-round-parts-policy", normalMode && options.ExperimentalRoundPartsPolicy);
+            AddFlag(arguments, "--experimental-steer-turn-basis-fix", normalMode && options.ExperimentalSteerTurnBasisFix);
             AddValue(arguments, "--format", options.Format);
             AddInteger(arguments, "--jobs", options.Jobs);
             AddInteger(arguments, "--decompile-jobs", options.DecompileJobs);
