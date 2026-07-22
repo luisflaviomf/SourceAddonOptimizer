@@ -46,7 +46,7 @@ internal static class VtfLosslessBc3Repack
     internal static void Build(string sourceVtfPath, string outputVtfPath)
     {
         DdsBcDocument sourcePayload = VtfBcPayloadExtractor.Extract(sourceVtfPath);
-        DdsBcDocument losslessColorPayload = Bc3ColorBlockTranscoder.Transcode(sourcePayload);
+        DdsBcDocument losslessColorPayload = LosslessBc3ColorBlockTranscoder.Transcode(sourcePayload);
         VtfBcFileBuilder.Build(
             sourceVtfPath,
             losslessColorPayload,
