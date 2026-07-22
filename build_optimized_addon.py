@@ -1053,6 +1053,7 @@ def _run_single_addon(
         print(traceback.format_exc())
         return 1
     finally:
+        _write_silhouette_backend_report(maximum_silhouette_backend, work_dir)
         _print_silhouette_backend_summary(maximum_silhouette_backend)
 
 
@@ -1271,6 +1272,35 @@ def _print_silhouette_backend_summary(backend) -> None:
         f"reason={snapshot['fallback_reason'] or 'none'}",
         flush=True,
     )
+
+
+def _write_silhouette_backend_report(backend, work_dir: Path) -> None:
+    if backend is None:
+        return
+    try:
+        snapshot = backend.snapshot()
+        report_path = Path(work_dir) / "logs" / "maximum_silhouette_backend.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "backend": snapshot,
+                    "timing_ms": {
+                        name.removesuffix("_ns"): round(float(value) / 1_000_000.0, 6)
+                        for name, value in snapshot.items()
+                        if name.endswith("_ns") and type(value) is int
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    except Exception as exc:
+        print(f"[WARN] Maximum silhouette backend report could not be written: {exc}", flush=True)
 
 
 def main(argv: list[str]) -> int:

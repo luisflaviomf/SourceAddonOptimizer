@@ -1,3 +1,8 @@
+[CmdletBinding()]
+param(
+    [string] $CandidateRoot
+)
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -12,7 +17,24 @@ $publishProfile = "win-x64-singlefile"
 $projectDir = Split-Path -Parent $csprojPath
 $runtimeBuildDir = Join-Path $projectDir "bin\$configuration\net6.0-windows\$runtimeIdentifier"
 $runtimeObjDir = Join-Path $projectDir "obj\$configuration\net6.0-windows\$runtimeIdentifier"
-$finalExePath = Join-Path $runtimeBuildDir "publish\GmodAddonOptimizer.exe"
+$candidateMode = ![string]::IsNullOrWhiteSpace($CandidateRoot)
+if ($candidateMode) {
+    $publishDir = [System.IO.Path]::GetFullPath($CandidateRoot)
+    if (Test-Path -LiteralPath $publishDir) {
+        throw "Candidate publish root already exists; refusing to overwrite it: $publishDir"
+    }
+    $candidateBuildRoot = Join-Path (Split-Path -Parent $publishDir) (".build-" + (Split-Path -Leaf $publishDir))
+    if (Test-Path -LiteralPath $candidateBuildRoot) {
+        throw "Candidate build root already exists; refusing to reuse it: $candidateBuildRoot"
+    }
+    $candidateBinRoot = Join-Path $candidateBuildRoot "bin\"
+    $candidateObjRoot = Join-Path $candidateBuildRoot "obj\"
+    $candidateDefaultExcludes = "$projectDir\bin\**%3B$projectDir\obj\**"
+}
+else {
+    $publishDir = Join-Path $runtimeBuildDir "publish"
+}
+$finalExePath = Join-Path $publishDir "GmodAddonOptimizer.exe"
 $packagedZipPath = Join-Path $projectDir "Resources\SourceAddonOptimizer.win-x64.zip"
 
 function Invoke-Step {
@@ -50,15 +72,28 @@ if (!(Test-Path $csprojPath)) {
 }
 
 Invoke-Step -Name "Clean runtime-specific build output" -Action {
-    Invoke-Dotnet @(
-        "clean",
-        $csprojPath,
-        "-c", $configuration
-    )
+    if ($candidateMode) {
+        New-Item -ItemType Directory -Force -Path $candidateBuildRoot | Out-Null
+        Invoke-Dotnet @(
+            "clean",
+            $csprojPath,
+            "-c", $configuration,
+            "-p:BaseOutputPath=$candidateBinRoot",
+            "-p:BaseIntermediateOutputPath=$candidateObjRoot",
+            "-p:DefaultItemExcludes=$candidateDefaultExcludes"
+        )
+    }
+    else {
+        Invoke-Dotnet @(
+            "clean",
+            $csprojPath,
+            "-c", $configuration
+        )
 
-    foreach ($path in @($runtimeBuildDir, $runtimeObjDir)) {
-        if (Test-Path $path) {
-            Remove-Item $path -Recurse -Force
+        foreach ($path in @($runtimeBuildDir, $runtimeObjDir)) {
+            if (Test-Path $path) {
+                Remove-Item $path -Recurse -Force
+            }
         }
     }
 }
@@ -75,16 +110,69 @@ Invoke-Step -Name "Package embedded WPF tools ZIP" -Action {
 }
 
 Invoke-Step -Name "Publish WPF single-file executable" -Action {
-    Invoke-Dotnet @(
+    $publishArguments = @(
         "publish",
         $csprojPath,
         "-c", $configuration,
         "-r", $runtimeIdentifier,
         "-p:PublishProfile=$publishProfile"
     )
+    if ($candidateMode) {
+        $publishArguments += @(
+            "-p:BaseOutputPath=$candidateBinRoot",
+            "-p:BaseIntermediateOutputPath=$candidateObjRoot",
+            "-p:DefaultItemExcludes=$candidateDefaultExcludes",
+            "--output", $publishDir
+        )
+    }
+    Invoke-Dotnet $publishArguments
 
     if (!(Test-Path $finalExePath)) {
         throw "Final executable was not generated: $finalExePath"
+    }
+}
+
+if ($candidateMode) {
+    Invoke-Step -Name "Create candidate audit artifacts" -Action {
+        $auditZip = Join-Path $publishDir "SourceAddonOptimizer.win-x64.zip"
+        Copy-Item -LiteralPath $packagedZipPath -Destination $auditZip
+
+        $candidateZip = "$publishDir.zip"
+        $temporaryZip = "$candidateZip.$PID.tmp"
+        if (Test-Path -LiteralPath $candidateZip) {
+            throw "Candidate archive already exists; refusing to overwrite it: $candidateZip"
+        }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        try {
+            [System.IO.Compression.ZipFile]::CreateFromDirectory(
+                $publishDir,
+                $temporaryZip,
+                [System.IO.Compression.CompressionLevel]::Optimal,
+                $false
+            )
+            [System.IO.File]::Move($temporaryZip, $candidateZip)
+        }
+        finally {
+            Remove-Item -LiteralPath $temporaryZip -Force -ErrorAction SilentlyContinue
+        }
+
+        $artifacts = @($finalExePath, $auditZip, $packagedZipPath, $candidateZip) | ForEach-Object {
+            $item = Get-Item -LiteralPath $_
+            [PSCustomObject][ordered]@{
+                path = $item.FullName
+                size = [Int64]$item.Length
+                sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        }
+        $hashManifest = "$publishDir.hashes.json"
+        [System.IO.File]::WriteAllText(
+            $hashManifest,
+            ($artifacts | ConvertTo-Json -Depth 4),
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        Write-Host "Candidate publish: $publishDir"
+        Write-Host "Candidate archive: $candidateZip"
+        Write-Host "Candidate hashes: $hashManifest"
     }
 }
 

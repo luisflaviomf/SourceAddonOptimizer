@@ -4,6 +4,7 @@ from pathlib import Path
 from contextlib import redirect_stdout
 import builtins
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -80,6 +81,32 @@ class WorkerCliTests(unittest.TestCase):
         self.assertEqual(backend.state, "legacy")
         self.assertTrue(backend.snapshot()["fallback"])
         self.assertIn("selected=legacy", output.getvalue())
+
+    def test_maximum_writes_a_machine_readable_backend_report(self) -> None:
+        snapshot = {
+            "backend": "native",
+            "api_version": "1.0.0",
+            "build_id": "maximum-silhouette-raw-v1-20260722",
+            "dll_path": "C:/validated/tools/meshopt_bridge.dll",
+            "calls": 3,
+            "silhouette_total_ns": 2_500_000,
+            "fallback": False,
+        }
+        backend = mock.Mock()
+        backend.snapshot.return_value = snapshot
+
+        with tempfile.TemporaryDirectory() as raw:
+            work_dir = Path(raw)
+            build_optimized_addon._write_silhouette_backend_report(backend, work_dir)
+            report = json.loads(
+                (work_dir / "logs" / "maximum_silhouette_backend.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(report["schema"], 1)
+        self.assertEqual(report["backend"], snapshot)
+        self.assertEqual(report["timing_ms"]["silhouette_total"], 2.5)
 
     def test_framework_resolver_is_optional_and_never_changes_addon_path(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

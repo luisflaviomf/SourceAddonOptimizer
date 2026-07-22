@@ -36,6 +36,7 @@ class SilhouetteBackend:
         self._fallback_reason = ""
         self._api_version = ""
         self._build_id = ""
+        self._dll_path = str(package.dll_path) if package is not None else ""
         self._diagnostics: dict[str, int] = {}
         self._buffers = threading.local()
 
@@ -173,6 +174,7 @@ class SilhouetteBackend:
                 "backend": self._state,
                 "api_version": self._api_version,
                 "build_id": self._build_id,
+                "dll_path": self._dll_path,
                 "fallback": self._fallback,
                 "fallback_stage": self._fallback_stage,
                 "fallback_reason": self._fallback_reason,
