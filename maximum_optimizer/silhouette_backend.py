@@ -214,6 +214,15 @@ def configure_silhouette_backend(
     return backend
 
 
+def configure_legacy_silhouette_backend(stage: str, error: Exception | str) -> SilhouetteBackend:
+    global _BACKEND
+    backend = SilhouetteBackend(None)
+    backend.fail(stage, error)
+    with _BACKEND_LOCK:
+        _BACKEND = backend
+    return backend
+
+
 def reset_silhouette_backend() -> None:
     global _BACKEND
     with _BACKEND_LOCK:

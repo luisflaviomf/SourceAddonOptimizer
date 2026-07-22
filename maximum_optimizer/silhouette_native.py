@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 from dataclasses import dataclass
 import hashlib
+import json
 import math
 from pathlib import Path
 import struct
@@ -44,6 +45,57 @@ class NativeSilhouettePackage:
             EXPECTED_SILHOUETTE_BUILD_ID,
             "x64",
         )
+
+
+def load_native_silhouette_package(
+    manifest_path: Path, package_root: Path
+) -> NativeSilhouettePackage:
+    manifest = Path(manifest_path)
+    root = Path(package_root)
+    if not manifest.is_absolute() or not root.is_absolute():
+        raise ValueError("silhouette manifest and package root must be absolute")
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        silhouette = payload["silhouette"]
+        relative = str(silhouette["dllPath"]).replace("\\", "/")
+        expected_hash = str(silhouette["sha256"])
+        expected_size = int(silhouette["size"])
+        api_version = str(silhouette["apiVersion"])
+        build_id = str(silhouette["buildId"])
+        architecture = str(silhouette["architecture"])
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid silhouette tool manifest at {manifest}: {exc}") from exc
+    if payload.get("schemaVersion") != 1 or payload.get("toolVersion") != "0.1.18":
+        raise RuntimeError(f"unsupported silhouette tool manifest contract at {manifest}")
+    relative_path = Path(relative)
+    if relative_path.is_absolute() or not relative or any(part in ("", ".", "..") for part in relative_path.parts):
+        raise RuntimeError(f"unsafe silhouette DLL path in {manifest}: {relative}")
+    resolved_root = root.resolve()
+    dll_path = (resolved_root / relative_path).resolve()
+    try:
+        dll_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise RuntimeError(f"silhouette DLL escapes package root: {relative}") from exc
+    declared_files = {
+        str(item.get("path", "")).replace("\\", "/"): item
+        for item in payload.get("files", [])
+        if isinstance(item, dict)
+    }
+    declared = declared_files.get(relative)
+    if (
+        declared is None
+        or str(declared.get("sha256", "")).lower() != expected_hash.lower()
+        or int(declared.get("size", -1)) != expected_size
+    ):
+        raise RuntimeError(f"silhouette DLL declaration disagrees with file manifest at {manifest}")
+    return NativeSilhouettePackage(
+        dll_path,
+        expected_hash,
+        expected_size,
+        api_version,
+        build_id,
+        architecture,
+    )
 
 
 @dataclass(frozen=True)

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import redirect_stdout
+import builtins
+import io
+import os
 import tempfile
 import unittest
+from unittest import mock
 
 import build_optimized_addon
+from maximum_optimizer.silhouette_backend import reset_silhouette_backend
 
 
 class WorkerCliTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        reset_silhouette_backend()
+
     def test_maximum_is_public_mode_and_starts_from_profiled_normal_seed(self) -> None:
         args = build_optimized_addon.parse_args(
             ["addon", "--optimizer-mode", "maximum", "--ratio", "0.75"]
@@ -23,6 +32,54 @@ class WorkerCliTests(unittest.TestCase):
                     ["addon", "--optimizer-mode", mode, "--ratio", "0.75"]
                 )
                 self.assertEqual(build_optimized_addon.effective_normal_ratio(args), 0.75)
+
+    def test_normal_and_fidelity_never_import_or_initialize_silhouette_backend(self) -> None:
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name.startswith("maximum_optimizer.silhouette"):
+                raise AssertionError(f"silhouette backend imported for non-Maximum mode: {name}")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=guarded_import):
+            for mode in ("normal", "fidelity"):
+                self.assertIsNone(
+                    build_optimized_addon._initialize_silhouette_backend_for_mode(
+                        mode, Path(__file__).resolve().parents[2]
+                    )
+                )
+
+    def test_maximum_uses_repo_absolute_dll_and_ignores_retired_environment_override(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        output = io.StringIO()
+        with mock.patch.dict(
+            os.environ,
+            {"MAXIMUM_SILHOUETTE_EXPERIMENT_DLL": str(repo_root / "fake-old.dll")},
+            clear=False,
+        ), redirect_stdout(output):
+            backend = build_optimized_addon._initialize_silhouette_backend_for_mode(
+                "maximum", repo_root
+            )
+            build_optimized_addon._print_silhouette_backend_summary(backend)
+
+        self.assertIsNotNone(backend)
+        self.assertEqual(backend.state, "native")
+        text = output.getvalue()
+        self.assertIn("selected=native", text)
+        self.assertIn("api=1.0.0", text)
+        self.assertIn("build=maximum-silhouette-raw-v1-20260722", text)
+        self.assertIn("silhouette_backend_summary", text)
+        self.assertNotIn("fake-old.dll", text)
+
+    def test_missing_maximum_native_package_selects_exact_fallback_without_job_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, redirect_stdout(io.StringIO()) as output:
+            backend = build_optimized_addon._initialize_silhouette_backend_for_mode(
+                "maximum", Path(raw)
+            )
+        self.assertIsNotNone(backend)
+        self.assertEqual(backend.state, "legacy")
+        self.assertTrue(backend.snapshot()["fallback"])
+        self.assertIn("selected=legacy", output.getvalue())
 
     def test_framework_resolver_is_optional_and_never_changes_addon_path(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

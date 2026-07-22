@@ -458,6 +458,7 @@ def _run_single_addon(
     compile_script: Path,
     selective_optimize_script: Path,
     round_parts_optimize_script: Path,
+    maximum_silhouette_backend=None,
     emit_path_header: bool = True,
     emit_result_lines: bool = True,
 ) -> int:
@@ -469,6 +470,10 @@ def _run_single_addon(
     t_all = time.monotonic()
     orig_models_dir = addon_path / "models"
     maximum_mode_active = str(getattr(args, "optimizer_mode", OPTIMIZER_MODE_NORMAL)).lower() == OPTIMIZER_MODE_MAXIMUM
+    if maximum_silhouette_backend is None:
+        maximum_silhouette_backend = _initialize_silhouette_backend_for_mode(
+            getattr(args, "optimizer_mode", OPTIMIZER_MODE_NORMAL), repo_root
+        )
 
     try:
         # 1) Decompile + organize + backup .phy
@@ -1047,6 +1052,8 @@ def _run_single_addon(
         print(f"[ERROR] Addon: {addon_path}")
         print(traceback.format_exc())
         return 1
+    finally:
+        _print_silhouette_backend_summary(maximum_silhouette_backend)
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
@@ -1204,10 +1211,75 @@ def effective_normal_ratio(args: argparse.Namespace) -> float:
     return load_profile(profile_path).seed_ratio
 
 
+def _initialize_silhouette_backend_for_mode(optimizer_mode: str, runtime_root: Path):
+    if str(optimizer_mode).lower() != OPTIMIZER_MODE_MAXIMUM:
+        return None
+
+    from maximum_optimizer.silhouette_backend import (
+        configure_legacy_silhouette_backend,
+        configure_silhouette_backend,
+    )
+    from maximum_optimizer.silhouette_native import (
+        NativeSilhouettePackage,
+        load_native_silhouette_package,
+    )
+
+    root = Path(runtime_root).resolve()
+    package = None
+    try:
+        if getattr(sys, "frozen", False):
+            manifest_path = root / "maximum_optimizer" / "native" / "tool-package-manifest.json"
+            package = load_native_silhouette_package(manifest_path, root.parent)
+        else:
+            dll_path = root / "maximum_optimizer" / "native" / "bin" / "win-x64" / "meshopt_bridge.dll"
+            package = NativeSilhouettePackage.from_file_for_test(dll_path)
+        backend = configure_silhouette_backend(package)
+        backend.initialize()
+    except Exception as exc:
+        backend = configure_legacy_silhouette_backend("initialize", exc)
+    snapshot = backend.snapshot()
+    print(
+        "[MAXIMUM] silhouette_backend "
+        f"selected={snapshot['backend']} "
+        f"api={snapshot['api_version'] or 'unavailable'} "
+        f"build={snapshot['build_id'] or 'unavailable'} "
+        f"dll={package.dll_path if package is not None else 'unavailable'} "
+        f"fallback={str(bool(snapshot['fallback'])).lower()} "
+        f"reason={snapshot['fallback_reason'] or 'none'}",
+        flush=True,
+    )
+    return backend
+
+
+def _print_silhouette_backend_summary(backend) -> None:
+    if backend is None:
+        return
+    snapshot = backend.snapshot()
+    milliseconds = lambda name: float(snapshot[name]) / 1_000_000.0
+    print(
+        "[MAXIMUM] silhouette_backend_summary "
+        f"backend={snapshot['backend']} "
+        f"api={snapshot['api_version'] or 'unavailable'} "
+        f"build={snapshot['build_id'] or 'unavailable'} "
+        f"calls={snapshot['calls']} "
+        f"prep_ms={milliseconds('mask_preparation_ns'):.3f} "
+        f"marshal_in_ms={milliseconds('input_marshaling_ns'):.3f} "
+        f"native_ms={milliseconds('native_call_ns'):.3f} "
+        f"marshal_out_ms={milliseconds('output_marshaling_ns'):.3f} "
+        f"fallback={str(bool(snapshot['fallback'])).lower()} "
+        f"fallback_stage={snapshot['fallback_stage'] or 'none'} "
+        f"reason={snapshot['fallback_reason'] or 'none'}",
+        flush=True,
+    )
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
 
     repo_root = _runtime_root()
+    maximum_silhouette_backend = _initialize_silhouette_backend_for_mode(
+        args.optimizer_mode, repo_root
+    )
     decompile_script = (repo_root / "batch_decompile_organize.py").resolve()
     optimize_script = (repo_root / "batch_optimize_qc.py").resolve()
     compile_script = (repo_root / "batch_compile_opt_qc.py").resolve()
@@ -1253,6 +1325,7 @@ def main(argv: list[str]) -> int:
             compile_script=compile_script,
             selective_optimize_script=selective_optimize_script,
             round_parts_optimize_script=round_parts_optimize_script,
+            maximum_silhouette_backend=maximum_silhouette_backend,
         )
 
     addon_units, skipped_without_models = _discover_child_addons(addon_path)
@@ -1318,6 +1391,7 @@ def main(argv: list[str]) -> int:
             compile_script=compile_script,
             selective_optimize_script=selective_optimize_script,
             round_parts_optimize_script=round_parts_optimize_script,
+            maximum_silhouette_backend=maximum_silhouette_backend,
             emit_path_header=False,
             emit_result_lines=False,
         )
