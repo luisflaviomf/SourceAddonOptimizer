@@ -35,6 +35,28 @@ class StudioMdlPathTests(unittest.TestCase):
             self.assertFalse(source_alias.exists())
             self.assertFalse(game_alias.exists())
 
+    @unittest.skipUnless(os.name == "nt", "directory junctions are Windows-specific")
+    def test_non_ascii_source_and_game_paths_receive_ascii_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "source-ação-空"
+            game = root / "game-ação-空"
+            source.mkdir()
+            game.mkdir()
+            (source / "mesh.smd").write_text("version 1\n", encoding="utf-8")
+            (game / "gameinfo.txt").write_text("GameInfo {}\n", encoding="utf-8")
+
+            with _studiomdl_execution_paths(source, game) as (short_source, short_game):
+                self.assertTrue(str(short_source).isascii())
+                self.assertTrue(str(short_game).isascii())
+                self.assertEqual((short_source / "mesh.smd").read_text(encoding="utf-8"), "version 1\n")
+                self.assertTrue((short_game / "gameinfo.txt").is_file())
+                source_alias = short_source
+                game_alias = short_game
+
+            self.assertFalse(source_alias.exists())
+            self.assertFalse(game_alias.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

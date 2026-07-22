@@ -389,7 +389,12 @@ def _studiomdl_execution_paths(source_dir: Path, game_dir: Path):
     """Give legacy StudioMDL short paths without copying either working tree."""
     source_dir = source_dir.resolve()
     game_dir = game_dir.resolve()
-    if os.name != "nt" or max(len(str(source_dir)), len(str(game_dir))) < 160:
+    needs_alias = (
+        max(len(str(source_dir)), len(str(game_dir))) >= 160
+        or not str(source_dir).isascii()
+        or not str(game_dir).isascii()
+    )
+    if os.name != "nt" or not needs_alias:
         yield source_dir, game_dir
         return
 
