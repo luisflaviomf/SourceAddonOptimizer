@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import struct
 import unittest
+from unittest import mock
 
 from PIL import Image, ImageChops
 
@@ -242,6 +243,46 @@ class RawMaskSilhouetteKernelTests(unittest.TestCase):
             self.kernel.measure(invalid_stride, valid, empty_distance=5)
         with self.assertRaisesRegex(ValueError, "binary"):
             self.kernel.measure(non_binary, valid, empty_distance=5)
+
+    def test_opt_in_prepared_metrics_are_bitwise_exact_and_use_one_batch_call(self) -> None:
+        from tests.maximum_optimizer.test_metrics import BUDGET, CONTRACT, make_disc
+
+        original = make_disc(64)
+        candidate = make_disc(6)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
+            baseline_reference = metrics_module.prepare_region_reference(original, CONTRACT)
+            baseline = metrics_module.measure_region_prepared(baseline_reference, candidate)
+            baseline_decision = metrics_module.validate_region(baseline, BUDGET)
+
+        with mock.patch.dict(
+            os.environ,
+            {"MAXIMUM_SILHOUETTE_EXPERIMENT_DLL": str(EXPERIMENT_DLL)},
+            clear=False,
+        ):
+            metrics_module._reset_silhouette_experiment_diagnostics()
+            with mock.patch(
+                "maximum_optimizer.metrics._boundary_points",
+                side_effect=AssertionError("experimental path rebuilt Python boundaries"),
+            ), mock.patch(
+                "maximum_optimizer.metrics._kd_tree",
+                side_effect=AssertionError("experimental path rebuilt Python KD trees"),
+            ):
+                native_reference = metrics_module.prepare_region_reference(original, CONTRACT)
+                actual = metrics_module.measure_region_prepared(native_reference, candidate)
+            diagnostics = metrics_module._get_silhouette_experiment_diagnostics()
+
+        self.assertEqual(actual, baseline)
+        self.assertEqual(metrics_module.validate_region(actual, BUDGET), baseline_decision)
+        for field in baseline.__dataclass_fields__:
+            self.assertEqual(
+                struct.pack("=d", getattr(actual, field)),
+                struct.pack("=d", getattr(baseline, field)),
+                field,
+            )
+        self.assertEqual(diagnostics["calls"], 1)
+        self.assertGreater(diagnostics["mask_preparation_ns"], 0)
+        self.assertGreater(diagnostics["native_call_ns"], 0)
 
 
 if __name__ == "__main__":
