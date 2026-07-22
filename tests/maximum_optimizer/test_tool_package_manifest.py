@@ -69,6 +69,14 @@ def build_package(root: Path, *, include_attribute_contract: bool = True) -> Pat
 
 @unittest.skipUnless(NATIVE_DLL.is_file(), "promoted native DLL not built")
 class ToolPackageManifestTests(unittest.TestCase):
+    def test_release_publish_omits_debug_symbols_and_machine_paths(self) -> None:
+        script = (REPO_ROOT / "build_release_wpf.ps1").read_text(encoding="utf-8")
+        self.assertIn('"-p:DebugType=None"', script)
+        self.assertIn('"-p:DebugSymbols=false"', script)
+        self.assertNotIn("PublishProfile=", script)
+        self.assertIn('"Publish WPF x64 application"', script)
+        self.assertIn("Publish unexpectedly contains debug symbols", script)
+
     def test_worker_spec_packages_attribute_contract_sources(self) -> None:
         spec = (REPO_ROOT / "pyinstaller/worker.spec").read_text(encoding="utf-8")
         for relative in ATTRIBUTE_CONTRACT_RELATIVE_PATHS:

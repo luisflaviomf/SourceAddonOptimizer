@@ -20,7 +20,7 @@ import tempfile
 import threading
 from _thread import LockType
 
-DEFAULT_ROOT = r"C:\Users\luisf\OneDrive\Documentos\lvscrowbar"
+DEFAULT_ROOT = "."
 DEFAULT_STUDIOMDL = r"C:\Program Files (x86)\Steam\steamapps\common\GarrysMod\bin\studiomdl.exe"
 MAX_AUTO_COMPILE_JOBS = 4
 

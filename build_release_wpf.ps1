@@ -12,7 +12,6 @@ $packageScript = Join-Path $repoRoot "pyinstaller\package_wpf_tools.ps1"
 $csprojPath = Join-Path $repoRoot "GmodAddonCompressor-master\GmodAddonCompressor\GmodAddonCompressor.csproj"
 $runtimeIdentifier = "win-x64"
 $configuration = "Release"
-$publishProfile = "win-x64-singlefile"
 
 $projectDir = Split-Path -Parent $csprojPath
 $runtimeBuildDir = Join-Path $projectDir "bin\$configuration\net6.0-windows\$runtimeIdentifier"
@@ -109,13 +108,14 @@ Invoke-Step -Name "Package embedded WPF tools ZIP" -Action {
     }
 }
 
-Invoke-Step -Name "Publish WPF single-file executable" -Action {
+Invoke-Step -Name "Publish WPF x64 application" -Action {
     $publishArguments = @(
         "publish",
         $csprojPath,
         "-c", $configuration,
         "-r", $runtimeIdentifier,
-        "-p:PublishProfile=$publishProfile"
+        "-p:DebugType=None",
+        "-p:DebugSymbols=false"
     )
     if ($candidateMode) {
         $publishArguments += @(
@@ -129,6 +129,10 @@ Invoke-Step -Name "Publish WPF single-file executable" -Action {
 
     if (!(Test-Path $finalExePath)) {
         throw "Final executable was not generated: $finalExePath"
+    }
+    $debugSymbols = @(Get-ChildItem -LiteralPath $publishDir -Filter "*.pdb" -File -Recurse)
+    if ($debugSymbols.Count -ne 0) {
+        throw "Publish unexpectedly contains debug symbols: $($debugSymbols.FullName -join ', ')"
     }
 }
 

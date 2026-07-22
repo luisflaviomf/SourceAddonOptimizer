@@ -5,10 +5,14 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from batch_compile_opt_qc import _studiomdl_execution_paths
+from batch_compile_opt_qc import DEFAULT_ROOT, _studiomdl_execution_paths
 
 
 class StudioMdlPathTests(unittest.TestCase):
+    def test_default_scan_root_is_portable(self) -> None:
+        self.assertEqual(DEFAULT_ROOT, ".")
+        self.assertFalse(Path(DEFAULT_ROOT).is_absolute())
+
     @unittest.skipUnless(os.name == "nt", "directory junctions are Windows-specific")
     def test_long_source_and_game_paths_receive_short_live_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
