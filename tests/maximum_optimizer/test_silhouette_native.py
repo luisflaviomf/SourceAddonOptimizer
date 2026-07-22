@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import math
 import os
 from pathlib import Path
@@ -20,6 +21,8 @@ from maximum_optimizer.silhouette_native import (
     MaskBatch,
     NativeSilhouettePackage,
     RawMaskSilhouetteKernel,
+    _NativeInput,
+    _NativeOutput,
 )
 
 
@@ -327,6 +330,36 @@ class RawMaskSilhouetteKernelTests(unittest.TestCase):
             self.kernel.measure(invalid_stride, valid, empty_distance=5)
         with self.assertRaisesRegex(ValueError, "binary"):
             self.kernel.measure(non_binary, valid, empty_distance=5)
+
+    def test_rejects_stride_overflow_before_reading_masks(self) -> None:
+        storage = (ctypes.c_ubyte * 1)()
+        intersections = (ctypes.c_uint64 * 1)()
+        unions = (ctypes.c_uint64 * 1)()
+        maximum_size = ctypes.c_size_t(-1).value
+        native_input = _NativeInput(
+            ctypes.sizeof(_NativeInput),
+            1,
+            2,
+            1,
+            1,
+            storage,
+            maximum_size,
+            maximum_size,
+            storage,
+            1,
+            2,
+        )
+        native_output = _NativeOutput(
+            struct_size=ctypes.sizeof(_NativeOutput),
+            intersections=intersections,
+            unions=unions,
+            view_capacity=1,
+        )
+
+        self.assertEqual(
+            self.kernel._measure(ctypes.byref(native_input), ctypes.byref(native_output)),
+            -3,
+        )
 
     def test_opt_in_prepared_metrics_are_bitwise_exact_and_use_one_batch_call(self) -> None:
         from tests.maximum_optimizer.test_metrics import BUDGET, CONTRACT, make_disc

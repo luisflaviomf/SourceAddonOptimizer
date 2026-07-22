@@ -144,6 +144,11 @@ bool can_multiply(std::size_t a, std::size_t b)
     return b == 0 || a <= std::numeric_limits<std::size_t>::max() / b;
 }
 
+bool can_add(std::size_t a, std::size_t b)
+{
+    return a <= std::numeric_limits<std::size_t>::max() - b;
+}
+
 bool finite_values(const float* values, std::size_t count)
 {
     for (std::size_t index = 0; index < count; ++index)
@@ -604,10 +609,16 @@ extern "C" __declspec(dllexport) int maximum_silhouette_metrics_raw_batch_v1(
             return ErrorNullPointer;
         if (!can_multiply(input->width, input->height) ||
             !can_multiply(input->view_count, static_cast<std::size_t>(input->width) * input->height) ||
-            !can_multiply(input->empty_distance, input->empty_distance))
+            !can_multiply(input->empty_distance, input->empty_distance) ||
+            !can_multiply(input->original_row_stride, input->height) ||
+            !can_multiply(input->candidate_row_stride, input->height))
             return ErrorCount;
         const std::size_t cell_count = static_cast<std::size_t>(input->width) * input->height;
         const std::size_t all_cells = cell_count * input->view_count;
+        if (!can_multiply(all_cells, std::size_t(2)))
+            return ErrorCount;
+        const std::size_t original_view_span = input->original_row_stride * input->height;
+        const std::size_t candidate_view_span = input->candidate_row_stride * input->height;
         const std::uint64_t maximum_distance =
             static_cast<std::uint64_t>(input->width - 1) * (input->width - 1) +
             static_cast<std::uint64_t>(input->height - 1) * (input->height - 1);
@@ -616,12 +627,17 @@ extern "C" __declspec(dllexport) int maximum_silhouette_metrics_raw_batch_v1(
         if (cell_count >= kCellLimit || maximum_distance >= std::numeric_limits<std::uint32_t>::max() ||
             empty_distance_squared > std::numeric_limits<std::uint32_t>::max() ||
             input->original_row_stride < input->width || input->candidate_row_stride < input->width ||
-            input->original_view_stride < input->original_row_stride * input->height ||
-            input->candidate_view_stride < input->candidate_row_stride * input->height ||
+            input->original_view_stride < original_view_span ||
+            input->candidate_view_stride < candidate_view_span ||
             output->view_capacity < input->view_count)
             return ErrorCount;
         if (!can_multiply(input->view_count - 1, input->original_view_stride) ||
             !can_multiply(input->view_count - 1, input->candidate_view_stride))
+            return ErrorCount;
+        const std::size_t original_last_view = (input->view_count - 1) * input->original_view_stride;
+        const std::size_t candidate_last_view = (input->view_count - 1) * input->candidate_view_stride;
+        if (!can_add(original_last_view, original_view_span) ||
+            !can_add(candidate_last_view, candidate_view_span))
             return ErrorCount;
 
         const bool debug_offsets = output->original_boundary_offsets != nullptr ||
