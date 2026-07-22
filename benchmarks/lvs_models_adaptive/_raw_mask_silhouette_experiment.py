@@ -36,8 +36,13 @@ from maximum_optimizer.qc_graph import scan_qc_occurrences  # noqa: E402
 from maximum_optimizer.regions import build_region_graph, correspond_graphs  # noqa: E402
 from maximum_optimizer.rendering import RenderEvidence  # noqa: E402
 from maximum_optimizer.reporting import maximum_report_payload  # noqa: E402
+from maximum_optimizer.silhouette_backend import (  # noqa: E402
+    configure_silhouette_backend,
+    reset_silhouette_backend,
+)
 from maximum_optimizer.silhouette_native import (  # noqa: E402
     MaskBatch,
+    NativeSilhouettePackage,
     RawMaskSilhouetteKernel,
 )
 from maximum_optimizer.smd import parse_smd  # noqa: E402
@@ -53,6 +58,14 @@ def write_json(path: Path, payload: object) -> None:
         newline="\n",
     )
     os.replace(temporary, path)
+
+
+def select_silhouette_lane(lane: str, dll: Path) -> None:
+    reset_silhouette_backend()
+    if lane == "experiment":
+        backend = configure_silhouette_backend(NativeSilhouettePackage.from_file_for_test(dll))
+        if not backend.initialize():
+            raise RuntimeError(backend.snapshot()["fallback_reason"])
 
 
 def image_from_bits(width: int, height: int, bits: bytes) -> Image.Image:
@@ -155,7 +168,7 @@ def seeded_cases(count: int) -> list[tuple[int, int, bytes, bytes, tuple[int, in
 
 
 def run_mask_equivalence(dll: Path, count: int, output: Path) -> None:
-    kernel = RawMaskSilhouetteKernel(dll)
+    kernel = RawMaskSilhouetteKernel(NativeSilhouettePackage.from_file_for_test(dll))
     digest = hashlib.sha256()
     started = time.perf_counter()
     maximum_distance_squared = 0
@@ -317,12 +330,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
     for required in (addon_root, original_root, normal_root, compiled_root, framework, blender):
         if not required.exists():
             raise FileNotFoundError(required)
-    if args.lane == "experiment":
-        if args.dll is None or not args.dll.is_file():
-            raise FileNotFoundError(args.dll)
-        os.environ["MAXIMUM_SILHOUETTE_EXPERIMENT_DLL"] = str(args.dll.resolve())
-    else:
-        os.environ.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
+    if args.lane == "experiment" and (args.dll is None or not args.dll.is_file()):
+        raise FileNotFoundError(args.dll)
+    select_silhouette_lane(args.lane, args.dll or Path("unused"))
 
     args.staging_root.mkdir(parents=True, exist_ok=False)
     args.cache_root.mkdir(parents=True, exist_ok=True)
@@ -545,14 +555,14 @@ def run_cross_equivalence(dll: Path, output: Path) -> None:
         contract = _pose_contract(original, profile)
         array_sha256 = region_payload_sha256(candidate)
 
-        os.environ.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
+        select_silhouette_lane("baseline", dll)
         baseline_started = time.perf_counter()
         baseline_reference = metrics_module.prepare_region_reference(original, contract)
         baseline = metrics_module.measure_region_prepared(baseline_reference, candidate)
         baseline_seconds = time.perf_counter() - baseline_started
         baseline_decision = metrics_module.validate_region(baseline, budget)
 
-        os.environ["MAXIMUM_SILHOUETTE_EXPERIMENT_DLL"] = str(Path(dll).resolve())
+        select_silhouette_lane("experiment", dll)
         metrics_module._reset_silhouette_experiment_diagnostics()
         experiment_started = time.perf_counter()
         experiment_reference = metrics_module.prepare_region_reference(original, contract)
@@ -600,7 +610,7 @@ def run_cross_equivalence(dll: Path, output: Path) -> None:
         }
         checks.append(check)
         print(json.dumps(check, sort_keys=True), flush=True)
-    os.environ.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
+    reset_silhouette_backend()
     payload = {
         "schema": 1,
         "status": "exact",
@@ -769,11 +779,10 @@ def run_benchmark_suite(root: Path, dll: Path) -> None:
 
 
 def measure_cross_once(original, candidate, contract, lane: str, dll: Path) -> dict[str, object]:
+    select_silhouette_lane(lane, dll)
     if lane == "experiment":
-        os.environ["MAXIMUM_SILHOUETTE_EXPERIMENT_DLL"] = str(Path(dll).resolve())
         candidate_name = "_silhouette_metrics_native_prepared"
     else:
-        os.environ.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
         candidate_name = "_silhouette_metrics_prepared"
     metrics_module._reset_silhouette_experiment_diagnostics()
     silhouette_ns = 0
@@ -860,11 +869,15 @@ def run_cross_performance(dll: Path, output: Path) -> None:
             "schedule": schedule,
             "runs": runs,
         })
-    os.environ.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
+    reset_silhouette_backend()
     write_json(output, {"schema": 1, "status": "exact", "results": results})
 
 
 def run_full_worker_once(lane: str, addon_root: Path, work_root: Path, dll: Path) -> dict[str, object]:
+    if lane != "experiment":
+        raise RuntimeError(
+            "source full-worker legacy injection was retired; use an isolated invalid benchmark package"
+        )
     try:
         import psutil
     except ImportError as exc:
@@ -895,10 +908,7 @@ def run_full_worker_once(lane: str, addon_root: Path, work_root: Path, dll: Path
     ]
     environment = dict(os.environ)
     environment.pop("MAXIMUM_MESHOPT_DLL", None)
-    if lane == "experiment":
-        environment["MAXIMUM_SILHOUETTE_EXPERIMENT_DLL"] = str(Path(dll).resolve())
-    else:
-        environment.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
+    environment.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
     started = time.perf_counter()
     process = subprocess.Popen(
         command,
