@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 from bisect import bisect_left
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import heapq
 import math
-import os
-from pathlib import Path
 import random
-import threading
 import time
 from typing import Iterable, Sequence
 
@@ -16,12 +13,8 @@ from PIL import Image, ImageChops, ImageDraw
 
 from .contracts import RegionBudget, RegionMetrics, ValidationDecision
 from .regions import SmdRegion
-from .silhouette_native import (
-    MaskBatch,
-    NativeSilhouettePackage,
-    RawMaskSilhouetteKernel,
-    pack_masks,
-)
+from .silhouette_backend import current_silhouette_backend
+from .silhouette_native import MaskBatch, pack_masks
 from .smd import SmdTriangle, SmdVertex
 
 
@@ -109,33 +102,17 @@ class PreparedRegionReference:
     silhouette_mask_batch: MaskBatch | None = field(default=None, compare=False, repr=False)
 
 
-_SILHOUETTE_EXPERIMENT_KERNELS: dict[Path, RawMaskSilhouetteKernel] = {}
-_SILHOUETTE_EXPERIMENT_LOCK = threading.Lock()
-_SILHOUETTE_EXPERIMENT_BUFFERS = threading.local()
-_SILHOUETTE_EXPERIMENT_DIAGNOSTICS: dict[str, int] = {}
-
-
 def _reset_silhouette_experiment_diagnostics() -> None:
-    with _SILHOUETTE_EXPERIMENT_LOCK:
-        _SILHOUETTE_EXPERIMENT_DIAGNOSTICS.clear()
+    current_silhouette_backend().reset_diagnostics()
 
 
 def _record_silhouette_experiment_diagnostics(**values: int) -> None:
-    with _SILHOUETTE_EXPERIMENT_LOCK:
-        for name, value in values.items():
-            if name == "native_peak_scratch_bytes":
-                _SILHOUETTE_EXPERIMENT_DIAGNOSTICS[name] = max(
-                    _SILHOUETTE_EXPERIMENT_DIAGNOSTICS.get(name, 0), value
-                )
-            else:
-                _SILHOUETTE_EXPERIMENT_DIAGNOSTICS[name] = (
-                    _SILHOUETTE_EXPERIMENT_DIAGNOSTICS.get(name, 0) + value
-                )
+    current_silhouette_backend().record(**values)
 
 
 def _get_silhouette_experiment_diagnostics() -> dict[str, int]:
-    with _SILHOUETTE_EXPERIMENT_LOCK:
-        result = dict(_SILHOUETTE_EXPERIMENT_DIAGNOSTICS)
+    snapshot = current_silhouette_backend().snapshot()
+    result = {name: int(value) for name, value in snapshot.items() if type(value) is int}
     for name in (
         "calls",
         "mask_preparation_ns",
@@ -155,20 +132,6 @@ def _get_silhouette_experiment_diagnostics() -> dict[str, int]:
     ):
         result.setdefault(name, 0)
     return result
-
-
-def _silhouette_experiment_path() -> Path | None:
-    configured = os.environ.get("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL")
-    return Path(configured).expanduser().resolve() if configured else None
-
-
-def _silhouette_experiment_kernel(path: Path) -> RawMaskSilhouetteKernel:
-    with _SILHOUETTE_EXPERIMENT_LOCK:
-        kernel = _SILHOUETTE_EXPERIMENT_KERNELS.get(path)
-        if kernel is None:
-            kernel = RawMaskSilhouetteKernel(NativeSilhouettePackage.from_file_for_test(path))
-            _SILHOUETTE_EXPERIMENT_KERNELS[path] = kernel
-        return kernel
 
 
 def _add(left: Vector3, right: Vector3) -> Vector3:
@@ -570,11 +533,10 @@ def _silhouette_metrics_native_prepared(
 ) -> tuple[float, float]:
     if reference.silhouette_mask_batch is None:
         raise RuntimeError("native silhouette reference has no raw mask batch")
-    path = _silhouette_experiment_path()
-    if path is None:
-        raise RuntimeError("native silhouette experiment was disabled after reference preparation")
+    backend = current_silhouette_backend()
+    if not backend.native_enabled:
+        raise RuntimeError("native silhouette backend was disabled after reference preparation")
 
-    total_start = time.perf_counter_ns()
     mask_start = time.perf_counter_ns()
     candidate_masks = tuple(
         _project_region(
@@ -586,36 +548,31 @@ def _silhouette_metrics_native_prepared(
         )
         for item in reference.silhouettes
     )
-    reusable = getattr(_SILHOUETTE_EXPERIMENT_BUFFERS, "candidate", None)
+    reusable = backend.candidate_buffer()
     previous_size = len(reusable) if reusable is not None else 0
     candidate_batch = pack_masks(candidate_masks, reusable)
-    _SILHOUETTE_EXPERIMENT_BUFFERS.candidate = candidate_batch.buffer
+    backend.set_candidate_buffer(candidate_batch.buffer)
     mask_ns = time.perf_counter_ns() - mask_start
 
-    result = _silhouette_experiment_kernel(path).measure(
+    result = backend.measure(
         reference.silhouette_mask_batch,
         candidate_batch,
         empty_distance=reference.contract.silhouette_resolution,
     )
-    diagnostics = result.diagnostics
     _record_silhouette_experiment_diagnostics(
-        calls=1,
         mask_preparation_ns=mask_ns,
-        input_marshaling_ns=diagnostics.input_marshaling_ns,
-        native_call_ns=diagnostics.native_call_ns,
-        boundary_extraction_ns=diagnostics.boundary_extraction_ns,
-        distance_calculation_ns=diagnostics.distance_calculation_ns,
-        metric_production_ns=diagnostics.metric_production_ns,
-        output_marshaling_ns=diagnostics.output_marshaling_ns,
-        caller_postprocessing_ns=diagnostics.caller_postprocessing_ns,
-        native_allocation_count=diagnostics.native_allocation_count,
-        native_allocation_bytes=diagnostics.native_allocation_bytes,
-        native_peak_scratch_bytes=diagnostics.native_peak_scratch_bytes,
         python_buffer_growth_count=int(len(candidate_batch.buffer) > previous_size),
         python_buffer_growth_bytes=max(0, len(candidate_batch.buffer) - previous_size),
-        silhouette_total_ns=time.perf_counter_ns() - total_start,
     )
     return result.worst_iou_loss, result.boundary_p95_px
+
+
+def _legacy_silhouette_reference(reference: PreparedRegionReference) -> PreparedRegionReference:
+    silhouettes = []
+    for item in reference.silhouettes:
+        boundary = item.boundary or _boundary_points(item.mask)
+        silhouettes.append(replace(item, boundary=boundary, boundary_tree=_kd_tree(boundary)))
+    return replace(reference, silhouettes=tuple(silhouettes), silhouette_mask_batch=None)
 
 
 def _validate_structure(original: SmdRegion, candidate: SmdRegion) -> None:
@@ -644,12 +601,13 @@ def prepare_region_reference(original: SmdRegion, contract: MetricContract) -> P
     diagonal = max(_length(_sub(bounds_max, bounds_min)), 1e-9)
     original_data = _triangle_data(original)
     original_bvh = _build_bvh(original_data, tuple(range(len(original_data))))
-    experiment_path = _silhouette_experiment_path()
+    backend = current_silhouette_backend()
+    native_enabled = backend.native_enabled
     silhouette_start = time.perf_counter_ns()
-    silhouettes = _prepare_silhouettes(original, contract, raw_native=experiment_path is not None)
+    silhouettes = _prepare_silhouettes(original, contract, raw_native=native_enabled)
     silhouette_mask_batch = (
         pack_masks(tuple(item.mask for item in silhouettes))
-        if experiment_path is not None
+        if native_enabled
         else None
     )
     if silhouette_mask_batch is not None:
@@ -686,7 +644,14 @@ def measure_region_prepared(reference: PreparedRegionReference, candidate: SmdRe
     if reference.silhouette_mask_batch is None:
         silhouette_iou, silhouette_boundary = _silhouette_metrics_prepared(reference, candidate)
     else:
-        silhouette_iou, silhouette_boundary = _silhouette_metrics_native_prepared(reference, candidate)
+        try:
+            silhouette_iou, silhouette_boundary = _silhouette_metrics_native_prepared(reference, candidate)
+        except Exception as exc:
+            backend = current_silhouette_backend()
+            backend.fail("measure", exc)
+            silhouette_iou, silhouette_boundary = _silhouette_metrics_prepared(
+                _legacy_silhouette_reference(reference), candidate
+            )
     return RegionMetrics(
         surface_p95=_clean(_percentile(surfaces, 0.95)),
         surface_max=_clean(_percentile(surfaces, 0.99)),

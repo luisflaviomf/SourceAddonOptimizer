@@ -11,6 +11,10 @@ from unittest import mock
 from PIL import Image, ImageChops
 
 from maximum_optimizer import metrics as metrics_module
+from maximum_optimizer.silhouette_backend import (
+    configure_silhouette_backend,
+    reset_silhouette_backend,
+)
 from maximum_optimizer.silhouette_native import (
     EXPECTED_SILHOUETTE_BUILD_ID,
     MaskBatch,
@@ -329,17 +333,14 @@ class RawMaskSilhouetteKernelTests(unittest.TestCase):
 
         original = make_disc(64)
         candidate = make_disc(6)
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("MAXIMUM_SILHOUETTE_EXPERIMENT_DLL", None)
-            baseline_reference = metrics_module.prepare_region_reference(original, CONTRACT)
-            baseline = metrics_module.measure_region_prepared(baseline_reference, candidate)
-            baseline_decision = metrics_module.validate_region(baseline, BUDGET)
+        reset_silhouette_backend()
+        baseline_reference = metrics_module.prepare_region_reference(original, CONTRACT)
+        baseline = metrics_module.measure_region_prepared(baseline_reference, candidate)
+        baseline_decision = metrics_module.validate_region(baseline, BUDGET)
 
-        with mock.patch.dict(
-            os.environ,
-            {"MAXIMUM_SILHOUETTE_EXPERIMENT_DLL": str(PROMOTED_DLL)},
-            clear=False,
-        ):
+        backend = configure_silhouette_backend(promoted_package())
+        self.assertTrue(backend.initialize())
+        try:
             metrics_module._reset_silhouette_experiment_diagnostics()
             with mock.patch(
                 "maximum_optimizer.metrics._boundary_points",
@@ -351,6 +352,8 @@ class RawMaskSilhouetteKernelTests(unittest.TestCase):
                 native_reference = metrics_module.prepare_region_reference(original, CONTRACT)
                 actual = metrics_module.measure_region_prepared(native_reference, candidate)
             diagnostics = metrics_module._get_silhouette_experiment_diagnostics()
+        finally:
+            reset_silhouette_backend()
 
         self.assertEqual(actual, baseline)
         self.assertEqual(metrics_module.validate_region(actual, BUDGET), baseline_decision)
