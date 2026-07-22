@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Models Maximum v2: promoted the exact native silhouette kernel with a validated
+  KD fallback. The final same-session gate reduced adaptive simplification from
+  9.220 s to 5.739 s (-37.76%) without changing decisions or compiled output.
+  Normal and Fidelity are unchanged.
 - M4: Hardened pipeline UX (summary, cancel handling, progress phase/item split, tools validation).
 - M4: Added pipeline summary copy button and start guard.
 - UX: Centralized theme brushes in App.xaml and removed theme-dependent colors.

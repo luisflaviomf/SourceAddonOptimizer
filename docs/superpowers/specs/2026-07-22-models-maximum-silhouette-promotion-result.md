@@ -2,7 +2,93 @@
 
 Data: 2026-07-22  
 Branch: `feature/models-maximum-adaptive-v2`  
-Estado: candidato RC3 aprovado tecnicamente; sem merge na `main` e sem release oficial.
+Estado: candidato final RC10 aprovado no gate técnico; sem merge na `main` e sem release oficial.
+
+## Gate final RC10
+
+O gate final foi repetido a partir de uma exportação limpa do commit de código
+`83e3e748250278026c2f5941ecf677f6665f9bd4`. O DLL nativo Release x64 e o
+worker PyInstaller foram reconstruídos do zero antes de executar
+`build_release_wpf.ps1`. O pacote resultante passou pelos validadores de
+manifesto, ABI, arquitetura e contrato de instalação do WPF.
+
+Resultados de verificação:
+
+- 23 testes nativos e 113 testes Python passaram;
+- contrato WPF passou, inclusive 16 instalações concorrentes, pacote adulterado,
+  extração interrompida, ZIP incompleto, manifesto inválido, DLL x86 e DLL falsa
+  adjacente;
+- o DLL é AMD64, exporta a ABI 1.0.0 e depende somente de `KERNEL32.dll`;
+- o pacote tem 74 arquivos, nenhum PDB/cache/fonte C++/header e nenhum caminho de
+  desenvolvimento;
+- o WPF real executou Maximum em 18,589 s, selecionou o backend nativo nas nove
+  chamadas, não usou fallback e manteve os hashes aprovados de MDL/VVD/DX90/PHY;
+- uma execução em caminhos com `ação` e `空` terminou em 15,500 s;
+- duas instâncias simultâneas do WPF permaneceram funcionais;
+- a segunda execução não alterou a árvore instalada e não deixou diretórios
+  `.partial` nem caches dentro dos tools.
+
+O teste final de fallback usou o worker bruto sem o manifesto intencionalmente.
+Ele terminou em 19,453 s com KD (`fallback_stage=initialize`). Um novo processo,
+executando o pacote instalado válido, voltou ao backend nativo e terminou em
+15,435 s. A etapa `adaptive-simplification` caiu de 9,220045 s para 5,738918 s:
+3,481127 s a menos, ou -37,756% (1,607x). As duas lanes selecionaram
+13.578 de 16.304 triângulos e produziram exatamente os mesmos quatro arquivos:
+
+| Arquivo | SHA-256 |
+|---|---|
+| `wheel.dx90.vtx` | `e5794c1aca2da04c039d44d0d9d29eb20e23695b5453a5756c50f7598ee2d9fc` |
+| `wheel.mdl` | `f7c8b07f9ab95f06f036d1581d55614bad46277bb5b388508655a5dbcd0c4a02` |
+| `wheel.phy` | `fa3e392bdd115a77570f8f323fc5f8ae28590e7843744b0eaefcd116a905cb3c` |
+| `wheel.vvd` | `8d1bbfd6d2209ae2a99ed4994813c0f00c02c6c2f73bbeb5c036e3264bfda5ee` |
+
+Regressões reais curtas do mesmo gate, sempre sem DX80 e sem fallback nativo:
+
+| Família | Tempo total | Triângulos | Bytes comparáveis | Redução |
+|---|---:|---:|---:|---:|
+| Pontiac wheel | 19,671 s | 16.304 -> 13.578 | 981.876 -> 835.224 | 14,94% |
+| Toyota Supra | 192,822 s | 331.485 -> 259.143 | 18.052.152 -> 14.061.517 | 22,11% |
+| Dodge Charger, skinning | 194,734 s | 299.415 -> 214.550 | 21.759.408 -> 16.125.385 | 25,89% |
+| Caterham, 11 modelos | 42,591 s | 50.258 -> 36.912 | 4.120.885 -> 3.250.264 | 21,13% |
+
+O gate de equivalência cross-model confirmou floats, decisões e payloads exatos
+em Toyota (vidro/múltiplos materiais), Dodge (skinning/pesos mistos) e Pontiac.
+No Dodge, a reprovação local de silhueta/material boundary também foi idêntica,
+demonstrando que o fallback regional continuou restrito à região que falhou.
+
+Durante a revisão de segurança foi encontrado um overflow possível na validação
+de `row_stride * height` e do span da última vista. O commit `83e3e74` passou a
+validar multiplicações e somas antes de qualquer leitura e adicionou um teste de
+regressão. Todos os exports permanecem `noexcept`, inicializam/limpam a saída,
+validam ponteiros, dimensões, capacidades e máscaras, e convertem exceções em
+códigos de erro. Uma falha nativa parcial sempre descarta a tentativa completa e
+recalcula a métrica exata pelo KD.
+
+Limitações conhecidas do candidato:
+
+- o publish é uma pasta/ZIP completo; o EXE isolado não é single-file;
+- o alvo `net6.0-windows` está fora de suporte;
+- `Magick.NET-Q16-AnyCPU` 14.10.4 mantém advisories NuGet preexistentes, incluindo
+  um de severidade alta; isto não foi introduzido por Maximum v2;
+- a saída de console do Blender ainda pode exibir mojibake cosmético em alguns
+  caminhos Unicode, embora o job e o StudioMDL funcionem;
+- `_nearest` não foi alterado e não faz parte desta promoção.
+
+Artefato final auditado:
+
+- pasta: `D:/gaco-max-v2-final-gate-20260722/candidate-publish-rc10-final`;
+- executável: 232.960 bytes, SHA-256
+  `6aa5a130a68af34484efbab8ba92b04c7d217da31b40b498488ce4384fb2592f`;
+- ZIP interno: 31.298.155 bytes, SHA-256
+  `09bccf7743e0ffbbbf6de93786b1b6f573bd31342e85571704a9ececac998bff`;
+- DLL nativo: 218.112 bytes, SHA-256
+  `3bea244de4962a350c274cb94f6a6d9e205618883557d5444596fd88ed44b490`;
+- ZIP do publish: 268.584.961 bytes, SHA-256
+  `7cd6a350bd6950f56fcf82e08216545c0ebffec17b024b8a76d30035066a87c6`.
+
+As configurações e a instalação de tools preexistentes do usuário foram
+restauradas após o gate. Nenhum merge, push, PR, publicação ou release oficial
+foi executado.
 
 ## Veredito
 
