@@ -10,6 +10,7 @@ import unittest
 import zipfile
 
 from maximum_optimizer.tool_package_manifest import (
+    ATTRIBUTE_CONTRACT_RELATIVE_PATHS,
     DLL_RELATIVE_PATH,
     MANIFEST_RELATIVE_PATH,
     validate_package_directory,
@@ -19,19 +20,22 @@ from maximum_optimizer.tool_package_manifest import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NATIVE_DLL = REPO_ROOT / "maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll"
-
-
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build_package(root: Path) -> Path:
+def build_package(root: Path, *, include_attribute_contract: bool = True) -> Path:
     dll = root / DLL_RELATIVE_PATH
     dll.parent.mkdir(parents=True)
     shutil.copy2(NATIVE_DLL, dll)
     (root / "SourceAddonOptimizerWorker.exe").write_bytes(b"worker")
     (root / "_internal/base_library.zip").parent.mkdir(parents=True, exist_ok=True)
     (root / "_internal/base_library.zip").write_bytes(b"base")
+    if include_attribute_contract:
+        for relative in ATTRIBUTE_CONTRACT_RELATIVE_PATHS:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(relative.encode("ascii"))
     paths = sorted(
         (path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()),
         key=lambda value: value.encode("utf-8"),
@@ -65,6 +69,19 @@ def build_package(root: Path) -> Path:
 
 @unittest.skipUnless(NATIVE_DLL.is_file(), "promoted native DLL not built")
 class ToolPackageManifestTests(unittest.TestCase):
+    def test_worker_spec_packages_attribute_contract_sources(self) -> None:
+        spec = (REPO_ROOT / "pyinstaller/worker.spec").read_text(encoding="utf-8")
+        for relative in ATTRIBUTE_CONTRACT_RELATIVE_PATHS:
+            with self.subTest(relative=relative):
+                self.assertIn(Path(relative).name, spec)
+
+    def test_package_without_attribute_contract_sources_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            build_package(root, include_attribute_contract=False)
+            with self.assertRaisesRegex(RuntimeError, "attribute contract"):
+                validate_package_directory(root)
+
     def test_complete_directory_and_zip_validate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "package"

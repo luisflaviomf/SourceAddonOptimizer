@@ -39,6 +39,8 @@ a = Analysis(
         (str(repo_root / "batch_optimize_parallel.py"), "."),
         (str(repo_root / "batch_compile_opt_qc.py"), "."),
         (str(repo_root / "render_previews.py"), "."),
+        (str(maximum_package / "mesh_attributes.py"), "maximum_optimizer"),
+        (str(maximum_package / "meshopt_bridge.py"), "maximum_optimizer"),
         (
             str(maximum_package / "profiles" / "maximum-adaptive-v2.json"),
             "maximum_optimizer/profiles",

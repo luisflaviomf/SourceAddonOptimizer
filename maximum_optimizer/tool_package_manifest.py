@@ -12,6 +12,10 @@ from .silhouette_native import NativeSilhouettePackage, RawMaskSilhouetteKernel
 
 MANIFEST_RELATIVE_PATH = "_internal/maximum_optimizer/native/tool-package-manifest.json"
 DLL_RELATIVE_PATH = "_internal/maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll"
+ATTRIBUTE_CONTRACT_RELATIVE_PATHS = (
+    "_internal/maximum_optimizer/mesh_attributes.py",
+    "_internal/maximum_optimizer/meshopt_bridge.py",
+)
 TOOL_VERSION = "0.1.18"
 
 
@@ -74,6 +78,9 @@ def _parse_manifest(payload: bytes) -> tuple[dict[str, object], dict[str, dict[s
         ordered.append(path)
     if ordered != sorted(ordered, key=lambda item: item.encode("utf-8")):
         raise RuntimeError("tool package file manifest is not bytewise sorted")
+    missing_contract = [path for path in ATTRIBUTE_CONTRACT_RELATIVE_PATHS if path not in declared]
+    if missing_contract:
+        raise RuntimeError(f"tool package attribute contract sources are missing: {missing_contract}")
     silhouette = manifest.get("silhouette")
     if not isinstance(silhouette, dict):
         raise RuntimeError("tool package silhouette contract is missing")
