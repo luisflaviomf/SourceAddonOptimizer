@@ -350,13 +350,13 @@ effective = risk + (1.0 - risk) * 0.35 * runtime_importance
 - Modify: `GmodAddonCompressor-master/GmodAddonCompressor/MainWindow.xaml`
 - Modify: `tests/wpf_companion_contract/Program.cs`
 
-- [ ] Add failing tests for structural-only import, visual-only incomplete state, merge by identical `run_id` and plan hash, mismatched hash rejection, duplicate result preservation, screenshot hash/path containment, and exact overall status precedence.
-- [ ] Implement result import through the same strict bundle reader. Resolve screenshots with `Path.GetFullPath` plus containment under the selected `screenshots/<run-id>` root and verify declared size/hash before displaying/opening.
-- [ ] Merge structural and visual resources only when run ID and plan SHA-256 match. Keep conflicting imports side-by-side as diagnostics; never silently replace a prior result.
-- [ ] Present totals and filterable `FAILED`, `WARNING`, `INCOMPLETE`, and `PASS` groups, with model/material/test identifiers, short reasons, screenshots, truncation/performance stats, and copy/export summary actions.
-- [ ] Keep structural results useful without screenshots. A headless run must show `WARNING: visual validation not run`, not `FAILED`.
-- [ ] Run the C# contract tests and WPF build, then import valid and hostile fixture results manually; expected result: hostile inputs are preserved for diagnosis but never partially displayed as trusted results.
-- [ ] Commit: `feat(wpf): present companion validation results`.
+- [x] Add failing tests for structural-only import, visual-only incomplete state, merge by identical `run_id` and plan hash, mismatched hash rejection, duplicate result preservation, screenshot hash/path containment, and exact overall status precedence.
+- [x] Implement result import through the same strict bundle reader. Resolve screenshots with `Path.GetFullPath` plus containment under the selected `screenshots/<run-id>` root and verify declared size/hash before displaying/opening.
+- [x] Merge structural and visual resources only when run ID and plan SHA-256 match. Keep conflicting imports side-by-side as diagnostics; never silently replace a prior result.
+- [x] Present totals and filterable `FAILED`, `WARNING`, `INCOMPLETE`, and `PASS` groups, with model/material/test identifiers, short reasons, screenshots, truncation/performance stats, and copy/export summary actions.
+- [x] Keep structural results useful without screenshots. A headless run must show `WARNING: visual validation not run`, not `FAILED`.
+- [x] Run the C# contract tests and WPF build, then import valid and hostile fixture results manually; expected result: hostile inputs are preserved for diagnosis but never partially displayed as trusted results.
+- [x] Commit: `feat(wpf): present companion validation results`.
 
 ## Task 14: Run full automated security and regression gates
 

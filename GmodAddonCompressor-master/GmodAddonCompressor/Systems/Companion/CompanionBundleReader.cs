@@ -142,6 +142,234 @@ namespace GmodAddonCompressor.Systems.Companion
             );
         }
 
+        public static CompanionValidationBundle ReadValidationResult(string indexPath, DateTimeOffset? now = null)
+        {
+            DateTimeOffset clock = now ?? DateTimeOffset.UtcNow;
+            BundleMetadata metadata = ReadMetadata(indexPath, clock);
+            if (metadata.Schema != CompanionResultService.StructuralSchema
+                && metadata.Schema != CompanionResultService.VisualSchema)
+                throw new InvalidOperationException($"Unexpected payload schema: {metadata.Schema}");
+            if (metadata.ContractMajor != CompanionContract.ContractMajor || metadata.ContractMinor != CompanionContract.ContractMinor)
+                throw new InvalidOperationException($"Unsupported contract {metadata.ContractMajor}.{metadata.ContractMinor} for {metadata.Schema}.");
+
+            JsonElement index = metadata.Index;
+            int chunkCount = ReadInteger(index.GetProperty("chunk_count"), "chunk_count", 1, 10_000);
+            long totalBytes = ReadInteger64(index.GetProperty("total_bytes"), "total_bytes", 0, CompanionContract.MaxBundleBytes);
+            JsonElement declarations = ReadArray(index.GetProperty("chunks"), "chunks", 10_000);
+            if (declarations.GetArrayLength() != chunkCount)
+                throw new InvalidOperationException("chunk_count does not match declarations.");
+
+            var parsedDeclarations = new List<ChunkDeclaration>(chunkCount);
+            var filenames = new HashSet<string>(StringComparer.Ordinal);
+            int expectedSequence = 1;
+            long declaredTotal = 0;
+            foreach (JsonElement declaration in declarations.EnumerateArray())
+            {
+                RequireFields(declaration, "chunk declaration", "sequence", "file", "bytes", "sha256");
+                int sequence = ReadInteger(declaration.GetProperty("sequence"), "chunk declaration sequence", 1, 10_000);
+                if (sequence != expectedSequence)
+                    throw new InvalidOperationException("Chunk declarations are reordered.");
+                string filename = ReadString(declaration.GetProperty("file"), "chunk filename", 15, 15);
+                Match match = ChunkFilePattern.Match(filename);
+                if (!match.Success || int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) != sequence || !filenames.Add(filename))
+                    throw new InvalidOperationException("Chunk filename is invalid or repeated.");
+                long bytes = ReadInteger64(declaration.GetProperty("bytes"), "chunk bytes", 1, CompanionContract.MaxChunkBytes);
+                string hash = ReadSha256(declaration.GetProperty("sha256"), "chunk sha256");
+                declaredTotal = checked(declaredTotal + bytes);
+                if (declaredTotal > CompanionContract.MaxBundleBytes)
+                    throw new InvalidOperationException("Bundle exceeds its byte limit.");
+                parsedDeclarations.Add(new ChunkDeclaration(sequence, filename, bytes, hash));
+                expectedSequence++;
+            }
+            if (declaredTotal != totalBytes)
+                throw new InvalidOperationException("total_bytes does not match chunk declarations.");
+
+            var resources = new List<CompanionValidationResource>();
+            var screenshots = new List<CompanionValidationScreenshot>();
+            var identities = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            string? planSha256 = null;
+            CompanionValidationStatus overall = CompanionValidationStatus.Pass;
+            long primaryCount = 0;
+            long secondaryCount = 0;
+            double wallSeconds = 0;
+            long truncatedPrimary = 0;
+            long truncatedSecondary = 0;
+            foreach (ChunkDeclaration declaration in parsedDeclarations)
+            {
+                string chunkPath = Path.Combine(metadata.Root, declaration.Filename);
+                byte[] raw = ReadBytes(chunkPath, CompanionContract.MaxChunkBytes, "chunk");
+                if (raw.LongLength != declaration.Bytes)
+                    throw new InvalidOperationException("Chunk size does not match its declaration.");
+                if (!Sha256(raw).Equals(declaration.Sha256, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Chunk hash does not match its declaration.");
+                using JsonDocument chunkDocument = ParseObject(raw, "chunk");
+                JsonElement chunk = chunkDocument.RootElement;
+                RequireFields(chunk, "chunk envelope", "schema", "contract", "run_id", "created_utc", "producer", "environment", "chunk", "payload");
+                if (ReadString(chunk.GetProperty("schema"), "chunk schema", 1, 64) != metadata.Schema)
+                    throw new InvalidOperationException("Chunk schema does not match the index.");
+                if (ReadGuid(chunk.GetProperty("run_id"), "chunk run_id") != metadata.RunId)
+                    throw new InvalidOperationException("Chunk run_id does not match the index.");
+                (int major, int minor) = ReadContract(chunk.GetProperty("contract"));
+                if (major != metadata.ContractMajor || minor != metadata.ContractMinor)
+                    throw new InvalidOperationException("Chunk contract does not match the index.");
+                if (ReadTimestamp(chunk.GetProperty("created_utc"), clock) != metadata.CreatedUtc)
+                    throw new InvalidOperationException("Chunk timestamp does not match the index.");
+                if (ReadProducer(chunk.GetProperty("producer")) != metadata.Producer)
+                    throw new InvalidOperationException("Chunk producer does not match the index.");
+                if (ReadEnvironment(chunk.GetProperty("environment")) != metadata.Environment)
+                    throw new InvalidOperationException("Chunk environment does not match the index.");
+                ReadChunkMetadata(chunk.GetProperty("chunk"), declaration.Sequence, chunkCount);
+
+                JsonElement payload = chunk.GetProperty("payload");
+                string chunkPlanSha256;
+                if (metadata.Schema == CompanionResultService.StructuralSchema)
+                {
+                    RequireFields(payload, "structural result payload", "plan_sha256", "overall_status", "resources", "performance", "truncation");
+                    chunkPlanSha256 = ReadSha256(payload.GetProperty("plan_sha256"), "plan_sha256");
+                    ReadResultResources(payload.GetProperty("resources"), resources, identities);
+                    JsonElement performance = payload.GetProperty("performance");
+                    RequireFields(performance, "structural performance", "tests", "wall_seconds");
+                    primaryCount = checked(primaryCount + ReadInteger64(performance.GetProperty("tests"), "performance.tests", 0, long.MaxValue));
+                    wallSeconds += ReadFiniteNumber(performance.GetProperty("wall_seconds"), "performance.wall_seconds", 0, 604_800);
+                    JsonElement truncation = payload.GetProperty("truncation");
+                    RequireFields(truncation, "structural truncation", "resources", "warnings");
+                    truncatedPrimary = checked(truncatedPrimary + ReadInteger64(truncation.GetProperty("resources"), "truncation.resources", 0, long.MaxValue));
+                    truncatedSecondary = checked(truncatedSecondary + ReadInteger64(truncation.GetProperty("warnings"), "truncation.warnings", 0, long.MaxValue));
+                }
+                else
+                {
+                    RequireFields(payload, "visual result payload", "plan_sha256", "overall_status", "resources", "screenshots", "performance", "truncation");
+                    chunkPlanSha256 = ReadSha256(payload.GetProperty("plan_sha256"), "plan_sha256");
+                    ReadResultResources(payload.GetProperty("resources"), resources, identities);
+                    ReadResultScreenshots(payload.GetProperty("screenshots"), screenshots, identities);
+                    JsonElement performance = payload.GetProperty("performance");
+                    RequireFields(performance, "visual performance", "models", "screenshots", "wall_seconds");
+                    primaryCount = checked(primaryCount + ReadInteger64(performance.GetProperty("models"), "performance.models", 0, long.MaxValue));
+                    secondaryCount = checked(secondaryCount + ReadInteger64(performance.GetProperty("screenshots"), "performance.screenshots", 0, long.MaxValue));
+                    wallSeconds += ReadFiniteNumber(performance.GetProperty("wall_seconds"), "performance.wall_seconds", 0, 604_800);
+                    JsonElement truncation = payload.GetProperty("truncation");
+                    RequireFields(truncation, "visual truncation", "models", "screenshots");
+                    truncatedPrimary = checked(truncatedPrimary + ReadInteger64(truncation.GetProperty("models"), "truncation.models", 0, long.MaxValue));
+                    truncatedSecondary = checked(truncatedSecondary + ReadInteger64(truncation.GetProperty("screenshots"), "truncation.screenshots", 0, long.MaxValue));
+                }
+                if (planSha256 != null && !planSha256.Equals(chunkPlanSha256, StringComparison.Ordinal))
+                    throw new InvalidOperationException("plan_sha256 differs across result chunks.");
+                planSha256 = chunkPlanSha256;
+                overall = CompanionResultService.CombineStatusForContract(
+                    overall,
+                    ReadValidationStatus(payload.GetProperty("overall_status"), "overall_status")
+                );
+            }
+            if (resources.Count > CompanionContract.MaxResultResources)
+                throw new InvalidOperationException("Result exceeds the aggregate resource limit.");
+            if (screenshots.Count > CompanionContract.MaxScreenshots)
+                throw new InvalidOperationException("Result exceeds the aggregate screenshot limit.");
+            CompanionValidationStatus observedStatus = CompanionValidationStatus.Pass;
+            foreach (CompanionValidationStatus status in resources.Select(item => item.Status).Concat(screenshots.Select(item => item.Status)))
+                observedStatus = CompanionResultService.CombineStatusForContract(observedStatus, status);
+            if (CompanionResultService.CombineStatusForContract(overall, observedStatus) != overall)
+                throw new InvalidOperationException("Declared overall_status understates a resource or screenshot result.");
+
+            return new CompanionValidationBundle(
+                metadata.Root,
+                metadata.IndexPath,
+                metadata.Schema,
+                metadata.RunId,
+                metadata.CreatedUtc,
+                metadata.IndexSha256,
+                planSha256 ?? throw new InvalidOperationException("Result plan hash is missing."),
+                overall,
+                resources,
+                screenshots,
+                primaryCount,
+                secondaryCount,
+                wallSeconds,
+                truncatedPrimary,
+                truncatedSecondary
+            );
+        }
+
+        private static void ReadResultResources(
+            JsonElement value,
+            List<CompanionValidationResource> output,
+            Dictionary<string, HashSet<string>> identities)
+        {
+            foreach (JsonElement resource in ReadArray(value, "resources", CompanionContract.MaxResultResources).EnumerateArray())
+            {
+                RequireFields(resource, "result resource", "id", "test_id", "path", "status", "reason", "warnings");
+                string id = ReadString(resource.GetProperty("id"), "resource.id", 1, 64);
+                RegisterId(identities, "resources", id);
+                string testId = ReadString(resource.GetProperty("test_id"), "resource.test_id", 1, 64);
+                string path = CompanionContract.NormalizeVirtualPath(ReadString(resource.GetProperty("path"), "resource.path", 1, CompanionContract.MaxPathBytes));
+                var warnings = new List<string>();
+                foreach (JsonElement warning in ReadArray(resource.GetProperty("warnings"), "resource.warnings", 64).EnumerateArray())
+                    warnings.Add(ReadString(warning, "resource.warning", 0, 512));
+                output.Add(new CompanionValidationResource(
+                    id,
+                    testId,
+                    path,
+                    ReadValidationStatus(resource.GetProperty("status"), "resource.status"),
+                    ReadString(resource.GetProperty("reason"), "resource.reason", 0, 1_024),
+                    warnings
+                ));
+            }
+        }
+
+        private static void ReadResultScreenshots(
+            JsonElement value,
+            List<CompanionValidationScreenshot> output,
+            Dictionary<string, HashSet<string>> identities)
+        {
+            foreach (JsonElement screenshot in ReadArray(value, "screenshots", CompanionContract.MaxScreenshots).EnumerateArray())
+            {
+                RequireFields(screenshot, "screenshot", "id", "test_id", "path", "sha256", "bytes", "view", "retry_count", "status", "camera", "state");
+                string id = ReadString(screenshot.GetProperty("id"), "screenshot.id", 1, 64);
+                RegisterId(identities, "screenshots", id);
+                string view = ReadString(screenshot.GetProperty("view"), "screenshot.view", 1, 16);
+                if (view != "front" && view != "side" && view != "rear" && view != "isometric" && view != "closeup")
+                    throw new InvalidOperationException("Invalid screenshot view.");
+                JsonElement camera = screenshot.GetProperty("camera");
+                RequireFields(camera, "screenshot.camera", "fov", "distance", "crop_width", "crop_height");
+                JsonElement state = screenshot.GetProperty("state");
+                RequireFields(state, "screenshot.state", "skin", "bodygroups");
+                var bodygroups = new List<string>();
+                foreach (JsonElement bodygroup in ReadArray(state.GetProperty("bodygroups"), "screenshot.state.bodygroups", 1_024).EnumerateArray())
+                {
+                    RequireFields(bodygroup, "screenshot bodygroup", "name", "value");
+                    string name = ReadString(bodygroup.GetProperty("name"), "screenshot bodygroup name", 1, 128);
+                    int bodygroupValue = ReadInteger(bodygroup.GetProperty("value"), "screenshot bodygroup value", 0, 255);
+                    bodygroups.Add(name + "=" + bodygroupValue.ToString(CultureInfo.InvariantCulture));
+                }
+                output.Add(new CompanionValidationScreenshot(
+                    id,
+                    ReadString(screenshot.GetProperty("test_id"), "screenshot.test_id", 1, 64),
+                    ReadString(screenshot.GetProperty("path"), "screenshot.path", 1, CompanionContract.MaxPathBytes),
+                    ReadSha256(screenshot.GetProperty("sha256"), "screenshot.sha256"),
+                    ReadInteger64(screenshot.GetProperty("bytes"), "screenshot.bytes", 0, CompanionContract.MaxScreenshotBytes),
+                    view,
+                    ReadInteger(screenshot.GetProperty("retry_count"), "screenshot.retry_count", 0, 1),
+                    ReadValidationStatus(screenshot.GetProperty("status"), "screenshot.status"),
+                    ReadFiniteNumber(camera.GetProperty("fov"), "screenshot.camera.fov", 1, 120),
+                    ReadFiniteNumber(camera.GetProperty("distance"), "screenshot.camera.distance", 0, 1_000_000),
+                    ReadInteger(camera.GetProperty("crop_width"), "screenshot.camera.crop_width", 1, 4_096),
+                    ReadInteger(camera.GetProperty("crop_height"), "screenshot.camera.crop_height", 1, 4_096),
+                    ReadInteger(state.GetProperty("skin"), "screenshot.state.skin", 0, 255),
+                    bodygroups,
+                    string.Empty
+                ));
+            }
+        }
+
+        private static CompanionValidationStatus ReadValidationStatus(JsonElement value, string label) =>
+            ReadString(value, label, 4, 10) switch
+            {
+                "PASS" => CompanionValidationStatus.Pass,
+                "WARNING" => CompanionValidationStatus.Warning,
+                "FAILED" => CompanionValidationStatus.Failed,
+                "INCOMPLETE" => CompanionValidationStatus.Incomplete,
+                _ => throw new InvalidOperationException($"Invalid {label}."),
+            };
+
         private static BundleMetadata ReadMetadata(string indexPath, DateTimeOffset now)
         {
             string fullInput = Path.GetFullPath(indexPath ?? throw new InvalidOperationException("Bundle path is missing."));

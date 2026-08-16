@@ -17,9 +17,12 @@
     <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionRuntimeProfileSnapshotService.cs" Link="CompanionRuntimeProfileSnapshotService.cs" />
     <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionMaximumReportReader.cs" Link="CompanionMaximumReportReader.cs" />
     <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionValidationPlanService.cs" Link="CompanionValidationPlanService.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionResultService.cs" Link="CompanionResultService.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\companion_contract\fixtures\valid\sao-runtime-profile-v1.json" Link="fixtures\valid\sao-runtime-profile-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\companion_contract\fixtures\valid\sao-structural-result-v1.json" Link="fixtures\valid\sao-structural-result-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\companion_contract\fixtures\valid\sao-visual-result-v1.json" Link="fixtures\valid\sao-visual-result-v1.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\companion_contract\fixtures\invalid\cases.json" Link="fixtures\invalid\cases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -1,7 +1,9 @@
 using GmodAddonCompressor.Models;
 using GmodAddonCompressor.Systems.Companion;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.CompilerServices;
 
 namespace GmodAddonCompressor.DataContexts
@@ -22,6 +24,12 @@ namespace GmodAddonCompressor.DataContexts
         private CompanionProfileImportResult? _importedProfile;
         private bool _optimizerIsMaximum;
         private bool _hasOptimizationResult;
+        private IReadOnlyList<CompanionValidationReport> _validationReports = System.Array.Empty<CompanionValidationReport>();
+        private IReadOnlyList<CompanionValidationReportItem> _allValidationResources = System.Array.Empty<CompanionValidationReportItem>();
+        private readonly ObservableCollection<CompanionValidationReportItem> _validationResources = new();
+        private string _validationStatusFilter = "ALL";
+        private CompanionValidationReportItem? _selectedValidationResource;
+        private readonly List<string> _validationDiagnostics = new();
 
         public string GarrysModRoot
         {
@@ -103,6 +111,37 @@ namespace GmodAddonCompressor.DataContexts
         public bool CanImportProfile => !IsBusy;
         public bool CanGeneratePlan => !IsBusy && _hasOptimizationResult;
         public bool CanImportResults => !IsBusy;
+        public ObservableCollection<CompanionValidationReportItem> ValidationResources => _validationResources;
+        public IReadOnlyList<CompanionValidationReport> ValidationReports => _validationReports;
+        public bool HasValidationResults => _validationReports.Count > 0;
+        public bool CanCopyValidationSummary => !IsBusy && HasValidationResults;
+        public bool CanExportValidationSummary => !IsBusy && HasValidationResults;
+        public bool CanOpenValidationScreenshot => !IsBusy && _selectedValidationResource?.HasScreenshot == true;
+
+        public string ValidationStatusFilter
+        {
+            get => _validationStatusFilter;
+            set
+            {
+                string normalized = (value ?? "ALL").Trim().ToUpperInvariant();
+                if (normalized != "ALL" && normalized != "FAILED" && normalized != "WARNING" && normalized != "INCOMPLETE" && normalized != "PASS")
+                    normalized = "ALL";
+                if (!Set(ref _validationStatusFilter, normalized))
+                    return;
+                RefreshValidationResources();
+            }
+        }
+
+        public CompanionValidationReportItem? SelectedValidationResource
+        {
+            get => _selectedValidationResource;
+            set
+            {
+                if (!Set(ref _selectedValidationResource, value))
+                    return;
+                OnPropertyChanged(nameof(CanOpenValidationScreenshot));
+            }
+        }
 
         public void ApplyInstallStatus(CompanionInstallStatus status)
         {
@@ -183,6 +222,48 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(CanGeneratePlan));
         }
 
+        public void ApplyValidationReports(IReadOnlyList<CompanionValidationReport> reports)
+        {
+            _validationReports = reports?.ToArray() ?? System.Array.Empty<CompanionValidationReport>();
+            _allValidationResources = _validationReports.SelectMany(report => report.Items).ToArray();
+            SelectedValidationResource = null;
+            RefreshValidationResources();
+            RefreshValidationSummary();
+            OnPropertyChanged(nameof(ValidationReports));
+            OnPropertyChanged(nameof(HasValidationResults));
+            OnPropertyChanged(nameof(CanCopyValidationSummary));
+            OnPropertyChanged(nameof(CanExportValidationSummary));
+            OnPropertyChanged(nameof(CanOpenValidationScreenshot));
+        }
+
+        public void ApplyValidationImportError(string path, string error)
+        {
+            _validationDiagnostics.Add($"REJECTED - {path}{System.Environment.NewLine}{error}");
+            RefreshValidationSummary();
+        }
+
+        public string BuildValidationExportText() => CompanionResultService.ExportSummary(_validationReports);
+
+        private void RefreshValidationResources()
+        {
+            _validationResources.Clear();
+            foreach (CompanionValidationReportItem item in _allValidationResources.Where(item =>
+                _validationStatusFilter == "ALL" || item.Status == _validationStatusFilter))
+                _validationResources.Add(item);
+            if (_selectedValidationResource != null && !_validationResources.Contains(_selectedValidationResource))
+                SelectedValidationResource = null;
+            OnPropertyChanged(nameof(ValidationResources));
+        }
+
+        private void RefreshValidationSummary()
+        {
+            var sections = new List<string>(_validationReports.Select(report => report.SummaryText));
+            sections.AddRange(_validationDiagnostics);
+            ValidationSummaryText = sections.Count == 0
+                ? "No trusted validation result is active."
+                : string.Join(System.Environment.NewLine + System.Environment.NewLine, sections);
+        }
+
         public event PropertyChangedEventHandler? PropertyChanged;
 
         private bool Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
@@ -206,6 +287,9 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(CanImportProfile));
             OnPropertyChanged(nameof(CanGeneratePlan));
             OnPropertyChanged(nameof(CanImportResults));
+            OnPropertyChanged(nameof(CanCopyValidationSummary));
+            OnPropertyChanged(nameof(CanExportValidationSummary));
+            OnPropertyChanged(nameof(CanOpenValidationScreenshot));
         }
 
         private void NotifyProfileProperties()

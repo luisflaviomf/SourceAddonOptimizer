@@ -2644,6 +2644,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,14">
@@ -2882,6 +2883,95 @@
                                                  Value="{Binding ProgressValue}" />
                                 </StackPanel>
                             </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource Card}" Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="TRUSTED EVIDENCE" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Validation results" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="Structural and visual evidence is merged only when run ID and plan hash match. Conflicts and duplicate imports remain visible; screenshot files are opened only after path, size and SHA-256 verification." />
+
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,16,0,0">
+                                <WrapPanel VerticalAlignment="Center">
+                                    <TextBlock Style="{StaticResource LabelText}"
+                                               Text="Status filter"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,10,0" />
+                                    <ComboBox x:Name="Combo_CompanionResultFilter"
+                                              Width="130"
+                                              SelectedIndex="0">
+                                        <ComboBoxItem Content="All" Tag="ALL" />
+                                        <ComboBoxItem Content="FAILED" Tag="FAILED" />
+                                        <ComboBoxItem Content="WARNING" Tag="WARNING" />
+                                        <ComboBoxItem Content="INCOMPLETE" Tag="INCOMPLETE" />
+                                        <ComboBoxItem Content="PASS" Tag="PASS" />
+                                    </ComboBox>
+                                    <Button x:Name="Button_CompanionCopyResults"
+                                            Margin="12,0,0,0"
+                                            Content="Copy Summary"
+                                            Width="116"
+                                            IsEnabled="{Binding CanCopyValidationSummary}" />
+                                    <Button x:Name="Button_CompanionExportResults"
+                                            Margin="8,0,0,0"
+                                            Content="Export Summary"
+                                            Width="124"
+                                            IsEnabled="{Binding CanExportValidationSummary}" />
+                                    <Button x:Name="Button_CompanionOpenScreenshot"
+                                            Margin="8,0,0,0"
+                                            Content="Open Screenshot"
+                                            Width="132"
+                                            IsEnabled="{Binding CanOpenValidationScreenshot}" />
+                                </WrapPanel>
+                            </Border>
+
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.35*" />
+                                    <ColumnDefinition Width="0.65*" />
+                                </Grid.ColumnDefinitions>
+                                <ListBox Grid.Column="0"
+                                         MinHeight="220"
+                                         MaxHeight="430"
+                                         ItemsSource="{Binding ValidationResources}"
+                                         SelectedItem="{Binding SelectedValidationResource, Mode=TwoWay}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="{DynamicResource Border}"
+                                                    BorderThickness="0,0,0,1"
+                                                    Padding="8">
+                                                <StackPanel>
+                                                    <TextBlock FontWeight="Bold" Text="{Binding Status}" />
+                                                    <TextBlock Margin="0,3,0,0"
+                                                               Text="{Binding DetailText}"
+                                                               TextWrapping="Wrap" />
+                                                    <TextBlock Margin="0,3,0,0"
+                                                               Foreground="{DynamicResource TextSecondary}"
+                                                               Text="{Binding WarningText}"
+                                                               TextWrapping="Wrap" />
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <Border Grid.Column="1"
+                                        Style="{StaticResource CardInnerPanel}"
+                                        Margin="12,0,0,0"
+                                        MinHeight="220">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource LabelText}" Text="Verified screenshot" />
+                                        <Image Margin="0,10,0,0"
+                                               MaxHeight="330"
+                                               Stretch="Uniform"
+                                               Source="{Binding SelectedValidationResource.PrimaryScreenshotPath}" />
+                                        <TextBlock Margin="0,8,0,0"
+                                                   Style="{StaticResource MutedText}"
+                                                   Text="{Binding SelectedValidationResource.PrimaryScreenshotPath}"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
                         </StackPanel>
                     </Border>
                 </Grid>

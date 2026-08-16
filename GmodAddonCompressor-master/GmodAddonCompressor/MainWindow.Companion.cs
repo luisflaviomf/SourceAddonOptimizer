@@ -5,12 +5,16 @@ using Microsoft.Win32;
 using Ookii.Dialogs.Wpf;
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 
 namespace GmodAddonCompressor
 {
@@ -18,6 +22,7 @@ namespace GmodAddonCompressor
     {
         private const string CompanionResourceName = "GmodAddonCompressor.Resources.SourceAddonOptimizerCompanion.zip";
         private readonly CompanionContext _companionContext = new();
+        private readonly CompanionResultService _companionResultService = new();
         private CancellationTokenSource? _companionCts;
         private string[] _companionProfileIndexes = Array.Empty<string>();
         private string _lastMaximumRuntimeSummaryText = string.Empty;
@@ -41,6 +46,10 @@ namespace GmodAddonCompressor
             Button_CompanionCopyPlan.Click += Button_CompanionCopyPlan_Click;
             Button_CompanionOpenPlan.Click += Button_CompanionOpenPlan_Click;
             Button_CompanionImportResults.Click += Button_CompanionImportResults_Click;
+            Combo_CompanionResultFilter.SelectionChanged += Combo_CompanionResultFilter_SelectionChanged;
+            Button_CompanionCopyResults.Click += Button_CompanionCopyResults_Click;
+            Button_CompanionExportResults.Click += Button_CompanionExportResults_Click;
+            Button_CompanionOpenScreenshot.Click += Button_CompanionOpenScreenshot_Click;
             Button_CompanionCancel.Click += Button_CompanionCancel_Click;
             Button_CompanionCopyPlan.IsEnabled = false;
             Button_CompanionOpenPlan.IsEnabled = false;
@@ -516,21 +525,100 @@ namespace GmodAddonCompressor
             return dialog.ShowDialog(this).GetValueOrDefault() ? dialog.SelectedPath : null;
         }
 
-        private void Button_CompanionImportResults_Click(object sender, RoutedEventArgs e)
+        private async void Button_CompanionImportResults_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new OpenFileDialog
             {
-                Title = "Select a Companion validation result index",
+                Title = "Select Companion structural and/or visual result indexes",
                 Filter = "Companion result index|run-index.json|JSON files|*.json",
                 CheckFileExists = true,
-                Multiselect = false,
+                Multiselect = true,
             };
             if (!dialog.ShowDialog(this).GetValueOrDefault())
                 return;
-            _companionContext.ValidationSummaryText =
-                "Result selected: " + dialog.FileName + Environment.NewLine
-                + "Result contract verification and merge are handled by the validation-result import stage.";
-            _companionContext.OperationStatusText = "Validation result selected.";
+            CancellationTokenSource cts = BeginCompanionOperation("Verifying validation results and screenshot evidence...", 10);
+            var rejected = new List<(string Path, string Error)>();
+            int imported = 0;
+            try
+            {
+                string[] selected = dialog.FileNames.Select(Path.GetFullPath).ToArray();
+                for (int index = 0; index < selected.Length; index++)
+                {
+                    cts.Token.ThrowIfCancellationRequested();
+                    string path = selected[index];
+                    try
+                    {
+                        await Task.Run(() => _companionResultService.Import(path), cts.Token);
+                        imported++;
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException
+                        || ex is IOException
+                        || ex is UnauthorizedAccessException
+                        || ex is ArgumentException
+                        || ex is NotSupportedException)
+                    {
+                        rejected.Add((path, ex.Message));
+                    }
+                    _companionContext.ProgressValue = 10 + (int)Math.Round(85d * (index + 1) / selected.Length);
+                }
+                _companionContext.ApplyValidationReports(_companionResultService.Reports);
+                foreach ((string path, string error) in rejected)
+                    _companionContext.ApplyValidationImportError(path, error);
+                _companionContext.ProgressValue = 100;
+                _companionContext.OperationStatusText = rejected.Count == 0
+                    ? $"Imported {imported} trusted validation result(s)."
+                    : $"Imported {imported}; rejected {rejected.Count}. Rejected inputs remain listed for diagnosis and were not displayed as trusted evidence.";
+            }
+            catch (OperationCanceledException)
+            {
+                _companionContext.OperationStatusText = "Validation result import cancelled.";
+            }
+            finally
+            {
+                EndCompanionOperation(cts);
+            }
+        }
+
+        private void Combo_CompanionResultFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (Combo_CompanionResultFilter.SelectedItem is ComboBoxItem item && item.Tag is string filter)
+                _companionContext.ValidationStatusFilter = filter;
+        }
+
+        private void Button_CompanionCopyResults_Click(object sender, RoutedEventArgs e)
+        {
+            string summary = _companionContext.BuildValidationExportText();
+            if (string.IsNullOrWhiteSpace(summary))
+                return;
+            Clipboard.SetText(summary);
+            _companionContext.OperationStatusText = "Validation summary copied.";
+        }
+
+        private void Button_CompanionExportResults_Click(object sender, RoutedEventArgs e)
+        {
+            string summary = _companionContext.BuildValidationExportText();
+            if (string.IsNullOrWhiteSpace(summary))
+                return;
+            var dialog = new SaveFileDialog
+            {
+                Title = "Export Companion validation summary",
+                Filter = "Text summary|*.txt",
+                FileName = "companion-validation-summary.txt",
+                AddExtension = true,
+                OverwritePrompt = true,
+            };
+            if (!dialog.ShowDialog(this).GetValueOrDefault())
+                return;
+            File.WriteAllText(dialog.FileName, summary + Environment.NewLine, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            _companionContext.OperationStatusText = "Validation summary exported: " + dialog.FileName;
+        }
+
+        private void Button_CompanionOpenScreenshot_Click(object sender, RoutedEventArgs e)
+        {
+            string? path = _companionContext.SelectedValidationResource?.PrimaryScreenshotPath;
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                return;
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
         }
 
         private void Button_CompanionCancel_Click(object sender, RoutedEventArgs e)

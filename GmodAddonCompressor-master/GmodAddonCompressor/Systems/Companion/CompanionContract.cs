@@ -17,6 +17,9 @@ namespace GmodAddonCompressor.Systems.Companion
         public const int MaxTotalKeys = 100_000;
         public const int MaxModels = 4_096;
         public const int MaxMaterials = 16_384;
+        public const int MaxResultResources = 5_000;
+        public const int MaxScreenshots = 1_000;
+        public const int MaxScreenshotBytes = 8_000_000;
         public const int MaxPathBytes = 512;
         public const int MaxPathComponentBytes = 128;
         public const string RuntimeProfileSchema = "sao-runtime-profile-v1";

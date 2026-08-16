@@ -38,6 +38,11 @@ static JsonObject LoadRuntimeProfileFixture() =>
         ?? throw new InvalidOperationException("Runtime profile fixture is missing."))
     .AsObject();
 
+static JsonObject LoadResultFixture(string schema) =>
+    (JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "valid", schema + ".json")))
+        ?? throw new InvalidOperationException($"Result fixture is missing: {schema}."))
+    .AsObject();
+
 static byte[] JsonBytes(JsonNode value) => Encoding.UTF8.GetBytes(value.ToJsonString() + "\n");
 
 static string WriteRuntimeBundle(string root, params JsonObject[] chunks)
@@ -716,6 +721,111 @@ try
         "no changed"
     );
 
+    DateTimeOffset resultNow = new(2026, 8, 16, 18, 0, 0, TimeSpan.Zero);
+    string resultDataRoot = Path.Combine(testRoot, "companion-result-data");
+    const string resultRunId = "55555555-5555-4555-8555-555555555555";
+    const string planHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    JsonObject structuralResult = LoadResultFixture("sao-structural-result-v1");
+    structuralResult["run_id"] = resultRunId;
+    structuralResult["created_utc"] = "2026-08-16T17:00:00Z";
+    structuralResult["payload"]!["plan_sha256"] = planHash;
+    string structuralIndex = WriteRuntimeBundle(
+        Path.Combine(resultDataRoot, "validation_results", resultRunId, "structural-0001"),
+        structuralResult
+    );
+    var structuralOnlyService = new CompanionResultService();
+    CompanionValidationReport structuralOnly = structuralOnlyService.Import(structuralIndex, resultDataRoot, resultNow);
+    Assert(structuralOnly.HasStructural && !structuralOnly.HasVisual, "Structural-only result channels were reported incorrectly.");
+    Assert(structuralOnly.OverallStatus == CompanionValidationStatus.Warning, "A structural-only PASS must warn that visual validation was not run.");
+    Assert(structuralOnly.SummaryText.Contains("visual validation not run", StringComparison.OrdinalIgnoreCase), "Structural-only warning is not explicit.");
+
+    JsonObject visualIncompleteResult = LoadResultFixture("sao-visual-result-v1");
+    visualIncompleteResult["run_id"] = "66666666-6666-4666-8666-666666666666";
+    visualIncompleteResult["created_utc"] = "2026-08-16T17:00:00Z";
+    visualIncompleteResult["payload"]!["overall_status"] = "INCOMPLETE";
+    visualIncompleteResult["payload"]!["resources"]![0]!["status"] = "INCOMPLETE";
+    visualIncompleteResult["payload"]!["resources"]![0]!["reason"] = "client disconnected";
+    visualIncompleteResult["payload"]!["screenshots"] = new JsonArray();
+    visualIncompleteResult["payload"]!["performance"]!["screenshots"] = 0;
+    string visualIncompleteIndex = WriteRuntimeBundle(
+        Path.Combine(resultDataRoot, "validation_results", "66666666-6666-4666-8666-666666666666", "visual-0001"),
+        visualIncompleteResult
+    );
+    var visualOnlyService = new CompanionResultService();
+    CompanionValidationReport visualOnly = visualOnlyService.Import(visualIncompleteIndex, resultDataRoot, resultNow);
+    Assert(!visualOnly.HasStructural && visualOnly.HasVisual, "Visual-only result channels were reported incorrectly.");
+    Assert(visualOnly.OverallStatus == CompanionValidationStatus.Incomplete, "A visual-only interrupted result must remain INCOMPLETE.");
+
+    byte[] screenshotBytes = Encoding.UTF8.GetBytes("verified local PNG fixture bytes");
+    string screenshotRelative = $"screenshots/{resultRunId}/test-1-isometric.png";
+    string screenshotFull = Path.Combine(resultDataRoot, screenshotRelative.Replace('/', Path.DirectorySeparatorChar));
+    Directory.CreateDirectory(Path.GetDirectoryName(screenshotFull)!);
+    File.WriteAllBytes(screenshotFull, screenshotBytes);
+    JsonObject visualResult = LoadResultFixture("sao-visual-result-v1");
+    visualResult["run_id"] = resultRunId;
+    visualResult["created_utc"] = "2026-08-16T17:00:00Z";
+    visualResult["payload"]!["plan_sha256"] = planHash;
+    visualResult["payload"]!["screenshots"]![0]!["path"] = screenshotRelative;
+    visualResult["payload"]!["screenshots"]![0]!["bytes"] = screenshotBytes.LongLength;
+    visualResult["payload"]!["screenshots"]![0]!["sha256"] = Digest(screenshotBytes);
+    string visualIndex = WriteRuntimeBundle(
+        Path.Combine(resultDataRoot, "validation_results", resultRunId, "visual-0001"),
+        visualResult
+    );
+    var mergedResultService = new CompanionResultService();
+    mergedResultService.Import(structuralIndex, resultDataRoot, resultNow);
+    CompanionValidationReport mergedResult = mergedResultService.Import(visualIndex, resultDataRoot, resultNow);
+    Assert(mergedResultService.Imports.Count == 2 && mergedResultService.Reports.Count == 1, "Matching result channels did not merge into one report.");
+    Assert(mergedResult.HasStructural && mergedResult.HasVisual && mergedResult.OverallStatus == CompanionValidationStatus.Pass, "Matching PASS channels did not produce a complete PASS report.");
+    Assert(mergedResult.Screenshots.Single().FullPath == Path.GetFullPath(screenshotFull), "Verified screenshot was not resolved to its contained full path.");
+    mergedResultService.Import(structuralIndex, resultDataRoot, resultNow);
+    Assert(mergedResultService.Imports.Count == 3 && mergedResultService.Reports.Single().Sources.Count == 3, "A duplicate import silently replaced prior evidence.");
+
+    JsonObject conflictResult = (JsonObject)CloneJson(visualResult);
+    conflictResult["payload"]!["plan_sha256"] = new string('c', 64);
+    string conflictIndex = WriteRuntimeBundle(
+        Path.Combine(resultDataRoot, "validation_results", resultRunId, "visual-0002"),
+        conflictResult
+    );
+    mergedResultService.Import(conflictIndex, resultDataRoot, resultNow);
+    Assert(mergedResultService.Reports.Count == 2 && mergedResultService.Reports.All(report => report.HasPlanConflict), "Mismatched plan hashes were merged or hidden.");
+    Assert(mergedResultService.Reports.All(report => report.Sources.Select(source => source.PlanSha256).Distinct(StringComparer.Ordinal).Count() == 1), "A conflicting plan entered a merged report.");
+
+    JsonObject traversalResult = (JsonObject)CloneJson(visualResult);
+    traversalResult["run_id"] = "77777777-7777-4777-8777-777777777777";
+    traversalResult["payload"]!["screenshots"]![0]!["path"] = "screenshots/77777777-7777-4777-8777-777777777777/../escape.png";
+    string traversalIndex = WriteRuntimeBundle(Path.Combine(testRoot, "result-traversal"), traversalResult);
+    ExpectFailure(() => new CompanionResultService().Import(traversalIndex, resultDataRoot, resultNow), "screenshot path");
+
+    JsonObject wrongHashResult = (JsonObject)CloneJson(visualResult);
+    wrongHashResult["run_id"] = "88888888-8888-4888-8888-888888888888";
+    string wrongHashRelative = "screenshots/88888888-8888-4888-8888-888888888888/test-1-isometric.png";
+    wrongHashResult["payload"]!["screenshots"]![0]!["path"] = wrongHashRelative;
+    string wrongHashFull = Path.Combine(resultDataRoot, wrongHashRelative.Replace('/', Path.DirectorySeparatorChar));
+    Directory.CreateDirectory(Path.GetDirectoryName(wrongHashFull)!);
+    File.WriteAllBytes(wrongHashFull, screenshotBytes);
+    wrongHashResult["payload"]!["screenshots"]![0]!["sha256"] = new string('d', 64);
+    string wrongHashIndex = WriteRuntimeBundle(Path.Combine(testRoot, "result-wrong-hash"), wrongHashResult);
+    ExpectFailure(() => new CompanionResultService().Import(wrongHashIndex, resultDataRoot, resultNow), "screenshot hash");
+
+    JsonObject understatedResult = (JsonObject)CloneJson(structuralResult);
+    understatedResult["run_id"] = "99999999-9999-4999-8999-999999999999";
+    understatedResult["payload"]!["resources"]![0]!["status"] = "FAILED";
+    understatedResult["payload"]!["overall_status"] = "PASS";
+    string understatedIndex = WriteRuntimeBundle(Path.Combine(testRoot, "result-understated"), understatedResult);
+    ExpectFailure(() => new CompanionResultService().Import(understatedIndex, resultDataRoot, resultNow), "understates");
+
+    Assert(CompanionResultService.CombineStatusForContract(CompanionValidationStatus.Pass, CompanionValidationStatus.Incomplete) == CompanionValidationStatus.Incomplete, "INCOMPLETE precedence is incorrect.");
+    Assert(CompanionResultService.CombineStatusForContract(CompanionValidationStatus.Incomplete, CompanionValidationStatus.Warning) == CompanionValidationStatus.Warning, "WARNING precedence is incorrect.");
+    Assert(CompanionResultService.CombineStatusForContract(CompanionValidationStatus.Warning, CompanionValidationStatus.Failed) == CompanionValidationStatus.Failed, "FAILED precedence is incorrect.");
+
+    var validationContext = new CompanionContext();
+    validationContext.ApplyValidationReports(mergedResultService.Reports);
+    Assert(validationContext.ValidationResources.Count > 0 && validationContext.ValidationSummaryText.Contains("conflict", StringComparison.OrdinalIgnoreCase), "Validation results were not exposed to the WPF context.");
+    validationContext.ValidationStatusFilter = "FAILED";
+    Assert(validationContext.ValidationResources.All(item => item.Status == "FAILED"), "Validation result status filter leaked another status.");
+
     string emptyAddon = Path.Combine(testRoot, "empty-addon");
     Directory.CreateDirectory(emptyAddon);
     CompanionProfileImportResult noMatch = CompanionProfileService.Import(new[] { validIndex }, emptyAddon, now, CancellationToken.None);
@@ -741,6 +851,17 @@ try
     Assert(!profileContext.UseWithMaximumV2, "An ineligible profile accepted the opt-in.");
     profileContext.ClearForAddonChange();
     Assert(!profileContext.UseWithMaximumV2 && !profileContext.CanUseWithMaximumV2, "Addon change did not clear profile eligibility.");
+
+    if (args.Length >= 3 && args[0] == "--import-result")
+    {
+        var smokeImport = new CompanionResultService();
+        foreach (string indexPath in args.Skip(2))
+        {
+            CompanionValidationReport report = smokeImport.Import(indexPath, args[1], DateTimeOffset.UtcNow);
+            Console.WriteLine("REAL RESULT IMPORT: " + report.SummaryText);
+            Assert(report.Screenshots.All(screenshot => screenshot.Bytes == new FileInfo(screenshot.FullPath).Length), "Real result screenshot size was not retained.");
+        }
+    }
 
     Console.WriteLine("WPF Companion contract tests passed.");
 }
