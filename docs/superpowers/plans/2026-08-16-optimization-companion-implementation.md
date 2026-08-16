@@ -120,16 +120,16 @@ assert bundle.payloads[0]["models"][0]["path"] == "models/lvs/example.mdl"
 - Create: `tests/companion_addon/test_lua_package.py`
 - Create: `tests/companion_addon/test_lua_security.py`
 
-- [ ] Add failing package tests that require exactly one `lua/autorun` file, lowercase Linux-safe paths, unique `SAO.` namespace use, explicit `AddCSLuaFile`/`include` ordering, and no unexpected files outside the approved addon tree.
-- [ ] Add failing security tests that scan all Companion Lua for forbidden APIs and literals: `RunString`, `CompileString`, `os.execute`, `game.ConsoleCommand`, `LocalPlayer():ConCommand`, dynamic `require`, `http.`, URL schemes, or arbitrary caller-supplied filenames. Require every `net.Receive` to use a declared fixed message name and permission helper.
-- [ ] Run `python -m pytest tests\companion_addon -q`; expected result: failure because the addon tree is absent.
-- [ ] Implement the loader and shared constants. Use `sourceaddonoptimizer` as the only data root and fixed folders `profiles`, `validation_inbox`, `validation_results`, and `screenshots`; never concatenate an unvalidated client path into `file.*` calls.
-- [ ] Implement server permission checks for server console, single-player host, or current `IsSuperAdmin()` on every privileged action. Define session IDs, 15-minute expiry, per-player rate limits, fixed net read order, and maximum string lengths; malformed traffic is logged to Companion state and ignored.
-- [ ] Implement Lua closed-table validation for the envelope/index fields and the same virtual-path/test-kind allowlists. Keep Garry's Mod's normal `util.JSONToTable` depth/length protections; never pass permissive unlimited flags.
-- [ ] Implement atomic writers using `*.partial`, `file.Rename`, and `complete.ready` last. Preserve an existing run directory on duplicate `run_id`; write an explicit collision diagnostic instead of overwriting.
-- [ ] Implement `scripts/test_companion_lua.ps1` to extract the already-bundled `Resources/glualint.zip` into a unique temporary directory, lint only the Companion tree, remove only that verified temporary directory, and print `Companion Lua lint passed`.
-- [ ] Run `python -m pytest tests\companion_addon -q` and `powershell -ExecutionPolicy Bypass -File scripts\test_companion_lua.ps1`; expected result: all tests pass and the linter prints the success marker.
-- [ ] Commit: `feat(companion): add secure gmod addon foundation`.
+- [x] Add failing package tests that require exactly one `lua/autorun` file, lowercase Linux-safe paths, unique `SAO.` namespace use, explicit `AddCSLuaFile`/`include` ordering, and no unexpected files outside the approved addon tree.
+- [x] Add failing security tests that scan all Companion Lua for forbidden APIs and literals: `RunString`, `CompileString`, `os.execute`, `game.ConsoleCommand`, `LocalPlayer():ConCommand`, dynamic `require`, `http.`, URL schemes, or arbitrary caller-supplied filenames. Require every `net.Receive` to use a declared fixed message name and permission helper.
+- [x] Run `python -m pytest tests\companion_addon -q`; expected result: failure because the addon tree is absent.
+- [x] Implement the loader and shared constants. Use `sourceaddonoptimizer` as the only data root and fixed folders `profiles`, `validation_inbox`, `validation_results`, and `screenshots`; never concatenate an unvalidated client path into `file.*` calls.
+- [x] Implement server permission checks for server console, single-player host, or current `IsSuperAdmin()` on every privileged action. Define session IDs, 15-minute expiry, per-player rate limits, fixed net read order, and maximum string lengths; malformed traffic is logged to Companion state and ignored.
+- [x] Implement Lua closed-table validation for the envelope/index fields and the same virtual-path/test-kind allowlists. Keep Garry's Mod's normal `util.JSONToTable` depth/length protections; never pass permissive unlimited flags.
+- [x] Implement atomic writers using `*.partial`, `file.Rename`, and `complete.ready` last. Preserve an existing run directory on duplicate `run_id`; write an explicit collision diagnostic instead of overwriting.
+- [x] Implement `scripts/test_companion_lua.ps1` to extract the already-bundled `Resources/glualint.zip` into a unique temporary directory, lint only the Companion tree, remove only that verified temporary directory, and print `Companion Lua lint passed`.
+- [x] Run `python -m pytest tests\companion_addon -q` and `powershell -ExecutionPolicy Bypass -File scripts\test_companion_lua.ps1`; expected result: all tests pass and the linter prints the success marker.
+- [x] Commit: `feat(companion): add secure gmod addon foundation`.
 
 ## Task 3: Implement bounded runtime profiling and standalone audit value
 

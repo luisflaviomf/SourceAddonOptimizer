@@ -1,0 +1,6 @@
+{
+  "title": "Source Addon Optimizer Companion",
+  "type": "tool",
+  "tags": ["build"],
+  "ignore": ["*.psd", "*.xcf"]
+}
