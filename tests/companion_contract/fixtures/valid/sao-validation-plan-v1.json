@@ -1,0 +1,15 @@
+{
+  "schema": "sao-validation-plan-v1",
+  "contract": {"major": 1, "minor": 0},
+  "run_id": "22222222-2222-4222-8222-222222222222",
+  "created_utc": "2026-08-15T12:00:00Z",
+  "producer": {"name": "GMod Addon Optimizer", "version": "1.0.0"},
+  "environment": {"game_build": "", "map": "", "gamemode": "", "realm": "client", "session_seconds": 0, "mounted_addons": []},
+  "chunk": {"sequence": 1, "total": 1},
+  "payload": {
+    "tests": [{"id": "test-1", "kind": "model_structure", "path": "models/lvs/example.mdl", "required_files": ["models/lvs/example.mdl", "models/lvs/example.vvd", "models/lvs/example.dx90.vtx"], "expected_phy": false, "skins": [0], "bodygroups": [], "materials": ["materials/models/lvs/tire.vmt"], "views": ["isometric"], "priority": 100, "expected_bytes": 1024}],
+    "limits": {"max_models": 250, "max_screenshots": 1000, "max_ordinary_views": 4, "screenshot_retries": 1},
+    "dx80_excluded": true,
+    "truncation": {"tests": 0, "models": 0, "screenshots": 0}
+  }
+}

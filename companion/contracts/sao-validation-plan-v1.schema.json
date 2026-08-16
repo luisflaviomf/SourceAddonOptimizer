@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sourceaddonoptimizer.local/contracts/sao-validation-plan-v1.schema.json",
+  "title": "Source Addon Optimizer validation plan chunk v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "contract", "run_id", "created_utc", "producer", "environment", "chunk", "payload"],
+  "properties": {
+    "schema": {"const": "sao-validation-plan-v1"},
+    "contract": {"$ref": "#/$defs/contract"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "producer": {"$ref": "#/$defs/producer"},
+    "environment": {"$ref": "#/$defs/environment"},
+    "chunk": {"$ref": "#/$defs/chunk"},
+    "payload": {"type": "object", "additionalProperties": false, "required": ["tests", "limits", "dx80_excluded", "truncation"], "properties": {"tests": {"type": "array", "maxItems": 5000, "items": {"$ref": "#/$defs/test"}}, "limits": {"$ref": "#/$defs/limits"}, "dx80_excluded": {"const": true}, "truncation": {"$ref": "#/$defs/truncation"}}}
+  },
+  "$defs": {
+    "contract": {"type": "object", "additionalProperties": false, "required": ["major", "minor"], "properties": {"major": {"const": 1}, "minor": {"const": 0}}},
+    "producer": {"type": "object", "additionalProperties": false, "required": ["name", "version"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 64}, "version": {"type": "string", "minLength": 1, "maxLength": 32}}},
+    "environment": {"type": "object", "additionalProperties": false, "required": ["game_build", "map", "gamemode", "realm", "session_seconds", "mounted_addons"], "properties": {"game_build": {"type": "string", "maxLength": 64}, "map": {"type": "string", "maxLength": 128}, "gamemode": {"type": "string", "maxLength": 128}, "realm": {"enum": ["server", "client", "singleplayer"]}, "session_seconds": {"type": "number", "minimum": 0, "maximum": 604800}, "mounted_addons": {"type": "array", "maxItems": 4096, "items": {"type": "object", "additionalProperties": false, "required": ["workshop_id", "title"], "properties": {"workshop_id": {"type": "string", "pattern": "^[0-9]{1,20}$"}, "title": {"type": "string", "maxLength": 256}}}}}},
+    "chunk": {"type": "object", "additionalProperties": false, "required": ["sequence", "total"], "properties": {"sequence": {"type": "integer", "minimum": 1}, "total": {"type": "integer", "minimum": 1}}},
+    "test": {"type": "object", "additionalProperties": false, "required": ["id", "kind", "path", "required_files", "expected_phy", "skins", "bodygroups", "materials", "views", "priority", "expected_bytes"], "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "kind": {"enum": ["model_structure", "model_state", "material_resolve", "model_render"]}, "path": {"type": "string", "minLength": 1, "maxLength": 512}, "required_files": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}}, "expected_phy": {"type": "boolean"}, "skins": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"type": "integer", "minimum": 0, "maximum": 255}}, "bodygroups": {"type": "array", "maxItems": 1024, "items": {"type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "value": {"type": "integer", "minimum": 0, "maximum": 255}}}}, "materials": {"type": "array", "maxItems": 4096, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}}, "views": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"enum": ["front", "side", "rear", "isometric", "closeup"]}}, "priority": {"type": "integer", "minimum": 0, "maximum": 1000000}, "expected_bytes": {"type": "integer", "minimum": 0}}},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["max_models", "max_screenshots", "max_ordinary_views", "screenshot_retries"], "properties": {"max_models": {"type": "integer", "minimum": 1, "maximum": 250}, "max_screenshots": {"type": "integer", "minimum": 1, "maximum": 1000}, "max_ordinary_views": {"type": "integer", "minimum": 1, "maximum": 4}, "screenshot_retries": {"const": 1}}},
+    "truncation": {"type": "object", "additionalProperties": false, "required": ["tests", "models", "screenshots"], "properties": {"tests": {"type": "integer", "minimum": 0}, "models": {"type": "integer", "minimum": 0}, "screenshots": {"type": "integer", "minimum": 0}}}
+  }
+}

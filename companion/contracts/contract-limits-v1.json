@@ -1,0 +1,33 @@
+{
+  "schema": "sao-contract-limits-v1",
+  "contract": {
+    "major": 1,
+    "minor": 0
+  },
+  "max_chunk_bytes": 2000000,
+  "max_completion_bytes": 4096,
+  "max_index_bytes": 262144,
+  "max_profile_bytes": 20000000,
+  "max_json_depth": 12,
+  "max_total_keys": 100000,
+  "max_models": 4096,
+  "max_materials": 16384,
+  "max_plan_models": 250,
+  "max_screenshots": 1000,
+  "max_ordinary_views": 4,
+  "max_path_bytes": 512,
+  "max_path_component_bytes": 128,
+  "test_kinds": [
+    "model_structure",
+    "model_state",
+    "material_resolve",
+    "model_render"
+  ],
+  "virtual_roots": {
+    "models": [".ani", ".dx90.vtx", ".mdl", ".phy", ".vtx", ".vvd"],
+    "materials": [".vmt", ".vtf"],
+    "sound": [".mp3", ".ogg", ".wav"],
+    "lua": [".lua"],
+    "maps": [".bsp"]
+  }
+}

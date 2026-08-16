@@ -1,0 +1,10 @@
+{
+  "schema": "sao-visual-result-v1",
+  "contract": {"major": 1, "minor": 0},
+  "run_id": "44444444-4444-4444-8444-444444444444",
+  "created_utc": "2026-08-15T12:00:00Z",
+  "producer": {"name": "Source Addon Optimizer Companion", "version": "1.0.0"},
+  "environment": {"game_build": "2026.08", "map": "gm_flatgrass", "gamemode": "sandbox", "realm": "client", "session_seconds": 20, "mounted_addons": []},
+  "chunk": {"sequence": 1, "total": 1},
+  "payload": {"plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "overall_status": "PASS", "resources": [{"id": "visual-1", "test_id": "test-1", "path": "models/lvs/example.mdl", "status": "PASS", "reason": "capture completed", "warnings": []}], "screenshots": [{"id": "shot-1", "test_id": "test-1", "path": "screenshots/44444444-4444-4444-8444-444444444444/test-1-isometric.png", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "bytes": 2048, "view": "isometric", "retry_count": 0, "status": "PASS"}], "performance": {"models": 1, "screenshots": 1, "wall_seconds": 1.5}, "truncation": {"models": 0, "screenshots": 0}}
+}

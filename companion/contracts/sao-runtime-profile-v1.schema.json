@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sourceaddonoptimizer.local/contracts/sao-runtime-profile-v1.schema.json",
+  "title": "Source Addon Optimizer runtime profile chunk v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "contract", "run_id", "created_utc", "producer", "environment", "chunk", "payload"],
+  "properties": {
+    "schema": {"const": "sao-runtime-profile-v1"},
+    "contract": {"$ref": "#/$defs/contract"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "producer": {"$ref": "#/$defs/producer"},
+    "environment": {"$ref": "#/$defs/environment"},
+    "chunk": {"$ref": "#/$defs/chunk"},
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["models", "materials", "lua_errors", "performance", "truncation"],
+      "properties": {
+        "models": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/model"}},
+        "materials": {"type": "array", "maxItems": 16384, "items": {"$ref": "#/$defs/material"}},
+        "lua_errors": {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/lua_error"}},
+        "performance": {"$ref": "#/$defs/performance"},
+        "truncation": {"$ref": "#/$defs/truncation"}
+      }
+    }
+  },
+  "$defs": {
+    "contract": {"type": "object", "additionalProperties": false, "required": ["major", "minor"], "properties": {"major": {"const": 1}, "minor": {"const": 0}}},
+    "producer": {"type": "object", "additionalProperties": false, "required": ["name", "version"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 64}, "version": {"type": "string", "minLength": 1, "maxLength": 32}}},
+    "environment": {"type": "object", "additionalProperties": false, "required": ["game_build", "map", "gamemode", "realm", "session_seconds", "mounted_addons"], "properties": {"game_build": {"type": "string", "maxLength": 64}, "map": {"type": "string", "maxLength": 128}, "gamemode": {"type": "string", "maxLength": 128}, "realm": {"enum": ["server", "client", "singleplayer"]}, "session_seconds": {"type": "number", "minimum": 0, "maximum": 604800}, "mounted_addons": {"type": "array", "maxItems": 4096, "items": {"type": "object", "additionalProperties": false, "required": ["workshop_id", "title"], "properties": {"workshop_id": {"type": "string", "pattern": "^[0-9]{1,20}$"}, "title": {"type": "string", "maxLength": 256}}}}}},
+    "chunk": {"type": "object", "additionalProperties": false, "required": ["sequence", "total"], "properties": {"sequence": {"type": "integer", "minimum": 1}, "total": {"type": "integer", "minimum": 1}}},
+    "bodygroup": {"type": "object", "additionalProperties": false, "required": ["name", "value", "evidence"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "value": {"type": "integer", "minimum": 0, "maximum": 255}, "evidence": {"$ref": "#/$defs/evidence"}}},
+    "submaterial": {"type": "object", "additionalProperties": false, "required": ["slot", "material", "evidence"], "properties": {"slot": {"type": "integer", "minimum": 0, "maximum": 255}, "material": {"type": "string", "minLength": 1, "maxLength": 512}, "evidence": {"$ref": "#/$defs/evidence"}}},
+    "model": {"type": "object", "additionalProperties": false, "required": ["id", "path", "evidence", "skins", "bodygroups", "submaterials", "materials"], "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "path": {"type": "string", "minLength": 1, "maxLength": 512}, "evidence": {"$ref": "#/$defs/evidence"}, "skins": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"type": "integer", "minimum": 0, "maximum": 255}}, "bodygroups": {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/bodygroup"}}, "submaterials": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/submaterial"}}, "materials": {"type": "array", "maxItems": 4096, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}}}},
+    "material": {"type": "object", "additionalProperties": false, "required": ["id", "path", "evidence"], "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "path": {"type": "string", "minLength": 1, "maxLength": 512}, "evidence": {"$ref": "#/$defs/evidence"}}},
+    "lua_error": {"type": "object", "additionalProperties": false, "required": ["id", "realm", "message", "source", "count"], "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "realm": {"enum": ["server", "client", "menu"]}, "message": {"type": "string", "maxLength": 1024}, "source": {"type": "string", "maxLength": 512}, "count": {"type": "integer", "minimum": 1, "maximum": 1000000}}},
+    "performance": {"type": "object", "additionalProperties": false, "required": ["samples", "average_ms", "p95_ms", "max_ms", "queue_high_water"], "properties": {"samples": {"type": "integer", "minimum": 0}, "average_ms": {"type": "number", "minimum": 0}, "p95_ms": {"type": "number", "minimum": 0}, "max_ms": {"type": "number", "minimum": 0}, "queue_high_water": {"type": "integer", "minimum": 0}}},
+    "truncation": {"type": "object", "additionalProperties": false, "required": ["models", "materials", "lua_errors", "bytes"], "properties": {"models": {"type": "integer", "minimum": 0}, "materials": {"type": "integer", "minimum": 0}, "lua_errors": {"type": "integer", "minimum": 0}, "bytes": {"type": "integer", "minimum": 0}}},
+    "evidence": {"enum": ["registered", "instantiated", "visible", "repeated_visible", "focused"]}
+  }
+}

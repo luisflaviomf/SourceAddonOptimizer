@@ -1,0 +1,10 @@
+{
+  "schema": "sao-structural-result-v1",
+  "contract": {"major": 1, "minor": 0},
+  "run_id": "33333333-3333-4333-8333-333333333333",
+  "created_utc": "2026-08-15T12:00:00Z",
+  "producer": {"name": "Source Addon Optimizer Companion", "version": "1.0.0"},
+  "environment": {"game_build": "2026.08", "map": "gm_flatgrass", "gamemode": "sandbox", "realm": "server", "session_seconds": 15, "mounted_addons": []},
+  "chunk": {"sequence": 1, "total": 1},
+  "payload": {"plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "overall_status": "PASS", "resources": [{"id": "result-1", "test_id": "test-1", "path": "models/lvs/example.mdl", "status": "PASS", "reason": "required model files resolved", "warnings": []}], "performance": {"tests": 1, "wall_seconds": 0.25}, "truncation": {"resources": 0, "warnings": 0}}
+}
