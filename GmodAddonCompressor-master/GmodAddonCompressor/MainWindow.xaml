@@ -764,6 +764,26 @@
                                 </StackPanel>
                             </Border>
 
+                            <Border x:Name="ModelsCompanionProfileCard"
+                                    Style="{StaticResource CardInnerPanel}"
+                                    Margin="0,12,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Runtime evidence (optional)" />
+                                    <CheckBox Margin="0,8,0,0"
+                                              Content="Use with Models Maximum v2"
+                                              IsChecked="{Binding UseWithMaximumV2, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              IsEnabled="{Binding CanUseWithMaximumV2}" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,6,0,0"
+                                               Text="{Binding ProfileCompatibilityText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,3,0,0"
+                                               Text="{Binding ProfileMatchText}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+
                             <Border Style="{StaticResource CardInnerPanel}"
                                     Margin="0,12,0,0"
                                     Visibility="{Binding AddonWorkshopWarningVisibility}"
@@ -2461,6 +2481,26 @@
                             </StackPanel>
                         </Border>
 
+                        <Border x:Name="PipelineCompanionProfileCard"
+                                Style="{StaticResource CardInnerPanel}"
+                                Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Maximum v2 runtime evidence (optional)" />
+                                <CheckBox Margin="0,8,0,0"
+                                          Content="Use with Models Maximum v2"
+                                          IsChecked="{Binding UseWithMaximumV2, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          IsEnabled="{Binding CanUseWithMaximumV2}" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,6,0,0"
+                                           Text="{Binding ProfileCompatibilityText}"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,3,0,0"
+                                           Text="{Binding ProfileMatchText}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
                         <Border Style="{StaticResource ActionBarCard}" Margin="0,12,0,0">
                             <StackPanel Orientation="Horizontal">
                                 <Button x:Name="Button_StartPipeline"
@@ -2716,6 +2756,26 @@
                                     <TextBlock Style="{StaticResource MutedText}"
                                                Margin="0,10,0,0"
                                                Text="{Binding ProfileSummaryText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               Text="{Binding ProfileOriginText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,3,0,0"
+                                               Text="{Binding ProfileAgeText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,3,0,0"
+                                               Text="{Binding ProfileMatchText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,3,0,0"
+                                               Text="{Binding ProfileTruncationText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,3,0,0"
+                                               Text="{Binding ProfileCompatibilityText}"
                                                TextWrapping="Wrap" />
                                 </StackPanel>
                             </Border>

@@ -4,7 +4,9 @@ using GmodAddonCompressor.Systems.Companion;
 using Microsoft.Win32;
 using Ookii.Dialogs.Wpf;
 using System;
+using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,10 +19,15 @@ namespace GmodAddonCompressor
         private const string CompanionResourceName = "GmodAddonCompressor.Resources.SourceAddonOptimizerCompanion.zip";
         private readonly CompanionContext _companionContext = new();
         private CancellationTokenSource? _companionCts;
+        private string[] _companionProfileIndexes = Array.Empty<string>();
 
         private void InitializeCompanion()
         {
             CompanionTabRoot.DataContext = _companionContext;
+            ModelsCompanionProfileCard.DataContext = _companionContext;
+            PipelineCompanionProfileCard.DataContext = _companionContext;
+            _companionContext.SetOptimizerMode(_context.OptimizerModeIsMaximum);
+            _context.PropertyChanged += MainContext_PropertyChangedForCompanion;
             Button_CompanionBrowseGame.Click += Button_CompanionBrowseGame_Click;
             Button_CompanionDetectGame.Click += Button_CompanionDetectGame_Click;
             Button_CompanionInstall.Click += Button_CompanionInstall_Click;
@@ -31,11 +38,17 @@ namespace GmodAddonCompressor
             Button_CompanionGeneratePlan.Click += Button_CompanionGeneratePlan_Click;
             Button_CompanionImportResults.Click += Button_CompanionImportResults_Click;
             Button_CompanionCancel.Click += Button_CompanionCancel_Click;
-            Closed += (_, _) => CancelCompanionOperation();
+            Closed += (_, _) =>
+            {
+                _context.PropertyChanged -= MainContext_PropertyChangedForCompanion;
+                CancelCompanionOperation();
+            };
         }
 
         private void LoadCompanionSettings()
         {
+            _companionContext.SetOptimizerMode(_context.OptimizerModeIsMaximum);
+            _companionProfileIndexes = Array.Empty<string>();
             _companionContext.ResetImportedProfile(_settings.CompanionLastProfilePath);
             _ = RefreshCompanionStatusAsync(_settings.CompanionGarrysModRoot, persistDetectedRoot: false);
         }
@@ -136,14 +149,14 @@ namespace GmodAddonCompressor
             }
         }
 
-        private void Button_CompanionImportProfile_Click(object sender, RoutedEventArgs e)
+        private async void Button_CompanionImportProfile_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new OpenFileDialog
             {
                 Title = "Select a Companion runtime profile index",
                 Filter = "Companion profile index|run-index.json|JSON files|*.json",
                 CheckFileExists = true,
-                Multiselect = false,
+                Multiselect = true,
             };
             string? priorDirectory = Path.GetDirectoryName(_companionContext.LastProfilePath);
             if (!string.IsNullOrWhiteSpace(priorDirectory) && Directory.Exists(priorDirectory))
@@ -151,9 +164,91 @@ namespace GmodAddonCompressor
             if (!dialog.ShowDialog(this).GetValueOrDefault())
                 return;
 
-            _companionContext.ResetImportedProfile(dialog.FileName);
-            _companionContext.OperationStatusText = "Profile selected; Maximum v2 remains disabled until explicit opt-in.";
+            _companionProfileIndexes = dialog.FileNames
+                .Select(Path.GetFullPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            _companionContext.ResetImportedProfile(_companionProfileIndexes[0]);
             SaveSettings();
+            await ImportCompanionProfilesAsync(
+                _companionProfileIndexes,
+                _context.AddonDirectoryPath,
+                persistSelectedPath: true
+            );
+        }
+
+        private void MainContext_PropertyChangedForCompanion(object? sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(MainWindowContext.OptimizerModeIndex))
+            {
+                _companionContext.SetOptimizerMode(_context.OptimizerModeIsMaximum);
+                return;
+            }
+            if (e.PropertyName != nameof(MainWindowContext.AddonDirectoryPath))
+                return;
+
+            _companionContext.ClearForAddonChange();
+            string[] indexes = _companionProfileIndexes.ToArray();
+            string addonRoot = _context.AddonDirectoryPath;
+            if (indexes.Length > 0 && Directory.Exists(addonRoot))
+                _ = ImportCompanionProfilesAsync(indexes, addonRoot, persistSelectedPath: false);
+        }
+
+        private async Task ImportCompanionProfilesAsync(
+            string[] profileIndexes,
+            string addonRoot,
+            bool persistSelectedPath)
+        {
+            if (profileIndexes.Length == 0)
+                return;
+            _companionContext.ResetImportedProfile(profileIndexes[0]);
+            if (!Directory.Exists(addonRoot))
+            {
+                _companionContext.ProfileSummaryText =
+                    "Select a valid addon folder before importing. The profile remains disabled.";
+                _companionContext.OperationStatusText = "Profile not imported: addon folder is missing.";
+                return;
+            }
+
+            CancellationTokenSource cts = BeginCompanionOperation("Validating and matching runtime profile...", 10);
+            try
+            {
+                string[] capturedProfiles = profileIndexes.ToArray();
+                string capturedAddon = Path.GetFullPath(addonRoot);
+                CompanionProfileImportResult result = await Task.Run(
+                    () => CompanionProfileService.Import(
+                        capturedProfiles,
+                        capturedAddon,
+                        DateTimeOffset.UtcNow,
+                        cts.Token
+                    ),
+                    cts.Token
+                );
+                cts.Token.ThrowIfCancellationRequested();
+                if (!Path.GetFullPath(_context.AddonDirectoryPath).Equals(capturedAddon, StringComparison.OrdinalIgnoreCase))
+                    return;
+                _companionContext.ApplyImportedProfile(result, capturedProfiles[0]);
+                _companionContext.ProgressValue = 100;
+                _companionContext.OperationStatusText = result.IsEligible
+                    ? "Profile verified and matched. Maximum v2 use remains off until you check it explicitly."
+                    : "Profile verified, but it is not eligible for Maximum v2: " + result.CompatibilityText;
+                if (persistSelectedPath)
+                    SaveSettings();
+            }
+            catch (OperationCanceledException)
+            {
+                _companionContext.OperationStatusText = "Profile import cancelled; Maximum v2 profile use is off.";
+            }
+            catch (Exception ex)
+            {
+                _companionContext.ResetImportedProfile(profileIndexes[0]);
+                _companionContext.ProfileSummaryText = "Profile rejected: " + ex.Message;
+                _companionContext.OperationStatusText = "Profile import failed; Models and Pipeline are unchanged.";
+            }
+            finally
+            {
+                EndCompanionOperation(cts);
+            }
         }
 
         private void Button_CompanionGeneratePlan_Click(object sender, RoutedEventArgs e)

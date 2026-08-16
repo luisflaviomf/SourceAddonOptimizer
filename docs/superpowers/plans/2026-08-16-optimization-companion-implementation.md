@@ -202,14 +202,14 @@ assert bundle.payloads[0]["models"][0]["path"] == "models/lvs/example.mdl"
 - Modify: `GmodAddonCompressor-master/GmodAddonCompressor/MainWindow.xaml`
 - Modify: `tests/wpf_companion_contract/Program.cs`
 
-- [ ] Link the valid/hostile fixtures into the C# test project and add failing tests proving parity with Python: closed fields, limits before parse, hashes, versions, paths, finite numbers, duplicate IDs, incomplete runs, and metadata-only inspection for unsupported minor versions.
-- [ ] Add profile-merge tests proving maximum evidence tier wins, skins/bodygroups/submaterials use set union, raw counts do not add, zero matched assets yields no usable profile, and absence is never represented as negative evidence.
-- [ ] Implement the C# reader and profile service. Mark a profile stale and ineligible when its timestamp is more than 180 days old; reject timestamps over five minutes in the future. Age is never used as negative importance and never blocks ordinary optimization.
-- [ ] Intersect imported virtual model/material paths with the selected addon using normalized case-insensitive virtual identities, but preserve original display casing. Present origin, age, models/materials observed, matched assets, ignored external assets, truncations, and compatibility.
-- [ ] Add one compact card to Models and one to Pipeline, both bound to the same `CompanionContext`, with `[ ] Use with Models Maximum v2`. Enable it only when the imported profile is valid, non-stale, has at least one match, and the selected optimizer mode is Maximum.
-- [ ] Clear the checkbox when the mode leaves Maximum, profile changes, selected addon changes, or application restarts. Merely detecting a new profile never checks it.
-- [ ] Run the C# contract tests and WPF build. Manually prove that Normal/Fidelity and every Compress preset behave with the controls disabled and unchanged.
-- [ ] Commit: `feat(wpf): import profiles with explicit maximum opt-in`.
+- [x] Link the valid/hostile fixtures into the C# test project and add failing tests proving parity with Python: closed fields, limits before parse, hashes, versions, paths, finite numbers, duplicate IDs, incomplete runs, and metadata-only inspection for unsupported minor versions.
+- [x] Add profile-merge tests proving maximum evidence tier wins, skins/bodygroups/submaterials use set union, raw counts do not add, zero matched assets yields no usable profile, and absence is never represented as negative evidence.
+- [x] Implement the C# reader and profile service. Mark a profile stale and ineligible when its timestamp is more than 180 days old; reject timestamps over five minutes in the future. Age is never used as negative importance and never blocks ordinary optimization.
+- [x] Intersect imported virtual model/material paths with the selected addon using normalized case-insensitive virtual identities, but preserve original display casing. Present origin, age, models/materials observed, matched assets, ignored external assets, truncations, and compatibility.
+- [x] Add one compact card to Models and one to Pipeline, both bound to the same `CompanionContext`, with `[ ] Use with Models Maximum v2`. Enable it only when the imported profile is valid, non-stale, has at least one match, and the selected optimizer mode is Maximum.
+- [x] Clear the checkbox when the mode leaves Maximum, profile changes, selected addon changes, or application restarts. Merely detecting a new profile never checks it.
+- [x] Run the C# contract tests and WPF build. Manually prove that Normal/Fidelity and every Compress preset behave with the controls disabled and unchanged.
+- [x] Commit: `feat(wpf): import profiles with explicit maximum opt-in`.
 
 ## Task 7: Parse QC runtime bindings and build a regional evidence map
 

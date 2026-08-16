@@ -1,4 +1,5 @@
 using GmodAddonCompressor.Models;
+using GmodAddonCompressor.Systems.Companion;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -18,6 +19,8 @@ namespace GmodAddonCompressor.DataContexts
         private bool _useWithMaximumV2;
         private bool _isBusy;
         private int _progressValue;
+        private CompanionProfileImportResult? _importedProfile;
+        private bool _optimizerIsMaximum;
 
         public string GarrysModRoot
         {
@@ -52,8 +55,18 @@ namespace GmodAddonCompressor.DataContexts
         public bool UseWithMaximumV2
         {
             get => _useWithMaximumV2;
-            set => Set(ref _useWithMaximumV2, value);
+            set => Set(ref _useWithMaximumV2, value && CanUseWithMaximumV2);
         }
+
+        public bool CanUseWithMaximumV2 => _optimizerIsMaximum && _importedProfile?.IsEligible == true;
+        public string ProfileOriginText => _importedProfile?.OriginText ?? "—";
+        public string ProfileAgeText => _importedProfile?.AgeText ?? "—";
+        public string ProfileMatchText => _importedProfile == null
+            ? "No addon intersection available"
+            : $"Observed {_importedProfile.ObservedModelCount} models / {_importedProfile.ObservedMaterialCount} materials · matched {_importedProfile.MatchedModelCount} / {_importedProfile.MatchedMaterialCount} · ignored external {_importedProfile.IgnoredExternalAssetCount}";
+        public string ProfileCompatibilityText => _importedProfile?.CompatibilityText ?? "No validated runtime profile";
+        public string ProfileTruncationText => _importedProfile?.TruncationText ?? "—";
+        public CompanionProfileImportResult? ImportedProfile => _importedProfile;
 
         public bool IsBusy
         {
@@ -118,12 +131,46 @@ namespace GmodAddonCompressor.DataContexts
 
         public void ResetImportedProfile(string? profilePath)
         {
+            _importedProfile = null;
             LastProfilePath = profilePath ?? string.Empty;
             UseWithMaximumV2 = false;
             ProfileSummaryText = string.IsNullOrWhiteSpace(LastProfilePath)
                 ? "No runtime profile imported. Models and Pipeline are unchanged."
                 : "Profile selected. Contract validation and addon matching are completed by the import step.";
+            NotifyProfileProperties();
             OnPropertyChanged(nameof(CanGeneratePlan));
+        }
+
+        public void ApplyImportedProfile(CompanionProfileImportResult result, string? profilePath)
+        {
+            _importedProfile = result ?? throw new System.ArgumentNullException(nameof(result));
+            LastProfilePath = profilePath ?? string.Empty;
+            Set(ref _useWithMaximumV2, false, nameof(UseWithMaximumV2));
+            ProfileSummaryText = result.IsEligible
+                ? $"Ready for explicit Maximum v2 opt-in. {result.MatchedModelCount} models and {result.MatchedMaterialCount} materials matched this addon."
+                : result.CompatibilityText;
+            NotifyProfileProperties();
+            OnPropertyChanged(nameof(CanGeneratePlan));
+        }
+
+        public void SetOptimizerMode(bool isMaximum)
+        {
+            if (_optimizerIsMaximum == isMaximum)
+                return;
+            _optimizerIsMaximum = isMaximum;
+            if (!isMaximum)
+                Set(ref _useWithMaximumV2, false, nameof(UseWithMaximumV2));
+            OnPropertyChanged(nameof(CanUseWithMaximumV2));
+        }
+
+        public void ClearForAddonChange()
+        {
+            _importedProfile = null;
+            Set(ref _useWithMaximumV2, false, nameof(UseWithMaximumV2));
+            ProfileSummaryText = string.IsNullOrWhiteSpace(LastProfilePath)
+                ? "No runtime profile imported. Models and Pipeline are unchanged."
+                : "The selected addon changed. Revalidating the imported profile before Maximum v2 can use it.";
+            NotifyProfileProperties();
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
@@ -149,6 +196,17 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(CanImportProfile));
             OnPropertyChanged(nameof(CanGeneratePlan));
             OnPropertyChanged(nameof(CanImportResults));
+        }
+
+        private void NotifyProfileProperties()
+        {
+            OnPropertyChanged(nameof(ImportedProfile));
+            OnPropertyChanged(nameof(CanUseWithMaximumV2));
+            OnPropertyChanged(nameof(ProfileOriginText));
+            OnPropertyChanged(nameof(ProfileAgeText));
+            OnPropertyChanged(nameof(ProfileMatchText));
+            OnPropertyChanged(nameof(ProfileCompatibilityText));
+            OnPropertyChanged(nameof(ProfileTruncationText));
         }
 
         private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>

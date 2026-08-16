@@ -22,3 +22,11 @@ Build under test: WPF Release (`net6.0-windows`)
 ## Regression caught by the smoke
 
 The first launch exposed a runtime-only WPF binding failure: a read-only profile path was receiving the default TwoWay `TextBox.Text` binding. The binding is now explicitly OneWay and has a regression test in `tests/companion_addon/test_wpf_companion_xaml.py`.
+
+## Runtime-profile import and mode gating
+
+- Rebuilt and launched the real Release executable after adding the shared Models/Pipeline profile card.
+- Selected Models Normal, Fidelity, and Maximum through Windows UI Automation. With no validated matching profile, `Use with Models Maximum v2` remained disabled in all three modes. Contract tests separately prove that an eligible profile enables the control only in Maximum and that leaving Maximum clears a checked opt-in.
+- Opened Pipeline and confirmed its shared `Use with Models Maximum v2` control was present and disabled under the same state.
+- Selected all four existing Compress presets (`Padrao`, `Magick`, `Maximum`, and `Magick+`) in the real window. All remained selectable; no Companion control exists in Compress.
+- The profile reader/service contract tests cover valid import, stale and zero-match ineligibility, multi-profile merge, case-insensitive addon intersection with display casing preserved, external-asset filtering, closed fields, pre-parse limits, hashes, versions, finite numbers, duplicate IDs, and incomplete bundles.

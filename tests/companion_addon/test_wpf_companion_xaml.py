@@ -9,3 +9,13 @@ def test_read_only_profile_binding_is_explicitly_one_way() -> None:
     xaml = MAIN_WINDOW.read_text(encoding="utf-8")
 
     assert 'Text="{Binding LastProfilePath, Mode=OneWay}"' in xaml
+
+
+def test_models_and_pipeline_share_explicit_maximum_opt_in() -> None:
+    xaml = MAIN_WINDOW.read_text(encoding="utf-8")
+
+    assert xaml.count('Content="Use with Models Maximum v2"') == 2
+    assert 'x:Name="ModelsCompanionProfileCard"' in xaml
+    assert 'x:Name="PipelineCompanionProfileCard"' in xaml
+    assert xaml.count('IsChecked="{Binding UseWithMaximumV2, Mode=TwoWay') == 2
+    assert xaml.count('IsEnabled="{Binding CanUseWithMaximumV2}"') == 2

@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 static void Assert(bool condition, string message)
 {
@@ -28,6 +29,89 @@ static void ExpectFailure(Action action, string expected)
 
 static string Digest(byte[] payload) =>
     Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
+
+static JsonNode CloneJson(JsonNode value) =>
+    JsonNode.Parse(value.ToJsonString()) ?? throw new InvalidOperationException("Could not clone JSON fixture.");
+
+static JsonObject LoadRuntimeProfileFixture() =>
+    (JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "valid", "sao-runtime-profile-v1.json")))
+        ?? throw new InvalidOperationException("Runtime profile fixture is missing."))
+    .AsObject();
+
+static byte[] JsonBytes(JsonNode value) => Encoding.UTF8.GetBytes(value.ToJsonString() + "\n");
+
+static string WriteRuntimeBundle(string root, params JsonObject[] chunks)
+{
+    Directory.CreateDirectory(root);
+    var declarations = new JsonArray();
+    for (int index = 0; index < chunks.Length; index++)
+    {
+        JsonObject chunk = chunks[index];
+        chunk["chunk"] = new JsonObject { ["sequence"] = index + 1, ["total"] = chunks.Length };
+        byte[] bytes = JsonBytes(chunk);
+        string filename = $"chunk-{index + 1:0000}.json";
+        File.WriteAllBytes(Path.Combine(root, filename), bytes);
+        declarations.Add(new JsonObject
+        {
+            ["sequence"] = index + 1,
+            ["file"] = filename,
+            ["bytes"] = bytes.LongLength,
+            ["sha256"] = Digest(bytes),
+        });
+    }
+
+    JsonObject first = chunks[0];
+    var runIndex = new JsonObject
+    {
+        ["schema"] = "sao-run-index-v1",
+        ["contract"] = CloneJson(first["contract"]!),
+        ["run_id"] = first["run_id"]!.GetValue<string>(),
+        ["payload_schema"] = first["schema"]!.GetValue<string>(),
+        ["created_utc"] = first["created_utc"]!.GetValue<string>(),
+        ["producer"] = CloneJson(first["producer"]!),
+        ["environment"] = CloneJson(first["environment"]!),
+        ["chunk_count"] = chunks.Length,
+        ["total_bytes"] = declarations.Sum(item => item!["bytes"]!.GetValue<long>()),
+        ["chunks"] = declarations,
+    };
+    byte[] indexBytes = JsonBytes(runIndex);
+    File.WriteAllBytes(Path.Combine(root, "run-index.json"), indexBytes);
+    File.WriteAllBytes(Path.Combine(root, "complete.ready.json"), JsonBytes(new JsonObject
+    {
+        ["schema"] = "sao-completion-v1",
+        ["run_id"] = first["run_id"]!.GetValue<string>(),
+        ["index_sha256"] = Digest(indexBytes),
+    }));
+    return Path.Combine(root, "run-index.json");
+}
+
+static void RewriteSingleProfileChunk(string bundleRoot, byte[] bytes)
+{
+    string chunkPath = Path.Combine(bundleRoot, "chunk-0001.json");
+    File.WriteAllBytes(chunkPath, bytes);
+    JsonObject index = JsonNode.Parse(File.ReadAllText(Path.Combine(bundleRoot, "run-index.json")))!.AsObject();
+    JsonObject declaration = index["chunks"]![0]!.AsObject();
+    declaration["bytes"] = bytes.LongLength;
+    declaration["sha256"] = Digest(bytes);
+    index["total_bytes"] = bytes.LongLength;
+    byte[] indexBytes = JsonBytes(index);
+    File.WriteAllBytes(Path.Combine(bundleRoot, "run-index.json"), indexBytes);
+    JsonObject ready = JsonNode.Parse(File.ReadAllText(Path.Combine(bundleRoot, "complete.ready.json")))!.AsObject();
+    ready["index_sha256"] = Digest(indexBytes);
+    File.WriteAllBytes(Path.Combine(bundleRoot, "complete.ready.json"), JsonBytes(ready));
+}
+
+static void RewriteRuntimeIndex(string bundleRoot, Action<JsonObject> mutate)
+{
+    string indexPath = Path.Combine(bundleRoot, "run-index.json");
+    JsonObject index = JsonNode.Parse(File.ReadAllText(indexPath))!.AsObject();
+    mutate(index);
+    byte[] indexBytes = JsonBytes(index);
+    File.WriteAllBytes(indexPath, indexBytes);
+    JsonObject ready = JsonNode.Parse(File.ReadAllText(Path.Combine(bundleRoot, "complete.ready.json")))!.AsObject();
+    ready["index_sha256"] = Digest(indexBytes);
+    File.WriteAllBytes(Path.Combine(bundleRoot, "complete.ready.json"), JsonBytes(ready));
+}
 
 static byte[] BuildPackage(string version, IReadOnlyDictionary<string, byte[]> files)
 {
@@ -292,6 +376,183 @@ try
     context.ApplyInstallStatus(compatible);
     Assert(context.InstallationStatusText == "Compatible" && context.CanRemove, "Compatible state was not presented by the WPF context.");
     Assert(!context.CanInstall && !context.CanUpdate, "WPF context exposed invalid compatible-state actions.");
+
+    DateTimeOffset now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
+    JsonObject validProfile = LoadRuntimeProfileFixture();
+    string validBundleRoot = Path.Combine(testRoot, "runtime-valid");
+    string validIndex = WriteRuntimeBundle(validBundleRoot, validProfile);
+    CompanionBundleInspection inspection = CompanionBundleReader.Inspect(validIndex, now);
+    Assert(inspection.Schema == CompanionContract.RuntimeProfileSchema, "Runtime profile schema was not inspected.");
+    Assert(inspection.ContractMajor == 1 && inspection.ContractMinor == 0 && inspection.IsComplete && inspection.IsCompatible, "Valid runtime metadata was not compatible.");
+    CompanionRuntimeProfile validRuntime = CompanionBundleReader.ReadRuntimeProfile(validIndex, now);
+    Assert(validRuntime.Models.Count == 1 && validRuntime.Materials.Count == 1, "Valid runtime profile assets were not read.");
+    Assert(validRuntime.Models["models/lvs/example.mdl"].Evidence == CompanionEvidenceTier.Focused, "Runtime evidence tier was not preserved.");
+
+    JsonObject invalidCases = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "invalid", "cases.json")))!.AsObject();
+    foreach (JsonNode? unsafePath in invalidCases["unsafe_paths"]!.AsArray())
+        ExpectFailure(() => CompanionContract.NormalizeVirtualPath(unsafePath!.GetValue<string>()), "virtual path");
+    foreach ((string source, JsonNode? expected) in invalidCases["safe_paths"]!.AsObject())
+        Assert(CompanionContract.NormalizeVirtualPath(source) == expected!.GetValue<string>(), $"Safe path normalization differs for {source}.");
+
+    string unknownPayloadRoot = Path.Combine(testRoot, "runtime-unknown-payload");
+    JsonObject unknownPayload = (JsonObject)CloneJson(LoadRuntimeProfileFixture());
+    unknownPayload["payload"]!["unexpected"] = true;
+    string unknownPayloadIndex = WriteRuntimeBundle(unknownPayloadRoot, unknownPayload);
+    ExpectFailure(() => CompanionBundleReader.ReadRuntimeProfile(unknownPayloadIndex, now), "unknown fields");
+
+    string unknownIndexRoot = Path.Combine(testRoot, "runtime-unknown-index");
+    string unknownIndex = WriteRuntimeBundle(unknownIndexRoot, (JsonObject)CloneJson(LoadRuntimeProfileFixture()));
+    RewriteRuntimeIndex(unknownIndexRoot, index => index["unexpected"] = true);
+    ExpectFailure(() => CompanionBundleReader.Inspect(unknownIndex, now), "unknown fields");
+
+    string incompleteRoot = Path.Combine(testRoot, "runtime-incomplete");
+    string incompleteIndex = WriteRuntimeBundle(incompleteRoot, (JsonObject)CloneJson(LoadRuntimeProfileFixture()));
+    File.Delete(Path.Combine(incompleteRoot, "complete.ready.json"));
+    ExpectFailure(() => CompanionBundleReader.Inspect(incompleteIndex, now), "incomplete");
+
+    string indexHashRoot = Path.Combine(testRoot, "runtime-index-hash");
+    string indexHashIndex = WriteRuntimeBundle(indexHashRoot, (JsonObject)CloneJson(LoadRuntimeProfileFixture()));
+    File.AppendAllText(indexHashIndex, " ");
+    ExpectFailure(() => CompanionBundleReader.Inspect(indexHashIndex, now), "hash");
+
+    string chunkHashRoot = Path.Combine(testRoot, "runtime-chunk-hash");
+    string chunkHashIndex = WriteRuntimeBundle(chunkHashRoot, (JsonObject)CloneJson(LoadRuntimeProfileFixture()));
+    File.AppendAllText(Path.Combine(chunkHashRoot, "chunk-0001.json"), " ");
+    ExpectFailure(() => CompanionBundleReader.ReadRuntimeProfile(chunkHashIndex, now), "size");
+
+    string newerMinorRoot = Path.Combine(testRoot, "runtime-newer-minor");
+    string newerMinorIndex = WriteRuntimeBundle(newerMinorRoot, (JsonObject)CloneJson(LoadRuntimeProfileFixture()));
+    RewriteRuntimeIndex(newerMinorRoot, index => index["contract"]!["minor"] = 1);
+    File.Delete(Path.Combine(newerMinorRoot, "chunk-0001.json"));
+    CompanionBundleInspection newerMinor = CompanionBundleReader.Inspect(newerMinorIndex, now);
+    Assert(!newerMinor.IsCompatible && newerMinor.ContractMajor == 1 && newerMinor.ContractMinor == 1, "Newer minor metadata was not inspectable/incompatible.");
+    ExpectFailure(() => CompanionBundleReader.ReadRuntimeProfile(newerMinorIndex, now), "unsupported contract");
+
+    string newerMajorRoot = Path.Combine(testRoot, "runtime-newer-major");
+    string newerMajorIndex = WriteRuntimeBundle(newerMajorRoot, (JsonObject)CloneJson(LoadRuntimeProfileFixture()));
+    RewriteRuntimeIndex(newerMajorRoot, index => index["contract"]!["major"] = 2);
+    Assert(!CompanionBundleReader.Inspect(newerMajorIndex, now).IsCompatible, "Unsupported major metadata appeared compatible.");
+    ExpectFailure(() => CompanionBundleReader.ReadRuntimeProfile(newerMajorIndex, now), "unsupported contract");
+
+    string oversizedDeclarationRoot = Path.Combine(testRoot, "runtime-oversized-declaration");
+    string oversizedDeclarationIndex = WriteRuntimeBundle(oversizedDeclarationRoot, (JsonObject)CloneJson(LoadRuntimeProfileFixture()));
+    RewriteRuntimeIndex(oversizedDeclarationRoot, index =>
+    {
+        index["chunks"]![0]!["bytes"] = CompanionContract.MaxChunkBytes + 1;
+        index["total_bytes"] = CompanionContract.MaxChunkBytes + 1;
+    });
+    File.WriteAllText(Path.Combine(oversizedDeclarationRoot, "chunk-0001.json"), "not json");
+    ExpectFailure(() => CompanionBundleReader.ReadRuntimeProfile(oversizedDeclarationIndex, now), "byte limit");
+
+    string nonFiniteRoot = Path.Combine(testRoot, "runtime-nonfinite");
+    string nonFiniteIndex = WriteRuntimeBundle(nonFiniteRoot, (JsonObject)CloneJson(LoadRuntimeProfileFixture()));
+    string nonFiniteText = File.ReadAllText(Path.Combine(nonFiniteRoot, "chunk-0001.json")).Replace("0.15", "1e400", StringComparison.Ordinal);
+    RewriteSingleProfileChunk(nonFiniteRoot, Encoding.UTF8.GetBytes(nonFiniteText));
+    ExpectFailure(() => CompanionBundleReader.ReadRuntimeProfile(nonFiniteIndex, now), "finite");
+
+    string duplicateKeyRoot = Path.Combine(testRoot, "runtime-duplicate-key");
+    string duplicateKeyIndex = WriteRuntimeBundle(duplicateKeyRoot, (JsonObject)CloneJson(LoadRuntimeProfileFixture()));
+    string duplicateKeyText = File.ReadAllText(Path.Combine(duplicateKeyRoot, "chunk-0001.json")).Replace(
+        "\"schema\":\"sao-runtime-profile-v1\"",
+        "\"schema\":\"sao-runtime-profile-v1\",\"schema\":\"sao-runtime-profile-v1\"",
+        StringComparison.Ordinal
+    );
+    RewriteSingleProfileChunk(duplicateKeyRoot, Encoding.UTF8.GetBytes(duplicateKeyText));
+    ExpectFailure(() => CompanionBundleReader.ReadRuntimeProfile(duplicateKeyIndex, now), "duplicate JSON key");
+
+    string duplicateIdRoot = Path.Combine(testRoot, "runtime-duplicate-id");
+    JsonObject duplicateA = (JsonObject)CloneJson(LoadRuntimeProfileFixture());
+    JsonObject duplicateB = (JsonObject)CloneJson(LoadRuntimeProfileFixture());
+    duplicateB["payload"]!["materials"] = new JsonArray();
+    string duplicateIdIndex = WriteRuntimeBundle(duplicateIdRoot, duplicateA, duplicateB);
+    ExpectFailure(() => CompanionBundleReader.ReadRuntimeProfile(duplicateIdIndex, now), "duplicate id across chunks");
+
+    string futureRoot = Path.Combine(testRoot, "runtime-future");
+    JsonObject futureProfile = (JsonObject)CloneJson(LoadRuntimeProfileFixture());
+    futureProfile["created_utc"] = "2999-01-01T00:00:00Z";
+    string futureIndex = WriteRuntimeBundle(futureRoot, futureProfile);
+    ExpectFailure(() => CompanionBundleReader.Inspect(futureIndex, now), "future");
+
+    JsonObject mergeA = (JsonObject)CloneJson(LoadRuntimeProfileFixture());
+    mergeA["payload"]!["models"]![0]!["evidence"] = "registered";
+    mergeA["payload"]!["models"]![0]!["skins"] = new JsonArray(0);
+    mergeA["payload"]!["models"]![0]!["bodygroups"] = new JsonArray(new JsonObject
+    {
+        ["name"] = "wheels", ["value"] = 0, ["evidence"] = "instantiated",
+    });
+    mergeA["payload"]!["models"]![0]!["submaterials"] = new JsonArray();
+    mergeA["payload"]!["models"]![0]!["materials"] = new JsonArray();
+    mergeA["payload"]!["materials"] = new JsonArray();
+    string mergeAIndex = WriteRuntimeBundle(Path.Combine(testRoot, "runtime-merge-a"), mergeA);
+
+    JsonObject mergeB = (JsonObject)CloneJson(LoadRuntimeProfileFixture());
+    mergeB["run_id"] = "22222222-2222-4222-8222-222222222222";
+    mergeB["payload"]!["models"]![0]!["skins"] = new JsonArray(1, 2);
+    mergeB["payload"]!["models"]![0]!["bodygroups"] = new JsonArray(
+        new JsonObject { ["name"] = "wheels", ["value"] = 0, ["evidence"] = "focused" },
+        new JsonObject { ["name"] = "spoiler", ["value"] = 1, ["evidence"] = "visible" }
+    );
+    ((JsonArray)mergeB["payload"]!["models"]!.AsArray()).Add(new JsonObject
+    {
+        ["id"] = "model-external",
+        ["path"] = "models/framework/external.mdl",
+        ["evidence"] = "focused",
+        ["skins"] = new JsonArray(),
+        ["bodygroups"] = new JsonArray(),
+        ["submaterials"] = new JsonArray(),
+        ["materials"] = new JsonArray(),
+    });
+    string mergeBIndex = WriteRuntimeBundle(Path.Combine(testRoot, "runtime-merge-b"), mergeB);
+
+    string selectedAddon = Path.Combine(testRoot, "selected-addon");
+    string selectedModel = Path.Combine(selectedAddon, "models", "LVS", "Example.mdl");
+    string selectedMaterial = Path.Combine(selectedAddon, "materials", "Models", "LVS", "Tire.vmt");
+    Directory.CreateDirectory(Path.GetDirectoryName(selectedModel)!);
+    Directory.CreateDirectory(Path.GetDirectoryName(selectedMaterial)!);
+    File.WriteAllBytes(selectedModel, Array.Empty<byte>());
+    File.WriteAllBytes(selectedMaterial, Array.Empty<byte>());
+    CompanionProfileImportResult merged = CompanionProfileService.Import(
+        new[] { mergeAIndex, mergeBIndex }, selectedAddon, now, CancellationToken.None
+    );
+    Assert(merged.IsEligible && !merged.IsStale, "Valid matched profiles were not eligible.");
+    Assert(merged.ObservedModelCount == 2 && merged.MatchedModelCount == 1 && merged.MatchedMaterialCount == 1, "Profile counts were added or matched incorrectly.");
+    Assert(merged.IgnoredExternalAssetCount == 1, "External framework asset was not ignored.");
+    CompanionObservedModel mergedModel = merged.Profile.Models["models/lvs/example.mdl"];
+    Assert(mergedModel.Evidence == CompanionEvidenceTier.Focused, "Maximum model evidence tier did not win.");
+    Assert(mergedModel.Skins.SetEquals(new[] { 0, 1, 2 }), "Model skins were not merged by set union.");
+    Assert(mergedModel.Bodygroups["wheels=0"] == CompanionEvidenceTier.Focused && mergedModel.Bodygroups.ContainsKey("spoiler=1"), "Bodygroups were not unioned with maximum evidence.");
+    Assert(mergedModel.Submaterials.ContainsKey("0=materials/models/lvs/tire.vmt"), "Submaterials were not unioned.");
+    Assert(mergedModel.Materials.SetEquals(new[] { "materials/models/lvs/tire.vmt" }), "Model materials were not unioned.");
+    Assert(mergedModel.DisplayPath == "models/LVS/Example.mdl", "Addon filesystem casing was not preserved for display.");
+    Assert(!merged.Profile.Models.ContainsKey("models/framework/external.mdl"), "External model leaked into the intersected profile.");
+    Assert(!merged.Profile.Models.ContainsKey("models/not-observed.mdl"), "Absence was represented as negative evidence.");
+    Assert(merged.OriginText.Contains("2 profile", StringComparison.OrdinalIgnoreCase) && merged.AgeText.Length > 0, "Origin or age presentation is missing.");
+
+    string emptyAddon = Path.Combine(testRoot, "empty-addon");
+    Directory.CreateDirectory(emptyAddon);
+    CompanionProfileImportResult noMatch = CompanionProfileService.Import(new[] { validIndex }, emptyAddon, now, CancellationToken.None);
+    Assert(!noMatch.IsEligible && noMatch.MatchedAssetCount == 0, "A zero-match profile became usable.");
+
+    JsonObject staleProfile = (JsonObject)CloneJson(LoadRuntimeProfileFixture());
+    staleProfile["created_utc"] = "2025-01-01T00:00:00Z";
+    string staleIndex = WriteRuntimeBundle(Path.Combine(testRoot, "runtime-stale"), staleProfile);
+    CompanionProfileImportResult stale = CompanionProfileService.Import(new[] { staleIndex }, selectedAddon, now, CancellationToken.None);
+    Assert(stale.IsStale && !stale.IsEligible, "A profile older than 180 days remained eligible.");
+
+    var profileContext = new CompanionContext();
+    profileContext.SetOptimizerMode(isMaximum: true);
+    profileContext.ApplyImportedProfile(merged, mergeBIndex);
+    Assert(profileContext.CanUseWithMaximumV2 && !profileContext.UseWithMaximumV2, "Eligible profile should enable but never automatically check the opt-in.");
+    profileContext.UseWithMaximumV2 = true;
+    Assert(profileContext.UseWithMaximumV2, "Explicit Maximum v2 opt-in was rejected.");
+    profileContext.SetOptimizerMode(isMaximum: false);
+    Assert(!profileContext.CanUseWithMaximumV2 && !profileContext.UseWithMaximumV2, "Leaving Maximum did not clear and disable the opt-in.");
+    profileContext.SetOptimizerMode(isMaximum: true);
+    profileContext.ApplyImportedProfile(noMatch, validIndex);
+    profileContext.UseWithMaximumV2 = true;
+    Assert(!profileContext.UseWithMaximumV2, "An ineligible profile accepted the opt-in.");
+    profileContext.ClearForAddonChange();
+    Assert(!profileContext.UseWithMaximumV2 && !profileContext.CanUseWithMaximumV2, "Addon change did not clear profile eligibility.");
 
     Console.WriteLine("WPF Companion contract tests passed.");
 }
