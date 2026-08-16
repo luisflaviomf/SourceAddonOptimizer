@@ -164,14 +164,14 @@ assert bundle.payloads[0]["models"][0]["path"] == "models/lvs/example.mdl"
 - Create: `tests/wpf_companion_contract/Program.cs`
 - Modify: `GmodAddonCompressor-master/GmodAddonCompressor/GmodAddonCompressor.csproj`
 
-- [ ] Add failing C# contract tests that build small in-memory packages and cover fresh install, update of declared files, preservation of `garrysmod/data/sourceaddonoptimizer`, refusal to overwrite an unknown destination, tampered/missing ownership file, traversal entries, symlink/junction escape, concurrent callers, interrupted staging, uninstall of declared files only, and refusal to recursively remove non-empty unknown directories.
-- [ ] Define a package manifest containing schema/version plus sorted relative payload path, bytes, and SHA-256. Put the install manifest at ZIP root and the payload below `sourceaddonoptimizer_companion/`; embed the ZIP as `GmodAddonCompressor.Resources.SourceAddonOptimizerCompanion.zip`.
-- [ ] Implement `scripts/package_companion.ps1` with deterministic ordering, byte/hash manifest generation, a temporary ZIP, complete validation, and atomic replacement of the embedded resource. Fail on uppercase/unsafe paths, undeclared files, forbidden extensions, lint failure, or more than one autorun file.
-- [ ] Implement Steam/Garry's Mod path detection from explicit user path first and registry/library discovery second. Resolve `garrysmod/addons/sourceaddonoptimizer_companion` with `Path.GetFullPath` plus containment checks; never use a broad recursive delete.
-- [ ] Implement install/update using a sibling unique staging directory, file-by-file hash validation, an ownership marker containing the package hash, atomic directory move for a new install, and declared-file replacement for an owned update. Preserve data profiles/results because they are outside the addon directory.
-- [ ] Implement uninstall by deleting only manifest-declared files and known empty directories. If unknown files remain, keep the directory and return a warning listing them.
-- [ ] Run `powershell -ExecutionPolicy Bypass -File scripts\package_companion.ps1` and `dotnet run --project tests\wpf_companion_contract\GmodAddonOptimizer.CompanionContractTests.csproj -c Release`; expected result: package validation and all installer tests pass.
-- [ ] Commit: `feat(wpf): package and install companion safely`.
+- [x] Add failing C# contract tests that build small in-memory packages and cover fresh install, update of declared files, preservation of `garrysmod/data/sourceaddonoptimizer`, refusal to overwrite an unknown destination, tampered/missing ownership file, traversal entries, symlink/junction escape, concurrent callers, interrupted staging, uninstall of declared files only, and refusal to recursively remove non-empty unknown directories.
+- [x] Define a package manifest containing schema/version plus sorted relative payload path, bytes, and SHA-256. Put the install manifest at ZIP root and the payload below `sourceaddonoptimizer_companion/`; embed the ZIP as `GmodAddonCompressor.Resources.SourceAddonOptimizerCompanion.zip`.
+- [x] Implement `scripts/package_companion.ps1` with deterministic ordering, byte/hash manifest generation, a temporary ZIP, complete validation, and atomic replacement of the embedded resource. Fail on uppercase/unsafe paths, undeclared files, forbidden extensions, lint failure, or more than one autorun file.
+- [x] Implement Steam/Garry's Mod path detection from explicit user path first and registry/library discovery second. Resolve `garrysmod/addons/sourceaddonoptimizer_companion` with `Path.GetFullPath` plus containment checks; never use a broad recursive delete.
+- [x] Implement install/update using a sibling unique staging directory, file-by-file hash validation, an ownership marker containing the package hash, atomic directory move for a new install, and declared-file replacement for an owned update. Preserve data profiles/results because they are outside the addon directory.
+- [x] Implement uninstall by deleting only manifest-declared files and known empty directories. If unknown files remain, keep the directory and return a warning listing them.
+- [x] Run `powershell -ExecutionPolicy Bypass -File scripts\package_companion.ps1` and `dotnet run --project tests\wpf_companion_contract\GmodAddonOptimizer.CompanionContractTests.csproj -c Release`; expected result: package validation and all installer tests pass.
+- [x] Commit: `feat(wpf): package and install companion safely`.
 
 ## Task 5: Add the WPF Companion tab without changing existing workflows
 
