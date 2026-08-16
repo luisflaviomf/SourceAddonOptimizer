@@ -44,5 +44,5 @@ def write_bundle(root: Path, chunks: list[dict[str, object]]) -> Path:
         "run_id": first["run_id"],
         "index_sha256": hashlib.sha256(index_raw).hexdigest(),
     }
-    (root / "complete.ready").write_bytes(json_bytes(ready))
+    (root / "complete.ready.json").write_bytes(json_bytes(ready))
     return root

@@ -521,10 +521,10 @@ _PAYLOAD_VALIDATORS: dict[str, Callable[..., None]] = {
 def _read_index_and_ready(root: Path) -> tuple[dict[str, Any], bytes, UUID, datetime, dict[str, object], dict[str, object], int, int]:
     if not root.is_dir():
         raise ValueError("bundle root is missing")
-    if not (root / "complete.ready").is_file():
-        raise ValueError("bundle is incomplete: complete.ready is missing")
+    if not (root / "complete.ready.json").is_file():
+        raise ValueError("bundle is incomplete: complete.ready.json is missing")
     index, index_raw = _load_object(root / "run-index.json", MAX_INDEX_BYTES, "run index")
-    ready, _ready_raw = _load_object(root / "complete.ready", MAX_COMPLETION_BYTES, "completion marker")
+    ready, _ready_raw = _load_object(root / "complete.ready.json", MAX_COMPLETION_BYTES, "completion marker")
     _require_keys(ready, {"schema", "run_id", "index_sha256"}, "completion marker")
     if ready["schema"] != "sao-completion-v1":
         raise ValueError("invalid completion schema")
@@ -770,7 +770,7 @@ def write_bundle(
         ready_raw = _json_bytes(ready)
         if len(ready_raw) > MAX_COMPLETION_BYTES:
             raise ValueError("completion marker exceeds its byte limit")
-        _write_atomic_file(partial_root / "complete.ready", ready_raw)
+        _write_atomic_file(partial_root / "complete.ready.json", ready_raw)
         read_bundle(partial_root, expected_schema=schema)
         if destination.exists():
             raise ValueError(f"bundle destination already exists: {destination}")

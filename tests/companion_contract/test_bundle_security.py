@@ -27,14 +27,14 @@ def update_index_for_chunk(root: Path, raw: bytes) -> None:
     index["total_bytes"] = len(raw)
     index_raw = json_bytes(index)
     (root / "run-index.json").write_bytes(index_raw)
-    ready = json.loads((root / "complete.ready").read_text(encoding="utf-8"))
+    ready = json.loads((root / "complete.ready.json").read_text(encoding="utf-8"))
     ready["index_sha256"] = hashlib.sha256(index_raw).hexdigest()
-    (root / "complete.ready").write_bytes(json_bytes(ready))
+    (root / "complete.ready.json").write_bytes(json_bytes(ready))
 
 
 def test_incomplete_bundle_is_rejected_as_incomplete(tmp_path: Path) -> None:
     root = write_bundle(tmp_path / "profile", [profile_chunk()])
-    (root / "complete.ready").unlink()
+    (root / "complete.ready.json").unlink()
 
     with pytest.raises(ValueError, match="incomplete"):
         read_bundle(root, expected_schema="sao-runtime-profile-v1")
@@ -54,9 +54,9 @@ def test_chunk_corruption_is_rejected_before_payload_use(tmp_path: Path, tamper:
         index["chunks"][0]["sha256"] = "0" * 64
         index_path.write_bytes(json_bytes(index))
     if tamper != "bytes":
-        ready = json.loads((root / "complete.ready").read_text(encoding="utf-8"))
+        ready = json.loads((root / "complete.ready.json").read_text(encoding="utf-8"))
         ready["index_sha256"] = hashlib.sha256(index_path.read_bytes()).hexdigest()
-        (root / "complete.ready").write_bytes(json_bytes(ready))
+        (root / "complete.ready.json").write_bytes(json_bytes(ready))
 
     with pytest.raises(ValueError, match="(size|hash)"):
         read_bundle(root, expected_schema="sao-runtime-profile-v1")
@@ -75,9 +75,9 @@ def test_unknown_fields_are_rejected_in_every_closed_structure(tmp_path: Path, l
         index["arguments"] = ["--unsafe"]
         index_raw = json_bytes(index)
         (root / "run-index.json").write_bytes(index_raw)
-        ready = json.loads((root / "complete.ready").read_text(encoding="utf-8"))
+        ready = json.loads((root / "complete.ready.json").read_text(encoding="utf-8"))
         ready["index_sha256"] = hashlib.sha256(index_raw).hexdigest()
-        (root / "complete.ready").write_bytes(json_bytes(ready))
+        (root / "complete.ready.json").write_bytes(json_bytes(ready))
 
     with pytest.raises(ValueError, match="unknown fields"):
         read_bundle(root, expected_schema="sao-runtime-profile-v1")
@@ -186,9 +186,9 @@ def test_missing_and_repeated_chunk_filenames_are_rejected(tmp_path: Path) -> No
     index["total_bytes"] *= 2
     index_raw = json_bytes(index)
     (root / "run-index.json").write_bytes(index_raw)
-    ready = json.loads((root / "complete.ready").read_text(encoding="utf-8"))
+    ready = json.loads((root / "complete.ready.json").read_text(encoding="utf-8"))
     ready["index_sha256"] = hashlib.sha256(index_raw).hexdigest()
-    (root / "complete.ready").write_bytes(json_bytes(ready))
+    (root / "complete.ready.json").write_bytes(json_bytes(ready))
     with pytest.raises(ValueError, match="chunk filename"):
         read_bundle(root, expected_schema="sao-runtime-profile-v1")
 

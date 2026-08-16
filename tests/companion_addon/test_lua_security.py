@@ -49,9 +49,13 @@ def test_storage_uses_only_fixed_data_roots_and_atomic_completion() -> None:
             "lua/sourceaddonoptimizer/shared/constants.lua"
         ]
     assert "function SAO.Storage.WriteBundle(" in source
-    assert '".partial"' in source
-    assert '"complete.ready"' in source
-    assert source.index('"run-index.json"') < source.index('"complete.ready"')
+    assert '".partial.json"' in source
+    assert '"complete.ready.json"' in source
+    assert source.index('"run-index.json"') < source.index('"complete.ready.json"')
+    assert 'write_atomic(root .. "/" .. COMPLETE_FILE, completion_raw)' in source
+    assert 'file.Open(partial, "wb", "DATA")' in source
+    assert "handle:Flush()" in source
+    assert "file.Write(partial" not in source
     assert "file.Rename" in source
     assert "file.Delete" not in source
 
@@ -73,7 +77,13 @@ def test_every_net_receiver_rechecks_permission_through_one_helper() -> None:
         if "net.Receive" not in source:
             continue
         receiver_count = source.count("net.Receive")
-        assert source.count("SAO.Permissions.CanUse(") >= receiver_count, relative
+        assert source.count("SAO.Constants.Net.") >= receiver_count, relative
+        if "/server/" in relative:
+            assert source.count("SAO.Permissions.CanUse(") >= receiver_count, relative
+        else:
+            assert "function can_use_local_admin()" in source, relative
+            assert source.count("can_use_local_admin()") > receiver_count, relative
+            assert "LocalPlayer()" in source and ":IsSuperAdmin()" in source, relative
         assert "net.ReadString()" not in source, relative
 
 
@@ -90,6 +100,7 @@ def test_privileged_sessions_are_bounded_expiring_and_revalidated() -> None:
     assert "SAO.Permissions.CanUse(ply)" in permissions
     assert "expires_at" in permissions
     assert "SecurityEvents" in permissions
+    assert "ply == nil or ply == NULL" in permissions
 
 
 def test_storage_restricts_each_folder_to_its_declared_schema() -> None:

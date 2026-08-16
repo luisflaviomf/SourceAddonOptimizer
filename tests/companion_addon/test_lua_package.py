@@ -22,8 +22,11 @@ EXPECTED_FILES = {
     "lua/sourceaddonoptimizer/shared/contract.lua",
     "lua/sourceaddonoptimizer/shared/validation.lua",
     "lua/sourceaddonoptimizer/server/permissions.lua",
+    "lua/sourceaddonoptimizer/server/profiler.lua",
+    "lua/sourceaddonoptimizer/server/error_collector.lua",
     "lua/sourceaddonoptimizer/server/storage.lua",
     "lua/sourceaddonoptimizer/server/result_writer.lua",
+    "lua/sourceaddonoptimizer/client/profiler.lua",
     "lua/sourceaddonoptimizer/client/result_writer.lua",
 }
 
@@ -72,8 +75,11 @@ def test_loader_sends_client_files_before_including_shared_and_realm_modules() -
         "sourceaddonoptimizer/shared/contract.lua",
         "sourceaddonoptimizer/shared/validation.lua",
         "sourceaddonoptimizer/server/permissions.lua",
+        "sourceaddonoptimizer/server/profiler.lua",
+        "sourceaddonoptimizer/server/error_collector.lua",
         "sourceaddonoptimizer/server/storage.lua",
         "sourceaddonoptimizer/server/result_writer.lua",
+        "sourceaddonoptimizer/client/profiler.lua",
         "sourceaddonoptimizer/client/result_writer.lua",
     ):
         assert relative in loader

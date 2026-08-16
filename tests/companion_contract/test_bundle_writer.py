@@ -56,7 +56,7 @@ def test_write_bundle_finishes_atomically_and_round_trips(tmp_path: Path) -> Non
     assert written.run_id == RUN_ID
     assert sorted(path.name for path in root.iterdir()) == [
         "chunk-0001.json",
-        "complete.ready",
+        "complete.ready.json",
         "run-index.json",
     ]
     assert not tuple(tmp_path.glob("*.partial"))

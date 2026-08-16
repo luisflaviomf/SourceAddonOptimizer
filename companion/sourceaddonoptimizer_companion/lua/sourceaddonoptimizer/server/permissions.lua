@@ -4,7 +4,7 @@ local sessions = {}
 SAO.Permissions.SecurityEvents = SAO.Permissions.SecurityEvents or {}
 
 local function session_key(ply)
-    if ply == nil then return "server-console" end
+    if ply == nil or ply == NULL then return "server-console" end
 
     return ply
 end
@@ -31,7 +31,7 @@ local function new_session_id(ply)
 end
 
 function SAO.Permissions.CanUse(ply)
-    if ply == nil then return true end
+    if ply == nil or ply == NULL then return true end
     if not IsValid(ply) or not ply:IsPlayer() then return false end
     if game.SinglePlayer() and ply:IsListenServerHost() then return true end
 
@@ -40,7 +40,7 @@ end
 
 function SAO.Permissions.CheckRateLimit(ply, action, interval)
     if not SAO.Permissions.CanUse(ply) or not isstring(action) or not isnumber(interval) or interval <= 0 then return false end
-    if ply == nil then return true end
+    if ply == nil or ply == NULL then return true end
     local identity = ply:SteamID64()
     local key = identity .. ":" .. action
     local now = SysTime()
@@ -49,6 +49,10 @@ function SAO.Permissions.CheckRateLimit(ply, action, interval)
     rate_limits[key] = now + interval
 
     return true
+end
+
+function SAO.Permissions.RecordSecurityEvent(action, detail)
+    record_rejection(action, detail)
 end
 
 function SAO.Permissions.OpenSession(ply)

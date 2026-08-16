@@ -1,6 +1,6 @@
 SAO.Storage = SAO.Storage or {}
 local INDEX_FILE = "run-index.json"
-local COMPLETE_FILE = "complete.ready"
+local COMPLETE_FILE = "complete.ready.json"
 local allowed_schemas_by_kind = {
     profiles = { ["sao-runtime-profile-v1"] = true },
     validation_inbox = { ["sao-validation-plan-v1"] = true },
@@ -26,9 +26,14 @@ local function run_root(kind, run_id)
 end
 
 local function write_atomic(path, raw)
-    local partial = path .. ".partial"
-    file.Write(partial, raw)
-    file.Rename(partial, path)
+    local partial = path .. ".partial.json"
+    local handle = file.Open(partial, "wb", "DATA")
+    if not handle then return false end
+    handle:Write(raw)
+    handle:Flush()
+    handle:Close()
+    if file.Size(partial, "DATA") ~= #raw then return false end
+    if not file.Rename(partial, path) then return false end
 
     return file.Exists(path, "DATA")
 end
@@ -111,7 +116,7 @@ function SAO.Storage.WriteBundle(kind, schema, run_id, created_utc, producer, en
     if not completion_valid then return false, completion_reason end
     local completion_raw, completion_encode_reason = SAO.Contract.EncodeJSON(completion)
     if not completion_raw or #completion_raw > SAO.Constants.MAX_COMPLETION_BYTES then return false, completion_encode_reason or "completion marker exceeds byte limit" end
-    if not write_atomic(root .. "/" .. "complete.ready", completion_raw) then return false, "completion marker write failed" end
+    if not write_atomic(root .. "/" .. COMPLETE_FILE, completion_raw) then return false, "completion marker write failed" end
 
     return true, root
 end

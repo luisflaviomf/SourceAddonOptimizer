@@ -406,13 +406,13 @@ Each chunk is at most 2 MB, has a bounded depth/key count, declares its sequence
 
 Writers use this protocol:
 
-1. Write a `.partial` file.
+1. Write a temporary file ending in `.partial.json` inside Garry's Mod (desktop writers may use an equivalent private `.partial` name).
 2. Calculate SHA-256 of its bytes.
 3. Rename it to its final chunk name.
 4. Repeat for all chunks.
-5. Write and atomically rename `complete.ready` last.
+5. Write and atomically rename `complete.ready.json` last.
 
-Consumers ignore runs without `complete.ready`, validate sizes/hashes before parsing, and preserve rejected input for diagnosis without partially applying it.
+Consumers ignore runs without `complete.ready.json`, validate sizes/hashes before parsing, and preserve rejected input for diagnosis without partially applying it. The `.json` suffix is part of the protocol because Garry's Mod's DATA sandbox refuses files ending in `.partial` or `.ready`; this was verified in the local engine smoke test.
 
 SHA-256 here detects corruption and binds chunks to a run. It is not DRM or a claim of authenticity.
 
