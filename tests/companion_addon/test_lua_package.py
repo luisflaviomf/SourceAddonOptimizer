@@ -29,6 +29,10 @@ EXPECTED_FILES = {
     "lua/sourceaddonoptimizer/server/structural_validator.lua",
     "lua/sourceaddonoptimizer/client/profiler.lua",
     "lua/sourceaddonoptimizer/client/result_writer.lua",
+    "lua/sourceaddonoptimizer/client/dashboard.lua",
+    "lua/sourceaddonoptimizer/client/model_gallery.lua",
+    "lua/sourceaddonoptimizer/client/asset_validator.lua",
+    "lua/sourceaddonoptimizer/client/screenshot_capture.lua",
 }
 
 
@@ -83,6 +87,10 @@ def test_loader_sends_client_files_before_including_shared_and_realm_modules() -
         "sourceaddonoptimizer/server/structural_validator.lua",
         "sourceaddonoptimizer/client/profiler.lua",
         "sourceaddonoptimizer/client/result_writer.lua",
+        "sourceaddonoptimizer/client/dashboard.lua",
+        "sourceaddonoptimizer/client/model_gallery.lua",
+        "sourceaddonoptimizer/client/asset_validator.lua",
+        "sourceaddonoptimizer/client/screenshot_capture.lua",
     ):
         assert relative in loader
 

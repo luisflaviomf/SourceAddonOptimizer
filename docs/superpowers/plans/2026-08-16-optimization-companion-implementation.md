@@ -331,15 +331,15 @@ effective = risk + (1.0 - risk) * 0.35 * runtime_importance
 - Modify: `companion/sourceaddonoptimizer_companion/lua/sourceaddonoptimizer_loader.lua`
 - Create: `tests/companion_addon/test_visual_gallery_contract.py`
 
-- [ ] Add failing tests for the `sao_companion` console command, Spawn Menu Utilities registration, panels `Overview/Profile/Validate/Results/Help`, authority checks, queue caps, four fixed views, one retry, cancellation, resolution-independent sizing, and text/icon status in addition to color.
-- [ ] Implement a `DModelPanel`-based controlled renderer with neutral background, fixed ambient/directional lighting, bounding-box camera fitting, and canonical front/side/rear/isometric camera transforms. Apply only plan-declared skin/bodygroup/submaterial state.
-- [ ] Capture only during a render-safe hook after the panel has painted, with a fixed crop and PNG output beneath `data/sourceaddonoptimizer/screenshots/<run-id>/`. Never accept a path or filename from the plan beyond validated test/run IDs.
-- [ ] Enforce 250 models, 1,000 screenshots, four ordinary views, one bounded close-up for a suspected failure, and one capture retry. Save queue progress after every model and resume only when run ID plus plan hash match.
-- [ ] On capture failure after retry, emit `WARNING`; on disconnect/map change/user cancel, emit `INCOMPLETE`. Never transfer screenshot bytes through `net`.
-- [ ] Write `sao-visual-result-v1` containing screenshot relative path/hash/size, camera/state metadata, per-test status, timing, retries, and truncations. Keep screenshots outside JSON chunks.
-- [ ] Run Lua lint and the visual contract tests; expected result: pass.
+- [x] Add failing tests for the `sao_companion` console command, Spawn Menu Utilities registration, panels `Overview/Profile/Validate/Results/Help`, authority checks, queue caps, four fixed views, one retry, cancellation, resolution-independent sizing, and text/icon status in addition to color.
+- [x] Implement a `DModelPanel`-based controlled renderer with neutral background, fixed ambient/directional lighting, bounding-box camera fitting, and canonical front/side/rear/isometric camera transforms. Apply only plan-declared skin/bodygroup/submaterial state.
+- [x] Capture only during a render-safe hook after the panel has painted, with a fixed crop and PNG output beneath `data/sourceaddonoptimizer/screenshots/<run-id>/`. Never accept a path or filename from the plan beyond validated test/run IDs.
+- [x] Enforce 250 models, 1,000 screenshots, four ordinary views, one bounded close-up for a suspected failure, and one capture retry. Save queue progress after every model and resume only when run ID plus plan hash match.
+- [x] On capture failure after retry, emit `WARNING`; on disconnect/map change/user cancel, emit `INCOMPLETE`. Never transfer screenshot bytes through `net`.
+- [x] Write `sao-visual-result-v1` containing screenshot relative path/hash/size, camera/state metadata, per-test status, timing, retries, and truncations. Keep screenshots outside JSON chunks.
+- [x] Run Lua lint and the visual contract tests; expected result: pass.
 - [ ] Perform a local screenshot smoke test at 1280x720, 1920x1080, and 150% Windows scaling. Record evidence paths and UI defects in `docs/companion/testing/gallery-smoke.md`.
-- [ ] Commit: `feat(companion): capture bounded visual validation evidence`.
+- [x] Commit: `feat(companion): capture bounded visual validation evidence`.
 
 ## Task 13: Import and merge structural/visual results in WPF
 

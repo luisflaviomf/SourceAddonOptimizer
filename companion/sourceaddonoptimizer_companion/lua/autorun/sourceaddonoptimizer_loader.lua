@@ -16,7 +16,7 @@ end
 
 local include_server = {"sourceaddonoptimizer/server/permissions.lua", "sourceaddonoptimizer/server/storage.lua", "sourceaddonoptimizer/server/profiler.lua", "sourceaddonoptimizer/server/error_collector.lua", "sourceaddonoptimizer/server/result_writer.lua", "sourceaddonoptimizer/server/structural_validator.lua"}
 
-local include_client = {"sourceaddonoptimizer/client/profiler.lua", "sourceaddonoptimizer/client/result_writer.lua"}
+local include_client = {"sourceaddonoptimizer/client/profiler.lua", "sourceaddonoptimizer/client/result_writer.lua", "sourceaddonoptimizer/client/screenshot_capture.lua", "sourceaddonoptimizer/client/model_gallery.lua", "sourceaddonoptimizer/client/asset_validator.lua", "sourceaddonoptimizer/client/dashboard.lua"}
 
 if SERVER then
     for _, path in ipairs(include_client) do

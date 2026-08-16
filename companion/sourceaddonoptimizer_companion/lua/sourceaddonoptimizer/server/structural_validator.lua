@@ -235,7 +235,7 @@ local function latest_progress(run_id, plan_sha256)
             local raw = file.Read(root .. "/" .. filename, "DATA")
             local saved = raw and SAO.Contract.DecodeJSON(raw, SAO.Constants.MAX_BUNDLE_BYTES) or nil
             local closed = saved and SAO.Contract.ValidateClosedKeys(saved, progress_fields) or false
-            if closed and saved.schema == "sao-structural-progress-v1" and saved.run_id == run_id and saved.plan_sha256 == plan_sha256 and isnumber(saved.cursor) and saved.cursor == math.floor(saved.cursor) and saved.cursor >= 1 and istable(saved.resources) and #saved.resources <= SAO.Constants.MAX_VALIDATION_TESTS then
+            if closed and saved.schema == "sao-structural-progress-v1" and saved.run_id == run_id and saved.plan_sha256 == plan_sha256 and isnumber(saved.cursor) and saved.cursor == math.floor(saved.cursor) and saved.cursor >= 1 and saved.cursor <= SAO.Constants.MAX_VALIDATION_TESTS + 1 and isnumber(saved.completed_tests) and saved.completed_tests == math.floor(saved.completed_tests) and saved.completed_tests >= 0 and saved.completed_tests <= SAO.Constants.MAX_VALIDATION_TESTS and isnumber(saved.save_serial) and saved.save_serial == math.floor(saved.save_serial) and saved.save_serial >= 0 and saved.save_serial <= SAO.Constants.MAX_VALIDATION_PROGRESS_FILES and istable(saved.resources) and #saved.resources <= SAO.Constants.MAX_VALIDATION_TESTS and table.Count(saved.resources) == #saved.resources then
                 local valid = true
                 for _, value in ipairs(saved.resources) do
                     if not validate_saved_resource(value) then valid = false break end
@@ -340,6 +340,7 @@ function SAO.StructuralValidator.Start(ply, run_id)
     local plan, reason = SAO.Validation.ReadPlan(run_id)
     if not plan then return false, reason end
     local saved = latest_progress(run_id, plan.plan_sha256)
+    if saved and saved.cursor > #plan.tests + 1 then saved = nil end
     state = {
         active = true,
         owner = ply,
@@ -360,8 +361,12 @@ end
 
 function SAO.StructuralValidator.Cancel(reason)
     if not state.active then return false, "no structural validation is active" end
+    local interrupted_test = state.tests[state.cursor]
     save_progress(reason or "cancelled")
     cleanup_all_entities()
+    if interrupted_test and #state.resources < SAO.Constants.MAX_VALIDATION_TESTS then
+        state.resources[#state.resources + 1] = resource(interrupted_test, "INCOMPLETE", reason or "structural validation interrupted", {})
+    end
 
     return finish(true)
 end
