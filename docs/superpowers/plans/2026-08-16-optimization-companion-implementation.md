@@ -293,14 +293,14 @@ effective = risk + (1.0 - risk) * 0.35 * runtime_importance
 - Modify: `tests/wpf_companion_contract/Program.cs`
 - Modify: `tests/maximum_optimizer/test_pipeline_reporting.py`
 
-- [ ] Add failing tests that build a plan from a synthetic optimized output/report and require virtual paths only; required `.mdl`, `.vvd`, `.dx90.vtx`; `.phy` only when expected; VMT/VTF dependencies; default and observed skin/bodygroup states; bounded risk-driven views; expected sizes; and explicit DX80 exclusion metadata.
-- [ ] Add rejection tests ensuring no field can contain an absolute path, executable, command, Lua source, URL, arguments, unknown test kind, or more than 250 models/1,000 screenshots/four ordinary views/one retry.
-- [ ] Extend the Maximum report only as needed to expose model virtual path, expected PHY, changed models, risk/material details, and selected states. Keep local source/work paths out of the exchange plan.
-- [ ] Implement plan priority in this order: structural failures, observed resources, curved/transparent regions, large geometry reduction, large texture reduction, then remaining assets. Select one isometric view for low risk, front plus isometric for medium, and front/side/rear/isometric for high or repeatedly observed.
-- [ ] Write `sao-validation-plan-v1` through the same chunk/index/completion protocol into a selected local `garrysmod/data/sourceaddonoptimizer/validation_inbox` or an export folder for manual remote transfer.
-- [ ] Bind Generate/Copy/Open actions to the Companion tab and show plan hash/run ID/caps/truncations. Never automatically copy to or control a remote server.
-- [ ] Run the C# and Python focused tests; expected result: pass with deterministic plan bytes for deterministic fixture input.
-- [ ] Commit: `feat(companion): emit bounded validation plans`.
+- [x] Add failing tests that build a plan from a synthetic optimized output/report and require virtual paths only; required `.mdl`, `.vvd`, `.dx90.vtx`; `.phy` only when expected; VMT/VTF dependencies; default and observed skin/bodygroup states; bounded risk-driven views; expected sizes; and explicit DX80 exclusion metadata.
+- [x] Add rejection tests ensuring no field can contain an absolute path, executable, command, Lua source, URL, arguments, unknown test kind, or more than 250 models/1,000 screenshots/four ordinary views/one retry.
+- [x] Extend the Maximum report only as needed to expose model virtual path, expected PHY, changed models, risk/material details, and selected states. Keep local source/work paths out of the exchange plan.
+- [x] Implement plan priority in this order: structural failures, observed resources, curved/transparent regions, large geometry reduction, large texture reduction, then remaining assets. Select one isometric view for low risk, front plus isometric for medium, and front/side/rear/isometric for high or repeatedly observed.
+- [x] Write `sao-validation-plan-v1` through the same chunk/index/completion protocol into a selected local `garrysmod/data/sourceaddonoptimizer/validation_inbox` or an export folder for manual remote transfer.
+- [x] Bind Generate/Copy/Open actions to the Companion tab and show plan hash/run ID/caps/truncations. Never automatically copy to or control a remote server.
+- [x] Run the C# and Python focused tests; expected result: pass with deterministic plan bytes for deterministic fixture input.
+- [x] Commit: `feat(companion): emit bounded validation plans`.
 
 ## Task 11: Implement in-game structural validation and resumable status
 

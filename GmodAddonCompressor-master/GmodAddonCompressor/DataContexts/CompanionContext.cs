@@ -21,6 +21,7 @@ namespace GmodAddonCompressor.DataContexts
         private int _progressValue;
         private CompanionProfileImportResult? _importedProfile;
         private bool _optimizerIsMaximum;
+        private bool _hasOptimizationResult;
 
         public string GarrysModRoot
         {
@@ -100,7 +101,7 @@ namespace GmodAddonCompressor.DataContexts
         public bool CanCancel => IsBusy;
         public bool CanOpenDataFolder => !IsBusy && !string.IsNullOrWhiteSpace(GarrysModRoot);
         public bool CanImportProfile => !IsBusy;
-        public bool CanGeneratePlan => !IsBusy && !string.IsNullOrWhiteSpace(LastProfilePath);
+        public bool CanGeneratePlan => !IsBusy && _hasOptimizationResult;
         public bool CanImportResults => !IsBusy;
 
         public void ApplyInstallStatus(CompanionInstallStatus status)
@@ -171,6 +172,15 @@ namespace GmodAddonCompressor.DataContexts
                 ? "No runtime profile imported. Models and Pipeline are unchanged."
                 : "The selected addon changed. Revalidating the imported profile before Maximum v2 can use it.";
             NotifyProfileProperties();
+            SetOptimizationResultAvailable(false);
+        }
+
+        public void SetOptimizationResultAvailable(bool available)
+        {
+            if (_hasOptimizationResult == available)
+                return;
+            _hasOptimizationResult = available;
+            OnPropertyChanged(nameof(CanGeneratePlan));
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

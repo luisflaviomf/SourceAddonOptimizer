@@ -2297,6 +2297,8 @@ namespace GmodAddonCompressor
             _modelsBatchAddonTotal = 0;
             _modelsBatchAddonName = string.Empty;
             _lastMaximumRuntimeSummaryText = string.Empty;
+            _companionContext.SetOptimizationResultAvailable(false);
+            ClearCompanionValidationPlanResult();
             SaveSettings();
             _modelsWorkDir = ToolPaths.GetWorkDir(addonDirectoryPath, _context.OptimizerSuffix);
             Button_OpenModelsOutput.IsEnabled = false;
@@ -2349,6 +2351,7 @@ namespace GmodAddonCompressor
                 await UpdateMaximumRuntimeSummaryAsync(
                     _modelsWorkDir,
                     runtimeProfileSnapshot != null,
+                    exitCode == 0,
                     CancellationToken.None
                 );
             }
@@ -2445,6 +2448,8 @@ namespace GmodAddonCompressor
             _modelsBatchAddonTotal = 0;
             _modelsBatchAddonName = string.Empty;
             _lastMaximumRuntimeSummaryText = string.Empty;
+            _companionContext.SetOptimizationResultAvailable(false);
+            ClearCompanionValidationPlanResult();
             _modelsWorkDir = ToolPaths.GetWorkDir(addonDirectoryPath, _context.OptimizerSuffix);
             _context.PipelineSummaryText = string.Empty;
             _context.PipelineSizeReportText = string.Empty;
@@ -2525,6 +2530,7 @@ namespace GmodAddonCompressor
                     await UpdateMaximumRuntimeSummaryAsync(
                         _modelsWorkDir,
                         runtimeProfileSnapshot != null,
+                        exitCode == 0,
                         token
                     );
                 }

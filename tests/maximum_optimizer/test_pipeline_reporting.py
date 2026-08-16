@@ -35,7 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 PROFILE = load_profile(REPO_ROOT / "maximum_optimizer" / "profiles" / "maximum-adaptive-v2.json")
 OCCURRENCE = QcOccurrence(
-    PurePosixPath("vehicle.qc"), "$body", 1, PurePosixPath("vehicle.smd")
+    PurePosixPath("vehicle.qc"), "$body", 2, PurePosixPath("vehicle.smd")
 )
 
 
@@ -166,8 +166,12 @@ class AdaptivePipelineTests(unittest.TestCase):
         for path in (addon / "models", addon / "materials", original, normal, final_models):
             path.mkdir(parents=True, exist_ok=True)
         (addon / "models" / "vehicle.mdl").write_bytes(b"o" * 100)
+        (addon / "models" / "vehicle.phy").write_bytes(b"p" * 24)
         (addon / "models" / "vehicle.dx80.vtx").write_bytes(b"8" * 40)
         (final_models / "vehicle.mdl").write_bytes(b"n" * 50)
+        (final_models / "vehicle.vvd").write_bytes(b"v" * 30)
+        (final_models / "vehicle.dx90.vtx").write_bytes(b"9" * 20)
+        (final_models / "vehicle.phy").write_bytes(b"p" * 24)
         for material in ("paint", "glass"):
             (addon / "materials" / f"{material}.vmt").write_text(
                 '"VertexLitGeneric"\n{\n  "$basetexture" "cars/test"\n}\n',
@@ -175,7 +179,7 @@ class AdaptivePipelineTests(unittest.TestCase):
             )
         shutil.copy2(FIXTURES / "two_components.smd", original / "vehicle.smd")
         shutil.copy2(FIXTURES / "two_components_OPT.smd", normal / "vehicle.smd")
-        qc = '$body "body" "vehicle.smd"\n'
+        qc = '$modelname "models/vehicle.mdl"\n$body "body" "vehicle.smd"\n'
         (original / "vehicle.qc").write_text(qc, encoding="utf-8")
         (normal / "vehicle.qc").write_text(qc, encoding="utf-8")
 
@@ -242,7 +246,11 @@ class AdaptivePipelineTests(unittest.TestCase):
             options = replace(self._fixture_options(root), validate_candidate=None)
 
             report = run_maximum_adaptive(options)
-            paint = next(item for item in report.region_details if item.material == "paint")
+            paint = next(
+                item
+                for item in report.region_details
+                if item.material == "paint" and "low-risk classifier" in item.reason
+            )
 
         self.assertEqual(paint.representation, "normal")
         self.assertEqual(paint.simplifier_evaluations, 0)
@@ -380,6 +388,29 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertEqual(payload["sizes"]["saved_comparable"], report.sizes.saved_comparable)
         self.assertEqual(payload["profile"]["sha256"], PROFILE.sha256)
         self.assertEqual(temporary_reports, ())
+
+    def test_report_exposes_only_virtual_model_validation_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            options = self._fixture_options(root)
+            report = run_maximum_adaptive(options)
+            payload = json.loads(options.report_path.read_text(encoding="utf-8"))
+            encoded = options.report_path.read_text(encoding="utf-8")
+
+        self.assertEqual(len(report.model_details), 1)
+        model = payload["model_details"][0]
+        self.assertEqual(model["model_path"], "models/vehicle.mdl")
+        self.assertTrue(model["expected_phy"])
+        self.assertTrue(model["changed"])
+        self.assertEqual(model["expected_bytes"], 124)
+        self.assertEqual(model["skins"], [0])
+        self.assertEqual(model["bodygroups"], [])
+        self.assertEqual(
+            model["materials"],
+            ["materials/glass.vmt", "materials/paint.vmt"],
+        )
+        self.assertGreaterEqual(model["maximum_risk"], 0.0)
+        self.assertNotIn(str(root), encoded)
 
     def test_failed_render_after_lighter_recovery_restores_only_that_region(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -75,6 +75,31 @@ class RegionReport:
 
 
 @dataclass(frozen=True)
+class ModelStateReport:
+    name: str
+    value: int
+
+
+@dataclass(frozen=True)
+class ModelValidationReport:
+    model_path: str
+    expected_phy: bool
+    changed: bool
+    structural_failure: bool
+    expected_bytes: int
+    original_bytes: int
+    original_triangles: int
+    final_triangles: int
+    geometry_reduction: float
+    maximum_risk: float
+    maximum_runtime_importance: float
+    visual_sensitive: bool
+    materials: tuple[str, ...]
+    skins: tuple[int, ...]
+    bodygroups: tuple[ModelStateReport, ...]
+
+
+@dataclass(frozen=True)
 class RuntimeRegionReport:
     key: str
     geometric_risk: float
@@ -112,6 +137,7 @@ class MaximumRunReport:
     final_triangles: int
     stages: tuple[StageTiming, ...]
     region_details: tuple[RegionReport, ...]
+    model_details: tuple[ModelValidationReport, ...]
     failures: tuple[str, ...]
     profile_sha256: str
     profile_version: str

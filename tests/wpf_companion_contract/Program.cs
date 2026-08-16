@@ -369,6 +369,10 @@ try
 
     var context = new CompanionContext();
     Assert(!context.UseWithMaximumV2, "Maximum profile use must start disabled.");
+    Assert(!context.CanGeneratePlan, "Validation plan generation must start unavailable without an optimization result.");
+    context.SetOptimizationResultAvailable(true);
+    Assert(context.CanGeneratePlan, "A verified optimization result did not enable validation plan generation.");
+    context.SetOptimizationResultAvailable(false);
     context.UseWithMaximumV2 = true;
     context.ResetImportedProfile("C:/profiles/example/run-index.json");
     Assert(!context.UseWithMaximumV2, "Import/reset must disable Maximum profile use.");
@@ -594,6 +598,123 @@ try
     Assert(appliedSummary.ScheduledValidations == 1 && appliedSummary.RegionalRecoveries == 1, "Runtime validation/recovery counts were not presented.");
     Assert(Math.Abs(appliedSummary.MaximumProtectionIncrease - 0.14) < 1e-9, "Geometric-to-effective protection was calculated incorrectly.");
     Assert(appliedSummary.DisplayText.Contains("applied", StringComparison.OrdinalIgnoreCase), "Applied evidence summary is unclear.");
+
+    string optimizedAddon = Path.Combine(testRoot, "optimized-addon");
+    string optimizedModel = Path.Combine(optimizedAddon, "models", "lvs", "example.mdl");
+    string optimizedMaterial = Path.Combine(optimizedAddon, "materials", "models", "lvs", "tire.vmt");
+    Directory.CreateDirectory(Path.GetDirectoryName(optimizedModel)!);
+    Directory.CreateDirectory(Path.GetDirectoryName(optimizedMaterial)!);
+    File.WriteAllBytes(optimizedModel, new byte[100]);
+    File.WriteAllBytes(Path.ChangeExtension(optimizedModel, ".vvd"), new byte[60]);
+    File.WriteAllBytes(Path.ChangeExtension(optimizedModel, ".dx90.vtx"), new byte[40]);
+    File.WriteAllBytes(Path.ChangeExtension(optimizedModel, ".phy"), new byte[20]);
+    File.WriteAllText(optimizedMaterial, "\"VertexLitGeneric\" { \"$basetexture\" \"models/lvs/tire_d\" \"$bumpmap\" \"models/lvs/tire_n\" }");
+    File.WriteAllBytes(Path.Combine(optimizedAddon, "materials", "models", "lvs", "tire_d.vtf"), new byte[80]);
+    File.WriteAllBytes(Path.Combine(optimizedAddon, "materials", "models", "lvs", "tire_n.vtf"), new byte[70]);
+    string planReport = Path.Combine(testRoot, "plan-report.json");
+    JsonObject planReportJson = new()
+    {
+        ["schema"] = 1,
+        ["model_details"] = new JsonArray(new JsonObject
+        {
+            ["model_path"] = "models/lvs/example.mdl",
+            ["expected_phy"] = true,
+            ["changed"] = true,
+            ["structural_failure"] = false,
+            ["expected_bytes"] = 220,
+            ["original_bytes"] = 440,
+            ["original_triangles"] = 1000,
+            ["final_triangles"] = 400,
+            ["geometry_reduction"] = 0.6,
+            ["maximum_risk"] = 0.8,
+            ["maximum_runtime_importance"] = 0.75,
+            ["visual_sensitive"] = true,
+            ["materials"] = new JsonArray("materials/models/lvs/tire.vmt"),
+            ["skins"] = new JsonArray(0, 2),
+            ["bodygroups"] = new JsonArray(new JsonObject { ["name"] = "wheels", ["value"] = 0 }),
+        }),
+    };
+    File.WriteAllText(planReport, planReportJson.ToJsonString());
+    DateTimeOffset planNow = new(2026, 8, 16, 13, 0, 0, TimeSpan.Zero);
+    CompanionValidationPlanResult firstPlan = CompanionValidationPlanService.Generate(
+        optimizedAddon, planReport, Path.Combine(testRoot, "plan-out-a"), planNow
+    );
+    CompanionValidationPlanResult secondPlan = CompanionValidationPlanService.Generate(
+        optimizedAddon, planReport, Path.Combine(testRoot, "plan-out-b"), planNow
+    );
+    Assert(firstPlan.RunId == secondPlan.RunId && firstPlan.IndexSha256 == secondPlan.IndexSha256, "Deterministic validation input produced different plan identities.");
+    string[] firstPlanFiles = Directory.GetFiles(firstPlan.BundleRoot).Select(Path.GetFileName).OrderBy(value => value, StringComparer.Ordinal).ToArray()!;
+    string[] secondPlanFiles = Directory.GetFiles(secondPlan.BundleRoot).Select(Path.GetFileName).OrderBy(value => value, StringComparer.Ordinal).ToArray()!;
+    Assert(firstPlanFiles.SequenceEqual(secondPlanFiles), "Deterministic validation plans emitted different files.");
+    Assert(firstPlanFiles.All(file => File.ReadAllBytes(Path.Combine(firstPlan.BundleRoot, file!)).SequenceEqual(File.ReadAllBytes(Path.Combine(secondPlan.BundleRoot, file!)))), "Deterministic validation plans emitted different bytes.");
+    string copiedPlan = CompanionValidationPlanService.CopyBundle(firstPlan.BundleRoot, Path.Combine(testRoot, "plan-copy"));
+    Assert(firstPlanFiles.All(file => File.ReadAllBytes(Path.Combine(firstPlan.BundleRoot, file!)).SequenceEqual(File.ReadAllBytes(Path.Combine(copiedPlan, file!)))), "Verified plan copy changed declared bytes.");
+    Assert(firstPlan.ModelCount == 1 && firstPlan.ScreenshotCount == 4, "Validation plan model/screenshot counts are incorrect.");
+    CompanionValidationTest structureTest = firstPlan.Tests.Single(test => test.Kind == "model_structure");
+    Assert(structureTest.Path == "models/lvs/example.mdl", "Validation plan did not use a virtual model path.");
+    Assert(structureTest.ExpectedBytes == 220, "Validation plan expected family bytes are incorrect.");
+    Assert(structureTest.RequiredFiles.SequenceEqual(new[] { "models/lvs/example.dx90.vtx", "models/lvs/example.mdl", "models/lvs/example.phy", "models/lvs/example.vvd" }), "Required DX90/model/PHY/VVD family is incorrect.");
+    Assert(!structureTest.RequiredFiles.Any(path => path.EndsWith(".dx80.vtx", StringComparison.Ordinal)), "DX80 leaked into validation requirements.");
+    CompanionValidationTest stateTest = firstPlan.Tests.Single(test => test.Kind == "model_state");
+    Assert(stateTest.Skins.SequenceEqual(new[] { 0, 2 }) && stateTest.Bodygroups.Single().Name == "wheels", "Observed/default states were not preserved.");
+    CompanionValidationTest renderTest = firstPlan.Tests.Single(test => test.Kind == "model_render");
+    Assert(renderTest.Views.SequenceEqual(new[] { "front", "side", "rear", "isometric" }), "High-risk/repeatedly-observed view policy is incorrect.");
+    Assert(CompanionValidationPlanService.SelectViewsForContract(0.20, 0.0).SequenceEqual(new[] { "isometric" }), "Low-risk view policy is incorrect.");
+    Assert(CompanionValidationPlanService.SelectViewsForContract(0.50, 0.0).SequenceEqual(new[] { "front", "isometric" }), "Medium-risk view policy is incorrect.");
+    Assert(CompanionValidationPlanService.SelectViewsForContract(0.80, 0.0).SequenceEqual(new[] { "front", "side", "rear", "isometric" }), "High-risk view policy is incorrect.");
+    Assert(CompanionValidationPlanService.SelectViewsForContract(0.20, 0.75).SequenceEqual(new[] { "front", "side", "rear", "isometric" }), "Repeated-observation view policy is incorrect.");
+    CompanionValidationTest materialTest = firstPlan.Tests.Single(test => test.Kind == "material_resolve");
+    Assert(materialTest.RequiredFiles.Contains("materials/models/lvs/tire_d.vtf") && materialTest.RequiredFiles.Contains("materials/models/lvs/tire_n.vtf"), "VMT texture dependencies are missing.");
+    Assert(firstPlan.Dx80Excluded && firstPlan.ScreenshotRetries == 1 && firstPlan.MaximumOrdinaryViews == 4, "Validation plan safety limits are incorrect.");
+    CompanionValidationPlanService.ValidateTestsForContract(firstPlan.Tests);
+    ExpectFailure(
+        () => CompanionValidationPlanService.ValidateTestsForContract(new[] { structureTest with { Path = @"C:\evil.mdl" } }),
+        "virtual"
+    );
+    ExpectFailure(
+        () => CompanionValidationPlanService.ValidateTestsForContract(new[] { structureTest with { Kind = "shell_command" } }),
+        "kind"
+    );
+    ExpectFailure(
+        () => CompanionValidationPlanService.ValidateTestsForContract(new[] { structureTest with { RequiredFiles = new[] { "lua/autorun/evil.lua" } } }),
+        "forbidden"
+    );
+    ExpectFailure(
+        () => CompanionValidationPlanService.ValidateTestsForContract(new[] { structureTest with { RequiredFiles = new[] { "https://evil.invalid/file.vtf" } } }),
+        "virtual"
+    );
+    ExpectFailure(
+        () => CompanionValidationPlanService.ValidateTestsForContract(new[] { structureTest with { RequiredFiles = new[] { "models/test/evil.exe" } } }),
+        "extension"
+    );
+    ExpectFailure(
+        () => CompanionValidationPlanService.ValidateTestsForContract(Enumerable.Range(0, 251).Select(index => structureTest with { Id = $"model-{index}", Path = $"models/test/model-{index}.mdl" }).ToArray()),
+        "250"
+    );
+    ExpectFailure(
+        () => CompanionValidationPlanService.ValidateTestsForContract(new[] { renderTest with { Views = new[] { "front", "side", "rear", "isometric", "closeup" } } }),
+        "views"
+    );
+    ExpectFailure(
+        () => CompanionValidationPlanService.ValidateTestsForContract(Enumerable.Range(0, 251).Select(index => renderTest with { Id = $"render-{index}", Views = new[] { "front", "side", "rear", "isometric" } }).ToArray()),
+        "1000"
+    );
+    JsonObject reportWithArguments = (JsonObject)CloneJson(planReportJson);
+    reportWithArguments["model_details"]![0]!["arguments"] = new JsonArray("-run");
+    string reportWithArgumentsPath = Path.Combine(testRoot, "plan-report-with-arguments.json");
+    File.WriteAllText(reportWithArgumentsPath, reportWithArguments.ToJsonString());
+    ExpectFailure(
+        () => CompanionValidationPlanService.Generate(optimizedAddon, reportWithArgumentsPath, Path.Combine(testRoot, "plan-arguments"), planNow),
+        "unknown"
+    );
+    JsonObject unchangedReport = (JsonObject)CloneJson(planReportJson);
+    unchangedReport["model_details"]![0]!["changed"] = false;
+    string unchangedReportPath = Path.Combine(testRoot, "plan-report-unchanged.json");
+    File.WriteAllText(unchangedReportPath, unchangedReport.ToJsonString());
+    ExpectFailure(
+        () => CompanionValidationPlanService.Generate(optimizedAddon, unchangedReportPath, Path.Combine(testRoot, "plan-unchanged"), planNow),
+        "no changed"
+    );
 
     string emptyAddon = Path.Combine(testRoot, "empty-addon");
     Directory.CreateDirectory(emptyAddon);

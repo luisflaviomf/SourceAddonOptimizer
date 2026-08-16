@@ -32,11 +32,14 @@ from .metrics import (
     validate_region,
 )
 from .qc_graph import QcOccurrence, scan_qc_occurrences
+from .qc_runtime import parse_qc_runtime_bindings
 from .regions import RegionPair, SmdRegion, build_region_graph, correspond_graphs
 from .rendering import RenderEvidence, RenderRequest, requires_targeted_render
 from .reporting import (
     ComparableSizeReport,
     MaximumRunReport,
+    ModelStateReport,
+    ModelValidationReport,
     RegionReport,
     RegionStatusCounts,
     RuntimeProfileReport,
@@ -221,6 +224,114 @@ def _source_triangle_total(root: Path) -> int:
         except (OSError, UnicodeError, ValueError):
             continue
     return total
+
+
+def _compiled_family_bytes(models_root: Path, model_path: str) -> int:
+    relative = PurePosixPath(model_path)
+    if not relative.parts or relative.parts[0] != "models" or relative.suffix != ".mdl":
+        return 0
+    stem = Path(models_root, *relative.parts[1:]).with_suffix("")
+    return sum(
+        path.stat().st_size
+        for path in stem.parent.glob(stem.name + ".*")
+        if path.is_file() and not path.name.casefold().endswith(".dx80.vtx")
+    )
+
+
+def _model_validation_details(
+    options: MaximumRunOptions,
+    occurrences: tuple[QcOccurrence, ...],
+    selected: list[_RegionState],
+    compiled_models_root: Path,
+    failures: list[str],
+) -> tuple[ModelValidationReport, ...]:
+    bindings = parse_qc_runtime_bindings(options.original_source_root).by_occurrence
+    states_by_source: dict[PurePosixPath, list[_RegionState]] = {}
+    for state in selected:
+        states_by_source.setdefault(state.source, []).append(state)
+    occurrences_by_model: dict[str, list[QcOccurrence]] = {}
+    for occurrence in occurrences:
+        binding = bindings.get(occurrence)
+        if binding is None or binding.model_path is None:
+            continue
+        occurrences_by_model.setdefault(binding.model_path, []).append(occurrence)
+
+    details: list[ModelValidationReport] = []
+    for model_path, model_occurrences in sorted(occurrences_by_model.items()):
+        state_by_key = {
+            state.key.value: state
+            for occurrence in model_occurrences
+            for state in states_by_source.get(occurrence.source_path, ())
+        }
+        model_states = list(state_by_key.values())
+        if not model_states:
+            continue
+        materials: set[str] = set()
+        visual_sensitive = False
+        for occurrence in model_occurrences:
+            for state in states_by_source.get(occurrence.source_path, ()):
+                semantics = resolve_material_semantics(
+                    state.material,
+                    options.addon_root,
+                    options.framework_resolver_root,
+                    occurrence.material_directories,
+                )
+                if semantics.resolver == "addon" and semantics.source_relative is not None:
+                    materials.add(semantics.source_relative)
+                visual_sensitive = visual_sensitive or semantics.requires_render
+        original_triangles = sum(state.original_triangles for state in model_states)
+        final_triangles = sum(state.selected_triangles for state in model_states)
+        geometry_reduction = (
+            0.0
+            if original_triangles <= 0
+            else max(0.0, min(1.0, 1.0 - final_triangles / original_triangles))
+        )
+        bodygroups: set[tuple[str, int]] = set()
+        skins = {0}
+        for occurrence in model_occurrences:
+            binding = bindings.get(occurrence)
+            if binding is not None and binding.bodygroup is not None:
+                bodygroups.add((binding.bodygroup[0], 0))
+        if options.runtime_evidence is not None:
+            skins.update(
+                skin
+                for (path, skin), _importance in options.runtime_evidence.skin_importance.items()
+                if path == model_path
+            )
+            bodygroups.update(
+                (name, value)
+                for (path, name, value), _importance in options.runtime_evidence.bodygroup_importance.items()
+                if path == model_path
+            )
+        model_relative = PurePosixPath(model_path)
+        original_model = options.addon_root / Path(*model_relative.parts)
+        failure_prefixes = (model_path + ":", "/".join(model_relative.parts[1:]) + ":")
+        structural_failure = any(
+            value.startswith(failure_prefixes)
+            or value in {"studiomdl_failed", "compile_failed_after_local_fallback"}
+            for value in failures
+        )
+        details.append(
+            ModelValidationReport(
+                model_path,
+                original_model.with_suffix(".phy").is_file(),
+                any(state.selected_triangles != state.original_triangles for state in model_states),
+                structural_failure,
+                _compiled_family_bytes(compiled_models_root, model_path),
+                _compiled_family_bytes(options.addon_root / "models", model_path),
+                original_triangles,
+                final_triangles,
+                geometry_reduction,
+                max((state.risk_score for state in model_states), default=0.0),
+                max((state.runtime_importance for state in model_states), default=0.0),
+                visual_sensitive
+                or any(state.targeted_render or state.risk_score >= 0.55 for state in model_states),
+                tuple(sorted(materials)),
+                tuple(sorted(skins)),
+                tuple(ModelStateReport(name, value) for name, value in sorted(bodygroups)),
+            )
+        )
+    return tuple(details)
 
 
 def _region_stats(key: RegionKey, template: SmdRegion, triangles: tuple[SmdTriangle, ...]) -> SmdRegion:
@@ -1219,6 +1330,13 @@ def _run_maximum_adaptive(options: MaximumRunOptions, spool_root: Path) -> Maxim
                 for item in runtime_states
             ),
         )
+    model_details = _model_validation_details(
+        options,
+        occurrences,
+        selected,
+        compiled.compiled_models_root,
+        failures,
+    )
     status = "failed" if failures else "optimized"
     report = MaximumRunReport(
         status,
@@ -1234,6 +1352,7 @@ def _run_maximum_adaptive(options: MaximumRunOptions, spool_root: Path) -> Maxim
         _source_triangle_total(compiled_source_root),
         tuple(timings),
         region_details,
+        model_details,
         tuple(dict.fromkeys(failures)),
         options.profile.sha256,
         options.profile.version,

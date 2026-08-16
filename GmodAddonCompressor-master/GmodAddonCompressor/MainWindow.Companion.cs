@@ -21,6 +21,7 @@ namespace GmodAddonCompressor
         private CancellationTokenSource? _companionCts;
         private string[] _companionProfileIndexes = Array.Empty<string>();
         private string _lastMaximumRuntimeSummaryText = string.Empty;
+        private string? _lastCompanionValidationPlanRoot;
 
         private void InitializeCompanion()
         {
@@ -37,8 +38,12 @@ namespace GmodAddonCompressor
             Button_CompanionOpenData.Click += Button_CompanionOpenData_Click;
             Button_CompanionImportProfile.Click += Button_CompanionImportProfile_Click;
             Button_CompanionGeneratePlan.Click += Button_CompanionGeneratePlan_Click;
+            Button_CompanionCopyPlan.Click += Button_CompanionCopyPlan_Click;
+            Button_CompanionOpenPlan.Click += Button_CompanionOpenPlan_Click;
             Button_CompanionImportResults.Click += Button_CompanionImportResults_Click;
             Button_CompanionCancel.Click += Button_CompanionCancel_Click;
+            Button_CompanionCopyPlan.IsEnabled = false;
+            Button_CompanionOpenPlan.IsEnabled = false;
             Closed += (_, _) =>
             {
                 _context.PropertyChanged -= MainContext_PropertyChangedForCompanion;
@@ -189,6 +194,7 @@ namespace GmodAddonCompressor
                 return;
 
             _companionContext.ClearForAddonChange();
+            ClearCompanionValidationPlanResult();
             string[] indexes = _companionProfileIndexes.ToArray();
             string addonRoot = _context.AddonDirectoryPath;
             if (indexes.Length > 0 && Directory.Exists(addonRoot))
@@ -318,6 +324,7 @@ namespace GmodAddonCompressor
         private async Task UpdateMaximumRuntimeSummaryAsync(
             string? workDir,
             bool runtimeProfileRequested,
+            bool optimizationSucceeded,
             CancellationToken cancellationToken)
         {
             _lastMaximumRuntimeSummaryText = string.Empty;
@@ -332,6 +339,11 @@ namespace GmodAddonCompressor
                 );
                 cancellationToken.ThrowIfCancellationRequested();
                 _lastMaximumRuntimeSummaryText = summary.DisplayText;
+                _companionContext.SetOptimizationResultAvailable(
+                    optimizationSucceeded
+                    && !string.IsNullOrWhiteSpace(_modelsOutputPath)
+                    && Directory.Exists(_modelsOutputPath)
+                );
                 _companionContext.ProfileSummaryText = summary.DisplayText;
                 _companionContext.OperationStatusText = summary.EvidenceApplied
                     ? "Maximum v2 completed with verified runtime evidence."
@@ -357,11 +369,151 @@ namespace GmodAddonCompressor
             }
         }
 
-        private void Button_CompanionGeneratePlan_Click(object sender, RoutedEventArgs e)
+        private async void Button_CompanionGeneratePlan_Click(object sender, RoutedEventArgs e)
         {
-            _companionContext.ValidationSummaryText =
-                "The profile is selected. Validation-plan generation becomes available after its contract and addon match are verified.";
-            _companionContext.OperationStatusText = "Waiting for a validated imported profile.";
+            if (!_companionContext.CanGeneratePlan)
+                return;
+            string? optimizedRoot = _modelsOutputPath;
+            string? workDir = _modelsWorkDir;
+            if (string.IsNullOrWhiteSpace(optimizedRoot)
+                || !Directory.Exists(optimizedRoot)
+                || string.IsNullOrWhiteSpace(workDir))
+            {
+                _companionContext.OperationStatusText = "Generate plan failed: no completed Maximum v2 output is available.";
+                return;
+            }
+            string reportPath = Path.Combine(workDir, "logs", "maximum_adaptive_report.json");
+            string? destinationParent = SelectValidationPlanDestination();
+            if (destinationParent == null)
+                return;
+
+            CancellationTokenSource cts = BeginCompanionOperation("Generating bounded validation plan...", 10);
+            try
+            {
+                string capturedOutput = Path.GetFullPath(optimizedRoot);
+                string capturedReport = Path.GetFullPath(reportPath);
+                string capturedDestination = Path.GetFullPath(destinationParent);
+                string capturedOriginal = Path.GetFullPath(_context.AddonDirectoryPath);
+                CompanionValidationPlanResult result = await Task.Run(
+                    () => CompanionValidationPlanService.Generate(
+                        capturedOutput,
+                        capturedReport,
+                        capturedDestination,
+                        DateTimeOffset.UtcNow,
+                        capturedOriginal
+                    ),
+                    cts.Token
+                );
+                cts.Token.ThrowIfCancellationRequested();
+                _lastCompanionValidationPlanRoot = result.BundleRoot;
+                Button_CompanionCopyPlan.IsEnabled = true;
+                Button_CompanionOpenPlan.IsEnabled = true;
+                _companionContext.ProgressValue = 100;
+                _companionContext.ValidationSummaryText =
+                    $"Plan ready: {result.ModelCount} models, {result.Tests.Count} tests, {result.ScreenshotCount} screenshots. "
+                    + $"Run {result.RunId:D}; SHA-256 {result.IndexSha256}. "
+                    + $"Caps {250} models / {1000} screenshots / {result.MaximumOrdinaryViews} views / {result.ScreenshotRetries} retry. "
+                    + $"Truncated: tests {result.TruncatedTests}, models {result.TruncatedModels}, screenshots {result.TruncatedScreenshots}. "
+                    + "DX80 is explicitly excluded.";
+                _companionContext.OperationStatusText = "Validation plan generated. Transfer remains a manual, local action.";
+            }
+            catch (OperationCanceledException)
+            {
+                _companionContext.OperationStatusText = "Validation plan generation cancelled.";
+            }
+            catch (Exception ex)
+            {
+                _companionContext.OperationStatusText = "Generate plan failed: " + ex.Message;
+            }
+            finally
+            {
+                EndCompanionOperation(cts);
+            }
+        }
+
+        private async void Button_CompanionCopyPlan_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(_lastCompanionValidationPlanRoot)
+                || !Directory.Exists(_lastCompanionValidationPlanRoot))
+                return;
+            var dialog = new VistaFolderBrowserDialog
+            {
+                Description = "Select the validation_inbox or export folder that will receive a verified copy.",
+                UseDescriptionForTitle = true,
+            };
+            if (!dialog.ShowDialog(this).GetValueOrDefault())
+                return;
+            CancellationTokenSource cts = BeginCompanionOperation("Copying and revalidating the plan...", 20);
+            try
+            {
+                string source = _lastCompanionValidationPlanRoot;
+                string destination = Path.GetFullPath(dialog.SelectedPath);
+                string copied = await Task.Run(
+                    () => CompanionValidationPlanService.CopyBundle(source, destination),
+                    cts.Token
+                );
+                cts.Token.ThrowIfCancellationRequested();
+                _companionContext.ProgressValue = 100;
+                _companionContext.OperationStatusText = "Verified plan copy created: " + copied;
+            }
+            catch (OperationCanceledException)
+            {
+                _companionContext.OperationStatusText = "Validation plan copy cancelled.";
+            }
+            catch (Exception ex)
+            {
+                _companionContext.OperationStatusText = "Copy plan failed: " + ex.Message;
+            }
+            finally
+            {
+                EndCompanionOperation(cts);
+            }
+        }
+
+        private void Button_CompanionOpenPlan_Click(object sender, RoutedEventArgs e) =>
+            OpenFolder(_lastCompanionValidationPlanRoot, "Companion plan");
+
+        private void ClearCompanionValidationPlanResult()
+        {
+            _lastCompanionValidationPlanRoot = null;
+            Button_CompanionCopyPlan.IsEnabled = false;
+            Button_CompanionOpenPlan.IsEnabled = false;
+        }
+
+        private string? SelectValidationPlanDestination()
+        {
+            string? gameRoot = CompanionPathPolicy.DetectGarrysModRoot(_companionContext.GarrysModRoot);
+            if (!string.IsNullOrWhiteSpace(gameRoot))
+            {
+                MessageBoxResult choice = MessageBox.Show(
+                    "Generate directly in this local Garry's Mod validation inbox?\n\n"
+                    + Path.Combine(gameRoot, "garrysmod", "data", "sourceaddonoptimizer", "validation_inbox")
+                    + "\n\nChoose No to select a manual export folder.",
+                    "Validation Plan",
+                    MessageBoxButton.YesNoCancel,
+                    MessageBoxImage.Question
+                );
+                if (choice == MessageBoxResult.Cancel)
+                    return null;
+                if (choice == MessageBoxResult.Yes)
+                {
+                    string inbox = Path.Combine(
+                        gameRoot,
+                        "garrysmod",
+                        "data",
+                        "sourceaddonoptimizer",
+                        "validation_inbox"
+                    );
+                    Directory.CreateDirectory(inbox);
+                    return inbox;
+                }
+            }
+            var dialog = new VistaFolderBrowserDialog
+            {
+                Description = "Select a local export folder for the validation plan.",
+                UseDescriptionForTitle = true,
+            };
+            return dialog.ShowDialog(this).GetValueOrDefault() ? dialog.SelectedPath : null;
         }
 
         private void Button_CompanionImportResults_Click(object sender, RoutedEventArgs e)

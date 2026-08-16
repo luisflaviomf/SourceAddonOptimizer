@@ -2819,6 +2819,14 @@
                                             Content="Import Results"
                                             Width="126"
                                             IsEnabled="{Binding CanImportResults}" />
+                                    <Button x:Name="Button_CompanionCopyPlan"
+                                            Margin="8,0,0,0"
+                                            Content="Copy Plan"
+                                            Width="104" />
+                                    <Button x:Name="Button_CompanionOpenPlan"
+                                            Margin="8,0,0,0"
+                                            Content="Open Plan"
+                                            Width="104" />
                                 </WrapPanel>
                             </Border>
                         </StackPanel>
