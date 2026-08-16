@@ -17,6 +17,9 @@ namespace GmodAddonCompressor.Systems.Optimizer
 
             AddValue(arguments, "--suffix", options.Suffix);
             AddValue(arguments, "--optimizer-mode", options.OptimizerMode);
+            bool maximumMode = string.Equals(options.OptimizerMode?.Trim(), "maximum", StringComparison.OrdinalIgnoreCase);
+            if (maximumMode)
+                AddValue(arguments, "--maximum-runtime-profile", options.MaximumRuntimeProfilePath);
             AddValue(arguments, "--blender", options.BlenderPath);
             AddValue(arguments, "--studiomdl", options.StudioMdlPath);
             AddNumber(arguments, "--ratio", options.Ratio);

@@ -14,6 +14,8 @@
     <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionContract.cs" Link="CompanionContract.cs" />
     <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionBundleReader.cs" Link="CompanionBundleReader.cs" />
     <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionProfileService.cs" Link="CompanionProfileService.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionRuntimeProfileSnapshotService.cs" Link="CompanionRuntimeProfileSnapshotService.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionMaximumReportReader.cs" Link="CompanionMaximumReportReader.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\companion_contract\fixtures\valid\sao-runtime-profile-v1.json" Link="fixtures\valid\sao-runtime-profile-v1.json" CopyToOutputDirectory="PreserveNewest" />

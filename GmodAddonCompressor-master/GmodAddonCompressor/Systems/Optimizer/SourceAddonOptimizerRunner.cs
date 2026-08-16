@@ -15,6 +15,7 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal string? StudioMdlPath { get; init; }
         internal string? Suffix { get; init; }
         internal string? OptimizerMode { get; init; }
+        internal string? MaximumRuntimeProfilePath { get; init; }
         internal double? Ratio { get; init; }
         internal double? Merge { get; init; }
         internal double? AutoSmooth { get; init; }

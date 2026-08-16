@@ -112,6 +112,63 @@ Assert(!arguments.Contains("--experimental-ground-policy"), "Maximum leaked the 
 Assert(!arguments.Contains("--experimental-round-parts-policy"), "Maximum leaked the experimental round-parts policy.");
 Assert(!arguments.Contains("--experimental-steer-turn-basis-fix"), "Maximum leaked the experimental steer policy.");
 
+string runtimeProfileWithSpaces = @"C:\work folder\runtime profile snapshot";
+var maximumProfileOptions = new SourceAddonOptimizerRunOptions
+{
+    AddonPath = @"C:\addon",
+    WorkDir = @"C:\work",
+    OptimizerMode = "maximum",
+    MaximumRuntimeProfilePath = runtimeProfileWithSpaces,
+    RestoreSkins = true,
+};
+var maximumProfileArguments = SourceAddonOptimizerCommandBuilder.BuildArguments(maximumProfileOptions);
+int runtimeProfileFlag = Array.IndexOf(maximumProfileArguments.ToArray(), "--maximum-runtime-profile");
+Assert(runtimeProfileFlag >= 0, "Maximum did not emit its explicitly selected runtime profile.");
+Assert(runtimeProfileFlag + 1 < maximumProfileArguments.Count, "Maximum runtime profile flag has no value.");
+Assert(maximumProfileArguments[runtimeProfileFlag + 1] == runtimeProfileWithSpaces, "A runtime profile path containing spaces was split or changed.");
+Assert(maximumProfileArguments.Count(value => value == runtimeProfileWithSpaces) == 1, "Maximum emitted the runtime profile path more than once.");
+
+foreach (string mode in new[] { "normal", "fidelity" })
+{
+    var nonMaximumProfileOptions = new SourceAddonOptimizerRunOptions
+    {
+        AddonPath = @"C:\addon",
+        WorkDir = @"C:\work",
+        OptimizerMode = mode,
+        MaximumRuntimeProfilePath = runtimeProfileWithSpaces,
+        RestoreSkins = true,
+    };
+    Assert(
+        !SourceAddonOptimizerCommandBuilder.BuildArguments(nonMaximumProfileOptions).Contains("--maximum-runtime-profile"),
+        $"{mode} leaked the Maximum runtime profile."
+    );
+}
+
+var uncheckedMaximumOptions = new SourceAddonOptimizerRunOptions
+{
+    AddonPath = @"C:\addon",
+    WorkDir = @"C:\work",
+    OptimizerMode = "maximum",
+    MaximumRuntimeProfilePath = null,
+    RestoreSkins = true,
+};
+Assert(
+    !SourceAddonOptimizerCommandBuilder.BuildArguments(uncheckedMaximumOptions).Contains("--maximum-runtime-profile"),
+    "Unchecked Maximum emitted a runtime profile."
+);
+var invalidMaximumOptions = new SourceAddonOptimizerRunOptions
+{
+    AddonPath = @"C:\addon",
+    WorkDir = @"C:\work",
+    OptimizerMode = "maximum",
+    MaximumRuntimeProfilePath = "   ",
+    RestoreSkins = true,
+};
+Assert(
+    !SourceAddonOptimizerCommandBuilder.BuildArguments(invalidMaximumOptions).Contains("--maximum-runtime-profile"),
+    "Maximum emitted an invalid runtime profile path."
+);
+
 var normalOptions = new SourceAddonOptimizerRunOptions
 {
     AddonPath = @"C:\addon",

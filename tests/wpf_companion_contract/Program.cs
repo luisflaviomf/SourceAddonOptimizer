@@ -528,6 +528,73 @@ try
     Assert(!merged.Profile.Models.ContainsKey("models/not-observed.mdl"), "Absence was represented as negative evidence.");
     Assert(merged.OriginText.Contains("2 profile", StringComparison.OrdinalIgnoreCase) && merged.AgeText.Length > 0, "Origin or age presentation is missing.");
 
+    string snapshotWork = Path.Combine(testRoot, "work with spaces");
+    CompanionRuntimeProfileSnapshot snapshot = CompanionRuntimeProfileSnapshotService.Create(
+        new[] { mergeAIndex, mergeBIndex },
+        selectedAddon,
+        snapshotWork,
+        now,
+        CancellationToken.None
+    );
+    Assert(snapshot.ImportResult.IsEligible, "Run-start snapshot did not revalidate profile eligibility.");
+    Assert(Directory.Exists(snapshot.BundleRoot), "Run-start profile snapshot was not created.");
+    Assert(Path.GetDirectoryName(snapshot.BundleRoot)!.StartsWith(Path.GetFullPath(snapshotWork), StringComparison.OrdinalIgnoreCase), "Profile snapshot escaped its run work directory.");
+    CompanionRuntimeProfile snapshottedRuntime = CompanionBundleReader.ReadRuntimeProfile(snapshot.BundleRoot, now);
+    Assert(snapshottedRuntime.Models.Count == 1 && snapshottedRuntime.Materials.Count == 1, "Merged snapshot did not retain the matched evidence set.");
+    Assert(snapshottedRuntime.Models["models/lvs/example.mdl"].Skins.SetEquals(new[] { 0, 1, 2 }), "Merged snapshot lost observed skins.");
+    File.Delete(Path.Combine(Path.GetDirectoryName(mergeAIndex)!, "chunk-0001.json"));
+    Assert(CompanionBundleReader.ReadRuntimeProfile(snapshot.BundleRoot, now).Models.Count == 1, "Changing the game-side profile altered an active run snapshot.");
+
+    string corruptSnapshotRoot = Path.Combine(testRoot, "runtime-corrupt-snapshot-source");
+    string corruptSnapshotIndex = WriteRuntimeBundle(corruptSnapshotRoot, (JsonObject)CloneJson(LoadRuntimeProfileFixture()));
+    File.AppendAllText(Path.Combine(corruptSnapshotRoot, "chunk-0001.json"), " ");
+    string rejectedSnapshotWork = Path.Combine(testRoot, "rejected-snapshot-work");
+    ExpectFailure(
+        () => CompanionRuntimeProfileSnapshotService.Create(
+            new[] { corruptSnapshotIndex }, selectedAddon, rejectedSnapshotWork, now, CancellationToken.None
+        ),
+        "size"
+    );
+    Assert(
+        !Directory.Exists(rejectedSnapshotWork)
+        || !Directory.EnumerateFiles(rejectedSnapshotWork, "complete.ready.json", SearchOption.AllDirectories).Any(),
+        "A rejected source left a selectable complete snapshot."
+    );
+
+    string maximumReportRoot = Path.Combine(testRoot, "maximum-report");
+    Directory.CreateDirectory(Path.Combine(maximumReportRoot, "logs"));
+    string maximumReportPath = Path.Combine(maximumReportRoot, "logs", "maximum_adaptive_report.json");
+    File.WriteAllText(maximumReportPath, "{\"schema\":1,\"family_status\":\"optimized\"}\n");
+    CompanionMaximumRuntimeSummary unusedSummary = CompanionMaximumReportReader.Read(maximumReportPath);
+    Assert(!unusedSummary.EvidenceApplied, "A report without runtime evidence was labelled as used.");
+
+    File.WriteAllText(maximumReportPath, JsonSerializer.Serialize(new
+    {
+        schema = 1,
+        family_status = "optimized",
+        runtime_profile = new
+        {
+            bundle_sha256 = new string('a', 64),
+            run_id = "11111111-1111-4111-8111-111111111111",
+            matched_models = 2,
+            matched_materials = 3,
+            matched_regions = 2,
+            scheduled_validations = 1,
+            regional_recoveries = 1,
+            regions = new object[]
+            {
+                new { key = "wheel", geometric_risk = 0.20, effective_risk = 0.34, runtime_importance = 0.50, reasons = new[] { "bodygroup" }, scheduled_validation = true, regional_recovery = true },
+                new { key = "glass", geometric_risk = 0.70, effective_risk = 0.75, runtime_importance = 0.40, reasons = new[] { "model" }, scheduled_validation = false, regional_recovery = false },
+            },
+        },
+    }) + "\n");
+    CompanionMaximumRuntimeSummary appliedSummary = CompanionMaximumReportReader.Read(maximumReportPath);
+    Assert(appliedSummary.EvidenceApplied, "Applied runtime evidence was not presented.");
+    Assert(appliedSummary.MatchedModels == 2 && appliedSummary.MatchedMaterials == 3 && appliedSummary.MatchedRegions == 2, "Runtime match counts were not presented.");
+    Assert(appliedSummary.ScheduledValidations == 1 && appliedSummary.RegionalRecoveries == 1, "Runtime validation/recovery counts were not presented.");
+    Assert(Math.Abs(appliedSummary.MaximumProtectionIncrease - 0.14) < 1e-9, "Geometric-to-effective protection was calculated incorrectly.");
+    Assert(appliedSummary.DisplayText.Contains("applied", StringComparison.OrdinalIgnoreCase), "Applied evidence summary is unclear.");
+
     string emptyAddon = Path.Combine(testRoot, "empty-addon");
     Directory.CreateDirectory(emptyAddon);
     CompanionProfileImportResult noMatch = CompanionProfileService.Import(new[] { validIndex }, emptyAddon, now, CancellationToken.None);

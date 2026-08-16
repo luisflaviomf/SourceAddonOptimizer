@@ -359,6 +359,10 @@ class AdaptivePipelineTests(unittest.TestCase):
         runtime_region = payload["runtime_profile"]["regions"][0]
         self.assertGreater(runtime_region["effective_risk"], runtime_region["geometric_risk"])
         self.assertEqual(runtime_region["runtime_importance"], 0.5)
+        self.assertTrue(runtime_region["scheduled_validation"])
+        self.assertTrue(runtime_region["regional_recovery"])
+        self.assertEqual(payload["runtime_profile"]["scheduled_validations"], 1)
+        self.assertEqual(payload["runtime_profile"]["regional_recoveries"], 1)
 
     def test_report_is_atomic_recomputable_and_dx80_neutral(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

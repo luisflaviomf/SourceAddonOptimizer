@@ -2296,6 +2296,7 @@ namespace GmodAddonCompressor
             _modelsBatchAddonIndex = 0;
             _modelsBatchAddonTotal = 0;
             _modelsBatchAddonName = string.Empty;
+            _lastMaximumRuntimeSummaryText = string.Empty;
             SaveSettings();
             _modelsWorkDir = ToolPaths.GetWorkDir(addonDirectoryPath, _context.OptimizerSuffix);
             Button_OpenModelsOutput.IsEnabled = false;
@@ -2309,15 +2310,31 @@ namespace GmodAddonCompressor
             _context.ModelsProgressValue = 0;
             _context.UnlockedUI = false;
 
-            var options = BuildSourceAddonOptimizerOptions(addonDirectoryPath, _modelsWorkDir, false);
-
             _optimizerCts?.Cancel();
             _optimizerCts = new CancellationTokenSource();
 
             int exitCode;
+            string? runtimeProfileSnapshot = null;
             try
             {
+                runtimeProfileSnapshot = await PrepareMaximumRuntimeProfileSnapshotAsync(
+                    addonDirectoryPath,
+                    _modelsWorkDir,
+                    _optimizerCts.Token
+                );
+                var options = BuildSourceAddonOptimizerOptions(
+                    addonDirectoryPath,
+                    _modelsWorkDir,
+                    false,
+                    runtimeProfileSnapshot
+                );
                 exitCode = await _optimizerRunner.RunAsync(options, _optimizerCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                _context.ModelsStatusText = "Canceled.";
+                _context.UnlockedUI = true;
+                return;
             }
             catch (Exception ex)
             {
@@ -2327,10 +2344,20 @@ namespace GmodAddonCompressor
             }
 
             _context.UnlockedUI = true;
+            if (_context.OptimizerModeIsMaximum)
+            {
+                await UpdateMaximumRuntimeSummaryAsync(
+                    _modelsWorkDir,
+                    runtimeProfileSnapshot != null,
+                    CancellationToken.None
+                );
+            }
 
             if (exitCode == 0)
             {
                 _context.ModelsStatusText = "OK";
+                if (!string.IsNullOrWhiteSpace(_lastMaximumRuntimeSummaryText))
+                    _context.ModelsProgressText = _lastMaximumRuntimeSummaryText;
                 if (!string.IsNullOrWhiteSpace(_modelsOutputPath))
                 {
                     Button_OpenModelsOutput.IsEnabled = true;
@@ -2417,6 +2444,7 @@ namespace GmodAddonCompressor
             _modelsBatchAddonIndex = 0;
             _modelsBatchAddonTotal = 0;
             _modelsBatchAddonName = string.Empty;
+            _lastMaximumRuntimeSummaryText = string.Empty;
             _modelsWorkDir = ToolPaths.GetWorkDir(addonDirectoryPath, _context.OptimizerSuffix);
             _context.PipelineSummaryText = string.Empty;
             _context.PipelineSizeReportText = string.Empty;
@@ -2472,7 +2500,17 @@ namespace GmodAddonCompressor
                 _context.PipelineSizeReportText = "Size report: computing (models before)...";
                 _pipelineModelsSizeBefore = await TryScanSizeAsync(addonDirectoryPath, token);
                 string modelsWorkDir = _modelsWorkDir ?? ToolPaths.GetWorkDir(addonDirectoryPath, _context.OptimizerSuffix);
-                var options = BuildSourceAddonOptimizerOptions(addonDirectoryPath, modelsWorkDir, true);
+                string? runtimeProfileSnapshot = await PrepareMaximumRuntimeProfileSnapshotAsync(
+                    addonDirectoryPath,
+                    modelsWorkDir,
+                    token
+                );
+                var options = BuildSourceAddonOptimizerOptions(
+                    addonDirectoryPath,
+                    modelsWorkDir,
+                    true,
+                    runtimeProfileSnapshot
+                );
 
                 int exitCode = await _optimizerRunner.RunAsync(options, token);
                 _pipelineModelsExitCode = exitCode;
@@ -2480,6 +2518,15 @@ namespace GmodAddonCompressor
                 {
                     _context.PipelineStatusText = "Canceled.";
                     return;
+                }
+
+                if (_context.OptimizerModeIsMaximum)
+                {
+                    await UpdateMaximumRuntimeSummaryAsync(
+                        _modelsWorkDir,
+                        runtimeProfileSnapshot != null,
+                        token
+                    );
                 }
 
                 _pipelineModelsOk = exitCode == 0 && !string.IsNullOrWhiteSpace(_pipelineOutputPath);
@@ -2578,7 +2625,10 @@ namespace GmodAddonCompressor
                 : "n/a";
 
             string compressMode = BuildCompressPipelineOptions().ModeLabel;
-            _context.PipelineSummaryText = $"Summary: Models {modelsStatus} | Output: {modelsOutput} | Compress {compressStatus} | Files: {compressCount} | Mode: {compressMode}";
+            string runtimeSummary = string.IsNullOrWhiteSpace(_lastMaximumRuntimeSummaryText)
+                ? string.Empty
+                : $" | {_lastMaximumRuntimeSummaryText}";
+            _context.PipelineSummaryText = $"Summary: Models {modelsStatus} | Output: {modelsOutput} | Compress {compressStatus} | Files: {compressCount} | Mode: {compressMode}{runtimeSummary}";
             _context.PipelineSizeReportText = BuildPipelineSizeReportText(BuildCompressPipelineOptions());
         }
 
@@ -3384,8 +3434,16 @@ namespace GmodAddonCompressor
         private SourceAddonOptimizerRunOptions BuildSourceAddonOptimizerOptions(
             string addonPath,
             string workDir,
-            bool singleAddonOnly)
+            bool singleAddonOnly,
+            string? maximumRuntimeProfilePath = null)
         {
+            string? selectedRuntimeProfile = _context.OptimizerModeIsMaximum
+                && _companionContext.UseWithMaximumV2
+                && _companionContext.CanUseWithMaximumV2
+                && !string.IsNullOrWhiteSpace(maximumRuntimeProfilePath)
+                && Directory.Exists(maximumRuntimeProfilePath)
+                    ? Path.GetFullPath(maximumRuntimeProfilePath)
+                    : null;
             return new SourceAddonOptimizerRunOptions
             {
                 WorkerExePath = ToolPaths.WorkerExePath,
@@ -3393,6 +3451,7 @@ namespace GmodAddonCompressor
                 WorkDir = workDir,
                 Suffix = _context.OptimizerSuffix,
                 OptimizerMode = GetOptimizerModeArgument(),
+                MaximumRuntimeProfilePath = selectedRuntimeProfile,
                 BlenderPath = string.IsNullOrWhiteSpace(_context.BlenderPath) ? null : _context.BlenderPath.Trim(),
                 StudioMdlPath = string.IsNullOrWhiteSpace(_context.StudioMdlPath) ? null : _context.StudioMdlPath.Trim(),
                 Ratio = _context.OptimizerRatio,

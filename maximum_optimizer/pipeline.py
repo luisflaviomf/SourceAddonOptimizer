@@ -154,6 +154,7 @@ class _SelectedRegion:
     runtime_model_path: str | None = None
     runtime_materials: tuple[str, ...] = ()
     runtime_scheduled_validation: bool = False
+    runtime_regional_recovery: bool = False
 
 
 @dataclass(frozen=True)
@@ -187,6 +188,7 @@ class _RegionState:
     runtime_model_path: str | None = None
     runtime_materials: tuple[str, ...] = ()
     runtime_scheduled_validation: bool = False
+    runtime_regional_recovery: bool = False
 
 
 def _sha256(path: Path) -> str:
@@ -605,6 +607,9 @@ def _region_state_without_spool(selected: _SelectedRegion) -> _RegionState:
         runtime_model_path=selected.runtime_model_path,
         runtime_materials=selected.runtime_materials,
         runtime_scheduled_validation=selected.runtime_scheduled_validation,
+        runtime_regional_recovery=(
+            selected.runtime_scheduled_validation and decision.representation == "original"
+        ),
     )
 
 
@@ -667,6 +672,9 @@ def _persist_region_state(
         runtime_model_path=selected.runtime_model_path,
         runtime_materials=selected.runtime_materials,
         runtime_scheduled_validation=selected.runtime_scheduled_validation,
+        runtime_regional_recovery=(
+            selected.runtime_scheduled_validation and decision.representation == "original"
+        ),
     )
 
 
@@ -1036,6 +1044,10 @@ def _run_maximum_adaptive(options: MaximumRunOptions, spool_root: Path) -> Maxim
                 failed_gates=(),
                 reason="targeted render failed; applied local fallback",
                 targeted_render=True,
+                runtime_regional_recovery=(
+                    item.runtime_scheduled_validation
+                    and item.fallback_representation == "original"
+                ),
             )
 
         pending_by_source: dict[PurePosixPath, list[_RegionState]] = {}
@@ -1192,6 +1204,8 @@ def _run_maximum_adaptive(options: MaximumRunOptions, spool_root: Path) -> Maxim
             len({item.runtime_model_path for item in runtime_states if item.runtime_model_path}),
             len({material for item in runtime_states for material in item.runtime_materials}),
             len(runtime_states),
+            sum(1 for item in runtime_states if item.runtime_scheduled_validation),
+            sum(1 for item in runtime_states if item.runtime_regional_recovery),
             tuple(
                 RuntimeRegionReport(
                     item.key.value,
@@ -1199,6 +1213,8 @@ def _run_maximum_adaptive(options: MaximumRunOptions, spool_root: Path) -> Maxim
                     item.effective_risk,
                     item.runtime_importance,
                     item.runtime_reasons,
+                    item.runtime_scheduled_validation,
+                    item.runtime_regional_recovery,
                 )
                 for item in runtime_states
             ),

@@ -81,6 +81,8 @@ class RuntimeRegionReport:
     effective_risk: float
     runtime_importance: float
     reasons: tuple[str, ...]
+    scheduled_validation: bool
+    regional_recovery: bool
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,8 @@ class RuntimeProfileReport:
     matched_models: int
     matched_materials: int
     matched_regions: int
+    scheduled_validations: int
+    regional_recoveries: int
     regions: tuple[RuntimeRegionReport, ...]
 
 

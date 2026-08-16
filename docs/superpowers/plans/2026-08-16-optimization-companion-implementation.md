@@ -276,13 +276,13 @@ effective = risk + (1.0 - risk) * 0.35 * runtime_importance
 - Modify: `tests/wpf_optimizer_contract/Program.cs`
 - Modify: `tests/wpf_companion_contract/Program.cs`
 
-- [ ] Add failing command-builder tests: Maximum plus checked valid profile emits one `--maximum-runtime-profile` argument; unchecked, invalid, Normal, and Fidelity emit none. Paths containing spaces remain one `ArgumentList` value.
-- [ ] Add `MaximumRuntimeProfilePath` to `SourceAddonOptimizerRunOptions`; populate it only inside `BuildSourceAddonOptimizerOptions()` when all explicit-use conditions still hold at run start.
-- [ ] Snapshot the selected bundle into the run work directory using validated declared files before launching the worker. Revalidate hashes after copy and pass the snapshot directory, so changing/removing the game-side profile cannot alter an active run.
-- [ ] Clear opt-in and continue without the profile if the snapshot fails. Do not fail or delay the ordinary Models/Pipeline start beyond one bounded validation/copy pass.
-- [ ] Read `maximum_adaptive_report.json` after completion and show whether evidence was applied plus matched models/materials/regions, geometric-to-effective protection, and extra regional recoveries. Never label a detected-but-unused profile as used.
-- [ ] Run both C# contract projects and the focused worker CLI tests; expected result: all pass.
-- [ ] Commit: `feat(wpf): pass explicit profile to maximum worker`.
+- [x] Add failing command-builder tests: Maximum plus checked valid profile emits one `--maximum-runtime-profile` argument; unchecked, invalid, Normal, and Fidelity emit none. Paths containing spaces remain one `ArgumentList` value.
+- [x] Add `MaximumRuntimeProfilePath` to `SourceAddonOptimizerRunOptions`; populate it only inside `BuildSourceAddonOptimizerOptions()` when all explicit-use conditions still hold at run start.
+- [x] Snapshot the selected bundle into the run work directory using validated declared files before launching the worker. Revalidate hashes after copy and pass the snapshot directory, so changing/removing the game-side profile cannot alter an active run.
+- [x] Clear opt-in and continue without the profile if the snapshot fails. Do not fail or delay the ordinary Models/Pipeline start beyond one bounded validation/copy pass.
+- [x] Read `maximum_adaptive_report.json` after completion and show whether evidence was applied plus matched models/materials/regions, geometric-to-effective protection, and extra regional recoveries. Never label a detected-but-unused profile as used.
+- [x] Run both C# contract projects and the focused worker CLI tests; expected result: all pass.
+- [x] Commit: `feat(wpf): pass explicit profile to maximum worker`.
 
 ## Task 10: Generate a closed validation plan from the optimized result
 

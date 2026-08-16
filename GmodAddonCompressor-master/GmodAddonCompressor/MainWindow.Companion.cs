@@ -20,6 +20,7 @@ namespace GmodAddonCompressor
         private readonly CompanionContext _companionContext = new();
         private CancellationTokenSource? _companionCts;
         private string[] _companionProfileIndexes = Array.Empty<string>();
+        private string _lastMaximumRuntimeSummaryText = string.Empty;
 
         private void InitializeCompanion()
         {
@@ -248,6 +249,111 @@ namespace GmodAddonCompressor
             finally
             {
                 EndCompanionOperation(cts);
+            }
+        }
+
+        private async Task<string?> PrepareMaximumRuntimeProfileSnapshotAsync(
+            string addonRoot,
+            string workDir,
+            CancellationToken cancellationToken)
+        {
+            if (!_context.OptimizerModeIsMaximum
+                || !_companionContext.UseWithMaximumV2
+                || !_companionContext.CanUseWithMaximumV2
+                || _companionProfileIndexes.Length == 0)
+                return null;
+
+            string[] capturedProfiles = _companionProfileIndexes.ToArray();
+            string capturedAddon = Path.GetFullPath(addonRoot);
+            string workParent = Path.GetDirectoryName(Path.GetFullPath(workDir))
+                ?? throw new InvalidOperationException("The Models work directory has no parent.");
+            string snapshotWork = Path.Combine(
+                workParent,
+                "runtime-profile-inputs",
+                Path.GetFileName(Path.GetFullPath(workDir))
+            );
+            try
+            {
+                CompanionRuntimeProfileSnapshot snapshot = await Task.Run(
+                    () => CompanionRuntimeProfileSnapshotService.Create(
+                        capturedProfiles,
+                        capturedAddon,
+                        snapshotWork,
+                        DateTimeOffset.UtcNow,
+                        cancellationToken
+                    ),
+                    cancellationToken
+                );
+                cancellationToken.ThrowIfCancellationRequested();
+                bool stillSelected = _context.OptimizerModeIsMaximum
+                    && _companionContext.UseWithMaximumV2
+                    && _companionContext.CanUseWithMaximumV2
+                    && Path.GetFullPath(_context.AddonDirectoryPath).Equals(
+                        capturedAddon,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    && capturedProfiles.SequenceEqual(_companionProfileIndexes, StringComparer.OrdinalIgnoreCase);
+                if (!stillSelected)
+                    return null;
+                _companionContext.OperationStatusText =
+                    $"Runtime profile snapshot verified for Maximum v2 ({snapshot.ImportResult.MatchedModelCount} models, {snapshot.ImportResult.MatchedMaterialCount} materials).";
+                return snapshot.BundleRoot;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _companionContext.UseWithMaximumV2 = false;
+                _companionContext.ProfileSummaryText =
+                    "Runtime evidence was rejected at run start and was not used. Ordinary Maximum v2 continues unchanged. "
+                    + ex.Message;
+                _companionContext.OperationStatusText =
+                    "Runtime profile snapshot failed; continuing without runtime evidence.";
+                return null;
+            }
+        }
+
+        private async Task UpdateMaximumRuntimeSummaryAsync(
+            string? workDir,
+            bool runtimeProfileRequested,
+            CancellationToken cancellationToken)
+        {
+            _lastMaximumRuntimeSummaryText = string.Empty;
+            if (string.IsNullOrWhiteSpace(workDir))
+                return;
+            string reportPath = Path.Combine(workDir, "logs", "maximum_adaptive_report.json");
+            try
+            {
+                CompanionMaximumRuntimeSummary summary = await Task.Run(
+                    () => CompanionMaximumReportReader.Read(reportPath),
+                    cancellationToken
+                );
+                cancellationToken.ThrowIfCancellationRequested();
+                _lastMaximumRuntimeSummaryText = summary.DisplayText;
+                _companionContext.ProfileSummaryText = summary.DisplayText;
+                _companionContext.OperationStatusText = summary.EvidenceApplied
+                    ? "Maximum v2 completed with verified runtime evidence."
+                    : runtimeProfileRequested
+                        ? "Maximum v2 completed, but the worker did not apply any runtime evidence."
+                        : "Maximum v2 completed without runtime evidence.";
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _lastMaximumRuntimeSummaryText = runtimeProfileRequested
+                    ? "Runtime evidence was requested, but its final Maximum report could not be verified."
+                    : string.Empty;
+                if (runtimeProfileRequested)
+                {
+                    _companionContext.ProfileSummaryText = _lastMaximumRuntimeSummaryText + " " + ex.Message;
+                    _companionContext.OperationStatusText =
+                        "Maximum completed; runtime evidence is not reported as used because verification failed.";
+                }
             }
         }
 
