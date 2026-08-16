@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Mapping
@@ -36,11 +37,13 @@ class RegionRuntimeImportance:
     region_material_importance: float
     runtime_importance: float
     reasons: tuple[str, ...]
+    model_path: str | None = None
+    matched_materials: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class RuntimeProfileDiagnostic:
-    code: Literal["invalid_runtime_profile"]
+    code: Literal["invalid_runtime_profile", "stale_runtime_profile"]
     message: str
 
 
@@ -115,11 +118,13 @@ class RuntimeEvidenceMap:
         candidates: set[str] = set()
         for token in material_tokens:
             candidates.update(_material_candidates(binding, token))
+        matched_materials: list[str] = []
         for candidate in sorted(candidates):
             signal = self.material_importance.get(candidate, 0.0)
             if signal <= 0.0:
                 continue
             material_signal = max(material_signal, signal)
+            matched_materials.append(candidate)
             reasons.append(f"material {candidate} importance {signal:.2f}")
 
         runtime_importance = max(model_baseline, state_importance, material_signal)
@@ -129,6 +134,8 @@ class RuntimeEvidenceMap:
             material_signal,
             runtime_importance,
             tuple(reasons),
+            binding.model_path,
+            tuple(matched_materials),
         )
 
 
@@ -214,9 +221,25 @@ def _build_runtime_evidence(bundle: ValidatedBundle, qc_root: Path) -> RuntimeEv
     )
 
 
-def load_runtime_evidence(profile_root: Path, qc_root: Path) -> RuntimeEvidenceLoadResult:
+def load_runtime_evidence(
+    profile_root: Path,
+    qc_root: Path,
+    *,
+    now: datetime | None = None,
+) -> RuntimeEvidenceLoadResult:
     try:
         bundle = read_bundle(Path(profile_root), expected_schema="sao-runtime-profile-v1")
+        clock = now or datetime.now(timezone.utc)
+        if clock.tzinfo is None or clock.utcoffset() is None:
+            raise ValueError("runtime profile clock must be timezone-aware")
+        if clock.astimezone(timezone.utc) - bundle.created_utc > timedelta(days=180):
+            return RuntimeEvidenceLoadResult(
+                None,
+                RuntimeProfileDiagnostic(
+                    "stale_runtime_profile",
+                    "runtime profile is stale (>180 days)",
+                ),
+            )
         evidence = _build_runtime_evidence(bundle, Path(qc_root))
     except (OSError, UnicodeError, ValueError) as exc:
         return RuntimeEvidenceLoadResult(

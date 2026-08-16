@@ -75,6 +75,25 @@ class RegionReport:
 
 
 @dataclass(frozen=True)
+class RuntimeRegionReport:
+    key: str
+    geometric_risk: float
+    effective_risk: float
+    runtime_importance: float
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RuntimeProfileReport:
+    bundle_sha256: str
+    run_id: str
+    matched_models: int
+    matched_materials: int
+    matched_regions: int
+    regions: tuple[RuntimeRegionReport, ...]
+
+
+@dataclass(frozen=True)
 class MaximumRunReport:
     family_status: Literal["optimized", "preserved", "failed", "cancelled"]
     regions: RegionStatusCounts
@@ -93,6 +112,7 @@ class MaximumRunReport:
     profile_sha256: str
     profile_version: str
     report_path: Path
+    runtime_profile: RuntimeProfileReport | None = None
 
 
 def _json_value(value):
@@ -107,6 +127,8 @@ def _json_value(value):
 
 def maximum_report_payload(report: MaximumRunReport) -> dict[str, object]:
     payload = _json_value(asdict(report))
+    if report.runtime_profile is None:
+        payload.pop("runtime_profile", None)
     payload["schema"] = 1
     payload["profile"] = {
         "version": report.profile_version,

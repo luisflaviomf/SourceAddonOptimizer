@@ -819,6 +819,11 @@ def _run_single_addon(
             profile = load_profile(
                 repo_root / "maximum_optimizer" / "profiles" / "maximum-adaptive-v2.json"
             )
+            runtime_evidence = _load_maximum_runtime_evidence_for_mode(
+                args.optimizer_mode,
+                args.maximum_runtime_profile,
+                maximum_original_source,
+            )
             framework_resolver = (
                 Path(args.maximum_framework_resolver).expanduser().resolve()
                 if args.maximum_framework_resolver
@@ -842,6 +847,7 @@ def _run_single_addon(
                     render_region=render_region_comparison,
                     cancel=_WorkerCancellationProbe(),
                     compiled_expectations=tuple(expectations),
+                    runtime_evidence=runtime_evidence,
                 )
             )
             print(
@@ -1089,6 +1095,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional read-only addon root used only to resolve Maximum analysis references.",
     )
+    ap.add_argument(
+        "--maximum-runtime-profile",
+        default=None,
+        help="Optional validated sao-runtime-profile-v1 bundle directory used only by Maximum.",
+    )
     ap.add_argument("--blender", default=None, help="Path to blender.exe (auto-detect if omitted).")
     ap.add_argument(
         "--decompile-jobs",
@@ -1200,7 +1211,37 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    return _build_argument_parser().parse_args(argv)
+    parser = _build_argument_parser()
+    args = parser.parse_args(argv)
+    if args.maximum_runtime_profile and args.optimizer_mode != OPTIMIZER_MODE_MAXIMUM:
+        parser.error("--maximum-runtime-profile is valid only with --optimizer-mode maximum")
+    return args
+
+
+def _load_maximum_runtime_evidence_for_mode(
+    optimizer_mode: str,
+    profile_root: str | None,
+    qc_root: Path,
+):
+    if str(optimizer_mode).lower() != OPTIMIZER_MODE_MAXIMUM or not profile_root:
+        return None
+    from maximum_optimizer.runtime_profile import load_runtime_evidence
+
+    result = load_runtime_evidence(Path(profile_root).expanduser(), Path(qc_root))
+    if result.diagnostic is not None:
+        print(
+            "[WARN] Maximum runtime profile rejected: "
+            f"{result.diagnostic.message}; continuing without runtime evidence.",
+            flush=True,
+        )
+        return None
+    assert result.evidence is not None
+    print(
+        "[MAXIMUM] runtime_profile_loaded "
+        f"run_id={result.evidence.run_id} sha256={result.evidence.bundle_sha256}",
+        flush=True,
+    )
+    return result.evidence
 
 
 def effective_normal_ratio(args: argparse.Namespace) -> float:

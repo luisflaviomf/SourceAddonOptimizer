@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 import math
 import struct
 from typing import Iterable, Sequence
@@ -209,6 +210,21 @@ def budget_for_risk(profile: MaximumProfile, features: RiskFeatures) -> RegionBu
         material_boundary_p95_px=limits.material_boundary_p95_px * scale,
         skinning_p95=limits.skinning_p95 * scale,
         skinning_max=limits.skinning_max * scale,
+    )
+
+
+def with_effective_risk(features: RiskFeatures, runtime_importance: float) -> RiskFeatures:
+    if not math.isfinite(runtime_importance):
+        raise ValueError("runtime importance must be finite")
+    importance = _clamp01(runtime_importance)
+    geometric = _clamp01(features.score)
+    if importance == 0.0 and geometric == features.score:
+        return features
+    effective = _clamp01(geometric + (1.0 - geometric) * 0.35 * importance)
+    return replace(
+        features,
+        score=effective,
+        target_ratio=0.08 + 0.57 * effective,
     )
 
 

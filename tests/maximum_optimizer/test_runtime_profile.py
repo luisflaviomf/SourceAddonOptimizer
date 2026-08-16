@@ -314,6 +314,29 @@ class RuntimeProfileTests(unittest.TestCase):
         self.assertEqual(result.diagnostic.code, "invalid_runtime_profile")
         self.assertIn("byte limit", result.diagnostic.message)
 
+    def test_profile_older_than_180_days_is_rejected_as_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            stale = write_bundle(
+                root / "stale",
+                schema="sao-runtime-profile-v1",
+                run_id=UUID("44444444-4444-4444-8444-444444444444"),
+                created_utc=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                producer=PRODUCER,
+                environment=ENVIRONMENT,
+                payloads=[payload()],
+            ).root
+            result = load_runtime_evidence(
+                stale,
+                FIXTURES,
+                now=datetime(2026, 8, 16, tzinfo=timezone.utc),
+            )
+
+        self.assertIsNone(result.evidence)
+        self.assertIsNotNone(result.diagnostic)
+        assert result.diagnostic is not None
+        self.assertEqual(result.diagnostic.code, "stale_runtime_profile")
+
 
 if __name__ == "__main__":
     unittest.main()

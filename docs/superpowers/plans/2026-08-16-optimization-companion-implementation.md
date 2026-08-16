@@ -250,21 +250,21 @@ runtime_importance = max(
 - Modify: `tests/maximum_optimizer/test_pipeline_reporting.py`
 - Modify: `tests/maximum_optimizer/test_worker_cli.py`
 
-- [ ] Add failing unit tests for the exact effective-risk formula, clamping, monotonicity, zero equivalence, target/budget reuse, and protection headroom:
+- [x] Add failing unit tests for the exact effective-risk formula, clamping, monotonicity, zero equivalence, target/budget reuse, and protection headroom:
 
 ```python
 effective = risk + (1.0 - risk) * 0.35 * runtime_importance
 ```
 
-- [ ] Add failing pipeline tests proving no profile and an empty/disabled profile produce byte-for-byte identical selected sources and report bytes, model-only evidence cannot create a family gate, a protected failed wheel restores only that wheel, and simplifier evaluations do not exceed the current bound.
-- [ ] Add `--maximum-runtime-profile <bundle-directory>` to `parse_args`. Reject its use with Normal/Fidelity at argument validation; when Maximum receives malformed/incompatible/stale input, print one warning, continue with `None`, and keep ordinary optimization available.
-- [ ] Add `runtime_evidence: RuntimeEvidenceMap | None = None` to `MaximumRunOptions`. Do not import, parse, or initialize Companion modules in Normal/Fidelity branches.
-- [ ] Add `with_effective_risk(features, importance)` that copies `RiskFeatures` with effective score and recalculated `target_ratio = 0.08 + 0.57 * effective_score`; pass that copy into the existing `budget_for_risk` and search.
-- [ ] Let direct state/material importance `>=0.50` schedule the existing adaptive validator for regions of at least 128 triangles. The moderated model baseline alone must not switch a low-risk region into validation; it may only tighten the target/budget if that region was already being evaluated.
-- [ ] Preserve the existing search and compile structure: no new full-family candidate, no second lighter candidate, no extra compile, no automatic Blender render. Use importance only for score/budget/priority and the already-existing one regional recovery.
-- [ ] When nonzero evidence is actually applied, extend the report with a `runtime_profile` block containing bundle hash/run ID, matched model/material/region counts, `geometric_risk`, `effective_risk`, `runtime_importance`, and reasons per region. Omit that block entirely for absent, disabled, empty, zero-match, rejected, or stale profiles so the no-profile report bytes remain unchanged; retain existing `risk_score` as the geometric score.
-- [ ] Run `python -m pytest tests\maximum_optimizer\test_risk.py tests\maximum_optimizer\test_runtime_profile.py tests\maximum_optimizer\test_pipeline_reporting.py tests\maximum_optimizer\test_worker_cli.py -q`; expected result: all pass.
-- [ ] Commit: `feat(maximum): apply bounded runtime importance regionally`.
+- [x] Add failing pipeline tests proving no profile and an empty/disabled profile produce byte-for-byte identical selected sources and report bytes, model-only evidence cannot create a family gate, a protected failed wheel restores only that wheel, and simplifier evaluations do not exceed the current bound.
+- [x] Add `--maximum-runtime-profile <bundle-directory>` to `parse_args`. Reject its use with Normal/Fidelity at argument validation; when Maximum receives malformed/incompatible/stale input, print one warning, continue with `None`, and keep ordinary optimization available.
+- [x] Add `runtime_evidence: RuntimeEvidenceMap | None = None` to `MaximumRunOptions`. Do not import, parse, or initialize Companion modules in Normal/Fidelity branches.
+- [x] Add `with_effective_risk(features, importance)` that copies `RiskFeatures` with effective score and recalculated `target_ratio = 0.08 + 0.57 * effective_score`; pass that copy into the existing `budget_for_risk` and search.
+- [x] Let direct state/material importance `>=0.50` schedule the existing adaptive validator for regions of at least 128 triangles. The moderated model baseline alone must not switch a low-risk region into validation; it may only tighten the target/budget if that region was already being evaluated.
+- [x] Preserve the existing search and compile structure: no new full-family candidate, no second lighter candidate, no extra compile, no automatic Blender render. Use importance only for score/budget/priority and the already-existing one regional recovery.
+- [x] When nonzero evidence is actually applied, extend the report with a `runtime_profile` block containing bundle hash/run ID, matched model/material/region counts, `geometric_risk`, `effective_risk`, `runtime_importance`, and reasons per region. Omit that block entirely for absent, disabled, empty, zero-match, rejected, or stale profiles so the no-profile report bytes remain unchanged; retain existing `risk_score` as the geometric score.
+- [x] Run `python -m pytest tests\maximum_optimizer\test_risk.py tests\maximum_optimizer\test_runtime_profile.py tests\maximum_optimizer\test_pipeline_reporting.py tests\maximum_optimizer\test_worker_cli.py -q`; expected result: all pass.
+- [x] Commit: `feat(maximum): apply bounded runtime importance regionally`.
 
 ## Task 9: Bridge the explicit WPF choice to the worker and summarize its effect
 

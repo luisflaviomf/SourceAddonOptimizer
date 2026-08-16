@@ -5,11 +5,18 @@ from pathlib import Path, PurePosixPath
 import tempfile
 import unittest
 
+from maximum_optimizer.contracts import RiskFeatures
 from maximum_optimizer.materials import MaterialSemantics, resolve_material_semantics
 from maximum_optimizer.profile import load_profile
 from maximum_optimizer.qc_graph import QcOccurrence
 from maximum_optimizer.regions import SmdRegion, build_region_graph
-from maximum_optimizer.risk import CANONICAL_VIEWS, budget_for_risk, measure_risk, requires_adaptive_validation
+from maximum_optimizer.risk import (
+    CANONICAL_VIEWS,
+    budget_for_risk,
+    measure_risk,
+    requires_adaptive_validation,
+    with_effective_risk,
+)
 from maximum_optimizer.smd import SmdDocument, SmdInfluence, SmdTriangle, SmdVertex
 
 
@@ -167,6 +174,34 @@ class MaterialTests(unittest.TestCase):
 
 
 class RiskTests(unittest.TestCase):
+    def test_runtime_importance_uses_exact_headroom_formula_and_target(self) -> None:
+        features = RiskFeatures(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.20, 0.194)
+
+        effective = with_effective_risk(features, 1.0)
+
+        self.assertAlmostEqual(effective.score, 0.20 + (1.0 - 0.20) * 0.35)
+        self.assertAlmostEqual(effective.target_ratio, 0.08 + 0.57 * effective.score)
+        base_budget = budget_for_risk(PROFILE, features)
+        protected_budget = budget_for_risk(PROFILE, effective)
+        self.assertTrue(
+            all(
+                getattr(protected_budget, field) < getattr(base_budget, field)
+                for field in base_budget.__dict__
+            )
+        )
+        self.assertEqual(with_effective_risk(features, 0.0), features)
+
+    def test_runtime_importance_is_clamped_monotonic_and_cannot_reduce_risk(self) -> None:
+        features = RiskFeatures(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.20, 0.194)
+        values = [with_effective_risk(features, value).score for value in (-2.0, 0.0, 0.5, 1.0, 3.0)]
+
+        self.assertEqual(values[0], features.score)
+        self.assertEqual(values[-1], values[-2])
+        self.assertEqual(values, sorted(values))
+        self.assertTrue(all(features.score <= value <= 1.0 for value in values))
+        with self.assertRaisesRegex(ValueError, "finite"):
+            with_effective_risk(features, float("nan"))
+
     def test_validation_targets_curves_and_named_visual_parts_but_skips_plain_planes(self) -> None:
         opaque = MaterialSemantics.opaque()
         flat = measure_risk(plane(), opaque, CANONICAL_VIEWS)

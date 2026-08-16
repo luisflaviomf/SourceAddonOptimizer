@@ -65,6 +65,50 @@ class WorkerCliTests(unittest.TestCase):
                 )
                 self.assertEqual(build_optimized_addon.effective_normal_ratio(args), 0.75)
 
+    def test_runtime_profile_argument_is_maximum_only(self) -> None:
+        maximum = build_optimized_addon.parse_args(
+            ["addon", "--optimizer-mode", "maximum", "--maximum-runtime-profile", "C:/profile bundle"]
+        )
+        self.assertEqual(maximum.maximum_runtime_profile, "C:/profile bundle")
+        for mode in ("normal", "fidelity"):
+            with self.subTest(mode=mode), self.assertRaises(SystemExit):
+                build_optimized_addon.parse_args(
+                    ["addon", "--optimizer-mode", mode, "--maximum-runtime-profile", "C:/profile"]
+                )
+
+    def test_non_maximum_runtime_profile_loader_does_not_import_companion_modules(self) -> None:
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name.startswith("maximum_optimizer.runtime_profile"):
+                raise AssertionError(f"runtime profile imported for non-Maximum mode: {name}")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=guarded_import):
+            for mode in ("normal", "fidelity"):
+                self.assertIsNone(
+                    build_optimized_addon._load_maximum_runtime_evidence_for_mode(
+                        mode,
+                        "C:/profile",
+                        Path("C:/qc"),
+                    )
+                )
+
+    def test_malformed_maximum_runtime_profile_warns_and_continues_without_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, redirect_stdout(io.StringIO()) as output:
+            root = Path(raw)
+            qc_root = root / "qc"
+            qc_root.mkdir()
+            evidence = build_optimized_addon._load_maximum_runtime_evidence_for_mode(
+                "maximum",
+                str(root / "missing-profile"),
+                qc_root,
+            )
+
+        self.assertIsNone(evidence)
+        self.assertIn("runtime profile rejected", output.getvalue())
+        self.assertIn("continuing without runtime evidence", output.getvalue())
+
     def test_normal_and_fidelity_never_import_or_initialize_silhouette_backend(self) -> None:
         real_import = builtins.__import__
 

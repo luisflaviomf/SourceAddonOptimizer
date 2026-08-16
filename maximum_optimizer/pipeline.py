@@ -39,11 +39,14 @@ from .reporting import (
     MaximumRunReport,
     RegionReport,
     RegionStatusCounts,
+    RuntimeProfileReport,
+    RuntimeRegionReport,
     StageTiming,
     comparable_model_bytes,
     write_atomic_maximum_report,
 )
-from .risk import budget_for_risk, measure_risk, requires_adaptive_validation
+from .risk import budget_for_risk, measure_risk, requires_adaptive_validation, with_effective_risk
+from .runtime_profile import RegionRuntimeImportance, RuntimeEvidenceMap
 from .search import RegionDecision, RegionRequest, optimize_region
 from .smd import SmdDocument, SmdInfluence, SmdTriangle, SmdVertex, parse_smd, serialize_smd
 
@@ -109,6 +112,7 @@ class MaximumRunOptions:
     compiled_expectations: tuple[CompiledFamilyExpectation, ...] = ()
     audit_closure: Callable[[Path], ClosureAudit] | None = None
     progress: Callable[[str], None] = print
+    runtime_evidence: RuntimeEvidenceMap | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -144,6 +148,12 @@ class _SelectedRegion:
     risk_score: float
     target_ratio: float
     targeted_render: bool = False
+    effective_risk: float = 0.0
+    runtime_importance: float = 0.0
+    runtime_reasons: tuple[str, ...] = ()
+    runtime_model_path: str | None = None
+    runtime_materials: tuple[str, ...] = ()
+    runtime_scheduled_validation: bool = False
 
 
 @dataclass(frozen=True)
@@ -171,6 +181,12 @@ class _RegionState:
     fallback_triangles: int = 0
     fallback_vertices: int = 0
     targeted_render: bool = False
+    effective_risk: float = 0.0
+    runtime_importance: float = 0.0
+    runtime_reasons: tuple[str, ...] = ()
+    runtime_model_path: str | None = None
+    runtime_materials: tuple[str, ...] = ()
+    runtime_scheduled_validation: bool = False
 
 
 def _sha256(path: Path) -> str:
@@ -583,6 +599,12 @@ def _region_state_without_spool(selected: _SelectedRegion) -> _RegionState:
         decision.validation.failed_gates,
         decision.reason,
         None,
+        effective_risk=selected.effective_risk,
+        runtime_importance=selected.runtime_importance,
+        runtime_reasons=selected.runtime_reasons,
+        runtime_model_path=selected.runtime_model_path,
+        runtime_materials=selected.runtime_materials,
+        runtime_scheduled_validation=selected.runtime_scheduled_validation,
     )
 
 
@@ -639,6 +661,12 @@ def _persist_region_state(
         fallback_representation,
         fallback_triangles,
         fallback_vertices,
+        effective_risk=selected.effective_risk,
+        runtime_importance=selected.runtime_importance,
+        runtime_reasons=selected.runtime_reasons,
+        runtime_model_path=selected.runtime_model_path,
+        runtime_materials=selected.runtime_materials,
+        runtime_scheduled_validation=selected.runtime_scheduled_validation,
     )
 
 
@@ -666,7 +694,13 @@ def _optimize_source(
             inventory.occurrence.material_directories,
         )
         features = measure_risk(pair.original, semantics, _VIEWS)
-        budget = budget_for_risk(options.profile, features)
+        runtime = (
+            options.runtime_evidence.for_region(inventory.occurrence, pair.original.material)
+            if options.runtime_evidence is not None
+            else RegionRuntimeImportance(0.0, 0.0, 0.0, 0.0, ())
+        )
+        effective_features = with_effective_risk(features, runtime.runtime_importance)
+        budget = budget_for_risk(options.profile, effective_features)
         metric_reference: PreparedRegionReference | None = None
 
         if not pair.confident:
@@ -688,17 +722,36 @@ def _optimize_source(
                     decision,
                     semantics,
                     features.score,
-                    features.target_ratio,
+                    effective_features.target_ratio,
+                    effective_risk=effective_features.score,
+                    runtime_importance=runtime.runtime_importance,
+                    runtime_reasons=runtime.reasons,
+                    runtime_model_path=runtime.model_path,
+                    runtime_materials=runtime.matched_materials,
                 )
             )
             continue
 
-        needs_validation = validate_injected is not None or requires_adaptive_validation(
+        geometric_validation = requires_adaptive_validation(
             source.as_posix(),
             pair.original.material,
             len(pair.original.triangles),
             features,
             semantics,
+        )
+        direct_runtime_signal = max(
+            runtime.observed_state_importance,
+            runtime.region_material_importance,
+        )
+        runtime_scheduled_validation = (
+            not geometric_validation
+            and direct_runtime_signal >= 0.50
+            and len(pair.original.triangles) >= 128
+        )
+        needs_validation = (
+            validate_injected is not None
+            or geometric_validation
+            or runtime_scheduled_validation
         )
         if not needs_validation:
             selected_region = pair.normal if len(pair.normal.triangles) <= len(pair.original.triangles) else pair.original
@@ -721,7 +774,12 @@ def _optimize_source(
                     decision,
                     semantics,
                     features.score,
-                    features.target_ratio,
+                    effective_features.target_ratio,
+                    effective_risk=effective_features.score,
+                    runtime_importance=runtime.runtime_importance,
+                    runtime_reasons=runtime.reasons,
+                    runtime_model_path=runtime.model_path,
+                    runtime_materials=runtime.matched_materials,
                 )
             )
             continue
@@ -762,7 +820,7 @@ def _optimize_source(
             request = RegionRequest(
                 pair.original,
                 pair.normal,
-                features.target_ratio,
+                effective_features.target_ratio,
                 normal_validation,
                 len(pair.original.triangles),
                 len(pair.normal.triangles),
@@ -794,7 +852,13 @@ def _optimize_source(
                 decision,
                 semantics,
                 features.score,
-                features.target_ratio,
+                effective_features.target_ratio,
+                effective_risk=effective_features.score,
+                runtime_importance=runtime.runtime_importance,
+                runtime_reasons=runtime.reasons,
+                runtime_model_path=runtime.model_path,
+                runtime_materials=runtime.matched_materials,
+                runtime_scheduled_validation=runtime_scheduled_validation,
             )
         )
     return inventory, tuple(selected), 0
@@ -1115,6 +1179,30 @@ def _run_maximum_adaptive(options: MaximumRunOptions, spool_root: Path) -> Maxim
         )
         for item in sorted(selected, key=lambda value: value.key.value)
     )
+    runtime_states = tuple(
+        item
+        for item in sorted(selected, key=lambda value: value.key.value)
+        if item.runtime_importance > 0.0
+    )
+    runtime_report = None
+    if options.runtime_evidence is not None and runtime_states:
+        runtime_report = RuntimeProfileReport(
+            options.runtime_evidence.bundle_sha256,
+            str(options.runtime_evidence.run_id),
+            len({item.runtime_model_path for item in runtime_states if item.runtime_model_path}),
+            len({material for item in runtime_states for material in item.runtime_materials}),
+            len(runtime_states),
+            tuple(
+                RuntimeRegionReport(
+                    item.key.value,
+                    item.risk_score,
+                    item.effective_risk,
+                    item.runtime_importance,
+                    item.runtime_reasons,
+                )
+                for item in runtime_states
+            ),
+        )
     status = "failed" if failures else "optimized"
     report = MaximumRunReport(
         status,
@@ -1134,6 +1222,7 @@ def _run_maximum_adaptive(options: MaximumRunOptions, spool_root: Path) -> Maxim
         options.profile.sha256,
         options.profile.version,
         options.report_path,
+        runtime_profile=runtime_report,
     )
     write_atomic_maximum_report(report)
     return report
