@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -211,3 +213,36 @@ def test_unknown_validation_operation_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="test kind"):
         read_bundle(root, expected_schema="sao-validation-plan-v1")
+
+
+def test_bundle_chunk_symlink_is_rejected_when_platform_allows_it(tmp_path: Path) -> None:
+    root = write_bundle(tmp_path / "symlink-bundle", [profile_chunk()])
+    chunk = root / "chunk-0001.json"
+    external = tmp_path / "external-chunk.json"
+    chunk.replace(external)
+    try:
+        chunk.symlink_to(external)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"SKIPPED (privilege unavailable): file symlink: {type(exc).__name__}")
+
+    with pytest.raises(ValueError, match="reparse|symbolic"):
+        read_bundle(root, expected_schema="sao-runtime-profile-v1")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="SKIPPED (Windows junction test)")
+def test_bundle_root_junction_is_rejected_when_platform_allows_it(tmp_path: Path) -> None:
+    target = write_bundle(tmp_path / "junction-target", [profile_chunk()])
+    junction = tmp_path / "junction-bundle"
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not junction.exists():
+        pytest.skip(f"SKIPPED (privilege unavailable): directory junction: {result.stderr.strip()}")
+    try:
+        with pytest.raises(ValueError, match="reparse|symbolic"):
+            read_bundle(junction, expected_schema="sao-runtime-profile-v1")
+    finally:
+        os.rmdir(junction)

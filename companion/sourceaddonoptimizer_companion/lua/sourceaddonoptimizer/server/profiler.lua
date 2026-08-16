@@ -593,8 +593,13 @@ util.AddNetworkString(SAO.Constants.Net.BeginSession)
 util.AddNetworkString(SAO.Constants.Net.EndSession)
 util.AddNetworkString(SAO.Constants.Net.Observation)
 
-net.Receive(SAO.Constants.Net.Observation, function(_, ply)
+net.Receive(SAO.Constants.Net.Observation, function(length, ply)
     if not SAO.Permissions.CanUse(ply) then return end
+    if not isnumber(length) or length < SAO.Constants.MIN_OBSERVATION_MESSAGE_BITS or length > SAO.Constants.MAX_OBSERVATION_MESSAGE_BITS then
+        SAO.Permissions.RecordSecurityEvent("profile_observation", "invalid message length")
+
+        return
+    end
     if not SAO.Permissions.CheckRateLimit(ply, "profile_observation", SAO.Constants.OBSERVATION_SEND_INTERVAL) then return end
     local identifier_bytes = net.ReadUInt(6)
     if identifier_bytes == 0 or identifier_bytes > SAO.Constants.MAX_NET_IDENTIFIER_BYTES then

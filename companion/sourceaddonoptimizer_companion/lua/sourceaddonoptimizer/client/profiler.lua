@@ -144,8 +144,10 @@ function SAO.ClientProfiler.FocusEntity(ent)
     return true
 end
 
-net.Receive(SAO.Constants.Net.BeginSession, function()
+net.Receive(SAO.Constants.Net.BeginSession, function(length)
     if not can_use_local_admin() then return end
+    if not isnumber(length) or length < SAO.Constants.MIN_SESSION_MESSAGE_BITS or length > SAO.Constants.MAX_SESSION_MESSAGE_BITS then return end
+    if active_identifier then return end
     local bytes = net.ReadUInt(6)
     if bytes == 0 or bytes > SAO.Constants.MAX_NET_IDENTIFIER_BYTES then return end
     active_identifier = net.ReadData(bytes)
@@ -157,8 +159,10 @@ net.Receive(SAO.Constants.Net.BeginSession, function()
     end
 end)
 
-net.Receive(SAO.Constants.Net.EndSession, function()
+net.Receive(SAO.Constants.Net.EndSession, function(length)
     if not can_use_local_admin() then return end
+    if not isnumber(length) or length < SAO.Constants.MIN_SESSION_MESSAGE_BITS or length > SAO.Constants.MAX_SESSION_MESSAGE_BITS then return end
+    if not active_identifier then return end
     local bytes = net.ReadUInt(6)
     if bytes == 0 or bytes > SAO.Constants.MAX_NET_IDENTIFIER_BYTES then return end
     local identifier = net.ReadData(bytes)

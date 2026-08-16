@@ -355,6 +355,7 @@ try
             .FirstOrDefault(path => (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0);
         Assert(knownReparse != null, "The Windows reparse policy test could not find a system reparse point.");
         ExpectFailure(() => CompanionPathPolicy.AssertNotReparsePoint(knownReparse!, "test path"), "reparse");
+        ExpectFailure(() => CompanionBundleReader.ReadValidationResult(knownReparse!), "reparse");
     }
 
     string unknownEmptyDirectory = Path.Combine(destination, "operator-empty-directory");

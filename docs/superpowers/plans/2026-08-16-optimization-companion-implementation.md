@@ -366,14 +366,14 @@ effective = risk + (1.0 - risk) * 0.35 * runtime_importance
 - Modify: `tests/companion_addon/*` only for newly discovered regression checks
 - Modify: `tests/wpf_companion_contract/Program.cs` only for newly discovered regressions
 
-- [ ] Build one orchestrator script that runs contract pytest, Companion-addon pytest, Maximum-focused pytest, Lua lint, existing WPF optimizer contracts, new WPF Companion contracts, and the WPF Release build. Stop on the first non-zero exit and print each exact command.
-- [ ] Add Windows filesystem security tests using real symlinks/junctions when privileges allow and an explicit `SKIPPED (privilege unavailable)` result otherwise; traversal/absolute/UNC tests must never skip.
-- [ ] Add net-protocol contract cases for unauthorized, replayed, expired, oversized, rate-limited, malformed, and wrong-order messages. Verify handlers discard the Companion message without disconnecting unrelated users.
-- [ ] Add an artifact-dependency test that scans an optimized addon fixture and fails if any Companion Lua/material path or `sourceaddonoptimizer` runtime reference appears.
-- [ ] Add no-profile golden tests comparing Maximum decisions, selected SMD serialization, report core fields, compile count, and output tree hashes before/after this feature. Verify Normal/Fidelity never import `runtime_profile` and every Compress test remains unchanged.
-- [ ] Run `powershell -ExecutionPolicy Bypass -File scripts\test_companion.ps1`; expected result: all mandatory gates pass with only documented privilege skips.
-- [ ] Run `git diff --check` and inspect `git status --short` for caches, data exports, screenshots, binaries, or unrelated changes.
-- [ ] Commit: `test(companion): enforce security and no-profile regressions`.
+- [x] Build one orchestrator script that runs contract pytest, Companion-addon pytest, Maximum-focused pytest, Lua lint, existing WPF optimizer contracts, new WPF Companion contracts, and the WPF Release build. Stop on the first non-zero exit and print each exact command.
+- [x] Add Windows filesystem security tests using real symlinks/junctions when privileges allow and an explicit `SKIPPED (privilege unavailable)` result otherwise; traversal/absolute/UNC tests must never skip.
+- [x] Add net-protocol contract cases for unauthorized, replayed, expired, oversized, rate-limited, malformed, and wrong-order messages. Verify handlers discard the Companion message without disconnecting unrelated users.
+- [x] Add an artifact-dependency test that scans an optimized addon fixture and fails if any Companion Lua/material path or `sourceaddonoptimizer` runtime reference appears.
+- [x] Add no-profile golden tests comparing Maximum decisions, selected SMD serialization, report core fields, compile count, and output tree hashes before/after this feature. Verify Normal/Fidelity never import `runtime_profile` and every Compress test remains unchanged.
+- [x] Run `powershell -ExecutionPolicy Bypass -File scripts\test_companion.ps1`; expected result: all mandatory gates pass with only documented privilege skips.
+- [x] Run `git diff --check` and inspect `git status --short` for caches, data exports, screenshots, binaries, or unrelated changes.
+- [x] Commit: `test(companion): enforce security and no-profile regressions`.
 
 ## Task 15: Execute the real-game matrix and LVS benchmark before tuning
 

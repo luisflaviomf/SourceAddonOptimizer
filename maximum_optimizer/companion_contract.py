@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
@@ -187,13 +188,27 @@ def _validate_json_shape(value: object) -> None:
 
 
 def _read_bytes(path: Path, maximum: int, label: str) -> bytes:
+    _reject_reparse_point(path, label)
     try:
         size = path.stat().st_size
     except FileNotFoundError as exc:
         raise ValueError(f"{label} is missing") from exc
     if size > maximum:
         raise ValueError(f"{label} exceeds its byte limit")
-    return path.read_bytes()
+    raw = path.read_bytes()
+    if len(raw) != size:
+        raise ValueError(f"{label} changed while it was being read")
+    return raw
+
+
+def _reject_reparse_point(path: Path, label: str) -> None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    if path.is_symlink() or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+        raise ValueError(f"{label} must not be a symbolic link or reparse point")
 
 
 def _load_object(path: Path, maximum: int, label: str) -> tuple[dict[str, Any], bytes]:
@@ -532,6 +547,7 @@ _PAYLOAD_VALIDATORS: dict[str, Callable[..., None]] = {
 def _read_index_and_ready(root: Path) -> tuple[dict[str, Any], bytes, UUID, datetime, dict[str, object], dict[str, object], int, int]:
     if not root.is_dir():
         raise ValueError("bundle root is missing")
+    _reject_reparse_point(root, "bundle root")
     if not (root / "complete.ready.json").is_file():
         raise ValueError("bundle is incomplete: complete.ready.json is missing")
     index, index_raw = _load_object(root / "run-index.json", MAX_INDEX_BYTES, "run index")

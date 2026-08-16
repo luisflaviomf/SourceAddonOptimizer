@@ -377,6 +377,7 @@ namespace GmodAddonCompressor.Systems.Companion
             string resolvedIndex = Directory.Exists(fullInput) ? Path.Combine(root, "run-index.json") : fullInput;
             if (!Path.GetFileName(resolvedIndex).Equals("run-index.json", StringComparison.OrdinalIgnoreCase) || !Directory.Exists(root))
                 throw new InvalidOperationException("Bundle root is missing or index path is invalid.");
+            CompanionPathPolicy.AssertNotReparsePoint(root, "bundle root");
             string readyPath = Path.Combine(root, "complete.ready.json");
             if (!File.Exists(readyPath))
                 throw new InvalidOperationException("Bundle is incomplete: complete.ready.json is missing.");
@@ -538,6 +539,7 @@ namespace GmodAddonCompressor.Systems.Companion
         {
             if (!File.Exists(path))
                 throw new InvalidOperationException($"{label} is missing.");
+            CompanionPathPolicy.AssertNotReparsePoint(path, label);
             var info = new FileInfo(path);
             if (info.Length > maximum)
                 throw new InvalidOperationException($"{label} exceeds its byte limit.");

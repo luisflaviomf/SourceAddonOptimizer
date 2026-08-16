@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -100,6 +101,20 @@ def runtime_map(
 
 
 class AdaptivePipelineTests(unittest.TestCase):
+    @staticmethod
+    def _tree_sha256(root: Path) -> str:
+        digest = hashlib.sha256()
+        for path in sorted(root.rglob("*"), key=lambda value: value.relative_to(root).as_posix()):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix().encode("utf-8")
+            raw = path.read_bytes()
+            digest.update(len(relative).to_bytes(4, "big"))
+            digest.update(relative)
+            digest.update(len(raw).to_bytes(8, "big"))
+            digest.update(raw)
+        return digest.hexdigest()
+
     def test_small_regions_use_a_bounded_sample_budget(self) -> None:
         graph = build_region_graph(
             parse_smd((FIXTURES / "two_components.smd").read_text(encoding="utf-8")),
@@ -302,6 +317,72 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertEqual(empty_bytes, absent_bytes)
         self.assertEqual(selected_sources["empty"], selected_sources["absent"])
         self.assertNotIn(b'"runtime_profile"', absent_bytes)
+
+    def test_no_profile_maximum_matches_frozen_decision_and_output_golden(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            options = replace(
+                self._fixture_options(root),
+                validate_candidate=None,
+                runtime_evidence=None,
+            )
+            selected: dict[str, object] = {}
+            compile_family = options.compile_family
+
+            def compile_and_capture(tree: Path):
+                selected["smd"] = tuple(
+                    (path.relative_to(tree).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest())
+                    for path in sorted(tree.rglob("*.smd"), key=lambda value: value.as_posix().casefold())
+                )
+                selected["tree"] = self._tree_sha256(tree)
+                return compile_family(tree)
+
+            with patch.object(pipeline_module.time, "perf_counter", return_value=10.0), patch.object(
+                pipeline_module.time, "process_time", return_value=5.0
+            ), patch.object(pipeline_module, "_peak_working_set", return_value=123):
+                report = run_maximum_adaptive(replace(options, compile_family=compile_and_capture))
+            payload = json.loads(options.report_path.read_text(encoding="utf-8"))
+            selected["compiled_tree"] = self._tree_sha256(root / "compiled-models")
+
+        decisions = tuple(
+            (
+                detail.material,
+                detail.representation,
+                detail.original_triangles,
+                detail.selected_triangles,
+                round(detail.risk_score, 12),
+                detail.simplifier_evaluations,
+            )
+            for detail in report.region_details
+        )
+        self.assertEqual(
+            decisions,
+            (
+                ("paint", "original", 2, 2, 0.172264172636, 1),
+                ("glass", "original", 1, 1, 0.18, 1),
+                ("paint", "normal", 1, 1, 0.18, 0),
+            ),
+        )
+        self.assertEqual(selected["smd"], (("vehicle.smd", "3769c9872899192005f685b00873fb6419d3bd60eecb2beab6c146277fc25941"),))
+        self.assertEqual(selected["tree"], "173623295e1fce7ac91d5163343b515ac3f451beb0810ca4e91cf713f3ff95e0")
+        self.assertEqual(selected["compiled_tree"], "eae68b2235930e9cd6ac3b45185d6e73229a2432c5e07bc35de6120bb5ad3e28")
+        self.assertEqual((report.original_triangles, report.normal_triangles, report.final_triangles), (4, 4, 4))
+        self.assertEqual((report.simplifier_evaluations, report.studiomdl_compiles, report.full_family_renders), (2, 1, 0))
+        self.assertEqual(report.family_status, "optimized")
+        self.assertEqual(
+            {key: payload[key] for key in ("schema", "family_status", "original_triangles", "normal_triangles", "final_triangles", "simplifier_evaluations", "studiomdl_compiles", "full_family_renders")},
+            {
+                "schema": 1,
+                "family_status": "optimized",
+                "original_triangles": 4,
+                "normal_triangles": 4,
+                "final_triangles": 4,
+                "simplifier_evaluations": 2,
+                "studiomdl_compiles": 1,
+                "full_family_renders": 0,
+            },
+        )
+        self.assertNotIn("runtime_profile", payload)
 
     def test_model_baseline_tightens_headroom_but_does_not_schedule_validation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
