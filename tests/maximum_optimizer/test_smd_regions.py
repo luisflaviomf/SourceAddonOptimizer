@@ -42,7 +42,11 @@ class SmdTests(unittest.TestCase):
 
 class QcGraphTests(unittest.TestCase):
     def test_qc_scanner_records_each_render_occurrence(self) -> None:
-        occurrences = scan_qc_occurrences(FIXTURES)
+        occurrences = tuple(
+            occurrence
+            for occurrence in scan_qc_occurrences(FIXTURES)
+            if occurrence.qc_path == PurePosixPath("vehicle.qc")
+        )
 
         self.assertEqual(len(occurrences), 2)
         self.assertEqual(occurrences[0].directive, "$body")

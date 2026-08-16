@@ -220,10 +220,10 @@ assert bundle.payloads[0]["models"][0]["path"] == "models/lvs/example.mdl"
 - Create: `tests/maximum_optimizer/fixtures/runtime_vehicle.qc`
 - Modify: `maximum_optimizer/qc_graph.py` only if a shared tokenizer/helper is extracted
 
-- [ ] Add failing tests for the fixed tier mapping, merged maximum tier, model-path normalization, `$modelname`, `$body`, `$model`, bodygroup name/choice indices, `$texturegroup` skin rows, `$cdmaterials`, direct material matches, missing bindings, and deterministic results under reordered input.
-- [ ] Define immutable `RuntimeEvidenceMap` and `RegionRuntimeImportance` records. `for_region(occurrence, material)` must return model baseline, observed-state signal, material signal, final maximum, and human-readable contributing reasons.
-- [ ] Parse QC into bindings keyed by canonical `$modelname`, source occurrence, bodygroup choice, and skin material row. Reuse the existing safe tokenizer and containment behavior; malformed/ambiguous QC contributes no state signal instead of failing a model family.
-- [ ] Implement exactly:
+- [x] Add failing tests for the fixed tier mapping, merged maximum tier, model-path normalization, `$modelname`, `$body`, `$model`, bodygroup name/choice indices, `$texturegroup` skin rows, `$cdmaterials`, direct material matches, missing bindings, and deterministic results under reordered input.
+- [x] Define immutable `RuntimeEvidenceMap` and `RegionRuntimeImportance` records. `for_region(occurrence, material)` must return model baseline, observed-state signal, material signal, final maximum, and human-readable contributing reasons.
+- [x] Parse QC into bindings keyed by canonical `$modelname`, source occurrence, bodygroup choice, and skin material row. Reuse the existing safe tokenizer and containment behavior; malformed/ambiguous QC contributes no state signal instead of failing a model family.
+- [x] Implement exactly:
 
 ```python
 runtime_importance = max(
@@ -233,10 +233,10 @@ runtime_importance = max(
 )
 ```
 
-- [ ] Ensure a model-only `1.00` observation yields at most `0.40` for every region. A wheel/bodygroup/material observation may yield the full tier only for its mapped regional occurrence/material. Missing paths return all zeros.
-- [ ] Load only `sao-runtime-profile-v1` bundles through `companion_contract.read_bundle`; cap/validation failures return a typed diagnostic to the caller, never a partially built map.
-- [ ] Run `python -m pytest tests\maximum_optimizer\test_runtime_profile.py tests\maximum_optimizer\test_risk.py -q`; expected result: pass.
-- [ ] Commit: `feat(maximum): map runtime evidence to model regions`.
+- [x] Ensure a model-only `1.00` observation yields at most `0.40` for every region. A wheel/bodygroup/material observation may yield the full tier only for its mapped regional occurrence/material. Missing paths return all zeros.
+- [x] Load only `sao-runtime-profile-v1` bundles through `companion_contract.read_bundle`; cap/validation failures return a typed diagnostic to the caller, never a partially built map.
+- [x] Run `python -m pytest tests\maximum_optimizer\test_runtime_profile.py tests\maximum_optimizer\test_risk.py -q`; expected result: pass.
+- [x] Commit: `feat(maximum): map runtime evidence to model regions`.
 
 ## Task 8: Integrate runtime importance into Maximum v2 without adding work explosion
 
