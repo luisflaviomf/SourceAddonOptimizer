@@ -18,11 +18,21 @@ local function ensure_base_folders()
     end
 end
 
-local function run_root(kind, run_id)
+local function run_root(kind, run_id, schema)
     local folder = SAO.Constants.DataFolders[kind]
     if not folder or not SAO.Contract.IsRunId(run_id) then return nil end
+    local root = SAO.Constants.DATA_ROOT .. "/" .. folder .. "/" .. run_id
+    if kind ~= "validation_results" then return root end
+    local prefix = schema == "sao-structural-result-v1" and "structural" or schema == "sao-visual-result-v1" and "visual" or nil
+    if not prefix then return nil end
+    file.CreateDir(root)
 
-    return SAO.Constants.DATA_ROOT .. "/" .. folder .. "/" .. run_id
+    for attempt = 1, 9999 do
+        local candidate = root .. "/" .. string.format("%s-%04d", prefix, attempt)
+        if not file.IsDir(candidate, "DATA") and not file.Exists(candidate .. "/" .. INDEX_FILE, "DATA") then return candidate end
+    end
+
+    return nil
 end
 
 local function write_atomic(path, raw)
@@ -39,7 +49,7 @@ local function write_atomic(path, raw)
 end
 
 function SAO.Storage.WriteBundle(kind, schema, run_id, created_utc, producer, environment, payloads)
-    local root = run_root(kind, run_id)
+    local root = run_root(kind, run_id, schema)
     local allowed_schemas = allowed_schemas_by_kind[kind]
     if not root or not allowed_schemas or not allowed_schemas[schema] or not SAO.Constants.Schemas[schema] or not istable(payloads) or #payloads == 0 then return false, "invalid bundle request" end
     if file.IsDir(root, "DATA") or file.Exists(root .. "/" .. INDEX_FILE, "DATA") or file.Exists(root .. "/" .. COMPLETE_FILE, "DATA") then return false, "run id already exists" end

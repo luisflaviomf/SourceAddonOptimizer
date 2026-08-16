@@ -41,6 +41,15 @@ local function record_error(message, realm, stack)
         source = source,
         count = math.min(1000000, 1)
     })
+    if SAO.StructuralValidator and SAO.StructuralValidator.RecordLuaError then
+        SAO.StructuralValidator.RecordLuaError({
+            id = identifier,
+            realm = realm,
+            message = message,
+            source = source,
+            count = 1
+        })
+    end
 end
 
 hook.Add("OnLuaError", "SAO.CollectServerLuaError", function(message, realm, stack)

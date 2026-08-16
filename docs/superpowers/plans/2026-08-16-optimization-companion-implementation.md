@@ -310,15 +310,15 @@ effective = risk + (1.0 - risk) * 0.35 * runtime_importance
 - Modify: `companion/sourceaddonoptimizer_companion/lua/sourceaddonoptimizer/shared/validation.lua`
 - Create: `tests/companion_addon/test_structural_validator_contract.py`
 
-- [ ] Add failing static contract tests for the closed test-kind dispatch table, required-sidecar checks, DX90 requirement, expected PHY behavior, `util.IsValidModel`, bounded temporary entity creation/removal, skin/bodygroup bounds, material/texture dependencies, conflict warnings, Lua-error summaries, and headless completion.
-- [ ] Implement a queue that reads only a fully validated `sao-validation-plan-v1` from `validation_inbox`, copies fixed test records into bounded internal state, and processes a configured small number per tick with cancellation/map-change hooks.
-- [ ] Use an explicit dispatch table for `model_structure`, `model_state`, `material_resolve`, and `model_render`; server code handles the first three and records visual items as pending client work. Unknown kinds reject the entire plan.
-- [ ] Verify `.mdl`, `.vvd`, `.dx90.vtx`, expected `.phy`, `util.IsValidModel`, temporary entity validity, skin/bodygroup range and selection, `GetMaterials()`, referenced VMT/VTF existence, basic bone/mesh plausibility, and multiple mounted providers where the engine exposes ambiguity.
-- [ ] Never execute addon Lua as a test. Remove every temporary entity on success, failure, cancellation, disconnect, or map change.
-- [ ] Emit per-resource `PASS`, `WARNING`, `FAILED`, or `INCOMPLETE` and compute overall status exactly as approved. A headless dedicated server completes structural work and emits a visual-client-missing `WARNING`, not a structural failure.
-- [ ] Persist bounded progress on cancellation/map change/disconnect, then write `sao-structural-result-v1` atomically. Preserve prior result folders on duplicate run IDs.
-- [ ] Run Lua lint and `python -m pytest tests\companion_addon\test_structural_validator_contract.py -q`; expected result: pass.
-- [ ] Commit: `feat(companion): validate optimized assets structurally`.
+- [x] Add failing static contract tests for the closed test-kind dispatch table, required-sidecar checks, DX90 requirement, expected PHY behavior, `util.IsValidModel`, bounded temporary entity creation/removal, skin/bodygroup bounds, material/texture dependencies, conflict warnings, Lua-error summaries, and headless completion.
+- [x] Implement a queue that reads only a fully validated `sao-validation-plan-v1` from `validation_inbox`, copies fixed test records into bounded internal state, and processes a configured small number per tick with cancellation/map-change hooks.
+- [x] Use an explicit dispatch table for `model_structure`, `model_state`, `material_resolve`, and `model_render`; server code handles the first three and records visual items as pending client work. Unknown kinds reject the entire plan.
+- [x] Verify `.mdl`, `.vvd`, `.dx90.vtx`, expected `.phy`, `util.IsValidModel`, temporary entity validity, skin/bodygroup range and selection, `GetMaterials()`, referenced VMT/VTF existence, basic bone/mesh plausibility, and multiple mounted providers where the engine exposes ambiguity.
+- [x] Never execute addon Lua as a test. Remove every temporary entity on success, failure, cancellation, disconnect, or map change.
+- [x] Emit per-resource `PASS`, `WARNING`, `FAILED`, or `INCOMPLETE` and compute overall status exactly as approved. A headless dedicated server completes structural work and emits a visual-client-missing `WARNING`, not a structural failure.
+- [x] Persist bounded progress on cancellation/map change/disconnect, then write `sao-structural-result-v1` atomically. Preserve prior result folders on duplicate run IDs.
+- [x] Run Lua lint and `python -m pytest tests\companion_addon\test_structural_validator_contract.py -q`; expected result: pass.
+- [x] Commit: `feat(companion): validate optimized assets structurally`.
 
 ## Task 12: Implement the controlled visual gallery and screenshot evidence
 

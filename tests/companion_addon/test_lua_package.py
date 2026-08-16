@@ -26,6 +26,7 @@ EXPECTED_FILES = {
     "lua/sourceaddonoptimizer/server/error_collector.lua",
     "lua/sourceaddonoptimizer/server/storage.lua",
     "lua/sourceaddonoptimizer/server/result_writer.lua",
+    "lua/sourceaddonoptimizer/server/structural_validator.lua",
     "lua/sourceaddonoptimizer/client/profiler.lua",
     "lua/sourceaddonoptimizer/client/result_writer.lua",
 }
@@ -79,6 +80,7 @@ def test_loader_sends_client_files_before_including_shared_and_realm_modules() -
         "sourceaddonoptimizer/server/error_collector.lua",
         "sourceaddonoptimizer/server/storage.lua",
         "sourceaddonoptimizer/server/result_writer.lua",
+        "sourceaddonoptimizer/server/structural_validator.lua",
         "sourceaddonoptimizer/client/profiler.lua",
         "sourceaddonoptimizer/client/result_writer.lua",
     ):

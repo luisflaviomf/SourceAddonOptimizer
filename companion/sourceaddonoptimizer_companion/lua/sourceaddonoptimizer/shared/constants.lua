@@ -21,6 +21,11 @@ SAO.Constants.MAX_MATERIALS_PER_MODEL = 128
 SAO.Constants.MAX_BODYGROUP_STATES_PER_MODEL = 256
 SAO.Constants.MAX_SUBMATERIALS_PER_MODEL = 32
 SAO.Constants.MAX_PROFILE_PAYLOAD_BYTES = 1800000
+SAO.Constants.MAX_VALIDATION_TESTS = 5000
+SAO.Constants.VALIDATION_TESTS_PER_TICK = 2
+SAO.Constants.VALIDATION_PROGRESS_INTERVAL = 16
+SAO.Constants.MAX_VALIDATION_PROGRESS_FILES = 512
+SAO.Constants.MAX_VALIDATION_WARNINGS = 64
 SAO.Constants.PROFILER_INITIAL_BUDGET = 12
 SAO.Constants.PROFILER_RECONCILE_BUDGET = 4
 SAO.Constants.PROFILER_CLIENT_BUDGET = 6
@@ -37,6 +42,7 @@ SAO.Constants.DataFolders = {
     profiles = "profiles",
     validation_inbox = "validation_inbox",
     validation_results = "validation_results",
+    validation_progress = "validation_progress",
     screenshots = "screenshots"
 }
 
