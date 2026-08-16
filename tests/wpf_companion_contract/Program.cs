@@ -1,3 +1,4 @@
+using GmodAddonCompressor.DataContexts;
 using GmodAddonCompressor.Models;
 using GmodAddonCompressor.Systems.Companion;
 using System.IO.Compression;
@@ -120,12 +121,21 @@ try
 {
     string freshGame = CreateGameRoot(testRoot, "fresh");
     Assert(CompanionPathPolicy.DetectGarrysModRoot(freshGame) == Path.GetFullPath(freshGame), "Explicit game root was not preferred.");
+    CompanionInstallStatus notInstalled = CompanionPackageInstaller.Inspect(firstPackage, freshGame);
+    Assert(notInstalled.State == CompanionInstallState.NotInstalled, "Missing addon did not present Not installed.");
+    Assert(notInstalled.CanInstall && !notInstalled.CanUpdate && !notInstalled.CanRemove, "Not installed actions are unsafe.");
     string destination = CompanionPathPolicy.ResolveAddonDestination(freshGame);
     CompanionInstallResult fresh = CompanionPackageInstaller.Install(firstPackage, freshGame, TimeSpan.FromSeconds(5));
     Assert(fresh.Disposition == CompanionInstallDisposition.Installed, "Fresh install did not report Installed.");
     Assert(fresh.Destination == destination, "Fresh install used the wrong destination.");
     Assert(File.Exists(Path.Combine(destination, CompanionPackageInstaller.OwnershipMarkerName)), "Ownership marker is missing.");
     Assert(File.ReadAllBytes(Path.Combine(destination, "lua", "sourceaddonoptimizer", "shared", "old.lua")).SequenceEqual(firstFiles["lua/sourceaddonoptimizer/shared/old.lua"]), "Fresh payload differs from package.");
+    CompanionInstallStatus compatible = CompanionPackageInstaller.Inspect(firstPackage, freshGame);
+    Assert(compatible.State == CompanionInstallState.Compatible && compatible.StatusText == "Compatible", "Current owned addon did not present Compatible.");
+    Assert(!compatible.CanInstall && !compatible.CanUpdate && compatible.CanRemove, "Compatible actions are unsafe.");
+    CompanionInstallStatus updateAvailable = CompanionPackageInstaller.Inspect(secondPackage, freshGame);
+    Assert(updateAvailable.State == CompanionInstallState.UpdateAvailable && updateAvailable.StatusText == "Update available", "Older owned addon did not present Update available.");
+    Assert(!updateAvailable.CanInstall && updateAvailable.CanUpdate && updateAvailable.CanRemove, "Update actions are unsafe.");
 
     string dataEvidence = Path.Combine(freshGame, "garrysmod", "data", "sourceaddonoptimizer", "profiles", "keep.json");
     Directory.CreateDirectory(Path.GetDirectoryName(dataEvidence)!);
@@ -143,7 +153,21 @@ try
     string unknownDestination = CompanionPathPolicy.ResolveAddonDestination(unknownGame);
     Directory.CreateDirectory(unknownDestination);
     File.WriteAllText(Path.Combine(unknownDestination, "foreign.txt"), "not ours");
+    CompanionInstallStatus unknownStatus = CompanionPackageInstaller.Inspect(firstPackage, unknownGame);
+    Assert(unknownStatus.State == CompanionInstallState.UnknownFolder && unknownStatus.StatusText == "Unknown folder", "Foreign destination did not present Unknown folder.");
+    Assert(!unknownStatus.CanInstall && !unknownStatus.CanUpdate && !unknownStatus.CanRemove, "Unknown folder exposed a destructive action.");
     ExpectFailure(() => CompanionPackageInstaller.Install(firstPackage, unknownGame), "unknown");
+
+    string incompatibleGame = CreateGameRoot(testRoot, "incompatible");
+    string incompatibleDestination = CompanionPathPolicy.ResolveAddonDestination(incompatibleGame);
+    Directory.CreateDirectory(incompatibleDestination);
+    File.WriteAllText(
+        Path.Combine(incompatibleDestination, CompanionPackageInstaller.OwnershipMarkerName),
+        "{\"schemaVersion\":2,\"packageVersion\":\"2.0.0\",\"packageSha256\":\"" + new string('0', 64) + "\",\"files\":[]}"
+    );
+    CompanionInstallStatus incompatible = CompanionPackageInstaller.Inspect(firstPackage, incompatibleGame);
+    Assert(incompatible.State == CompanionInstallState.Incompatible && incompatible.StatusText == "Incompatible", "Unsupported ownership schema did not present Incompatible.");
+    Assert(!incompatible.CanInstall && !incompatible.CanUpdate && !incompatible.CanRemove, "Incompatible addon exposed a destructive action.");
 
     string missingMarkerGame = CreateGameRoot(testRoot, "missing-marker");
     CompanionPackageInstaller.Install(firstPackage, missingMarkerGame);
@@ -157,6 +181,16 @@ try
         "{}"
     );
     ExpectFailure(() => CompanionPackageInstaller.Install(secondPackage, tamperedMarkerGame), "ownership");
+
+    string oversizedMarkerGame = CreateGameRoot(testRoot, "oversized-marker");
+    CompanionPackageInstaller.Install(firstPackage, oversizedMarkerGame);
+    File.WriteAllBytes(
+        Path.Combine(CompanionPathPolicy.ResolveAddonDestination(oversizedMarkerGame), CompanionPackageInstaller.OwnershipMarkerName),
+        new byte[1_000_001]
+    );
+    CompanionInstallStatus oversizedMarkerStatus = CompanionPackageInstaller.Inspect(firstPackage, oversizedMarkerGame);
+    Assert(oversizedMarkerStatus.State == CompanionInstallState.UnknownFolder, "Oversized ownership marker did not close installation actions.");
+    ExpectFailure(() => CompanionPackageInstaller.Install(secondPackage, oversizedMarkerGame), "ownership marker exceeds");
 
     string traversalGame = CreateGameRoot(testRoot, "traversal");
     byte[] traversalPackage = AddEntry(firstPackage, "sourceaddonoptimizer_companion/../escape.lua", Encoding.UTF8.GetBytes("escape"));
@@ -244,6 +278,20 @@ try
     Assert(!File.Exists(Path.Combine(destination, "addon.json")), "Uninstall retained a declared file.");
     Assert(!File.Exists(Path.Combine(destination, CompanionPackageInstaller.OwnershipMarkerName)), "Uninstall retained the ownership marker.");
     Assert(File.ReadAllText(dataEvidence) == "preserve", "Uninstall changed game data evidence.");
+
+    Assert(typeof(AppSettingsModel).GetProperty("CompanionGarrysModRoot") != null, "Companion game root is not persisted.");
+    Assert(typeof(AppSettingsModel).GetProperty("CompanionLastProfilePath") != null, "Companion profile location is not persisted.");
+    Assert(typeof(AppSettingsModel).GetProperty("CompanionUseWithMaximumV2") == null, "Maximum opt-in must never be persisted.");
+
+    var context = new CompanionContext();
+    Assert(!context.UseWithMaximumV2, "Maximum profile use must start disabled.");
+    context.UseWithMaximumV2 = true;
+    context.ResetImportedProfile("C:/profiles/example/run-index.json");
+    Assert(!context.UseWithMaximumV2, "Import/reset must disable Maximum profile use.");
+    Assert(context.LastProfilePath.EndsWith("run-index.json", StringComparison.Ordinal), "Profile location was not presented.");
+    context.ApplyInstallStatus(compatible);
+    Assert(context.InstallationStatusText == "Compatible" && context.CanRemove, "Compatible state was not presented by the WPF context.");
+    Assert(!context.CanInstall && !context.CanUpdate, "WPF context exposed invalid compatible-state actions.");
 
     Console.WriteLine("WPF Companion contract tests passed.");
 }

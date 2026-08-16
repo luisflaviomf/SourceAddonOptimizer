@@ -24,6 +24,101 @@ namespace GmodAddonCompressor.Systems.Companion
         private const string StagingPrefix = ".sourceaddonoptimizer_companion.";
         private const string StagingSuffix = ".staging";
 
+        internal static CompanionInstallStatus Inspect(byte[] packageBytes, string garrysModRoot)
+        {
+            ParsedPackage package = ParsePackage(packageBytes);
+            string destination = CompanionPathPolicy.ResolveAddonDestination(garrysModRoot);
+            if (File.Exists(destination) && !Directory.Exists(destination))
+            {
+                return new CompanionInstallStatus(
+                    CompanionInstallState.UnknownFolder,
+                    destination,
+                    package.Manifest.PackageVersion,
+                    string.Empty,
+                    "A file already occupies the Companion addon path. No changes are allowed."
+                );
+            }
+            if (!Directory.Exists(destination))
+            {
+                return new CompanionInstallStatus(
+                    CompanionInstallState.NotInstalled,
+                    destination,
+                    package.Manifest.PackageVersion,
+                    string.Empty,
+                    "The optional in-game Companion is not installed."
+                );
+            }
+
+            CompanionPathPolicy.AssertNotReparsePoint(destination, "Companion destination");
+            string markerPath = ResolveSafePath(destination, OwnershipMarkerName);
+            if (!File.Exists(markerPath))
+            {
+                return new CompanionInstallStatus(
+                    CompanionInstallState.UnknownFolder,
+                    destination,
+                    package.Manifest.PackageVersion,
+                    string.Empty,
+                    "The destination exists without a Source Addon Optimizer ownership marker. It will not be modified."
+                );
+            }
+
+            try
+            {
+                CompanionPathPolicy.AssertNotReparsePoint(markerPath, "Companion ownership marker");
+                byte[] markerBytes = ReadOwnershipMarkerBytes(markerPath);
+                using JsonDocument document = ParseClosedJson(markerBytes, "ownership marker");
+                if (!document.RootElement.TryGetProperty("schemaVersion", out JsonElement schema)
+                    || schema.ValueKind != JsonValueKind.Number
+                    || !schema.TryGetInt32(out int schemaVersion))
+                {
+                    return new CompanionInstallStatus(
+                        CompanionInstallState.UnknownFolder,
+                        destination,
+                        package.Manifest.PackageVersion,
+                        string.Empty,
+                        "The ownership marker is malformed. No changes are allowed."
+                    );
+                }
+                if (schemaVersion != 1)
+                {
+                    string installedVersion = document.RootElement.TryGetProperty("packageVersion", out JsonElement version)
+                        && version.ValueKind == JsonValueKind.String
+                        ? version.GetString() ?? string.Empty
+                        : string.Empty;
+                    return new CompanionInstallStatus(
+                        CompanionInstallState.Incompatible,
+                        destination,
+                        package.Manifest.PackageVersion,
+                        installedVersion,
+                        $"Ownership schema {schemaVersion} is not supported by this application."
+                    );
+                }
+
+                CompanionOwnershipMarker ownership = ReadOwnership(destination);
+                bool current = ownership.PackageSha256.Equals(package.PackageSha256, StringComparison.Ordinal)
+                    && InstalledPayloadMatches(destination, ownership.Files);
+                return new CompanionInstallStatus(
+                    current ? CompanionInstallState.Compatible : CompanionInstallState.UpdateAvailable,
+                    destination,
+                    package.Manifest.PackageVersion,
+                    ownership.PackageVersion,
+                    current
+                        ? "The installed Companion matches the packaged version."
+                        : "An owned Companion install differs from the packaged version and can be updated safely."
+                );
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is IOException || ex is UnauthorizedAccessException)
+            {
+                return new CompanionInstallStatus(
+                    CompanionInstallState.UnknownFolder,
+                    destination,
+                    package.Manifest.PackageVersion,
+                    string.Empty,
+                    "The ownership marker could not be verified. No changes are allowed."
+                );
+            }
+        }
+
         internal static CompanionInstallResult Install(
             byte[] packageBytes,
             string garrysModRoot,
@@ -333,7 +428,7 @@ namespace GmodAddonCompressor.Systems.Companion
             if (!File.Exists(markerPath))
                 throw new InvalidOperationException("The Companion destination is unknown because its ownership marker is missing.");
             CompanionPathPolicy.AssertNotReparsePoint(markerPath, "Companion ownership marker");
-            byte[] bytes = File.ReadAllBytes(markerPath);
+            byte[] bytes = ReadOwnershipMarkerBytes(markerPath);
             try
             {
                 using JsonDocument document = ParseClosedJson(bytes, "ownership marker");
@@ -350,8 +445,27 @@ namespace GmodAddonCompressor.Systems.Companion
             }
             catch (Exception ex) when (ex is JsonException || ex is InvalidOperationException || ex is IOException)
             {
-                throw new InvalidOperationException("The Companion ownership marker is invalid or tampered.", ex);
+                throw new InvalidOperationException("The Companion ownership marker is invalid or tampered. " + ex.Message, ex);
             }
+        }
+
+        private static byte[] ReadOwnershipMarkerBytes(string markerPath)
+        {
+            using var stream = new FileStream(markerPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length <= 0 || stream.Length > MaximumManifestBytes)
+                throw new InvalidOperationException("The Companion ownership marker exceeds its byte limit.");
+            byte[] bytes = new byte[(int)stream.Length];
+            int offset = 0;
+            while (offset < bytes.Length)
+            {
+                int read = stream.Read(bytes, offset, bytes.Length - offset);
+                if (read == 0)
+                    throw new InvalidOperationException("The Companion ownership marker changed while reading.");
+                offset += read;
+            }
+            if (stream.ReadByte() != -1)
+                throw new InvalidOperationException("The Companion ownership marker changed while reading.");
+            return bytes;
         }
 
         private static void ValidateOwnership(CompanionOwnershipMarker marker)

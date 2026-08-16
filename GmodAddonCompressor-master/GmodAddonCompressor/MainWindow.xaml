@@ -2588,6 +2588,237 @@
                 </Grid>
             </ScrollViewer>
         </TabItem>
+
+        <TabItem Header="Companion">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          CanContentScroll="False"
+                          Background="{DynamicResource AppBackground}">
+                <Grid x:Name="CompanionTabRoot"
+                      Margin="8"
+                      Background="{DynamicResource AppBackground}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.08*" />
+                        <ColumnDefinition Width="0.92*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,14">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="IN-GAME BRIDGE" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Installation &amp; compatibility" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="Install the optional auditing addon directly into Garry's Mod. The optimizer works normally without it, and optimized addons never depend on it." />
+
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Garry's Mod folder" />
+                                    <Grid Margin="0,8,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Text="{Binding GarrysModRoot}"
+                                                 IsReadOnly="True"
+                                                 TextWrapping="NoWrap"
+                                                 HorizontalScrollBarVisibility="Auto" />
+                                        <Button x:Name="Button_CompanionBrowseGame"
+                                                Grid.Column="1"
+                                                Margin="8,0,0,0"
+                                                Content="Select"
+                                                Width="82"
+                                                IsEnabled="{Binding CanImportProfile}" />
+                                        <Button x:Name="Button_CompanionDetectGame"
+                                                Grid.Column="2"
+                                                Margin="8,0,0,0"
+                                                Content="Detect"
+                                                Width="82"
+                                                IsEnabled="{Binding CanImportProfile}" />
+                                    </Grid>
+
+                                    <Grid Margin="0,14,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource LabelText}" Text="State" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="1"
+                                                   Margin="14,0,0,0"
+                                                   Style="{StaticResource ValueText}"
+                                                   Text="{Binding InstallationStatusText}"
+                                                   VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="2" Style="{StaticResource LabelText}" Text="Installed" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="3"
+                                                   Margin="10,0,0,0"
+                                                   Style="{StaticResource ValueText}"
+                                                   Text="{Binding InstalledVersionText}"
+                                                   VerticalAlignment="Center" />
+                                    </Grid>
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               Text="{Binding InstallationDetailText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,6,0,0"
+                                               Text="{Binding InstallDestinationText}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,12,0,0">
+                                <WrapPanel>
+                                    <Button x:Name="Button_CompanionInstall"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Content="Install Companion"
+                                            Width="142"
+                                            IsEnabled="{Binding CanInstall}" />
+                                    <Button x:Name="Button_CompanionUpdate"
+                                            Margin="8,0,0,0"
+                                            Content="Update"
+                                            Width="88"
+                                            IsEnabled="{Binding CanUpdate}" />
+                                    <Button x:Name="Button_CompanionRemove"
+                                            Style="{StaticResource ButtonDanger}"
+                                            Margin="8,0,0,0"
+                                            Content="Remove"
+                                            Width="88"
+                                            IsEnabled="{Binding CanRemove}" />
+                                    <Button x:Name="Button_CompanionOpenData"
+                                            Margin="8,0,0,0"
+                                            Content="Open Data Folder"
+                                            Width="126"
+                                            IsEnabled="{Binding CanOpenDataFolder}" />
+                                </WrapPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,0,14">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="RUNTIME EVIDENCE" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Profile import" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="Bring back a bounded profile recorded while you drive, inspect and use the addon in Garry's Mod. Importing never enables it automatically." />
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Last selected profile" />
+                                    <TextBox Margin="0,8,0,0"
+                                             Text="{Binding LastProfilePath, Mode=OneWay}"
+                                             IsReadOnly="True"
+                                             TextWrapping="Wrap"
+                                             MinHeight="48" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,10,0,0"
+                                               Text="{Binding ProfileSummaryText}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <Button x:Name="Button_CompanionImportProfile"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Content="Import Runtime Profile"
+                                            HorizontalAlignment="Left"
+                                            Width="172"
+                                            IsEnabled="{Binding CanImportProfile}" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               Text="Profile use is Maximum v2-only and remains off until you explicitly opt in."
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,0">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="VALIDATION LOOP" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Transfer &amp; results" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="Generate a declarative test plan for changed assets, run it in-game, then import structural and visual results. Remote servers use manual file transfer—no credentials are stored." />
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                                <TextBlock Text="{Binding ValidationSummaryText}"
+                                           TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextSecondary}" />
+                            </Border>
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,12,0,0">
+                                <WrapPanel>
+                                    <Button x:Name="Button_CompanionGeneratePlan"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Content="Generate Plan"
+                                            Width="126"
+                                            IsEnabled="{Binding CanGeneratePlan}" />
+                                    <Button x:Name="Button_CompanionImportResults"
+                                            Margin="8,0,0,0"
+                                            Content="Import Results"
+                                            Width="126"
+                                            IsEnabled="{Binding CanImportResults}" />
+                                </WrapPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="QUICK START" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="A closed, optional loop" />
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="32" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Foreground="{DynamicResource Accent}" FontWeight="Bold" Text="01" />
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="Install the Companion and restart Garry's Mod." TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="1" Margin="0,12,0,0" Foreground="{DynamicResource Accent}" FontWeight="Bold" Text="02" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,12,0,0" Text="Open Utilities → Source Addon Optimizer and record a representative session." TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="2" Margin="0,12,0,0" Foreground="{DynamicResource Accent}" FontWeight="Bold" Text="03" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,12,0,0" Text="Import the profile; enable it only if you want Maximum v2 to use positive importance evidence." TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="3" Margin="0,12,0,0" Foreground="{DynamicResource Accent}" FontWeight="Bold" Text="04" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,12,0,0" Text="Optimize, validate in-game, and import the result bundle." TextWrapping="Wrap" />
+                            </Grid>
+
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,18,0,0">
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource StatusTextBlockStyle}"
+                                                   Text="{Binding OperationStatusText}"
+                                                   TextWrapping="Wrap"
+                                                   VerticalAlignment="Center" />
+                                        <Button x:Name="Button_CompanionCancel"
+                                                Grid.Column="1"
+                                                Style="{StaticResource ButtonDanger}"
+                                                Margin="12,0,0,0"
+                                                Content="Cancel"
+                                                Width="82"
+                                                IsEnabled="{Binding CanCancel}" />
+                                    </Grid>
+                                    <ProgressBar Margin="0,12,0,0"
+                                                 Minimum="0"
+                                                 Maximum="100"
+                                                 Value="{Binding ProgressValue}" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </ScrollViewer>
+        </TabItem>
     </TabControl>
 
         <StackPanel Orientation="Horizontal"

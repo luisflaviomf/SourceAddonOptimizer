@@ -174,6 +174,7 @@ namespace GmodAddonCompressor
             _mapBspBuildRunner.OutputDirFound += MapBuildOutputDirFound;
             _mapBspBuildRunner.LogLine += MapScanLogLine;
             InitializeAddonMerge();
+            InitializeCompanion();
 
             LoadSettings();
         }
@@ -3201,6 +3202,7 @@ namespace GmodAddonCompressor
             LoadAddonMergeSettings();
             ResetMapScanSummary();
             UpdateMapScanActionStates();
+            LoadCompanionSettings();
             _ = RefreshAddonWorkshopWarningAsync(_context.AddonDirectoryPath, force: true);
         }
 
@@ -3257,6 +3259,7 @@ namespace GmodAddonCompressor
                 CompressMagickUseAggressivePng = _context.CompressMagickUseAggressivePng
             };
             SaveAddonMergeSettings(settings);
+            SaveCompanionSettings(settings);
 
             SettingsSystem.Save(settings);
         }

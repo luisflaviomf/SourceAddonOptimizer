@@ -182,14 +182,14 @@ assert bundle.payloads[0]["models"][0]["path"] == "models/lvs/example.mdl"
 - Modify: `GmodAddonCompressor-master/GmodAddonCompressor/MainWindow.xaml.cs`
 - Modify: `GmodAddonCompressor-master/GmodAddonCompressor/Models/AppSettingsModel.cs`
 
-- [ ] Add compile-time bindings/events in a new `Companion` tab with four cards: installation/compatibility, profile import/match summary, validation transfer/results, and quick start. Bind the tab root to a dedicated `CompanionContext`; do not expand the legacy Python GUI or move heavy work into `MainWindow.xaml.cs`.
-- [ ] Add installation tests to the C# contract project for state presentation (`Not installed`, `Compatible`, `Update available`, `Unknown folder`, `Incompatible`) and ensure every destructive action requires an owned manifest.
-- [ ] Implement `InitializeCompanion()` immediately after `InitializeAddonMerge()` and wire Install, Update, Remove, Open Data Folder, Import Profile, Generate Plan, Import Results, and Cancel buttons in `MainWindow.Companion.cs`.
-- [ ] Persist only the detected/selected Garry's Mod root and last imported profile location in `AppSettingsModel`. Never persist `UseWithMaximumV2=true`; initialize that property to false on every application launch and after every import.
-- [ ] Keep I/O and hashing asynchronous with cancellation and bounded progress. Any Companion error updates only the Companion card and never disables Models, Compress, Unpack, Merge, Maps, or Pipeline.
-- [ ] Run `dotnet build GmodAddonCompressor-master\GmodAddonCompressor\GmodAddonCompressor.csproj -c Release` and both WPF contract projects; expected result: clean build and all contracts pass.
-- [ ] Launch the Release build, open every existing tab, then verify the Companion tab with no game installation and with a test game root. Record the manual result in `docs/companion/testing/wpf-tab-smoke.md`.
-- [ ] Commit: `feat(wpf): add optional companion workspace`.
+- [x] Add compile-time bindings/events in a new `Companion` tab with four cards: installation/compatibility, profile import/match summary, validation transfer/results, and quick start. Bind the tab root to a dedicated `CompanionContext`; do not expand the legacy Python GUI or move heavy work into `MainWindow.xaml.cs`.
+- [x] Add installation tests to the C# contract project for state presentation (`Not installed`, `Compatible`, `Update available`, `Unknown folder`, `Incompatible`) and ensure every destructive action requires an owned manifest.
+- [x] Implement `InitializeCompanion()` immediately after `InitializeAddonMerge()` and wire Install, Update, Remove, Open Data Folder, Import Profile, Generate Plan, Import Results, and Cancel buttons in `MainWindow.Companion.cs`.
+- [x] Persist only the detected/selected Garry's Mod root and last imported profile location in `AppSettingsModel`. Never persist `UseWithMaximumV2=true`; initialize that property to false on every application launch and after every import.
+- [x] Keep I/O and hashing asynchronous with cancellation and bounded progress. Any Companion error updates only the Companion card and never disables Models, Compress, Unpack, Merge, Maps, or Pipeline.
+- [x] Run `dotnet build GmodAddonCompressor-master\GmodAddonCompressor\GmodAddonCompressor.csproj -c Release` and both WPF contract projects; expected result: clean build and all contracts pass.
+- [x] Launch the Release build, open every existing tab, then verify the Companion tab with no game installation and with a test game root. Record the manual result in `docs/companion/testing/wpf-tab-smoke.md`.
+- [x] Commit: `feat(wpf): add optional companion workspace`.
 
 ## Task 6: Import, merge, and intersect profiles with explicit Maximum-only opt-in
 

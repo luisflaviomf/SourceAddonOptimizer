@@ -52,6 +52,50 @@ namespace GmodAddonCompressor.Models
         AlreadyInstalled
     }
 
+    internal enum CompanionInstallState
+    {
+        NotInstalled,
+        Compatible,
+        UpdateAvailable,
+        UnknownFolder,
+        Incompatible
+    }
+
+    internal sealed class CompanionInstallStatus
+    {
+        internal CompanionInstallStatus(
+            CompanionInstallState state,
+            string destination,
+            string packagedVersion,
+            string installedVersion,
+            string detail)
+        {
+            State = state;
+            Destination = destination;
+            PackagedVersion = packagedVersion;
+            InstalledVersion = installedVersion;
+            Detail = detail;
+        }
+
+        public CompanionInstallState State { get; }
+        public string Destination { get; }
+        public string PackagedVersion { get; }
+        public string InstalledVersion { get; }
+        public string Detail { get; }
+        public string StatusText => State switch
+        {
+            CompanionInstallState.NotInstalled => "Not installed",
+            CompanionInstallState.Compatible => "Compatible",
+            CompanionInstallState.UpdateAvailable => "Update available",
+            CompanionInstallState.UnknownFolder => "Unknown folder",
+            _ => "Incompatible",
+        };
+        public bool IsOwned => State == CompanionInstallState.Compatible || State == CompanionInstallState.UpdateAvailable;
+        public bool CanInstall => State == CompanionInstallState.NotInstalled;
+        public bool CanUpdate => State == CompanionInstallState.UpdateAvailable;
+        public bool CanRemove => IsOwned;
+    }
+
     internal sealed class CompanionInstallResult
     {
         internal CompanionInstallResult(

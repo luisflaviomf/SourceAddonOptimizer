@@ -28,6 +28,8 @@ namespace GmodAddonCompressor.Models
         public string? GmadPath { get; set; }
         public string? BlenderPath { get; set; }
         public string? StudioMdlPath { get; set; }
+        public string? CompanionGarrysModRoot { get; set; }
+        public string? CompanionLastProfilePath { get; set; }
         public string? UnpackExistingMode { get; set; }
         public bool? UnpackOpenOnFinish { get; set; }
         public bool? UnpackExtractMapPak { get; set; }
