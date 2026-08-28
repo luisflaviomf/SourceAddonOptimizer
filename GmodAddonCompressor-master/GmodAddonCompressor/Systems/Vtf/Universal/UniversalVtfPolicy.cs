@@ -32,7 +32,7 @@ internal sealed record UniversalVtfThresholds(
     double ComponentRetentionMin,
     double HausdorffMax);
 
-internal sealed record UniversalVtfToolchain(
+internal sealed partial record UniversalVtfToolchain(
     string MagickVersion,
     long MagickManagedBytes,
     string MagickManagedSha256,
