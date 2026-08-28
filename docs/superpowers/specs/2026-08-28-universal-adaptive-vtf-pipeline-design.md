@@ -2,7 +2,7 @@
 
 Date: 2026-08-28
 
-Status: approved in chat on 2026-08-28; awaiting review of this written specification.
+Status: written specification approved by the user on 2026-08-28.
 
 ## Objective
 
