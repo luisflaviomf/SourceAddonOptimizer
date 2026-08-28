@@ -40,10 +40,18 @@ teste*.zip
 !/experiments/VtfMaximumLab/**
 !/experiments/VtfMaximumLab.Tests/
 !/experiments/VtfMaximumLab.Tests/**
+!/experiments/VtfUniversal.Tests/
+!/experiments/VtfUniversal.Tests/**
+!/experiments/VtfUniversalCorpusDriver/
+!/experiments/VtfUniversalCorpusDriver/**
 /experiments/VtfMaximumLab/**/bin/
 /experiments/VtfMaximumLab/**/obj/
 /experiments/VtfMaximumLab.Tests/**/bin/
 /experiments/VtfMaximumLab.Tests/**/obj/
+/experiments/VtfUniversal.Tests/**/bin/
+/experiments/VtfUniversal.Tests/**/obj/
+/experiments/VtfUniversalCorpusDriver/**/bin/
+/experiments/VtfUniversalCorpusDriver/**/obj/
 
 # Large local archives (do not commit)
 /*.zip
