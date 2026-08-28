@@ -422,6 +422,20 @@ internal static class VtfContainerWriter
 
         AuditResources(before, after);
         AuditUnmappedRanges(before, after);
+        if (request.LowResolutionPayload is null)
+        {
+            if (after.LowResolutionImage is not null)
+            {
+                throw new InvalidDataException("absent_low_resolution_image_was_invented");
+            }
+        }
+        else if (after.LowResolutionImage is null ||
+                 after.LowResolutionImage.Length != request.LowResolutionPayload.Length ||
+                 after.LowResolutionImage.Sha256 != Hash(request.LowResolutionPayload))
+        {
+            throw new InvalidDataException("written_low_resolution_payload_changed");
+        }
+
         if (request.LowResolutionPayloadWasCopied)
         {
             if (before.LowResolutionImage is null || after.LowResolutionImage is null ||

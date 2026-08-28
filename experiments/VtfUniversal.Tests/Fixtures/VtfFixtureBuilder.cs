@@ -31,6 +31,7 @@ internal static class VtfFixtureBuilder
     internal const int UnknownOffsetResourceTag = 0x005A5A;
 
     private const int TextureFlagsEnvMap = 0x00004000;
+    private const int TextureFlagsNoMip = 0x00000100;
     private const int HighResolutionImageTag = 0x000030;
     private const int InlineResourceFlag = 0x02;
     private const int CrcTag = 0x435243;
@@ -130,6 +131,106 @@ internal static class VtfFixtureBuilder
         return Persist(output);
     }
 
+    internal static VtfFixtureFile WriteNomip72(
+        int width,
+        int height,
+        int highResolutionFormat,
+        int frames = 1,
+        int depth = 1) =>
+        Write(
+            minorVersion: 2,
+            width,
+            height,
+            flags: TextureFlagsNoMip,
+            frames,
+            firstFrame: 0,
+            depth,
+            mips: 1,
+            resourceFactory: null,
+            highResolutionFormat: highResolutionFormat);
+
+    internal static VtfFixtureFile WriteNomip74(
+        int width,
+        int height,
+        int highResolutionFormat,
+        int frames = 1,
+        bool envMap = false,
+        int lowWidth = 0,
+        int lowHeight = 0)
+    {
+        const int minorVersion = 4;
+        int flags = TextureFlagsNoMip | (envMap ? TextureFlagsEnvMap : 0);
+        int firstFrame = envMap ? 0 : ushort.MaxValue;
+        int faces = envMap ? 7 : 1;
+        bool hasLow = lowWidth > 0 || lowHeight > 0;
+        if (hasLow && (lowWidth <= 0 || lowHeight <= 0))
+        {
+            throw new ArgumentException("Both low-resolution dimensions are required.");
+        }
+
+        int resourceCount = hasLow ? 2 : 1;
+        int headerSize = checked(80 + resourceCount * 8);
+        int lowBytes = hasLow ? ImageBytes(13, lowWidth, lowHeight) : 0;
+        int highBytes = checked(
+            ImageBytes(highResolutionFormat, width, height) * frames * faces);
+        uint lowOffset = checked((uint)headerSize);
+        uint highOffset = checked((uint)(headerSize + lowBytes));
+
+        using var output = new MemoryStream();
+        using (var writer = new BinaryWriter(output, Encoding.ASCII, leaveOpen: true))
+        {
+            WriteHeaderPrefix(
+                writer,
+                minorVersion,
+                headerSize,
+                width,
+                height,
+                flags,
+                frames,
+                firstFrame,
+                highResolutionFormat,
+                mips: 1,
+                lowResolutionFormat: hasLow ? 13 : -1,
+                lowWidth,
+                lowHeight,
+                depth: 1);
+            writer.Write(resourceCount);
+            while (output.Position < 80)
+            {
+                writer.Write((byte)0);
+            }
+
+            WriteResource(writer, HighResolutionImageTag, 0, highOffset);
+            if (hasLow)
+            {
+                WriteResource(writer, 0x000001, 0, lowOffset);
+            }
+
+            AssertPosition(output, headerSize);
+            if (hasLow)
+            {
+                writer.Write(Enumerable.Repeat((byte)0xD2, lowBytes).ToArray());
+            }
+
+            long highStart = output.Position;
+            WriteHighResolutionImages(
+                writer,
+                width,
+                height,
+                depth: 1,
+                frames,
+                faces,
+                mips: 1,
+                highResolutionFormat: highResolutionFormat);
+            if (output.Position - highStart != highBytes)
+            {
+                throw new InvalidOperationException("NOMIP fixture high-resolution size drifted.");
+            }
+        }
+
+        return Persist(output);
+    }
+
     internal static VtfFixtureFile WriteOverlappingResources() =>
         Write(
             minorVersion: 5,
@@ -172,9 +273,9 @@ internal static class VtfFixtureBuilder
         int firstFrame,
         int depth,
         int mips,
-        Func<int, IReadOnlyList<ResourceSpec>>? resourceFactory)
+        Func<int, IReadOnlyList<ResourceSpec>>? resourceFactory,
+        int highResolutionFormat = 13)
     {
-        const int highResolutionFormat = 13;
         IReadOnlyList<ResourceSpec> resources = Array.Empty<ResourceSpec>();
         int resourceCount = minorVersion >= 3 && resourceFactory is not null
             ? resourceFactory(0).Count
@@ -232,7 +333,15 @@ internal static class VtfFixtureBuilder
                         firstFrame != ushort.MaxValue
                 ? 7
                 : (flags & TextureFlagsEnvMap) != 0 ? 6 : 1;
-            WriteHighResolutionImages(writer, width, height, depth, frames, faces, mips);
+            WriteHighResolutionImages(
+                writer,
+                width,
+                height,
+                depth,
+                frames,
+                faces,
+                mips,
+                highResolutionFormat);
         }
 
         return Persist(output);
@@ -301,7 +410,8 @@ internal static class VtfFixtureBuilder
         int depth,
         int frames,
         int faces,
-        int mips)
+        int mips,
+        int highResolutionFormat = 13)
     {
         byte marker = 1;
         for (int level = mips - 1; level >= 0; level--)
@@ -309,7 +419,7 @@ internal static class VtfFixtureBuilder
             int mipWidth = Math.Max(1, width >> level);
             int mipHeight = Math.Max(1, height >> level);
             int mipDepth = Math.Max(1, depth >> level);
-            int bytesPerImage = ImageBytes(mipWidth, mipHeight);
+            int bytesPerImage = ImageBytes(highResolutionFormat, mipWidth, mipHeight);
             for (int frame = 0; frame < frames; frame++)
             for (int face = 0; face < faces; face++)
             for (int slice = 0; slice < mipDepth; slice++)
@@ -319,8 +429,17 @@ internal static class VtfFixtureBuilder
         }
     }
 
-    private static int ImageBytes(int width, int height) =>
-        Math.Max(1, (width + 3) / 4) * Math.Max(1, (height + 3) / 4) * 8;
+    private static int ImageBytes(int width, int height) => ImageBytes(13, width, height);
+
+    private static int ImageBytes(int format, int width, int height) =>
+        format switch
+        {
+            13 or 20 => Math.Max(1, (width + 3) / 4) *
+                        Math.Max(1, (height + 3) / 4) * 8,
+            15 => Math.Max(1, (width + 3) / 4) *
+                  Math.Max(1, (height + 3) / 4) * 16,
+            _ => throw new ArgumentOutOfRangeException(nameof(format))
+        };
 
     private static void AssertPosition(Stream stream, int expected)
     {
