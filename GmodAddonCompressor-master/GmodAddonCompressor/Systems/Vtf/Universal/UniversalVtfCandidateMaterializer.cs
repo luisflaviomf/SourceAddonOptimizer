@@ -13,9 +13,12 @@ internal sealed class UniversalVtfEncodingSession : IDisposable
         string workDirectory)
     {
         _sessionRoot = sessionRoot;
+        Fingerprint = toolchain;
         Encoder = new VtfCmdBlockEncoder(toolchain);
         WorkDirectory = workDirectory;
     }
+
+    internal UniversalVtfToolchainFingerprint Fingerprint { get; }
 
     internal VtfCmdBlockEncoder Encoder { get; }
 

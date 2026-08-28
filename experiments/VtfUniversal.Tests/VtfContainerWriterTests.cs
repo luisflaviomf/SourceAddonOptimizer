@@ -1,3 +1,4 @@
+using GmodAddonCompressor.Systems.Vtf;
 using GmodAddonCompressor.Systems.Vtf.Universal;
 using VtfUniversal.Tests.Fixtures;
 using Xunit;
@@ -7,6 +8,87 @@ namespace VtfUniversal.Tests;
 public sealed class VtfContainerWriterTests
 {
     private const uint ApprovedInlineCrc = 0x3C66AA52;
+
+    [Fact]
+    public async Task WritesOnlyApprovedBc3ToOpaqueBc1FormatOverride()
+    {
+        using VtfFixtureFile source = VtfFixtureBuilder.WriteNomip72(16, 16, 15);
+        using var root = new UniversalVtfToolchainTests.ToolchainTempDirectory();
+        string output = Path.Combine(root.Path, "bc1.vtf");
+        VtfContainerLayout before = VtfContainerLayoutReader.Read(source.Path);
+        byte[] sourceBytes = File.ReadAllBytes(source.Path);
+        byte[] bc3 = before.Subresources
+            .OrderBy(range => range.Range.Offset)
+            .SelectMany(range => sourceBytes
+                .AsSpan(checked((int)range.Range.Offset), range.Range.Length)
+                .ToArray())
+            .ToArray();
+        byte[] bc1 = Bc3ColorBlockTranscoder.TranscodePayload(bc3);
+
+        await VtfContainerWriter.WriteAsync(
+            new VtfContainerWriteRequest(
+                source.Path,
+                16,
+                16,
+                1,
+                1,
+                bc1,
+                0,
+                0,
+                null,
+                RetainedSourceLevel: null,
+                LowResolutionPayloadWasCopied: false,
+                HighResolutionFormat: 13),
+            output,
+            CancellationToken.None);
+
+        VtfContainerLayout after = VtfContainerLayoutReader.Read(output);
+        Assert.Equal(13, after.Document.HighResFormat);
+        Assert.NotEqual(20, after.Document.HighResFormat);
+        Assert.Equal(bc1.Length, after.Subresources.Sum(range => range.Range.Length));
+        Assert.True(VtfHighResImageDecoder.TryDecodeHighResMipSliceRgba(
+            source.Path, before.Document, 0, 0, 0, 0, out byte[] beforeRgba));
+        Assert.True(VtfHighResImageDecoder.TryDecodeHighResMipSliceRgba(
+            output, after.Document, 0, 0, 0, 0, out byte[] afterRgba));
+        for (int offset = 0; offset < beforeRgba.Length; offset += 4)
+        {
+            Assert.Equal(beforeRgba[offset], afterRgba[offset]);
+            Assert.Equal(beforeRgba[offset + 1], afterRgba[offset + 1]);
+            Assert.Equal(beforeRgba[offset + 2], afterRgba[offset + 2]);
+            Assert.Equal(255, afterRgba[offset + 3]);
+        }
+    }
+
+    [Fact]
+    public async Task AnyOtherHighResolutionFormatOverrideFailsClosed()
+    {
+        using VtfFixtureFile source = VtfFixtureBuilder.WriteNomip72(8, 8, 13);
+        using var root = new UniversalVtfToolchainTests.ToolchainTempDirectory();
+        VtfContainerLayout layout = VtfContainerLayoutReader.Read(source.Path);
+        byte[] bytes = File.ReadAllBytes(source.Path);
+        VtfByteRange range = Assert.Single(layout.Subresources).Range;
+        byte[] payload = bytes.AsSpan(checked((int)range.Offset), range.Length).ToArray();
+        string output = Path.Combine(root.Path, "forbidden.vtf");
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            VtfContainerWriter.WriteAsync(
+                new VtfContainerWriteRequest(
+                    source.Path,
+                    8,
+                    8,
+                    1,
+                    1,
+                    payload,
+                    0,
+                    0,
+                    null,
+                    RetainedSourceLevel: null,
+                    LowResolutionPayloadWasCopied: false,
+                    HighResolutionFormat: 15),
+                output,
+                CancellationToken.None));
+        Assert.False(File.Exists(output));
+    }
 
     [Fact]
     public async Task PreservesHeaderMetadataAndApprovedInlineCrcAtExactPath()

@@ -16,7 +16,8 @@ internal sealed record VtfContainerWriteRequest(
     int LowResolutionHeight,
     byte[]? LowResolutionPayload,
     int? RetainedSourceLevel,
-    bool LowResolutionPayloadWasCopied);
+    bool LowResolutionPayloadWasCopied,
+    int? HighResolutionFormat = null);
 
 internal static class VtfContainerWriter
 {
@@ -248,6 +249,9 @@ internal static class VtfContainerWriter
     {
         BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(16, 2), checked((ushort)request.Width));
         BinaryPrimitives.WriteUInt16LittleEndian(output.AsSpan(18, 2), checked((ushort)request.Height));
+        BinaryPrimitives.WriteInt32LittleEndian(
+            output.AsSpan(52, 4),
+            request.HighResolutionFormat ?? source.Document.HighResFormat);
         output[56] = checked((byte)request.MipCount);
         output[61] = checked((byte)request.LowResolutionWidth);
         output[62] = checked((byte)request.LowResolutionHeight);
@@ -303,7 +307,15 @@ internal static class VtfContainerWriter
             throw new InvalidDataException("pre_7_2_vtf_cannot_store_volume_depth");
         }
 
-        int expectedHighBytes = ExpectedHighResolutionBytes(source.Document, request);
+        int targetFormat = request.HighResolutionFormat ?? source.Document.HighResFormat;
+        if (targetFormat != source.Document.HighResFormat &&
+            !(source.Document.HighResFormat == 15 && targetFormat == 13))
+        {
+            throw new InvalidDataException(
+                $"unsupported_high_resolution_format_change:{source.Document.HighResFormat}->{targetFormat}");
+        }
+
+        int expectedHighBytes = ExpectedHighResolutionBytes(source.Document, request, targetFormat);
         if (request.HighResolutionPayload is null ||
             request.HighResolutionPayload.Length != expectedHighBytes)
         {
@@ -342,7 +354,8 @@ internal static class VtfContainerWriter
 
     private static int ExpectedHighResolutionBytes(
         VtfDocumentInfo source,
-        VtfContainerWriteRequest request)
+        VtfContainerWriteRequest request,
+        int highResolutionFormat)
     {
         long total = 0;
         for (int level = 0; level < request.MipCount; level++)
@@ -351,7 +364,7 @@ internal static class VtfContainerWriter
             int height = Math.Max(1, request.Height >> level);
             int depth = Math.Max(1, request.Depth >> level);
             int imageBytes = VtfDocumentReader.GetImageByteCount(
-                source.HighResFormat,
+                highResolutionFormat,
                 width,
                 height);
             total = checked(total + (long)imageBytes * source.Frames * source.Faces * depth);
@@ -412,7 +425,8 @@ internal static class VtfContainerWriter
             newDocument.ReflectivityY != oldDocument.ReflectivityY ||
             newDocument.ReflectivityZ != oldDocument.ReflectivityZ ||
             newDocument.BumpScale != oldDocument.BumpScale ||
-            newDocument.HighResFormat != oldDocument.HighResFormat ||
+            newDocument.HighResFormat !=
+                (request.HighResolutionFormat ?? oldDocument.HighResFormat) ||
             newDocument.LowResFormat != oldDocument.LowResFormat ||
             newDocument.LowResWidth != request.LowResolutionWidth ||
             newDocument.LowResHeight != request.LowResolutionHeight)
@@ -451,6 +465,12 @@ internal static class VtfContainerWriter
                 before,
                 after,
                 request.RetainedSourceLevel.Value);
+        }
+
+        byte[] writtenHighResolution = ReadSubresourcePayload(candidatePath, after);
+        if (!writtenHighResolution.AsSpan().SequenceEqual(request.HighResolutionPayload))
+        {
+            throw new InvalidDataException("written_high_resolution_payload_changed");
         }
 
         foreach (VtfSubresourceRange subresource in after.Subresources)
@@ -591,6 +611,36 @@ internal static class VtfContainerWriter
         }
 
         return bytes;
+    }
+
+    private static byte[] ReadSubresourcePayload(
+        string path,
+        VtfContainerLayout layout)
+    {
+        VtfSubresourceRange[] ranges = layout.Subresources
+            .OrderBy(range => range.Range.Offset)
+            .ToArray();
+        long total = ranges.Sum(range => (long)range.Range.Length);
+        if (total <= 0 || total > int.MaxValue)
+        {
+            throw new InvalidDataException("written_high_resolution_payload_size_invalid");
+        }
+
+        byte[] source = File.ReadAllBytes(path);
+        var payload = new byte[checked((int)total)];
+        int cursor = 0;
+        foreach (VtfSubresourceRange range in ranges)
+        {
+            Buffer.BlockCopy(
+                source,
+                checked((int)range.Range.Offset),
+                payload,
+                cursor,
+                range.Range.Length);
+            cursor = checked(cursor + range.Range.Length);
+        }
+
+        return payload;
     }
 
     private static async Task WriteNewFileAsync(

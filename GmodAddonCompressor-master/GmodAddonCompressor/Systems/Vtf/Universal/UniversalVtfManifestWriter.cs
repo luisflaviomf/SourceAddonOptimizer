@@ -552,7 +552,8 @@ internal static class UniversalVtfManifestWriter
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             PropertyNameCaseInsensitive = false,
-            WriteIndented = false
+            WriteIndented = false,
+            NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
         };
         options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
         return options;
