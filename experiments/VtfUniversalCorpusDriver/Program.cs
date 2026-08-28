@@ -15,9 +15,13 @@ internal static class Program
 
         try
         {
-            return args[0].Equals("inventory", StringComparison.OrdinalIgnoreCase)
-                ? RunInventory(ParseOptions(args.Skip(1).ToArray()))
-                : UnknownCommand(args[0]);
+            IReadOnlyDictionary<string, string> options = ParseOptions(args.Skip(1).ToArray());
+            return args[0].ToLowerInvariant() switch
+            {
+                "inventory" => RunInventory(options),
+                "bc3-bridge" => RunBc3Bridge(options),
+                _ => UnknownCommand(args[0])
+            };
         }
         catch (ArgumentException error)
         {
@@ -34,6 +38,58 @@ internal static class Program
             Console.Error.WriteLine($"IO_ERROR {error.Message}");
             return 4;
         }
+    }
+
+    private static int RunBc3Bridge(IReadOnlyDictionary<string, string> options)
+    {
+        string rawRoot = Path.GetFullPath(RequireOption(options, "--raw-root"));
+        string safeRoot = Path.GetFullPath(RequireOption(options, "--safe-root"));
+        string priorManifest = Path.GetFullPath(RequireOption(options, "--prior-manifest"));
+        string requestedOutput = Path.GetFullPath(RequireOption(options, "--output"));
+        if (options.Count != 4)
+        {
+            throw new ArgumentException(
+                "bc3-bridge accepts only --raw-root, --safe-root, --prior-manifest and --output.");
+        }
+
+        if (rawRoot.Equals(safeRoot, StringComparison.OrdinalIgnoreCase) ||
+            IsWithin(requestedOutput, rawRoot) || IsWithin(requestedOutput, safeRoot))
+        {
+            throw new ArgumentException(
+                "Raw, safe and bridge output authorities must be physically separate.");
+        }
+
+        string outputParent = Path.GetDirectoryName(requestedOutput)
+            ?? throw new ArgumentException("Bridge output has no parent directory.");
+        Directory.CreateDirectory(outputParent);
+        string output = UniversalVtfTreeInventory.ResolveNewDestination(
+            outputParent,
+            Path.GetFileName(requestedOutput));
+
+        UniversalVtfTreeSnapshot rawBefore = UniversalVtfTreeInventory.Capture(rawRoot);
+        UniversalVtfTreeSnapshot safeBefore = UniversalVtfTreeInventory.Capture(safeRoot);
+        UniversalVtfInventory inventory = UniversalVtfInventoryScanner.Scan(rawRoot);
+        Bc3RawBridge bridge = Bc3ApprovedReceipt.Build(
+            inventory,
+            priorManifest,
+            safeBefore,
+            rawBefore);
+        Bc3RawBridgeFrozen frozen = Bc3RawBridgeStore.WriteCanonical(output, bridge);
+
+        RequireUnchanged(rawBefore, UniversalVtfTreeInventory.Capture(rawRoot), "raw");
+        RequireUnchanged(safeBefore, UniversalVtfTreeInventory.Capture(safeRoot), "safe");
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            status = "CLEAN",
+            rows = bridge.Rows.Count,
+            physicalOpaqueBc3 = bridge.PhysicalOpaqueBc3Count,
+            rawDxt1 = bridge.RawDxt1Count,
+            semanticExceptions = bridge.SemanticExceptionBc3Count,
+            equivalentPriorSafeColorChains = bridge.EquivalentPriorSafeColorChainCount,
+            sha256 = frozen.Sha256,
+            output = frozen.Path
+        }));
+        return 0;
     }
 
     private static int RunInventory(IReadOnlyDictionary<string, string> options)
@@ -137,6 +193,30 @@ internal static class Program
             ? value
             : throw new ArgumentException($"Missing required option: {name}");
 
+    private static bool IsWithin(string path, string root)
+    {
+        string fullRoot = Path.GetFullPath(root).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        string fullPath = Path.GetFullPath(path);
+        return fullPath.Equals(fullRoot, StringComparison.OrdinalIgnoreCase) ||
+               fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void RequireUnchanged(
+        UniversalVtfTreeSnapshot before,
+        UniversalVtfTreeSnapshot after,
+        string authority)
+    {
+        if (before.Files.Count != after.Files.Count ||
+            before.TotalBytes != after.TotalBytes ||
+            !before.TreeSha256.Equals(after.TreeSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"{authority}_authority_changed_during_bridge");
+        }
+    }
+
     private static int UnknownCommand(string command)
     {
         Console.Error.WriteLine($"Unknown command: {command}");
@@ -146,5 +226,8 @@ internal static class Program
     private static void PrintHelp()
     {
         Console.WriteLine("VtfUniversalCorpusDriver inventory --raw-root <dir> --output <json>");
+        Console.WriteLine(
+            "VtfUniversalCorpusDriver bc3-bridge --raw-root <dir> --safe-root <dir> " +
+            "--prior-manifest <json> --output <json>");
     }
 }
