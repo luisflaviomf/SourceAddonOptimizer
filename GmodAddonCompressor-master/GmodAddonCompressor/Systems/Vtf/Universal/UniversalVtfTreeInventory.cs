@@ -74,7 +74,10 @@ internal static class UniversalVtfTreeInventory
 
         var files = new List<UniversalVtfTreeFile>(physicalFiles.Count);
         foreach ((string fullPath, string relativePath) in physicalFiles
-                     .OrderBy(x => x.RelativePath, StringComparer.OrdinalIgnoreCase))
+                     .OrderBy(
+                         x => x.RelativePath.ToLowerInvariant(),
+                         StringComparer.Ordinal)
+                     .ThenBy(x => x.RelativePath, StringComparer.Ordinal))
         {
             files.Add(CaptureFile(fullPath, relativePath));
         }

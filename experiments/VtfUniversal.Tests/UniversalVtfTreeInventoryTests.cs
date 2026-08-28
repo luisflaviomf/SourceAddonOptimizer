@@ -23,6 +23,20 @@ public sealed class UniversalVtfTreeInventoryTests
     }
 
     [Fact]
+    public void SortsCanonicalPathsByCaseFoldedOrdinalKey()
+    {
+        using var tree = TestTree.Create(
+            ("a_u.txt", new byte[] { 0x01 }),
+            ("au.txt", new byte[] { 0x02 }));
+
+        UniversalVtfTreeSnapshot actual = UniversalVtfTreeInventory.Capture(tree.Root);
+
+        Assert.Equal(
+            "883402f20663ecb974334b45c4b34cf924de75fd5c76202774998402a6fa5009",
+            actual.TreeSha256);
+    }
+
+    [Fact]
     public void RejectsWrongAnchor()
     {
         using var tree = TestTree.Create(("a.txt", new byte[] { 0x41 }));
