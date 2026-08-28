@@ -28,6 +28,8 @@ internal sealed class VtfFixtureFile : IDisposable
 
 internal static class VtfFixtureBuilder
 {
+    internal const int UnknownOffsetResourceTag = 0x005A5A;
+
     private const int TextureFlagsEnvMap = 0x00004000;
     private const int HighResolutionImageTag = 0x000030;
     private const int InlineResourceFlag = 0x02;
@@ -48,21 +50,85 @@ internal static class VtfFixtureBuilder
                 new ResourceSpec(HighResolutionImageTag, 0, checked((uint)headerSize))
             });
 
-    internal static VtfFixtureFile WriteResource74WithInlineCrc(uint crc) =>
+    internal static VtfFixtureFile WriteResource74WithInlineCrc(uint crc, int mips = 1) =>
         Write(
             minorVersion: 4,
-            width: 4,
-            height: 4,
+            width: 16,
+            height: 16,
             flags: 0,
             frames: 1,
             firstFrame: 0,
             depth: 1,
-            mips: 1,
+            mips,
             resourceFactory: headerSize => new[]
             {
                 new ResourceSpec(HighResolutionImageTag, 0, checked((uint)headerSize)),
                 new ResourceSpec(CrcTag, InlineResourceFlag, crc)
             });
+
+    internal static VtfFixtureFile WriteResource75WithMips(
+        int width,
+        int height,
+        int mips)
+    {
+        const int minorVersion = 5;
+        const int highResolutionFormat = 13;
+        const int lowResolutionFormat = 13;
+        const int lowWidth = 4;
+        const int lowHeight = 4;
+        const int resourceCount = 3;
+        const int headerSize = 80 + resourceCount * 8;
+
+        int lowBytes = ImageBytes(lowWidth, lowHeight);
+        int highBytes = Enumerable.Range(0, mips)
+            .Sum(level => ImageBytes(
+                Math.Max(1, width >> level),
+                Math.Max(1, height >> level)));
+        uint lowOffset = headerSize;
+        uint highOffset = checked((uint)(headerSize + lowBytes));
+        uint unknownOffset = checked((uint)(headerSize + lowBytes + highBytes));
+        byte[] unknownPayload = Enumerable.Range(0, 23)
+            .Select(index => checked((byte)(0xA0 + index)))
+            .ToArray();
+
+        using var output = new MemoryStream();
+        using (var writer = new BinaryWriter(output, Encoding.ASCII, leaveOpen: true))
+        {
+            WriteHeaderPrefix(
+                writer,
+                minorVersion,
+                headerSize,
+                width,
+                height,
+                flags: 0,
+                frames: 1,
+                firstFrame: ushort.MaxValue,
+                highResolutionFormat,
+                mips,
+                lowResolutionFormat,
+                lowWidth,
+                lowHeight,
+                depth: 1);
+            writer.Write(resourceCount);
+            while (output.Position < 80)
+            {
+                writer.Write((byte)0);
+            }
+
+            // Deliberately keep dictionary order different from payload order.
+            WriteResource(writer, UnknownOffsetResourceTag, 0, unknownOffset);
+            WriteResource(writer, HighResolutionImageTag, 0, highOffset);
+            WriteResource(writer, 0x000001, 0, lowOffset);
+            AssertPosition(output, headerSize);
+
+            writer.Write(Enumerable.Repeat((byte)0xE1, lowBytes).ToArray());
+            WriteHighResolutionImages(writer, width, height, depth: 1, frames: 1,
+                faces: 1, mips);
+            writer.Write(unknownPayload);
+        }
+
+        return Persist(output);
+    }
 
     internal static VtfFixtureFile WriteOverlappingResources() =>
         Write(
@@ -122,30 +188,21 @@ internal static class VtfFixtureBuilder
         using var output = new MemoryStream();
         using (var writer = new BinaryWriter(output, Encoding.ASCII, leaveOpen: true))
         {
-            writer.Write(new byte[] { (byte)'V', (byte)'T', (byte)'F', 0 });
-            writer.Write(7);
-            writer.Write(minorVersion);
-            writer.Write(headerSize);
-            writer.Write(checked((ushort)width));
-            writer.Write(checked((ushort)height));
-            writer.Write(flags);
-            writer.Write(checked((ushort)frames));
-            writer.Write(checked((ushort)firstFrame));
-            writer.Write(0);
-            writer.Write(0.25f);
-            writer.Write(0.5f);
-            writer.Write(0.75f);
-            writer.Write(0);
-            writer.Write(1.0f);
-            writer.Write(highResolutionFormat);
-            writer.Write(checked((byte)mips));
-            writer.Write(-1);
-            writer.Write((byte)0);
-            writer.Write((byte)0);
-            if (minorVersion >= 2)
-            {
-                writer.Write(checked((ushort)depth));
-            }
+            WriteHeaderPrefix(
+                writer,
+                minorVersion,
+                headerSize,
+                width,
+                height,
+                flags,
+                frames,
+                firstFrame,
+                highResolutionFormat,
+                mips,
+                lowResolutionFormat: -1,
+                lowWidth: 0,
+                lowHeight: 0,
+                depth);
 
             while (output.Position < 68)
             {
@@ -162,11 +219,7 @@ internal static class VtfFixtureBuilder
 
                 foreach (ResourceSpec resource in resources)
                 {
-                    writer.Write((byte)(resource.Tag & 0xff));
-                    writer.Write((byte)((resource.Tag >> 8) & 0xff));
-                    writer.Write((byte)((resource.Tag >> 16) & 0xff));
-                    writer.Write(resource.Flags);
-                    writer.Write(resource.Data);
+                    WriteResource(writer, resource.Tag, resource.Flags, resource.Data);
                 }
             }
 
@@ -179,23 +232,107 @@ internal static class VtfFixtureBuilder
                         firstFrame != ushort.MaxValue
                 ? 7
                 : (flags & TextureFlagsEnvMap) != 0 ? 6 : 1;
-            byte marker = 1;
-            for (int level = mips - 1; level >= 0; level--)
-            {
-                int mipWidth = Math.Max(1, width >> level);
-                int mipHeight = Math.Max(1, height >> level);
-                int mipDepth = Math.Max(1, depth >> level);
-                int bytesPerImage = Math.Max(1, (mipWidth + 3) / 4) *
-                                    Math.Max(1, (mipHeight + 3) / 4) * 8;
-                for (int frame = 0; frame < frames; frame++)
-                for (int face = 0; face < faces; face++)
-                for (int slice = 0; slice < mipDepth; slice++)
-                {
-                    writer.Write(Enumerable.Repeat(marker++, bytesPerImage).ToArray());
-                }
-            }
+            WriteHighResolutionImages(writer, width, height, depth, frames, faces, mips);
         }
 
+        return Persist(output);
+    }
+
+    private static void WriteHeaderPrefix(
+        BinaryWriter writer,
+        int minorVersion,
+        int headerSize,
+        int width,
+        int height,
+        int flags,
+        int frames,
+        int firstFrame,
+        int highResolutionFormat,
+        int mips,
+        int lowResolutionFormat,
+        int lowWidth,
+        int lowHeight,
+        int depth)
+    {
+        writer.Write(new byte[] { (byte)'V', (byte)'T', (byte)'F', 0 });
+        writer.Write(7);
+        writer.Write(minorVersion);
+        writer.Write(headerSize);
+        writer.Write(checked((ushort)width));
+        writer.Write(checked((ushort)height));
+        writer.Write(flags);
+        writer.Write(checked((ushort)frames));
+        writer.Write(checked((ushort)firstFrame));
+        writer.Write(0);
+        writer.Write(0.25f);
+        writer.Write(0.5f);
+        writer.Write(0.75f);
+        writer.Write(0);
+        writer.Write(1.0f);
+        writer.Write(highResolutionFormat);
+        writer.Write(checked((byte)mips));
+        writer.Write(lowResolutionFormat);
+        writer.Write(checked((byte)lowWidth));
+        writer.Write(checked((byte)lowHeight));
+        if (minorVersion >= 2)
+        {
+            writer.Write(checked((ushort)depth));
+        }
+
+        while (writer.BaseStream.Position < 68)
+        {
+            writer.Write((byte)0);
+        }
+    }
+
+    private static void WriteResource(BinaryWriter writer, int tag, byte flags, uint data)
+    {
+        writer.Write((byte)(tag & 0xff));
+        writer.Write((byte)((tag >> 8) & 0xff));
+        writer.Write((byte)((tag >> 16) & 0xff));
+        writer.Write(flags);
+        writer.Write(data);
+    }
+
+    private static void WriteHighResolutionImages(
+        BinaryWriter writer,
+        int width,
+        int height,
+        int depth,
+        int frames,
+        int faces,
+        int mips)
+    {
+        byte marker = 1;
+        for (int level = mips - 1; level >= 0; level--)
+        {
+            int mipWidth = Math.Max(1, width >> level);
+            int mipHeight = Math.Max(1, height >> level);
+            int mipDepth = Math.Max(1, depth >> level);
+            int bytesPerImage = ImageBytes(mipWidth, mipHeight);
+            for (int frame = 0; frame < frames; frame++)
+            for (int face = 0; face < faces; face++)
+            for (int slice = 0; slice < mipDepth; slice++)
+            {
+                writer.Write(Enumerable.Repeat(marker++, bytesPerImage).ToArray());
+            }
+        }
+    }
+
+    private static int ImageBytes(int width, int height) =>
+        Math.Max(1, (width + 3) / 4) * Math.Max(1, (height + 3) / 4) * 8;
+
+    private static void AssertPosition(Stream stream, int expected)
+    {
+        if (stream.Position != expected)
+        {
+            throw new InvalidOperationException(
+                $"Fixture header position {stream.Position} differs from {expected}.");
+        }
+    }
+
+    private static VtfFixtureFile Persist(MemoryStream output)
+    {
         string directory = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
             "VtfUniversal.Tests",
