@@ -17,6 +17,8 @@
     <Content Include="icon.ico" />
     <EmbeddedResource Include="Resources\VtfMaximumTools.zip"
                       LogicalName="GmodAddonCompressor.Resources.VtfMaximumTools.zip" />
+    <EmbeddedResource Include="Resources\universal-vtf-v1-fixtures.json"
+                      LogicalName="GmodAddonCompressor.Resources.universal-vtf-v1-fixtures.json" />
   </ItemGroup>
 
   <ItemGroup>
