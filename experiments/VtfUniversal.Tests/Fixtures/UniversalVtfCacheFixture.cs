@@ -92,7 +92,98 @@ internal static class UniversalVtfCacheFixture
         UniversalVtfCacheKey.None,
         Sha('1'));
 
+    internal static UniversalVtfCachedAsset Asset(string sourceVtf)
+    {
+        string source = Path.GetFullPath(sourceVtf);
+        UniversalVtfArtifactReference artifact = UniversalVtfArtifactReference.FromVtf(source);
+        UniversalVtfAnalysisIdentity template = AnalysisIdentity();
+        UniversalVtfAnalysisIdentity analysisIdentity = template with
+        {
+            RawSha256 = artifact.Sha256,
+            RawBytes = artifact.Bytes,
+            Structure = template.Structure with
+            {
+                Width = artifact.Width,
+                Height = artifact.Height,
+                Depth = artifact.Depth,
+                Frames = artifact.Frames,
+                Faces = artifact.Faces,
+                MipCount = artifact.MipCount,
+                HighResFormat = artifact.Format
+            }
+        };
+        UniversalVtfAttemptMatrix runtime = Matrix(Path.GetDirectoryName(source)!);
+        UniversalVtfCachedAttemptMatrix matrix =
+            UniversalVtfCachedAttemptMatrix.FromRuntime(runtime);
+        string analysisKey = UniversalVtfCacheKey.Analysis(analysisIdentity);
+        var analysis = new UniversalVtfAnalysisReceipt(
+            UniversalVtfCacheContracts.AnalysisReceiptSchema,
+            analysisKey,
+            analysisIdentity,
+            UniversalVtfCacheCoverage.FullAttempts,
+            matrix,
+            new Dictionary<UniversalVtfCachedArtifactKey, UniversalVtfArtifactReference>
+            {
+                [new(1, UniversalVtfFilterRoute.SrgbColor)] = artifact,
+                [new(2, UniversalVtfFilterRoute.SrgbColor)] = artifact,
+                [new(2, UniversalVtfFilterRoute.NumericLinear)] = artifact
+            });
+        UniversalVtfProfileSelection selected =
+            UniversalVtfSelector.Select(runtime, UniversalVtfRuntimeCaps.Empty);
+        var selections = new Dictionary<UniversalVtfProfileKind, UniversalVtfCachedSelection>
+        {
+            [UniversalVtfProfileKind.Conservative] = Cached(
+                UniversalVtfProfileKind.Conservative,
+                selected.Conservative),
+            [UniversalVtfProfileKind.Balanced] = Cached(
+                UniversalVtfProfileKind.Balanced,
+                selected.Balanced),
+            [UniversalVtfProfileKind.Aggressive] = Cached(
+                UniversalVtfProfileKind.Aggressive,
+                selected.Aggressive)
+        };
+        var completionIdentity = new UniversalVtfCompletionIdentity(
+            UniversalVtfCacheKey.CompletionSchema,
+            analysisKey,
+            artifact.Sha256,
+            artifact.Bytes,
+            UniversalVtfCacheKey.None,
+            selections);
+        string completionKey = UniversalVtfCacheKey.Completion(completionIdentity);
+        var completion = new UniversalVtfCompletionReceipt(
+            UniversalVtfCacheContracts.CompletionReceiptSchema,
+            completionKey,
+            completionIdentity,
+            selections.ToDictionary(
+                pair => pair.Key,
+                pair => new UniversalVtfCompletedProfile(
+                    pair.Key,
+                    pair.Value,
+                    null,
+                    artifact,
+                    artifact.Bytes,
+                    artifact.Sha256,
+                    false,
+                    null,
+                    false,
+                    1)));
+        return new UniversalVtfCachedAsset(
+            analysis,
+            completion,
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [artifact.Sha256] = source
+            });
+    }
+
     internal static string Sha(char value) => new(value, 64);
+
+    private static UniversalVtfCachedSelection Cached(
+        UniversalVtfProfileKind profile,
+        UniversalVtfSelectedLevel selected) => new(
+        profile,
+        selected.Level,
+        selected.Route);
 
     private static UniversalVtfAttempt Attempt(
         string root,
