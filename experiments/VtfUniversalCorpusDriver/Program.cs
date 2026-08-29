@@ -49,6 +49,22 @@ internal sealed class UniversalVtfLegacyImportService : IUniversalVtfLegacyImpor
             cancellationToken);
 }
 
+internal interface IUniversalVtfMonotonicComposeService
+{
+    Task<UniversalVtfMonotonicComposeResult> ComposeAsync(
+        UniversalVtfMonotonicComposeRequest request,
+        CancellationToken cancellationToken);
+}
+
+internal sealed class UniversalVtfMonotonicComposeService :
+    IUniversalVtfMonotonicComposeService
+{
+    public Task<UniversalVtfMonotonicComposeResult> ComposeAsync(
+        UniversalVtfMonotonicComposeRequest request,
+        CancellationToken cancellationToken) =>
+        UniversalVtfMonotonicComposer.ComposeAsync(request, cancellationToken);
+}
+
 internal static class Program
 {
     private static async Task<int> Main(string[] args)
@@ -82,7 +98,8 @@ internal static class Driver
         string[] args,
         IUniversalVtfCorpusBuildService? buildService = null,
         CancellationToken cancellationToken = default,
-        IUniversalVtfLegacyImportService? legacyImportService = null)
+        IUniversalVtfLegacyImportService? legacyImportService = null,
+        IUniversalVtfMonotonicComposeService? monotonicComposeService = null)
     {
         ArgumentNullException.ThrowIfNull(args);
         if (args.Length == 0 || args.Contains("--help", StringComparer.OrdinalIgnoreCase) ||
@@ -95,6 +112,7 @@ internal static class Driver
         string command = args[0].ToLowerInvariant();
         buildService ??= new UniversalVtfCorpusBuildService();
         legacyImportService ??= new UniversalVtfLegacyImportService();
+        monotonicComposeService ??= new UniversalVtfMonotonicComposeService();
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -114,6 +132,10 @@ internal static class Driver
                 "seed-cache" => await RunSeedCacheAsync(
                     options,
                     legacyImportService,
+                    cancellationToken).ConfigureAwait(false),
+                "compose-monotonic" => await RunComposeMonotonicAsync(
+                    options,
+                    monotonicComposeService,
                     cancellationToken).ConfigureAwait(false),
                 "audit" => RunAudit(options, buildService, cancellationToken),
                 _ => throw new ArgumentException($"Unknown command: {command}")
@@ -137,12 +159,94 @@ internal static class Driver
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or
                                       NotSupportedException or InvalidOperationException or
-                                      OverflowException or JsonException)
+                                      OverflowException or JsonException or AggregateException)
         {
             int code = command == "audit" ? 5 : 4;
             Console.Error.WriteLine($"{Label(code)} {error.Message}");
             return code;
         }
+    }
+
+    private static async Task<int> RunComposeMonotonicAsync(
+        IReadOnlyDictionary<string, string> options,
+        IUniversalVtfMonotonicComposeService service,
+        CancellationToken cancellationToken)
+    {
+        RequireOnly(
+            options,
+            "--profile",
+            "--incumbent-root",
+            "--incumbent-name",
+            "--incumbent-file-count",
+            "--incumbent-bytes",
+            "--incumbent-tree-sha256",
+            "--raw-root",
+            "--safe-root",
+            "--alternative-name",
+            "--alternative-root",
+            "--alternative-manifest",
+            "--alternative-manifest-sha256",
+            "--output-root",
+            "--manifest");
+        string profileValue = RequireOption(options, "--profile");
+        if (!Enum.TryParse(profileValue, ignoreCase: true, out UniversalVtfProfileKind profile) ||
+            !Enum.IsDefined(typeof(UniversalVtfProfileKind), profile))
+        {
+            throw new ArgumentException($"Invalid profile: {profileValue}");
+        }
+
+        string incumbentRoot = RequireExistingDirectory(options, "--incumbent-root");
+        string rawRoot = RequireExistingDirectory(options, "--raw-root");
+        string safeRoot = RequireExistingDirectory(options, "--safe-root");
+        string alternativeRoot = RequireExistingDirectory(options, "--alternative-root");
+        string alternativeManifest = RequireExistingFile(options, "--alternative-manifest");
+        string outputRoot = Path.GetFullPath(RequireOption(options, "--output-root"));
+        string manifestPath = Path.GetFullPath(RequireOption(options, "--manifest"));
+        var anchor = new UniversalVtfTreeAnchor(
+            RequireOption(options, "--incumbent-name"),
+            RequirePositiveInt(options, "--incumbent-file-count"),
+            RequirePositiveLong(options, "--incumbent-bytes"),
+            RequireSha256(options, "--incumbent-tree-sha256"));
+        var alternative = new UniversalVtfMonotonicAlternativeAuthority(
+            RequireOption(options, "--alternative-name"),
+            alternativeRoot,
+            alternativeManifest,
+            RequireSha256(options, "--alternative-manifest-sha256"));
+        var request = new UniversalVtfMonotonicComposeRequest(
+            profile,
+            incumbentRoot,
+            anchor,
+            new[] { alternative },
+            outputRoot,
+            manifestPath,
+            new[]
+            {
+                new UniversalVtfMonotonicProtectedAuthority(
+                    "raw",
+                    rawRoot,
+                    UniversalVtfCorpusBuilder.DefaultAnchors.RawAnchor),
+                new UniversalVtfMonotonicProtectedAuthority(
+                    "safe",
+                    safeRoot,
+                    UniversalVtfCorpusBuilder.DefaultAnchors.SafeAnchor)
+            });
+        UniversalVtfMonotonicComposeResult result = await service.ComposeAsync(
+            request,
+            cancellationToken).ConfigureAwait(false);
+        WriteJson(new
+        {
+            status = "CLEAN",
+            schema = "universal-vtf-monotonic-compose-result-v1",
+            profile = profile.ToString().ToLowerInvariant(),
+            result.Root,
+            result.Bytes,
+            result.TreeSha256,
+            result.SavedBytes,
+            result.ReplacedVtfs,
+            result.ManifestPath,
+            result.ManifestSha256
+        });
+        return 0;
     }
 
     private static int RunToolchain(IReadOnlyDictionary<string, string> options)
@@ -642,6 +746,32 @@ internal static class Driver
         return value.ToLowerInvariant();
     }
 
+    private static int RequirePositiveInt(
+        IReadOnlyDictionary<string, string> options,
+        string name)
+    {
+        string value = RequireOption(options, name);
+        if (!int.TryParse(value, out int parsed) || parsed <= 0)
+        {
+            throw new ArgumentException($"Invalid positive integer for {name}: {value}");
+        }
+
+        return parsed;
+    }
+
+    private static long RequirePositiveLong(
+        IReadOnlyDictionary<string, string> options,
+        string name)
+    {
+        string value = RequireOption(options, name);
+        if (!long.TryParse(value, out long parsed) || parsed <= 0)
+        {
+            throw new ArgumentException($"Invalid positive integer for {name}: {value}");
+        }
+
+        return parsed;
+    }
+
     private static string RequireExistingDirectory(
         IReadOnlyDictionary<string, string> options,
         string name)
@@ -792,6 +922,14 @@ internal static class Driver
             "--conservative-manifest-sha256 <sha256> " +
             "--balanced-manifest-sha256 <sha256> " +
             "--aggressive-manifest-sha256 <sha256> --cache-root <dir>");
+        Console.WriteLine(
+            "  compose-monotonic --profile <profile> --incumbent-root <dir> " +
+            "--incumbent-name <name> --incumbent-file-count <n> " +
+            "--incumbent-bytes <n> --incumbent-tree-sha256 <sha256> " +
+            "--raw-root <frozen-dir> --safe-root <frozen-dir> " +
+            "--alternative-name <name> --alternative-root <dir> " +
+            "--alternative-manifest <json> --alternative-manifest-sha256 <sha256> " +
+            "--output-root <new-dir> --manifest <new-json>");
         Console.WriteLine(
             "  audit --raw-root <dir> --safe-root <dir> --candidate-root <dir> " +
             "--manifest <json> --manifest-sha256 <sha256> --bc-bridge <json> " +

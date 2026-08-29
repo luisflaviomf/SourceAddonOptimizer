@@ -126,6 +126,93 @@ public sealed class VtfUniversalCorpusDriverTests : IDisposable
         Assert.Empty(fake.Requests);
     }
 
+    [Fact]
+    public async Task ComposeMonotonicDelegatesPinnedIncumbentAndAlternative()
+    {
+        var fake = new RecordingMonotonicComposer();
+        string incumbent = Directory.CreateDirectory(Path.Combine(_root, "compose-incumbent")).FullName;
+        string raw = Directory.CreateDirectory(Path.Combine(_root, "compose-raw")).FullName;
+        string safe = Directory.CreateDirectory(Path.Combine(_root, "compose-safe")).FullName;
+        string alternative = Directory.CreateDirectory(Path.Combine(_root, "compose-alternative")).FullName;
+        string alternativeManifest = Path.Combine(_root, "compose-alternative.json");
+        File.WriteAllText(alternativeManifest, "{}");
+        string output = Path.Combine(_root, "compose-output");
+        string manifest = Path.Combine(_root, "compose-result.json");
+
+        int code = await Driver.RunAsync(new[]
+        {
+            "compose-monotonic",
+            "--profile", "balanced",
+            "--incumbent-root", incumbent,
+            "--incumbent-name", "adaptive-balanced",
+            "--incumbent-file-count", "3664",
+            "--incumbent-bytes", "385314332",
+            "--incumbent-tree-sha256", Hash('1'),
+            "--raw-root", raw,
+            "--safe-root", safe,
+            "--alternative-name", "universal-balanced",
+            "--alternative-root", alternative,
+            "--alternative-manifest", alternativeManifest,
+            "--alternative-manifest-sha256", Hash('2'),
+            "--output-root", output,
+            "--manifest", manifest
+        }, null, CancellationToken.None, null, fake);
+
+        Assert.Equal(0, code);
+        UniversalVtfMonotonicComposeRequest request = Assert.Single(fake.Requests);
+        Assert.Equal(UniversalVtfProfileKind.Balanced, request.Profile);
+        Assert.Equal(3_664, request.IncumbentAnchor.FileCount);
+        Assert.Equal(385_314_332, request.IncumbentAnchor.TotalBytes);
+        Assert.Equal(Hash('1'), request.IncumbentAnchor.TreeSha256);
+        Assert.Equal(new[] { "raw", "safe" },
+            request.ProtectedAuthorities!.Select(authority => authority.Name));
+        Assert.Equal(UniversalVtfCorpusBuilder.DefaultAnchors.RawAnchor,
+            request.ProtectedAuthorities![0].Anchor);
+        Assert.Equal(UniversalVtfCorpusBuilder.DefaultAnchors.SafeAnchor,
+            request.ProtectedAuthorities[1].Anchor);
+        Assert.Equal("universal-balanced", Assert.Single(request.Alternatives).Name);
+        Assert.Equal(output, request.OutputRoot);
+        Assert.Equal(manifest, request.ManifestPath);
+    }
+
+    [Fact]
+    public async Task ComposeMonotonicClassifiesRollbackAggregateAsTransformFailure()
+    {
+        var fake = new RecordingMonotonicComposer
+        {
+            Error = new AggregateException("publication and rollback failed")
+        };
+        string incumbent = Directory.CreateDirectory(Path.Combine(_root, "aggregate-incumbent"))
+            .FullName;
+        string raw = Directory.CreateDirectory(Path.Combine(_root, "aggregate-raw")).FullName;
+        string safe = Directory.CreateDirectory(Path.Combine(_root, "aggregate-safe")).FullName;
+        string alternative = Directory.CreateDirectory(Path.Combine(_root, "aggregate-alternative"))
+            .FullName;
+        string alternativeManifest = Path.Combine(_root, "aggregate-alternative.json");
+        File.WriteAllText(alternativeManifest, "{}");
+
+        int code = await Driver.RunAsync(new[]
+        {
+            "compose-monotonic",
+            "--profile", "balanced",
+            "--incumbent-root", incumbent,
+            "--incumbent-name", "adaptive-balanced",
+            "--incumbent-file-count", "3664",
+            "--incumbent-bytes", "385314332",
+            "--incumbent-tree-sha256", Hash('1'),
+            "--raw-root", raw,
+            "--safe-root", safe,
+            "--alternative-name", "universal-balanced",
+            "--alternative-root", alternative,
+            "--alternative-manifest", alternativeManifest,
+            "--alternative-manifest-sha256", Hash('2'),
+            "--output-root", Path.Combine(_root, "aggregate-output"),
+            "--manifest", Path.Combine(_root, "aggregate-result.json")
+        }, null, CancellationToken.None, null, fake);
+
+        Assert.Equal(4, code);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))
@@ -255,6 +342,34 @@ public sealed class VtfUniversalCorpusDriverTests : IDisposable
             Requests.Add(request);
             CacheRoots.Add(cacheRoot);
             return Task.FromResult(new UniversalVtfLegacyImportResult(1, 1, 0, 1, 0.1));
+        }
+    }
+
+    private sealed class RecordingMonotonicComposer : IUniversalVtfMonotonicComposeService
+    {
+        internal List<UniversalVtfMonotonicComposeRequest> Requests { get; } = new();
+
+        internal Exception? Error { get; init; }
+
+        public Task<UniversalVtfMonotonicComposeResult> ComposeAsync(
+            UniversalVtfMonotonicComposeRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Requests.Add(request);
+            if (Error is not null)
+            {
+                return Task.FromException<UniversalVtfMonotonicComposeResult>(Error);
+            }
+
+            return Task.FromResult(new UniversalVtfMonotonicComposeResult(
+                request.OutputRoot,
+                request.IncumbentAnchor.TotalBytes - 1,
+                Hash('3'),
+                1,
+                1,
+                request.ManifestPath,
+                Hash('4')));
         }
     }
 }
