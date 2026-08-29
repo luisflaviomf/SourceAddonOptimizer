@@ -104,6 +104,7 @@ public sealed class VtfUniversalCorpusDriverTests : IDisposable
             "--raw-root", raw,
             "--safe-root", safe,
             "--output-parent", Path.Combine(_root, Guid.NewGuid().ToString("N")),
+            "--cache-root", Path.Combine(_root, "cache"),
             "--profiles", "all",
             "--bc-bridge", Path.Combine(_root, "bridge.json"),
             "--bc-bridge-sha256", Hash('a')

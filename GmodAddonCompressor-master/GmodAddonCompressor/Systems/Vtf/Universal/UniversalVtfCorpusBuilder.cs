@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace GmodAddonCompressor.Systems.Vtf.Universal;
 
@@ -40,8 +41,10 @@ internal sealed record UniversalVtfBuildRequest(
     string? RuntimeCapsSha256,
     IReadOnlyList<UniversalVtfProfileKind> Profiles,
     string PolicyFingerprint,
+    string CacheRoot,
     UniversalVtfBuildAnchors? Anchors = null,
-    IUniversalVtfBuildObserver? Observer = null);
+    IUniversalVtfBuildObserver? Observer = null,
+    IUniversalVtfCacheCommitObserver? CacheObserver = null);
 
 internal sealed record UniversalVtfBuiltProfile(
     UniversalVtfProfileKind Profile,
@@ -56,12 +59,22 @@ internal sealed record UniversalVtfBuildResult(
     UniversalVtfBuiltProfile Balanced,
     UniversalVtfBuiltProfile Aggressive);
 
+internal enum UniversalVtfCacheAssetStatus
+{
+    CompletedHit,
+    AnalysisHit,
+    Miss,
+    Invalid
+}
+
 internal sealed record UniversalVtfBuildProgress(
     string Stage,
     int Completed,
     int Total,
     string? RelativePath,
-    UniversalVtfProfileKind? Profile);
+    UniversalVtfProfileKind? Profile,
+    UniversalVtfCacheAssetStatus? CacheStatus = null,
+    double? ElapsedMilliseconds = null);
 
 internal static class UniversalVtfCorpusBuilder
 {
@@ -145,6 +158,13 @@ internal static class UniversalVtfCorpusBuilder
         string safeRoot = RequireDirectory(request.SafeRoot, nameof(request.SafeRoot));
         string outputParent = RequireDirectory(request.OutputParent, nameof(request.OutputParent));
         string reportRoot = RequireDirectory(request.ReportRoot, nameof(request.ReportRoot));
+        string cacheRoot = ResolveCacheRoot(request.CacheRoot);
+        RequireSeparateCacheAuthority(
+            cacheRoot,
+            rawRoot,
+            safeRoot,
+            outputParent,
+            reportRoot);
         UniversalVtfBuildAnchors anchors = request.Anchors ?? DefaultAnchors;
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -227,6 +247,8 @@ internal static class UniversalVtfCorpusBuilder
                 request.PolicyFingerprint.ToLowerInvariant());
         }
 
+        var cache = new UniversalVtfPreparationCache(cacheRoot, request.CacheObserver);
+
         IReadOnlyList<string> frameworkRoots = DiscoverFrameworkRoots(rawRoot);
         VtfConsumerGraph consumerGraph = VtfConsumerGraphBuilder.Build(
             rawRoot,
@@ -261,35 +283,30 @@ internal static class UniversalVtfCorpusBuilder
                 string source = CombineAuthority(rawRoot, rawEntry.RelativePath);
                 string assetRoot = Path.Combine(candidateRoot, index.ToString("D4"));
                 Directory.CreateDirectory(assetRoot);
-                IReadOnlyList<UniversalVtfCandidateArtifact> candidates =
-                    await MaterializeCandidatesAsync(
-                        source,
-                        rawEntry,
-                        semantics,
-                        assetRoot,
-                        encodingSession,
-                        token).ConfigureAwait(false);
-                UniversalVtfAttemptMatrix matrix = UniversalVtfSelector.BuildAttempts(
-                    rawEntry,
-                    candidates,
-                    semantics);
-                UniversalVtfProfileSelection selection = UniversalVtfSelector.Select(
-                    matrix,
-                    runtimeCaps);
-                prepared[index] = new PreparedAsset(
+                Stopwatch elapsed = Stopwatch.StartNew();
+                prepared[index] = await PrepareMissAndCheckpointAsync(
                     rawEntry,
                     safeFile,
                     semantics,
-                    matrix,
-                    selection,
-                    bridgeRows.GetValueOrDefault(canonicalPath));
+                    source,
+                    assetRoot,
+                    encodingSession,
+                    runtimeCaps,
+                    bridgeRows.GetValueOrDefault(canonicalPath),
+                    request,
+                    policy,
+                    cache,
+                    token).ConfigureAwait(false);
+                elapsed.Stop();
                 int complete = Interlocked.Increment(ref preparedCount);
                 progress?.Report(new UniversalVtfBuildProgress(
                     "prepare",
                     complete,
                     rawInventory.Entries.Count,
                     canonicalPath,
-                    null));
+                    null,
+                    UniversalVtfCacheAssetStatus.Miss,
+                    elapsed.Elapsed.TotalMilliseconds));
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -315,22 +332,12 @@ internal static class UniversalVtfCorpusBuilder
                     stagingRoots[profile],
                     asset.SafeFile.RelativePath);
                 PrepareForReplacement(destination);
-                string spatialPath = selected.CandidatePath;
-                string finalSource = spatialPath;
-                if (asset.BridgeRow?.EligibilityMode is
-                    Bc3EligibilityMode.PhysicalOpaque or
-                    Bc3EligibilityMode.SemanticDetailRgbOnly)
-                {
-                    ValidateBridgeSelection(asset, selected.Level);
-                    string bcOutput = Path.Combine(
-                        candidateRoot,
-                        $"bc1-{(int)profile}-{completed:D4}.vtf");
-                    await MaterializeOpaqueBc1Async(
-                        spatialPath,
-                        bcOutput,
-                        cancellationToken).ConfigureAwait(false);
-                    finalSource = bcOutput;
-                }
+                UniversalVtfArtifactReference spatial = asset.Analysis.Artifacts[
+                    new UniversalVtfCachedArtifactKey(selected.Level, selected.Route)];
+                UniversalVtfCompletedProfile completedProfile =
+                    asset.Completion.Profiles[profile];
+                string spatialPath = cache.ResolveBlob(spatial);
+                string finalSource = cache.ResolveBlob(completedProfile.FinalArtifact);
 
                 File.Copy(finalSource, destination, overwrite: true);
                 rows.Add(CreateManifestRow(
@@ -443,6 +450,235 @@ internal static class UniversalVtfCorpusBuilder
                 frozenManifests[profile].Sha256,
                 tree.TotalBytes,
                 tree.TreeSha256);
+        }
+    }
+
+    private static async Task<PreparedAsset> PrepareMissAndCheckpointAsync(
+        UniversalVtfInventoryEntry raw,
+        UniversalVtfTreeFile safe,
+        UniversalVtfSemanticDecision semantics,
+        string source,
+        string assetRoot,
+        UniversalVtfEncodingSession encodingSession,
+        UniversalVtfRuntimeCaps runtimeCaps,
+        Bc3RawBridgeRow? bridgeRow,
+        UniversalVtfBuildRequest request,
+        UniversalVtfPolicyReceipt policy,
+        UniversalVtfPreparationCache cache,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<UniversalVtfCandidateArtifact> candidates =
+            await MaterializeCandidatesAsync(
+                source,
+                raw,
+                semantics,
+                assetRoot,
+                encodingSession,
+                cancellationToken).ConfigureAwait(false);
+        UniversalVtfAttemptMatrix matrix = UniversalVtfSelector.BuildAttempts(
+            raw,
+            candidates,
+            semantics);
+        UniversalVtfProfileSelection selection = UniversalVtfSelector.Select(
+            matrix,
+            runtimeCaps);
+        UniversalVtfAnalysisIdentity analysisIdentity = CreateAnalysisIdentity(
+            raw,
+            semantics,
+            bridgeRow,
+            request,
+            policy);
+        string analysisKey = UniversalVtfCacheKey.Analysis(analysisIdentity);
+
+        var analysisArtifacts = new Dictionary<
+            UniversalVtfCachedArtifactKey,
+            UniversalVtfArtifactReference>();
+        var artifactSources = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (UniversalVtfAttempt attempt in matrix.Attempts)
+        foreach (UniversalVtfRouteAttempt route in attempt.RouteAttempts
+                     .Where(route => route.StructurallyValid))
+        {
+            UniversalVtfArtifactReference reference =
+                UniversalVtfArtifactReference.FromVtf(route.CandidatePath);
+            analysisArtifacts.Add(
+                new UniversalVtfCachedArtifactKey(attempt.Level, route.Route),
+                reference);
+            AddArtifactSource(artifactSources, reference, route.CandidatePath);
+        }
+
+        var analysisReceipt = new UniversalVtfAnalysisReceipt(
+            UniversalVtfCacheContracts.AnalysisReceiptSchema,
+            analysisKey,
+            analysisIdentity,
+            UniversalVtfCacheCoverage.FullAttempts,
+            UniversalVtfCachedAttemptMatrix.FromRuntime(matrix),
+            analysisArtifacts);
+        var cachedSelections = new Dictionary<
+            UniversalVtfProfileKind,
+            UniversalVtfCachedSelection>();
+        var completedProfiles = new Dictionary<
+            UniversalVtfProfileKind,
+            UniversalVtfCompletedProfile>();
+        foreach (UniversalVtfProfileKind profile in Enum.GetValues<UniversalVtfProfileKind>())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            UniversalVtfSelectedLevel selected = Selected(selection, profile);
+            var artifactKey = new UniversalVtfCachedArtifactKey(
+                selected.Level,
+                selected.Route);
+            if (!analysisArtifacts.TryGetValue(
+                    artifactKey,
+                    out UniversalVtfArtifactReference? spatialReference))
+            {
+                throw new InvalidDataException(
+                    $"cache_selected_spatial_artifact_missing:{raw.RelativePath}:{profile}");
+            }
+
+            string spatialPath = selected.CandidatePath;
+            string finalPath = spatialPath;
+            if (bridgeRow?.EligibilityMode is
+                Bc3EligibilityMode.PhysicalOpaque or
+                Bc3EligibilityMode.SemanticDetailRgbOnly)
+            {
+                ValidateBridgeSelection(raw, bridgeRow, selected.Level);
+                finalPath = Path.Combine(
+                    assetRoot,
+                    $"final-bc1-{profile.ToString().ToLowerInvariant()}.vtf");
+                await MaterializeOpaqueBc1Async(
+                    spatialPath,
+                    finalPath,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            UniversalVtfArtifactReference finalReference =
+                UniversalVtfArtifactReference.FromVtf(finalPath);
+            AddArtifactSource(artifactSources, finalReference, finalPath);
+            var cachedSelection = new UniversalVtfCachedSelection(
+                profile,
+                selected.Level,
+                selected.Route);
+            cachedSelections.Add(profile, cachedSelection);
+            UniversalVtfProfileAttempt? selectedAttempt = selection.Attempts[profile]
+                .SingleOrDefault(attempt => attempt.Level == selected.Level);
+            VtfContainerLayout spatialLayout = VtfContainerLayoutReader.Read(spatialPath);
+            VtfContainerLayout finalLayout = VtfContainerLayoutReader.Read(finalPath);
+            completedProfiles.Add(
+                profile,
+                new UniversalVtfCompletedProfile(
+                    profile,
+                    cachedSelection,
+                    selectedAttempt?.Evaluation?.WorstGate,
+                    finalReference,
+                    spatialReference.Bytes,
+                    spatialReference.Sha256,
+                    spatialReference.Bytes == raw.Bytes,
+                    selected.Reason == "forced_floor_quality_deficit"
+                        ? selected.Reason
+                        : null,
+                    LowResolutionChanged(raw, spatialLayout),
+                    finalLayout.Resources.Count));
+        }
+
+        var completionIdentity = new UniversalVtfCompletionIdentity(
+            UniversalVtfCacheKey.CompletionSchema,
+            analysisKey,
+            safe.Sha256,
+            safe.Length,
+            request.RuntimeCapsSha256?.ToLowerInvariant() ?? UniversalVtfCacheKey.None,
+            cachedSelections);
+        var completionReceipt = new UniversalVtfCompletionReceipt(
+            UniversalVtfCacheContracts.CompletionReceiptSchema,
+            UniversalVtfCacheKey.Completion(completionIdentity),
+            completionIdentity,
+            completedProfiles);
+        var cached = new UniversalVtfCachedAsset(
+            analysisReceipt,
+            completionReceipt,
+            artifactSources);
+        await cache.PublishAsync(cached, cancellationToken).ConfigureAwait(false);
+        return new PreparedAsset(
+            raw,
+            safe,
+            semantics,
+            matrix,
+            selection,
+            bridgeRow,
+            analysisReceipt,
+            completionReceipt);
+    }
+
+    private static UniversalVtfAnalysisIdentity CreateAnalysisIdentity(
+        UniversalVtfInventoryEntry raw,
+        UniversalVtfSemanticDecision semantics,
+        Bc3RawBridgeRow? bridgeRow,
+        UniversalVtfBuildRequest request,
+        UniversalVtfPolicyReceipt policy)
+    {
+        IReadOnlyList<string> classes = semantics.Classes
+            .Select(value => ToCamelCase(value.ToString()))
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
+        var structure = new UniversalVtfStructuralIdentity(
+            raw.MajorVersion,
+            raw.MinorVersion,
+            raw.HeaderSize,
+            raw.Flags,
+            raw.Width,
+            raw.Height,
+            raw.Depth,
+            raw.Frames,
+            raw.FirstFrame,
+            raw.Faces,
+            raw.MipCount,
+            raw.HighResFormat,
+            raw.LowResFormat,
+            raw.LowResWidth,
+            raw.LowResHeight,
+            raw.IsNomip,
+            CanonicalFingerprint(raw.Resources),
+            CanonicalFingerprint(raw.Subresources),
+            CanonicalFingerprint(raw.UnmappedRanges));
+        return new UniversalVtfAnalysisIdentity(
+            UniversalVtfCacheKey.AnalysisSchema,
+            UniversalVtfPreparationFingerprint.Current,
+            raw.RelativePath.ToLowerInvariant(),
+            raw.Sha256.ToLowerInvariant(),
+            raw.Bytes,
+            structure,
+            UniversalVtfSemanticProof.Compute(semantics),
+            classes,
+            semantics.Route,
+            request.PolicyFingerprint.ToLowerInvariant(),
+            UniversalVtfPolicy.V1.FixtureSha256,
+            policy.ToolchainSha256.ToLowerInvariant(),
+            request.BcBridgeSha256.ToLowerInvariant(),
+            bridgeRow is null
+                ? UniversalVtfCacheKey.None
+                : CanonicalFingerprint(bridgeRow),
+            UniversalVtfPreparationFingerprint.CandidateParameters);
+    }
+
+    private static string CanonicalFingerprint<T>(T value) =>
+        UniversalVtfCanonicalJson.Sha256(UniversalVtfCanonicalJson.Serialize(value));
+
+    private static void AddArtifactSource(
+        IDictionary<string, string> sources,
+        UniversalVtfArtifactReference reference,
+        string path)
+    {
+        string source = Path.GetFullPath(path);
+        if (!sources.TryGetValue(reference.Sha256, out string? existing))
+        {
+            sources.Add(reference.Sha256, source);
+            return;
+        }
+
+        UniversalVtfArtifactReference existingReference =
+            UniversalVtfArtifactReference.FromVtf(existing);
+        if (existingReference != reference)
+        {
+            throw new InvalidDataException(
+                $"cache_artifact_hash_metadata_conflict:{reference.Sha256}");
         }
     }
 
@@ -658,28 +894,29 @@ internal static class UniversalVtfCorpusBuilder
         return result;
     }
 
-    private static void ValidateBridgeSelection(PreparedAsset asset, int level)
+    private static void ValidateBridgeSelection(
+        UniversalVtfInventoryEntry raw,
+        Bc3RawBridgeRow bridge,
+        int level)
     {
-        Bc3RawBridgeRow bridge = asset.BridgeRow
-            ?? throw new InvalidDataException("bc3_bridge_row_missing");
-        if (bridge.RawBytes != asset.Raw.Bytes ||
-            !bridge.RawSha256.Equals(asset.Raw.Sha256, StringComparison.OrdinalIgnoreCase) ||
-            bridge.RawFormat != asset.Raw.HighResFormat)
+        if (bridge.RawBytes != raw.Bytes ||
+            !bridge.RawSha256.Equals(raw.Sha256, StringComparison.OrdinalIgnoreCase) ||
+            bridge.RawFormat != raw.HighResFormat)
         {
-            throw new InvalidDataException($"bc3_bridge_raw_drift:{asset.Raw.RelativePath}");
+            throw new InvalidDataException($"bc3_bridge_raw_drift:{raw.RelativePath}");
         }
 
         Bc3RawMipReceipt mip = bridge.RawMips.SingleOrDefault(item => item.Level == level)
             ?? throw new InvalidDataException(
-                $"bc3_bridge_selected_level_missing:{asset.Raw.RelativePath}:{level}");
+                $"bc3_bridge_selected_level_missing:{raw.RelativePath}:{level}");
         UniversalVtfDimensions expected = UniversalVtfLevels.At(
-            asset.Raw.Width,
-            asset.Raw.Height,
+            raw.Width,
+            raw.Height,
             level);
         if (mip.Width != expected.Width || mip.Height != expected.Height)
         {
             throw new InvalidDataException(
-                $"bc3_bridge_selected_geometry:{asset.Raw.RelativePath}:{level}");
+                $"bc3_bridge_selected_geometry:{raw.RelativePath}:{level}");
         }
     }
 
@@ -1038,11 +1275,62 @@ internal static class UniversalVtfCorpusBuilder
         return full;
     }
 
+    private static string ResolveCacheRoot(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new ArgumentException("Cache root cannot be empty.", nameof(path));
+        }
+
+        string full = Path.GetFullPath(path).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        if (File.Exists(full))
+        {
+            throw new IOException($"cache_root_is_file:{full}");
+        }
+
+        string? parent = Path.GetDirectoryName(full);
+        if (parent is null || !Directory.Exists(parent))
+        {
+            throw new DirectoryNotFoundException(parent ?? full);
+        }
+
+        return full;
+    }
+
+    private static void RequireSeparateCacheAuthority(
+        string cache,
+        params string[] authorities)
+    {
+        if (authorities.Any(authority => PathsOverlap(cache, authority)))
+        {
+            throw new InvalidDataException("cache_authority_overlap");
+        }
+    }
+
+    private static bool PathsOverlap(string first, string second)
+    {
+        string left = Path.GetFullPath(first).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        string right = Path.GetFullPath(second).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        return left.Equals(right, StringComparison.OrdinalIgnoreCase) ||
+               left.StartsWith(right + Path.DirectorySeparatorChar,
+                   StringComparison.OrdinalIgnoreCase) ||
+               right.StartsWith(left + Path.DirectorySeparatorChar,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed record PreparedAsset(
         UniversalVtfInventoryEntry Raw,
         UniversalVtfTreeFile SafeFile,
         UniversalVtfSemanticDecision Semantics,
         UniversalVtfAttemptMatrix Matrix,
         UniversalVtfProfileSelection Selection,
-        Bc3RawBridgeRow? BridgeRow);
+        Bc3RawBridgeRow? BridgeRow,
+        UniversalVtfAnalysisReceipt Analysis,
+        UniversalVtfCompletionReceipt Completion);
 }

@@ -243,6 +243,7 @@ internal sealed class SyntheticUniversalCorpus : IDisposable
     internal string SafeRoot => Path.Combine(_root, "safe");
     internal string OutputParent => Path.Combine(_root, "output");
     internal string ReportRoot => Path.Combine(_root, "reports");
+    internal string CacheRoot => Path.Combine(_root, "cache");
     internal string SafeModelSha256 { get; private set; } = string.Empty;
     internal string RawVtfSha256 { get; private set; } = string.Empty;
     internal string SafeVtfSha256 { get; private set; } = string.Empty;
@@ -330,6 +331,7 @@ internal sealed class SyntheticUniversalCorpus : IDisposable
             corpus.RuntimeCapsSha256,
             Enum.GetValues<UniversalVtfProfileKind>(),
             policy.PolicyFingerprint,
+            corpus.CacheRoot,
             new UniversalVtfBuildAnchors(
                 new UniversalVtfTreeAnchor(
                     "synthetic_raw",

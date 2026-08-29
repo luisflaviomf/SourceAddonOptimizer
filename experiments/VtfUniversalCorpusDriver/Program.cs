@@ -320,6 +320,7 @@ internal static class Driver
             "--raw-root",
             "--safe-root",
             "--output-parent",
+            "--cache-root",
             "--report-root",
             "--profiles",
             "--bc-bridge",
@@ -337,6 +338,7 @@ internal static class Driver
         string rawRoot = RequireExistingDirectory(options, "--raw-root");
         string safeRoot = RequireExistingDirectory(options, "--safe-root");
         string outputParent = Path.GetFullPath(RequireOption(options, "--output-parent"));
+        string cacheRoot = Path.GetFullPath(RequireOption(options, "--cache-root"));
         string reportRoot = options.TryGetValue("--report-root", out string? requestedReport)
             ? Path.GetFullPath(requestedReport)
             : outputParent;
@@ -349,6 +351,12 @@ internal static class Driver
             ? RequireSha256(options, "--runtime-caps-sha256")
             : null;
         RequireSeparateAuthorities(rawRoot, safeRoot, outputParent, reportRoot);
+        if (Overlaps(cacheRoot, rawRoot) || Overlaps(cacheRoot, safeRoot) ||
+            Overlaps(cacheRoot, outputParent) || Overlaps(cacheRoot, reportRoot))
+        {
+            throw new ArgumentException(
+                "Cache authority must be physically separate from raw, safe, output and reports.");
+        }
         if (Directory.Exists(outputParent) || File.Exists(outputParent))
         {
             throw new IOException($"Output parent already exists: {outputParent}");
@@ -374,7 +382,8 @@ internal static class Driver
             capsPath,
             capsSha256,
             Enum.GetValues<UniversalVtfProfileKind>(),
-            policy.PolicyFingerprint);
+            policy.PolicyFingerprint,
+            cacheRoot);
         var progress = new InlineProgress<UniversalVtfBuildProgress>(item => WriteJson(new
         {
             type = "progress",
@@ -382,7 +391,9 @@ internal static class Driver
             item.Completed,
             item.Total,
             item.RelativePath,
-            profile = item.Profile?.ToString().ToLowerInvariant()
+            profile = item.Profile?.ToString().ToLowerInvariant(),
+            cacheStatus = item.CacheStatus?.ToString().ToLowerInvariant(),
+            item.ElapsedMilliseconds
         }));
         UniversalVtfBuildResult result = await service.BuildAsync(
             request,
@@ -648,7 +659,8 @@ internal static class Driver
         Console.WriteLine("  generated-smoke --raw-root <dir>");
         Console.WriteLine(
             "  build --raw-root <dir> --safe-root <dir> --bc-bridge <json> " +
-            "--bc-bridge-sha256 <sha256> --output-parent <new-dir> --profiles all " +
+            "--bc-bridge-sha256 <sha256> --output-parent <new-dir> " +
+            "--cache-root <dir> --profiles all " +
             "[--report-root <new-dir>] [--runtime-caps <json> " +
             "--runtime-caps-sha256 <sha256>]");
         Console.WriteLine(
