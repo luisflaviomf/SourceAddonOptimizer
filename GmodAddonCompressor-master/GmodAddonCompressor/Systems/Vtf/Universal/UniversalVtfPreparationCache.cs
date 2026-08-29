@@ -267,12 +267,6 @@ internal sealed class UniversalVtfPreparationCache
                 analysisReceiptPath,
                 analysis,
                 cancellationToken).ConfigureAwait(false);
-            if (analysisReceipt.Coverage ==
-                UniversalVtfCacheCoverage.ImportedExactProfileFinals)
-            {
-                return Miss("cache_imported_exact_completion_miss");
-            }
-
             await ValidateArtifactsAsync(
                 analysisReceipt.Artifacts.Values,
                 cancellationToken).ConfigureAwait(false);

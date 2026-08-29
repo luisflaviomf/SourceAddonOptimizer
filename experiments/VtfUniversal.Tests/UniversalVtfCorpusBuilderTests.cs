@@ -348,6 +348,21 @@ internal sealed class SyntheticUniversalCorpus : IDisposable
         return corpus;
     }
 
+    internal void RenewOutputDestinations()
+    {
+        string output = Path.Combine(_root, $"output-{Guid.NewGuid():N}");
+        string reports = Path.Combine(_root, $"reports-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(output);
+        Directory.CreateDirectory(reports);
+        Request = Request with
+        {
+            OutputParent = output,
+            ReportRoot = reports,
+            Observer = null,
+            CacheObserver = null
+        };
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

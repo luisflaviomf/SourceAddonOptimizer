@@ -407,6 +407,9 @@ internal static class Driver
             toolchainSha256 = policy.ToolchainSha256,
             bcBridgeSha256 = bridgeSha256,
             runtimeCapsSha256 = capsSha256,
+            cache = result.Cache,
+            result.RunJournalPath,
+            result.RunJournalSha256,
             profiles = new[]
             {
                 Result(result.Conservative),

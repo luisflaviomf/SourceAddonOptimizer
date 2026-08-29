@@ -149,7 +149,22 @@ public sealed class VtfUniversalCorpusDriverTests : IDisposable
             return Task.FromResult(new UniversalVtfBuildResult(
                 Profile(UniversalVtfProfileKind.Conservative),
                 Profile(UniversalVtfProfileKind.Balanced),
-                Profile(UniversalVtfProfileKind.Aggressive)));
+                Profile(UniversalVtfProfileKind.Aggressive),
+                new UniversalVtfCacheTelemetry(
+                    1,
+                    1,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    100,
+                    0.1,
+                    0.2,
+                    "test-cache",
+                    Hash('b')),
+                "journal",
+                Hash('a')));
         }
     }
 }
