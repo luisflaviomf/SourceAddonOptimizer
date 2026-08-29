@@ -86,6 +86,46 @@ public sealed class VtfUniversalCorpusDriverTests : IDisposable
         Assert.Empty(fake.Requests);
     }
 
+    [Fact]
+    public async Task SeedCacheDelegatesPinnedLegacyAuthorities()
+    {
+        var fake = new RecordingLegacyImporter();
+
+        int code = await Driver.RunAsync(
+            ValidSeedArgs(),
+            null,
+            CancellationToken.None,
+            fake);
+
+        Assert.Equal(0, code);
+        UniversalVtfLegacyImportRequest request = Assert.Single(fake.Requests);
+        Assert.Equal(Hash('a'), request.BcBridgeSha256);
+        Assert.Equal(Hash('b'), request.LegacyBuildLogSha256);
+        Assert.Equal(Hash('c'), request.ManifestSha256[UniversalVtfProfileKind.Conservative]);
+        Assert.Equal(Hash('d'), request.ManifestSha256[UniversalVtfProfileKind.Balanced]);
+        Assert.Equal(Hash('e'), request.ManifestSha256[UniversalVtfProfileKind.Aggressive]);
+        Assert.Equal(UniversalVtfCorpusBuilder.DefaultAnchors, request.Anchors);
+        Assert.Equal(Path.Combine(_root, "seed-cache"), fake.CacheRoots.Single());
+    }
+
+    [Fact]
+    public async Task SeedCacheRejectsCacheInsideLegacyAuthority()
+    {
+        string[] args = ValidSeedArgs();
+        string legacy = args[Array.IndexOf(args, "--legacy-root") + 1];
+        args[Array.IndexOf(args, "--cache-root") + 1] = Path.Combine(legacy, "cache");
+        var fake = new RecordingLegacyImporter();
+
+        int code = await Driver.RunAsync(
+            args,
+            null,
+            CancellationToken.None,
+            fake);
+
+        Assert.Equal(2, code);
+        Assert.Empty(fake.Requests);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))
@@ -119,6 +159,37 @@ public sealed class VtfUniversalCorpusDriverTests : IDisposable
         }
 
         return values.ToArray();
+    }
+
+    private string[] ValidSeedArgs()
+    {
+        string raw = Directory.CreateDirectory(Path.Combine(_root, "seed-raw")).FullName;
+        string safe = Directory.CreateDirectory(Path.Combine(_root, "seed-safe")).FullName;
+        string legacy = Directory.CreateDirectory(Path.Combine(_root, "legacy")).FullName;
+        string bridge = Path.Combine(_root, "bridge.json");
+        string log = Path.Combine(legacy, "legacy.build.jsonl");
+        File.WriteAllText(bridge, "{}");
+        File.WriteAllText(log, "{}");
+        foreach (string profile in new[] { "conservative", "balanced", "aggressive" })
+        {
+            File.WriteAllText(Path.Combine(legacy, profile + ".manifest.json"), "{}");
+        }
+
+        return new[]
+        {
+            "seed-cache",
+            "--raw-root", raw,
+            "--safe-root", safe,
+            "--bc-bridge", bridge,
+            "--bc-bridge-sha256", Hash('a'),
+            "--legacy-root", legacy,
+            "--legacy-build-log", log,
+            "--legacy-build-log-sha256", Hash('b'),
+            "--conservative-manifest-sha256", Hash('c'),
+            "--balanced-manifest-sha256", Hash('d'),
+            "--aggressive-manifest-sha256", Hash('e'),
+            "--cache-root", Path.Combine(_root, "seed-cache")
+        };
     }
 
     private static string[] RemoveOption(string[] args, string option)
@@ -165,6 +236,25 @@ public sealed class VtfUniversalCorpusDriverTests : IDisposable
                     Hash('b')),
                 "journal",
                 Hash('a')));
+        }
+    }
+
+    private sealed class RecordingLegacyImporter : IUniversalVtfLegacyImportService
+    {
+        internal List<UniversalVtfLegacyImportRequest> Requests { get; } = new();
+
+        internal List<string> CacheRoots { get; } = new();
+
+        public Task<UniversalVtfLegacyImportResult> ImportAsync(
+            UniversalVtfLegacyImportRequest request,
+            string cacheRoot,
+            IProgress<UniversalVtfLegacyImportProgress>? progress,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Requests.Add(request);
+            CacheRoots.Add(cacheRoot);
+            return Task.FromResult(new UniversalVtfLegacyImportResult(1, 1, 0, 1, 0.1));
         }
     }
 }

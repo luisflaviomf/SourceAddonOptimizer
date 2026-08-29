@@ -26,6 +26,29 @@ internal sealed class UniversalVtfCorpusBuildService : IUniversalVtfCorpusBuildS
         UniversalVtfCorpusBuilder.BuildAsync(request, progress, cancellationToken);
 }
 
+internal interface IUniversalVtfLegacyImportService
+{
+    Task<UniversalVtfLegacyImportResult> ImportAsync(
+        UniversalVtfLegacyImportRequest request,
+        string cacheRoot,
+        IProgress<UniversalVtfLegacyImportProgress>? progress,
+        CancellationToken cancellationToken);
+}
+
+internal sealed class UniversalVtfLegacyImportService : IUniversalVtfLegacyImportService
+{
+    public Task<UniversalVtfLegacyImportResult> ImportAsync(
+        UniversalVtfLegacyImportRequest request,
+        string cacheRoot,
+        IProgress<UniversalVtfLegacyImportProgress>? progress,
+        CancellationToken cancellationToken) =>
+        UniversalVtfLegacyCheckpointImporter.ImportAsync(
+            request,
+            new UniversalVtfPreparationCache(cacheRoot),
+            progress,
+            cancellationToken);
+}
+
 internal static class Program
 {
     private static async Task<int> Main(string[] args)
@@ -58,7 +81,8 @@ internal static class Driver
     internal static async Task<int> RunAsync(
         string[] args,
         IUniversalVtfCorpusBuildService? buildService = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IUniversalVtfLegacyImportService? legacyImportService = null)
     {
         ArgumentNullException.ThrowIfNull(args);
         if (args.Length == 0 || args.Contains("--help", StringComparer.OrdinalIgnoreCase) ||
@@ -70,6 +94,7 @@ internal static class Driver
 
         string command = args[0].ToLowerInvariant();
         buildService ??= new UniversalVtfCorpusBuildService();
+        legacyImportService ??= new UniversalVtfLegacyImportService();
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -85,6 +110,10 @@ internal static class Driver
                 "build" => await RunBuildAsync(
                     options,
                     buildService,
+                    cancellationToken).ConfigureAwait(false),
+                "seed-cache" => await RunSeedCacheAsync(
+                    options,
+                    legacyImportService,
                     cancellationToken).ConfigureAwait(false),
                 "audit" => RunAudit(options, buildService, cancellationToken),
                 _ => throw new ArgumentException($"Unknown command: {command}")
@@ -420,6 +449,83 @@ internal static class Driver
         return 0;
     }
 
+    private static async Task<int> RunSeedCacheAsync(
+        IReadOnlyDictionary<string, string> options,
+        IUniversalVtfLegacyImportService service,
+        CancellationToken cancellationToken)
+    {
+        RequireOnly(
+            options,
+            "--raw-root",
+            "--safe-root",
+            "--bc-bridge",
+            "--bc-bridge-sha256",
+            "--legacy-root",
+            "--legacy-build-log",
+            "--legacy-build-log-sha256",
+            "--conservative-manifest-sha256",
+            "--balanced-manifest-sha256",
+            "--aggressive-manifest-sha256",
+            "--cache-root");
+        string rawRoot = RequireExistingDirectory(options, "--raw-root");
+        string safeRoot = RequireExistingDirectory(options, "--safe-root");
+        string legacyRoot = RequireExistingDirectory(options, "--legacy-root");
+        string bridgePath = RequireExistingFile(options, "--bc-bridge");
+        string buildLogPath = RequireExistingFile(options, "--legacy-build-log");
+        string cacheRoot = Path.GetFullPath(RequireOption(options, "--cache-root"));
+        if (Overlaps(cacheRoot, rawRoot) || Overlaps(cacheRoot, safeRoot) ||
+            Overlaps(cacheRoot, legacyRoot))
+        {
+            throw new ArgumentException(
+                "Cache authority must be physically separate from raw, safe and legacy authorities.");
+        }
+
+        var manifests = new Dictionary<UniversalVtfProfileKind, string>
+        {
+            [UniversalVtfProfileKind.Conservative] =
+                RequireSha256(options, "--conservative-manifest-sha256"),
+            [UniversalVtfProfileKind.Balanced] =
+                RequireSha256(options, "--balanced-manifest-sha256"),
+            [UniversalVtfProfileKind.Aggressive] =
+                RequireSha256(options, "--aggressive-manifest-sha256")
+        };
+        var request = new UniversalVtfLegacyImportRequest(
+            rawRoot,
+            safeRoot,
+            bridgePath,
+            RequireSha256(options, "--bc-bridge-sha256"),
+            legacyRoot,
+            buildLogPath,
+            RequireSha256(options, "--legacy-build-log-sha256"),
+            manifests,
+            UniversalVtfCorpusBuilder.DefaultAnchors);
+        var progress = new InlineProgress<UniversalVtfLegacyImportProgress>(item => WriteJson(new
+        {
+            type = "progress",
+            stage = "seed-cache",
+            item.Completed,
+            item.Total,
+            item.RelativePath
+        }));
+        UniversalVtfLegacyImportResult result = await service.ImportAsync(
+            request,
+            cacheRoot,
+            progress,
+            cancellationToken).ConfigureAwait(false);
+        WriteJson(new
+        {
+            status = "CLEAN",
+            schema = "universal-vtf-cache-seed-result-v1",
+            result.TotalVtfs,
+            result.ImportedVtfs,
+            result.RecalculatedVtfs,
+            result.UniqueFinalBlobs,
+            result.ElapsedSeconds,
+            cacheRoot
+        });
+        return 0;
+    }
+
     private static int RunAudit(
         IReadOnlyDictionary<string, string> options,
         IUniversalVtfCorpusBuildService service,
@@ -549,6 +655,19 @@ internal static class Driver
         return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
+    private static string RequireExistingFile(
+        IReadOnlyDictionary<string, string> options,
+        string name)
+    {
+        string path = Path.GetFullPath(RequireOption(options, name));
+        if (!File.Exists(path))
+        {
+            throw new ArgumentException($"File does not exist for {name}: {path}");
+        }
+
+        return path;
+    }
+
     private static void RequirePair(
         IReadOnlyDictionary<string, string> options,
         string path,
@@ -666,6 +785,13 @@ internal static class Driver
             "--cache-root <dir> --profiles all " +
             "[--report-root <new-dir>] [--runtime-caps <json> " +
             "--runtime-caps-sha256 <sha256>]");
+        Console.WriteLine(
+            "  seed-cache --raw-root <dir> --safe-root <dir> --bc-bridge <json> " +
+            "--bc-bridge-sha256 <sha256> --legacy-root <dir> " +
+            "--legacy-build-log <jsonl> --legacy-build-log-sha256 <sha256> " +
+            "--conservative-manifest-sha256 <sha256> " +
+            "--balanced-manifest-sha256 <sha256> " +
+            "--aggressive-manifest-sha256 <sha256> --cache-root <dir>");
         Console.WriteLine(
             "  audit --raw-root <dir> --safe-root <dir> --candidate-root <dir> " +
             "--manifest <json> --manifest-sha256 <sha256> --bc-bridge <json> " +
