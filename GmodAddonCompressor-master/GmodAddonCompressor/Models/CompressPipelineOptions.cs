@@ -1,3 +1,5 @@
+using GmodAddonCompressor.Systems.Vtf.Universal;
+
 namespace GmodAddonCompressor.Models
 {
     internal enum CompressPipelineMode
@@ -14,6 +16,8 @@ namespace GmodAddonCompressor.Models
         public bool UseMagickForCommonVtf { get; init; }
         public bool UseMagickForAggressivePng { get; init; }
         public int MaximumVtfParallelism { get; init; } = 10;
+        public UniversalVtfProfileKind MaximumVtfProfile { get; init; } =
+            UniversalVtfProfileKind.Balanced;
 
         public bool IsMagickMode => Mode == CompressPipelineMode.Magick;
         public bool IsMaximumMode => Mode == CompressPipelineMode.Maximum;
@@ -26,7 +30,10 @@ namespace GmodAddonCompressor.Models
             const string vtfText = "VTF => unified pipeline: raw split first, export split fallback when needed, selective DXT routing plus premultiplied alpha-aware resize for FX-sensitive and opacity-alpha surfaces such as vehicle glass/cutouts, then preserve unchanged on no gain or out-of-scope cases.";
 
             if (IsMaximumMode)
-                return "Routing: VTF => adaptive Maximum candidate search at original, 2x and 4x resolution with exact VTF version preservation, semantic VMT/Lua/PCF analysis, BC1/BC3 encoder comparison, decoded-output quality gates and original fallback. Other selected types remain on Standard.";
+                return $"Routing: VTF => universal VTF batch, profile {MaximumVtfProfile}, " +
+                    "with an external immutable snapshot, semantic VMT/Lua/PCF analysis, " +
+                    "consecutive-level quality gates, structural audit and transactional " +
+                    "replacement. Other selected types remain on Standard.";
 
             if (!IsMagickMode)
                 return $"Routing: Standard for all selected types. {vtfText}";

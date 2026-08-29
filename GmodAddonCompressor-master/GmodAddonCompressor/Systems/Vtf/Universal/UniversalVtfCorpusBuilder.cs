@@ -415,7 +415,7 @@ internal static class UniversalVtfCorpusBuilder
         }
     }
 
-    private static async Task<IReadOnlyList<UniversalVtfCandidateArtifact>>
+    internal static async Task<IReadOnlyList<UniversalVtfCandidateArtifact>>
         MaterializeCandidatesAsync(
             string source,
             UniversalVtfInventoryEntry entry,
