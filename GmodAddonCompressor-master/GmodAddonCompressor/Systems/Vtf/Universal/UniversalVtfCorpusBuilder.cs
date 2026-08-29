@@ -83,9 +83,9 @@ internal static class UniversalVtfCorpusBuilder
         RequireFrozenBcPartition: true);
 
     internal static int PreparationParallelism { get; } = Math.Clamp(
-        Math.Max(1, Environment.ProcessorCount / 4),
+        Math.Max(1, Environment.ProcessorCount / 2),
         1,
-        4);
+        8);
 
     internal static Task PrepareInParallelAsync(
         int count,
