@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace GmodAddonCompressor.Systems.Vtf.Universal;
 
@@ -143,7 +142,8 @@ internal static class UniversalVtfManifestWriter
 {
     internal const string Schema = "universal-vtf-manifest-v1";
 
-    private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
+    private static readonly JsonSerializerOptions JsonOptions =
+        UniversalVtfCanonicalJson.SerializerOptions;
 
     internal static void Validate(UniversalVtfBuildReceipt receipt)
     {
@@ -241,7 +241,7 @@ internal static class UniversalVtfManifestWriter
             stream.Flush(flushToDisk: true);
         }
 
-        string sha = Sha256(bytes);
+        string sha = UniversalVtfCanonicalJson.Sha256(bytes);
         return new UniversalVtfManifestFrozen(fullPath, sha, canonicalManifest);
     }
 
@@ -488,139 +488,9 @@ internal static class UniversalVtfManifestWriter
     }
 
     internal static byte[] SerializeCanonical(UniversalVtfManifest manifest)
-    {
-        byte[] serialized = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
-        using JsonDocument document = JsonDocument.Parse(serialized);
-        using var output = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(output))
-        {
-            WriteCanonical(writer, document.RootElement);
-        }
-
-        return output.ToArray();
-    }
-
-    private static void WriteCanonical(Utf8JsonWriter writer, JsonElement element)
-    {
-        switch (element.ValueKind)
-        {
-            case JsonValueKind.Object:
-                writer.WriteStartObject();
-                foreach (JsonProperty property in element.EnumerateObject()
-                             .OrderBy(property => property.Name, StringComparer.Ordinal))
-                {
-                    writer.WritePropertyName(property.Name);
-                    WriteCanonical(writer, property.Value);
-                }
-
-                writer.WriteEndObject();
-                break;
-            case JsonValueKind.Array:
-                writer.WriteStartArray();
-                foreach (JsonElement item in element.EnumerateArray())
-                {
-                    WriteCanonical(writer, item);
-                }
-
-                writer.WriteEndArray();
-                break;
-            case JsonValueKind.String:
-                writer.WriteStringValue(element.GetString());
-                break;
-            case JsonValueKind.Number:
-                element.WriteTo(writer);
-                break;
-            case JsonValueKind.True:
-                writer.WriteBooleanValue(true);
-                break;
-            case JsonValueKind.False:
-                writer.WriteBooleanValue(false);
-                break;
-            case JsonValueKind.Null:
-                writer.WriteNullValue();
-                break;
-            default:
-                throw new InvalidDataException($"manifest_unsupported_json:{element.ValueKind}");
-        }
-    }
+        => UniversalVtfCanonicalJson.Serialize(manifest);
 
     internal static JsonSerializerOptions SerializerOptions => JsonOptions;
-
-    private static JsonSerializerOptions CreateJsonOptions()
-    {
-        var options = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            PropertyNameCaseInsensitive = false,
-            WriteIndented = false,
-            NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
-        };
-        options.Converters.Add(new ManifestDoubleConverter());
-        options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
-        return options;
-    }
-
-    private sealed class ManifestDoubleConverter : JsonConverter<double>
-    {
-        public override bool HandleNull => true;
-
-        public override double Read(
-            ref Utf8JsonReader reader,
-            Type typeToConvert,
-            JsonSerializerOptions options)
-        {
-            if (reader.TokenType == JsonTokenType.Null)
-            {
-                return double.NaN;
-            }
-
-            if (reader.TokenType == JsonTokenType.Number)
-            {
-                return reader.GetDouble();
-            }
-
-            if (reader.TokenType == JsonTokenType.String)
-            {
-                return reader.GetString() switch
-                {
-                    "Infinity" => double.PositiveInfinity,
-                    "-Infinity" => double.NegativeInfinity,
-                    _ => throw new JsonException("manifest_invalid_named_double")
-                };
-            }
-
-            throw new JsonException($"manifest_invalid_double_token:{reader.TokenType}");
-        }
-
-        public override void Write(
-            Utf8JsonWriter writer,
-            double value,
-            JsonSerializerOptions options)
-        {
-            if (double.IsNaN(value))
-            {
-                writer.WriteNullValue();
-                return;
-            }
-
-            if (double.IsPositiveInfinity(value))
-            {
-                writer.WriteStringValue("Infinity");
-                return;
-            }
-
-            if (double.IsNegativeInfinity(value))
-            {
-                writer.WriteStringValue("-Infinity");
-                return;
-            }
-
-            writer.WriteNumberValue(value);
-        }
-    }
-
-    private static string Sha256(byte[] bytes) =>
-        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 }
 
 internal static class UniversalVtfManifestStore
