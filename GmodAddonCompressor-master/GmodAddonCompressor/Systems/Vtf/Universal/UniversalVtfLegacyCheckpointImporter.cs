@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -299,7 +300,7 @@ internal static class UniversalVtfLegacyCheckpointImporter
         IReadOnlyDictionary<UniversalVtfProfileKind, UniversalVtfTreeSnapshot> finalTrees,
         UniversalVtfPolicyReceipt policy)
     {
-        string[] lines = System.Text.Encoding.UTF8.GetString(bytes)
+        string[] lines = DecodeLegacyBuildLog(bytes)
             .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
         if (lines.Length == 0)
         {
@@ -339,6 +340,37 @@ internal static class UniversalVtfLegacyCheckpointImporter
             {
                 throw new InvalidDataException($"legacy_build_log_profile_drift:{profile}");
             }
+        }
+    }
+
+    private static string DecodeLegacyBuildLog(byte[] bytes)
+    {
+        if (bytes.Length == 0)
+        {
+            throw new InvalidDataException("legacy_build_log_empty");
+        }
+
+        try
+        {
+            if (bytes.Length >= 2 && bytes[0] == 0xff && bytes[1] == 0xfe)
+            {
+                return new UnicodeEncoding(false, false, true).GetString(bytes, 2, bytes.Length - 2);
+            }
+
+            if (bytes.Length >= 2 && bytes[0] == 0xfe && bytes[1] == 0xff)
+            {
+                return new UnicodeEncoding(true, false, true).GetString(bytes, 2, bytes.Length - 2);
+            }
+
+            int offset = bytes.Length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb &&
+                         bytes[2] == 0xbf
+                ? 3
+                : 0;
+            return new UTF8Encoding(false, true).GetString(bytes, offset, bytes.Length - offset);
+        }
+        catch (DecoderFallbackException error)
+        {
+            throw new InvalidDataException("legacy_build_log_invalid_encoding", error);
         }
     }
 

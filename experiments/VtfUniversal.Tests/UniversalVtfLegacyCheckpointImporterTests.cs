@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using GmodAddonCompressor.Systems.Vtf.Universal;
@@ -163,6 +164,28 @@ public sealed class UniversalVtfLegacyCheckpointImporterTests :
             _fixture.LastCacheRoot,
             "receipt.json",
             SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task HashPinnedUtf16LittleEndianBuildLogIsAccepted()
+    {
+        UniversalVtfLegacyImportRequest request = _fixture.CloneRequest();
+        string text = File.ReadAllText(request.LegacyBuildLogPath, Encoding.UTF8);
+        File.WriteAllText(request.LegacyBuildLogPath, text, Encoding.Unicode);
+        request = request with
+        {
+            LegacyBuildLogSha256 = HashFile(request.LegacyBuildLogPath)
+        };
+
+        UniversalVtfLegacyImportResult result =
+            await UniversalVtfLegacyCheckpointImporter.ImportAsync(
+                request,
+                new UniversalVtfPreparationCache(_fixture.NewCacheRoot()),
+                null,
+                CancellationToken.None);
+
+        Assert.Equal(1, result.ImportedVtfs);
+        Assert.Equal(0, result.RecalculatedVtfs);
     }
 
     private static UniversalVtfLegacyImportRequest Repin(
