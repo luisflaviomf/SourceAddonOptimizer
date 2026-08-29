@@ -8,6 +8,57 @@ namespace VtfUniversal.Tests;
 public sealed class UniversalVtfMetricCalculatorTests
 {
     [Fact]
+    public void IndependentAuditorSentinelsMatchTheFrozenProducerInputs()
+    {
+        const string bridgeSha256 =
+            "9bf65c2b404365c23836b6eb2ff206a0fed6d8c217a71792406b775c8fb6dad1";
+        UniversalVtfPolicyReceipt receipt =
+            UniversalVtfCorpusBuilder.ResolveEmbeddedPolicyReceipt(bridgeSha256);
+
+        Assert.Equal(
+            "de1fd1acd3434d34d6365aec224d56e85a4a319ff935ab708ffa93f87be14266",
+            receipt.PolicyFingerprint);
+        Assert.Equal(
+            "415bd8ae0217aea0f85037eb5004fd3b03246229cfbff43ed28d12e086f0a4c6",
+            receipt.ToolchainSha256);
+    }
+
+    [Fact]
+    public void FrozenFixtureExposesEveryIndependentParityDefinition()
+    {
+        using JsonDocument document = JsonDocument.Parse(UniversalVtfPolicy.V1.LoadFixtureBytes());
+        JsonElement definitions = document.RootElement.GetProperty("definitions");
+        JsonElement cases = document.RootElement.GetProperty("cases");
+
+        Assert.Equal("decoded-uint8", definitions.GetProperty("sampleDomain").GetString());
+        Assert.Equal("reflect-101",
+            definitions.GetProperty("ssim").GetProperty("border").GetString());
+        Assert.Equal("population",
+            definitions.GetProperty("ssim").GetProperty("covariance").GetString());
+        Assert.Equal("nearest-rank-ceil-pn-minus-one",
+            definitions.GetProperty("percentile").GetString());
+        Assert.Equal("round-to-nearest-even",
+            definitions.GetProperty("coverageQuantization").GetString());
+        Assert.Equal(32, definitions.GetProperty("coverageBisectionSteps").GetInt32());
+
+        string[] requiredCases =
+        {
+            "identityRgba", "halfPlaneRgb", "alphaClassification", "normalAngles",
+            "normalLayouts", "nearestRank", "reflect101", "retentionZero", "routeTie",
+            "coverageScale32", "temporalFrames", "cubemapSeam"
+        };
+        Assert.All(requiredCases, name => Assert.True(cases.TryGetProperty(name, out _), name));
+
+        JsonElement coverage = cases.GetProperty("coverageScale32");
+        Assert.Equal(3, coverage.GetProperty("seedCandidates").GetArrayLength());
+        Assert.Equal(32, coverage.GetProperty("bisectionCandidates").GetArrayLength());
+        Assert.Equal(
+            1.1590909101068974,
+            coverage.GetProperty("expectedQuantizedWinningScale").GetDouble(),
+            12);
+    }
+
+    [Fact]
     public void EmbeddedFrozenFixtureDrivesMetricPrimitives()
     {
         using JsonDocument document = JsonDocument.Parse(UniversalVtfPolicy.V1.LoadFixtureBytes());
