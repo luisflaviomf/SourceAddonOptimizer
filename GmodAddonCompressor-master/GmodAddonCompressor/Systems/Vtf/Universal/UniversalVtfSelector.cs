@@ -429,6 +429,64 @@ internal static class UniversalVtfSelector
             profileAttempts);
     }
 
+    internal static UniversalVtfAttemptMatrix ReplayMeasuredAttempts(
+        string relativePath,
+        int flags,
+        IReadOnlyList<UniversalVtfManifestRouteAttempt> measured,
+        Func<int, UniversalVtfFilterRoute, string> resolveArtifact)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || measured is null || measured.Count == 0)
+        {
+            throw new InvalidDataException("legacy_attempt_matrix_empty");
+        }
+
+        ArgumentNullException.ThrowIfNull(resolveArtifact);
+        var attempts = new List<UniversalVtfAttempt>();
+        foreach (IGrouping<int, UniversalVtfManifestRouteAttempt> group in measured
+                     .OrderBy(value => value.Level)
+                     .ThenBy(value => value.Route)
+                     .GroupBy(value => value.Level))
+        {
+            UniversalVtfManifestRouteAttempt[] values = group.ToArray();
+            if (values.Select(value => value.Route).Distinct().Count() != values.Length)
+            {
+                throw new InvalidDataException($"legacy_attempt_duplicate_route:{group.Key}");
+            }
+
+            UniversalVtfRouteAttempt[] routes = values.Select(value =>
+                new UniversalVtfRouteAttempt(
+                    value.Route,
+                    Path.GetFullPath(resolveArtifact(value.Level, value.Route)),
+                    value.StructurallyValid,
+                    value.Metrics,
+                    value.StructuralReason)).ToArray();
+            UniversalVtfRouteAttempt? selected = SelectRoute(flags, routes);
+            UniversalVtfRouteAttempt fallback = routes.OrderBy(route => route.Route).First();
+            attempts.Add(selected is null
+                ? new UniversalVtfAttempt(
+                    group.Key,
+                    false,
+                    null,
+                    string.Join('|', routes.Select(route =>
+                        $"{route.Route}:{route.StructuralReason}")),
+                    fallback.Route,
+                    fallback.CandidatePath,
+                    routes)
+                : new UniversalVtfAttempt(
+                    group.Key,
+                    true,
+                    selected.Metrics,
+                    "ok",
+                    selected.Route,
+                    selected.CandidatePath,
+                    routes));
+        }
+
+        var matrix = new UniversalVtfAttemptMatrix(relativePath, attempts.AsReadOnly());
+        _ = Select(matrix, UniversalVtfRuntimeCaps.Empty);
+        return matrix;
+    }
+
     private static UniversalVtfRouteAttempt MeasureRoute(
         UniversalVtfInventoryEntry entry,
         int level,

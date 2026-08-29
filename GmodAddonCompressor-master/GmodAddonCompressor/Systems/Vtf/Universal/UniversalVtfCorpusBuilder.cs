@@ -518,8 +518,9 @@ internal static class UniversalVtfCorpusBuilder
             raw,
             semantics,
             bridgeRow,
-            request,
-            policy);
+            request.PolicyFingerprint,
+            policy.ToolchainSha256,
+            request.BcBridgeSha256);
         UniversalVtfCacheLookup analysisLookup = await cache.LookupAsync(
             identity,
             null,
@@ -545,7 +546,7 @@ internal static class UniversalVtfCorpusBuilder
                 runtimeCaps);
             UniversalVtfCompletionIdentity completionIdentity = CreateCompletionIdentity(
                 safe,
-                request,
+                request.RuntimeCapsSha256,
                 analysis.AnalysisKey,
                 selection);
             UniversalVtfCacheLookup completionLookup = await cache.LookupAsync(
@@ -686,7 +687,7 @@ internal static class UniversalVtfCorpusBuilder
 
         UniversalVtfCompletionIdentity completionIdentity = CreateCompletionIdentity(
             safe,
-            request,
+            request.RuntimeCapsSha256,
             analysis.AnalysisKey,
             selection);
         var completion = new UniversalVtfCompletionReceipt(
@@ -741,8 +742,9 @@ internal static class UniversalVtfCorpusBuilder
             raw,
             semantics,
             bridgeRow,
-            request,
-            policy);
+            request.PolicyFingerprint,
+            policy.ToolchainSha256,
+            request.BcBridgeSha256);
         string analysisKey = UniversalVtfCacheKey.Analysis(analysisIdentity);
 
         var analysisArtifacts = new Dictionary<
@@ -862,12 +864,13 @@ internal static class UniversalVtfCorpusBuilder
             completionReceipt);
     }
 
-    private static UniversalVtfAnalysisIdentity CreateAnalysisIdentity(
+    internal static UniversalVtfAnalysisIdentity CreateAnalysisIdentity(
         UniversalVtfInventoryEntry raw,
         UniversalVtfSemanticDecision semantics,
         Bc3RawBridgeRow? bridgeRow,
-        UniversalVtfBuildRequest request,
-        UniversalVtfPolicyReceipt policy)
+        string policyFingerprint,
+        string toolchainSha256,
+        string bcBridgeSha256)
     {
         IReadOnlyList<string> classes = semantics.Classes
             .Select(value => ToCamelCase(value.ToString()))
@@ -903,26 +906,26 @@ internal static class UniversalVtfCorpusBuilder
             UniversalVtfSemanticProof.Compute(semantics),
             classes,
             semantics.Route,
-            request.PolicyFingerprint.ToLowerInvariant(),
+            policyFingerprint.ToLowerInvariant(),
             UniversalVtfPolicy.V1.FixtureSha256,
-            policy.ToolchainSha256.ToLowerInvariant(),
-            request.BcBridgeSha256.ToLowerInvariant(),
+            toolchainSha256.ToLowerInvariant(),
+            bcBridgeSha256.ToLowerInvariant(),
             bridgeRow is null
                 ? UniversalVtfCacheKey.None
                 : CanonicalFingerprint(bridgeRow),
             UniversalVtfPreparationFingerprint.CandidateParameters);
     }
 
-    private static UniversalVtfCompletionIdentity CreateCompletionIdentity(
+    internal static UniversalVtfCompletionIdentity CreateCompletionIdentity(
         UniversalVtfTreeFile safe,
-        UniversalVtfBuildRequest request,
+        string? runtimeCapsSha256,
         string analysisKey,
         UniversalVtfProfileSelection selection) => new(
         UniversalVtfCacheKey.CompletionSchema,
         analysisKey,
         safe.Sha256,
         safe.Length,
-        request.RuntimeCapsSha256?.ToLowerInvariant() ?? UniversalVtfCacheKey.None,
+        runtimeCapsSha256?.ToLowerInvariant() ?? UniversalVtfCacheKey.None,
         new Dictionary<UniversalVtfProfileKind, UniversalVtfCachedSelection>
         {
             [UniversalVtfProfileKind.Conservative] = CachedSelection(
