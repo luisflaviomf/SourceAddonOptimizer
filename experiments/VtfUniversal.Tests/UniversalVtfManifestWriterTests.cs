@@ -67,6 +67,72 @@ public sealed class UniversalVtfManifestWriterTests : IDisposable
     }
 
     [Fact]
+    public async Task InvalidMetricsUseCanonicalNullAndRoundTripAsNan()
+    {
+        string first = Path.Combine(_root, "invalid-metric.json");
+        string second = Path.Combine(_root, "invalid-metric-roundtrip.json");
+        var invalidGate = new UniversalVtfGateResult(
+            UniversalVtfMetricNames.NormalMeanDegrees,
+            double.NaN,
+            "<=",
+            8,
+            double.NegativeInfinity,
+            Passed: false,
+            Reason: "metric_nan",
+            Plane: new UniversalVtfPlaneKey(0, 0, 0),
+            PlanePair: null);
+        var metrics = new UniversalVtfMetricSet(
+            new[]
+            {
+                new UniversalVtfPlaneMetricSet(
+                    new UniversalVtfPlaneKey(0, 0, 0),
+                    new UniversalVtfCommonMetrics(double.PositiveInfinity, 1, 1),
+                    new Dictionary<string, double>
+                    {
+                        [UniversalVtfMetricNames.NormalMeanDegrees] = double.NaN
+                    })
+            },
+            new Dictionary<string, double>
+            {
+                [UniversalVtfMetricNames.TemporalPsnr] = double.NaN
+            });
+        UniversalVtfManifestRow row = Row() with
+        {
+            WorstGate = invalidGate,
+            RouteAttempts = new[]
+            {
+                new UniversalVtfManifestRouteAttempt(
+                    1,
+                    UniversalVtfFilterRoute.NumericLinear,
+                    StructurallyValid: true,
+                    StructuralReason: "ok",
+                    Metrics: metrics)
+            }
+        };
+
+        UniversalVtfManifestFrozen frozen = await UniversalVtfManifestWriter.WriteAsync(
+            first,
+            Receipt(new[] { row }),
+            CancellationToken.None);
+        string json = File.ReadAllText(first);
+
+        Assert.DoesNotContain("\"NaN\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"value\":null", json, StringComparison.Ordinal);
+        Assert.Contains($"\"{UniversalVtfMetricNames.NormalMeanDegrees}\":null", json,
+            StringComparison.Ordinal);
+        UniversalVtfManifest loaded = UniversalVtfManifestStore.Load(first, frozen.Sha256);
+        Assert.True(double.IsNaN(loaded.Rows.Single().WorstGate!.Value));
+        Assert.True(double.IsNaN(loaded.Rows.Single().RouteAttempts.Single().Metrics!
+            .Planes.Single().SemanticValues[UniversalVtfMetricNames.NormalMeanDegrees]));
+        UniversalVtfManifestFrozen repeated = await UniversalVtfManifestWriter.WriteManifestAsync(
+            second,
+            loaded,
+            CancellationToken.None);
+        Assert.Equal(frozen.Sha256, repeated.Sha256);
+        Assert.Equal(File.ReadAllBytes(first), File.ReadAllBytes(second));
+    }
+
+    [Fact]
     public async Task AggregateExposesRawSafeAndFinalViews()
     {
         string path = Path.Combine(_root, "aggregate.json");

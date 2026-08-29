@@ -555,8 +555,68 @@ internal static class UniversalVtfManifestWriter
             WriteIndented = false,
             NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
         };
+        options.Converters.Add(new ManifestDoubleConverter());
         options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
         return options;
+    }
+
+    private sealed class ManifestDoubleConverter : JsonConverter<double>
+    {
+        public override bool HandleNull => true;
+
+        public override double Read(
+            ref Utf8JsonReader reader,
+            Type typeToConvert,
+            JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.Null)
+            {
+                return double.NaN;
+            }
+
+            if (reader.TokenType == JsonTokenType.Number)
+            {
+                return reader.GetDouble();
+            }
+
+            if (reader.TokenType == JsonTokenType.String)
+            {
+                return reader.GetString() switch
+                {
+                    "Infinity" => double.PositiveInfinity,
+                    "-Infinity" => double.NegativeInfinity,
+                    _ => throw new JsonException("manifest_invalid_named_double")
+                };
+            }
+
+            throw new JsonException($"manifest_invalid_double_token:{reader.TokenType}");
+        }
+
+        public override void Write(
+            Utf8JsonWriter writer,
+            double value,
+            JsonSerializerOptions options)
+        {
+            if (double.IsNaN(value))
+            {
+                writer.WriteNullValue();
+                return;
+            }
+
+            if (double.IsPositiveInfinity(value))
+            {
+                writer.WriteStringValue("Infinity");
+                return;
+            }
+
+            if (double.IsNegativeInfinity(value))
+            {
+                writer.WriteStringValue("-Infinity");
+                return;
+            }
+
+            writer.WriteNumberValue(value);
+        }
     }
 
     private static string Sha256(byte[] bytes) =>
