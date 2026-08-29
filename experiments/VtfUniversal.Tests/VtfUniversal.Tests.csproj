@@ -18,5 +18,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\GmodAddonCompressor.csproj" />
+    <ProjectReference Include="..\VtfUniversalCorpusDriver\VtfUniversalCorpusDriver.csproj" />
   </ItemGroup>
 </Project>

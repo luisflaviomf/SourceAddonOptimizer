@@ -76,6 +76,12 @@ internal static class UniversalVtfCorpusBuilder
     private static readonly ConcurrentDictionary<string, UniversalVtfPolicyReceipt>
         EmbeddedPolicyReceipts = new(StringComparer.OrdinalIgnoreCase);
 
+    internal static UniversalVtfBuildAnchors DefaultAnchors { get; } = new(
+        UniversalVtfCorpusExpectations.RawTreeAnchor,
+        SafeTreeAnchor,
+        UniversalVtfCorpusExpectations.LvsV1.VtfCount,
+        RequireFrozenBcPartition: true);
+
     internal static string ProfileName(UniversalVtfProfileKind profile) => profile switch
     {
         UniversalVtfProfileKind.Conservative => "universal-vtf-conservative",
@@ -113,11 +119,7 @@ internal static class UniversalVtfCorpusBuilder
         string safeRoot = RequireDirectory(request.SafeRoot, nameof(request.SafeRoot));
         string outputParent = RequireDirectory(request.OutputParent, nameof(request.OutputParent));
         string reportRoot = RequireDirectory(request.ReportRoot, nameof(request.ReportRoot));
-        UniversalVtfBuildAnchors anchors = request.Anchors ?? new UniversalVtfBuildAnchors(
-            UniversalVtfCorpusExpectations.RawTreeAnchor,
-            SafeTreeAnchor,
-            UniversalVtfCorpusExpectations.LvsV1.VtfCount,
-            RequireFrozenBcPartition: true);
+        UniversalVtfBuildAnchors anchors = request.Anchors ?? DefaultAnchors;
 
         cancellationToken.ThrowIfCancellationRequested();
         UniversalVtfTreeSnapshot rawBefore = UniversalVtfTreeInventory.Capture(rawRoot);
