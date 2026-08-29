@@ -9,6 +9,40 @@ namespace VtfUniversal.Tests;
 public sealed class UniversalVtfCorpusBuilderTests
 {
     [Fact]
+    public async Task PreparationSchedulerUsesBoundedParallelism()
+    {
+        int active = 0;
+        int maximumActive = 0;
+
+        await UniversalVtfCorpusBuilder.PrepareInParallelAsync(
+            12,
+            async (_, cancellationToken) =>
+            {
+                int current = Interlocked.Increment(ref active);
+                int observed;
+                do
+                {
+                    observed = Volatile.Read(ref maximumActive);
+                }
+                while (current > observed &&
+                       Interlocked.CompareExchange(
+                           ref maximumActive,
+                           current,
+                           observed) != observed);
+
+                await Task.Delay(40, cancellationToken);
+                Interlocked.Decrement(ref active);
+            },
+            CancellationToken.None);
+
+        Assert.InRange(UniversalVtfCorpusBuilder.PreparationParallelism, 1, 10);
+        if (UniversalVtfCorpusBuilder.PreparationParallelism > 1)
+        {
+            Assert.True(maximumActive > 1);
+        }
+    }
+
+    [Fact]
     public async Task UsesSafeNonVtfAndRawVtf()
     {
         using SyntheticUniversalCorpus corpus = SyntheticUniversalCorpus.Create();

@@ -82,6 +82,34 @@ internal static class UniversalVtfCorpusBuilder
         UniversalVtfCorpusExpectations.LvsV1.VtfCount,
         RequireFrozenBcPartition: true);
 
+    internal static int PreparationParallelism { get; } = Math.Clamp(
+        Math.Max(1, Environment.ProcessorCount / 4),
+        1,
+        4);
+
+    internal static Task PrepareInParallelAsync(
+        int count,
+        Func<int, CancellationToken, Task> prepare,
+        CancellationToken cancellationToken)
+    {
+        if (count < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count));
+        }
+
+        ArgumentNullException.ThrowIfNull(prepare);
+        var options = new ParallelOptions
+        {
+            CancellationToken = cancellationToken,
+            MaxDegreeOfParallelism = PreparationParallelism
+        };
+        return Parallel.ForEachAsync(
+            Enumerable.Range(0, count),
+            options,
+            async (index, token) =>
+                await prepare(index, token).ConfigureAwait(false));
+    }
+
     internal static string ProfileName(UniversalVtfProfileKind profile) => profile switch
     {
         UniversalVtfProfileKind.Conservative => "universal-vtf-conservative",
@@ -213,54 +241,59 @@ internal static class UniversalVtfCorpusBuilder
         Dictionary<string, Bc3RawBridgeRow> bridgeRows = bridge.Rows
             .ToDictionary(row => row.RelativePath, StringComparer.OrdinalIgnoreCase);
 
-        var prepared = new List<PreparedAsset>(rawInventory.Entries.Count);
+        var prepared = new PreparedAsset[rawInventory.Entries.Count];
         int preparedCount = 0;
-        foreach (UniversalVtfInventoryEntry rawEntry in rawInventory.Entries)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            string canonicalPath = rawEntry.RelativePath.ToLowerInvariant();
-            if (!safeFiles.TryGetValue(rawEntry.RelativePath, out UniversalVtfTreeFile? safeFile) ||
-                !safeVtfs.ContainsKey(rawEntry.RelativePath))
+        await PrepareInParallelAsync(
+            rawInventory.Entries.Count,
+            async (index, token) =>
             {
-                throw new InvalidDataException($"safe_vtf_missing:{canonicalPath}");
-            }
+                UniversalVtfInventoryEntry rawEntry = rawInventory.Entries[index];
+                string canonicalPath = rawEntry.RelativePath.ToLowerInvariant();
+                if (!safeFiles.TryGetValue(
+                        rawEntry.RelativePath,
+                        out UniversalVtfTreeFile? safeFile) ||
+                    !safeVtfs.ContainsKey(rawEntry.RelativePath))
+                {
+                    throw new InvalidDataException($"safe_vtf_missing:{canonicalPath}");
+                }
 
-            UniversalVtfSemanticDecision semantics = UniversalVtfSemanticResolver.Resolve(
-                rawEntry,
-                consumerGraph);
-            string source = CombineAuthority(rawRoot, rawEntry.RelativePath);
-            string assetRoot = Path.Combine(candidateRoot, preparedCount.ToString("D4"));
-            Directory.CreateDirectory(assetRoot);
-            IReadOnlyList<UniversalVtfCandidateArtifact> candidates =
-                await MaterializeCandidatesAsync(
-                    source,
+                UniversalVtfSemanticDecision semantics = UniversalVtfSemanticResolver.Resolve(
                     rawEntry,
+                    consumerGraph);
+                string source = CombineAuthority(rawRoot, rawEntry.RelativePath);
+                string assetRoot = Path.Combine(candidateRoot, index.ToString("D4"));
+                Directory.CreateDirectory(assetRoot);
+                IReadOnlyList<UniversalVtfCandidateArtifact> candidates =
+                    await MaterializeCandidatesAsync(
+                        source,
+                        rawEntry,
+                        semantics,
+                        assetRoot,
+                        encodingSession,
+                        token).ConfigureAwait(false);
+                UniversalVtfAttemptMatrix matrix = UniversalVtfSelector.BuildAttempts(
+                    rawEntry,
+                    candidates,
+                    semantics);
+                UniversalVtfProfileSelection selection = UniversalVtfSelector.Select(
+                    matrix,
+                    runtimeCaps);
+                prepared[index] = new PreparedAsset(
+                    rawEntry,
+                    safeFile,
                     semantics,
-                    assetRoot,
-                    encodingSession,
-                    cancellationToken).ConfigureAwait(false);
-            UniversalVtfAttemptMatrix matrix = UniversalVtfSelector.BuildAttempts(
-                rawEntry,
-                candidates,
-                semantics);
-            UniversalVtfProfileSelection selection = UniversalVtfSelector.Select(
-                matrix,
-                runtimeCaps);
-            prepared.Add(new PreparedAsset(
-                rawEntry,
-                safeFile,
-                semantics,
-                matrix,
-                selection,
-                bridgeRows.GetValueOrDefault(canonicalPath)));
-            preparedCount++;
-            progress?.Report(new UniversalVtfBuildProgress(
-                "prepare",
-                preparedCount,
-                rawInventory.Entries.Count,
-                canonicalPath,
-                null));
-        }
+                    matrix,
+                    selection,
+                    bridgeRows.GetValueOrDefault(canonicalPath));
+                int complete = Interlocked.Increment(ref preparedCount);
+                progress?.Report(new UniversalVtfBuildProgress(
+                    "prepare",
+                    complete,
+                    rawInventory.Entries.Count,
+                    canonicalPath,
+                    null));
+            },
+            cancellationToken).ConfigureAwait(false);
 
         foreach (UniversalVtfProfileKind profile in Enum.GetValues<UniversalVtfProfileKind>())
         {
@@ -274,7 +307,7 @@ internal static class UniversalVtfCorpusBuilder
         foreach (UniversalVtfProfileKind profile in Enum.GetValues<UniversalVtfProfileKind>())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var rows = new List<UniversalVtfManifestRow>(prepared.Count);
+            var rows = new List<UniversalVtfManifestRow>(prepared.Length);
             int completed = 0;
             foreach (PreparedAsset asset in prepared)
             {
@@ -313,7 +346,7 @@ internal static class UniversalVtfCorpusBuilder
                 progress?.Report(new UniversalVtfBuildProgress(
                     "compose",
                     completed,
-                    prepared.Count,
+                    prepared.Length,
                     asset.Raw.RelativePath,
                     profile));
             }
