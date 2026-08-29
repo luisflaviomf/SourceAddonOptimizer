@@ -6,7 +6,9 @@ internal static class UniversalVtfCacheFixture
 {
     internal const string RelativePath = "materials/models/diggercars/cache/body.vtf";
 
-    internal static UniversalVtfAttemptMatrix Matrix(string root)
+    internal static UniversalVtfAttemptMatrix Matrix(
+        string root,
+        string relativePath = RelativePath)
     {
         UniversalVtfMetricSet floor = Metrics(
             double.PositiveInfinity,
@@ -15,7 +17,7 @@ internal static class UniversalVtfCacheFixture
             includeSpecialValues: true);
         UniversalVtfMetricSet second = Metrics(25.0, 0.94, 0.45);
         return new UniversalVtfAttemptMatrix(
-            RelativePath,
+            relativePath,
             new[]
             {
                 Attempt(
@@ -56,10 +58,11 @@ internal static class UniversalVtfCacheFixture
     internal static IEqualityComparer<UniversalVtfProfileSelection> SelectionComparer { get; } =
         new ProfileSelectionComparer();
 
-    internal static UniversalVtfAnalysisIdentity AnalysisIdentity() => new(
+    internal static UniversalVtfAnalysisIdentity AnalysisIdentity(
+        string relativePath = RelativePath) => new(
         UniversalVtfCacheKey.AnalysisSchema,
         Sha('a'),
-        RelativePath,
+        relativePath,
         Sha('0'),
         2_048,
         new UniversalVtfStructuralIdentity(
@@ -92,11 +95,13 @@ internal static class UniversalVtfCacheFixture
         UniversalVtfCacheKey.None,
         Sha('1'));
 
-    internal static UniversalVtfCachedAsset Asset(string sourceVtf)
+    internal static UniversalVtfCachedAsset Asset(
+        string sourceVtf,
+        string relativePath = RelativePath)
     {
         string source = Path.GetFullPath(sourceVtf);
         UniversalVtfArtifactReference artifact = UniversalVtfArtifactReference.FromVtf(source);
-        UniversalVtfAnalysisIdentity template = AnalysisIdentity();
+        UniversalVtfAnalysisIdentity template = AnalysisIdentity(relativePath);
         UniversalVtfAnalysisIdentity analysisIdentity = template with
         {
             RawSha256 = artifact.Sha256,
@@ -112,7 +117,9 @@ internal static class UniversalVtfCacheFixture
                 HighResFormat = artifact.Format
             }
         };
-        UniversalVtfAttemptMatrix runtime = Matrix(Path.GetDirectoryName(source)!);
+        UniversalVtfAttemptMatrix runtime = Matrix(
+            Path.GetDirectoryName(source)!,
+            relativePath);
         UniversalVtfCachedAttemptMatrix matrix =
             UniversalVtfCachedAttemptMatrix.FromRuntime(runtime);
         string analysisKey = UniversalVtfCacheKey.Analysis(analysisIdentity);

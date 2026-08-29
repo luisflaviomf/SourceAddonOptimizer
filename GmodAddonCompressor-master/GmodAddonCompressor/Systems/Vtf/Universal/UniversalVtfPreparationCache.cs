@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace GmodAddonCompressor.Systems.Vtf.Universal;
 
 internal enum UniversalVtfCacheHitKind
@@ -11,7 +13,8 @@ internal sealed record UniversalVtfCacheLookup(
     UniversalVtfCacheHitKind HitKind,
     UniversalVtfAnalysisReceipt? Analysis,
     UniversalVtfCompletionReceipt? Completion,
-    IReadOnlyList<string> Issues);
+    IReadOnlyList<string> Issues,
+    bool Quarantined = false);
 
 internal sealed record UniversalVtfCachePublishResult(
     bool AnalysisPublished,
@@ -33,6 +36,10 @@ internal sealed class UniversalVtfPreparationCache
 {
     private const string OwnedStagingPrefix = "owned-";
 
+    private static readonly ConcurrentDictionary<
+        string,
+        Lazy<Task<UniversalVtfCacheLookup>>> Flights = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly string _root;
     private readonly string _versionRoot;
     private readonly string _objectsRoot;
@@ -40,6 +47,7 @@ internal sealed class UniversalVtfPreparationCache
     private readonly string _completionRoot;
     private readonly string _stagingRoot;
     private readonly string _quarantineRoot;
+    private readonly string _locksRoot;
     private readonly IUniversalVtfCacheCommitObserver? _observer;
 
     internal UniversalVtfPreparationCache(string cacheRoot)
@@ -63,8 +71,100 @@ internal sealed class UniversalVtfPreparationCache
         _completionRoot = Path.Combine(_versionRoot, "completed");
         _stagingRoot = Path.Combine(_versionRoot, "staging");
         _quarantineRoot = Path.Combine(_versionRoot, "quarantine");
+        _locksRoot = Path.Combine(_versionRoot, "locks");
         _observer = observer;
         InitializeLayout();
+    }
+
+    internal async Task<UniversalVtfCacheLookup> GetOrCreateAsync(
+        UniversalVtfAnalysisIdentity analysis,
+        UniversalVtfCompletionIdentity completion,
+        Func<CancellationToken, Task<UniversalVtfCachedAsset>> factory,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(analysis);
+        ArgumentNullException.ThrowIfNull(completion);
+        ArgumentNullException.ThrowIfNull(factory);
+        string analysisKey = UniversalVtfCacheKey.Analysis(analysis);
+        string completionKey = UniversalVtfCacheKey.Completion(completion);
+        if (!completion.AnalysisKey.Equals(analysisKey, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("cache_factory_analysis_completion_identity_mismatch");
+        }
+
+        string flightKey = $"{_root}\0{completionKey}";
+        var candidate = new Lazy<Task<UniversalVtfCacheLookup>>(
+            () => GetOrCreateCoreAsync(
+                analysis,
+                completion,
+                completionKey,
+                factory,
+                cancellationToken),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+        Lazy<Task<UniversalVtfCacheLookup>> flight = Flights.GetOrAdd(flightKey, candidate);
+        Task<UniversalVtfCacheLookup> task = flight.Value;
+        try
+        {
+            return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (task.IsCompleted)
+            {
+                Flights.TryRemove(
+                    new KeyValuePair<string, Lazy<Task<UniversalVtfCacheLookup>>>(flightKey, flight));
+            }
+        }
+    }
+
+    private async Task<UniversalVtfCacheLookup> GetOrCreateCoreAsync(
+        UniversalVtfAnalysisIdentity analysis,
+        UniversalVtfCompletionIdentity completion,
+        string completionKey,
+        Func<CancellationToken, Task<UniversalVtfCachedAsset>> factory,
+        CancellationToken cancellationToken)
+    {
+        UniversalVtfCacheLookup initial = await LookupAsync(
+            analysis,
+            completion,
+            cancellationToken).ConfigureAwait(false);
+        if (initial.HitKind == UniversalVtfCacheHitKind.Completed)
+        {
+            return initial;
+        }
+
+        await using FileStream cacheLock = await AcquireLockAsync(
+            completionKey,
+            cancellationToken).ConfigureAwait(false);
+        UniversalVtfCacheLookup afterLock = await LookupAsync(
+            analysis,
+            completion,
+            cancellationToken).ConfigureAwait(false);
+        if (afterLock.HitKind == UniversalVtfCacheHitKind.Completed)
+        {
+            return afterLock;
+        }
+
+        UniversalVtfCachedAsset asset = await factory(cancellationToken).ConfigureAwait(false);
+        UniversalVtfCacheContracts.Validate(asset);
+        if (!CanonicalEquals(asset.Analysis.Identity, analysis) ||
+            !CanonicalEquals(asset.Completion.Identity, completion))
+        {
+            throw new InvalidDataException("cache_factory_identity_drift");
+        }
+
+        await PublishAsync(asset, cancellationToken).ConfigureAwait(false);
+        UniversalVtfCacheLookup published = await LookupAsync(
+            analysis,
+            completion,
+            cancellationToken).ConfigureAwait(false);
+        if (published.HitKind != UniversalVtfCacheHitKind.Completed)
+        {
+            throw new InvalidDataException(
+                $"cache_publish_not_replayable:{string.Join('|', published.Issues)}");
+        }
+
+        return published;
     }
 
     internal async Task<UniversalVtfCacheLookup> LookupAsync(
@@ -85,42 +185,77 @@ internal sealed class UniversalVtfPreparationCache
             }
         }
 
+        string analysisDirectory = EntryDirectory(_analysisRoot, analysisKey);
+        string analysisReceiptPath = Path.Combine(analysisDirectory, "receipt.json");
         if (completionKey is not null)
         {
-            string completionReceiptPath = ReceiptPath(_completionRoot, completionKey);
+            string completionDirectory = EntryDirectory(_completionRoot, completionKey);
+            string completionReceiptPath = Path.Combine(completionDirectory, "receipt.json");
             if (File.Exists(completionReceiptPath))
             {
+                UniversalVtfCompletionReceipt completionReceipt;
                 try
                 {
-                    UniversalVtfCompletionReceipt completionReceipt =
-                        await ReadCompletionAsync(
-                            completionReceiptPath,
-                            completion!,
-                            cancellationToken).ConfigureAwait(false);
-                    UniversalVtfAnalysisReceipt analysisReceipt = await ReadAnalysisAsync(
-                        ReceiptPath(_analysisRoot, analysisKey),
+                    completionReceipt = await ReadCompletionAsync(
+                        completionReceiptPath,
+                        completion!,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception error) when (IsCacheEvidenceError(error))
+                {
+                    return InvalidEntry(
+                        completionDirectory,
+                        "completed",
+                        completionKey,
+                        "cache_completed_invalid",
+                        error);
+                }
+
+                UniversalVtfAnalysisReceipt analysisReceipt;
+                try
+                {
+                    analysisReceipt = await ReadAnalysisAsync(
+                        analysisReceiptPath,
                         analysis,
                         cancellationToken).ConfigureAwait(false);
                     await ValidateArtifactsAsync(
                         analysisReceipt.Artifacts.Values,
                         cancellationToken).ConfigureAwait(false);
-                    await ValidateArtifactsAsync(
-                        completionReceipt.Profiles.Values.Select(profile => profile.FinalArtifact),
-                        cancellationToken).ConfigureAwait(false);
-                    return new UniversalVtfCacheLookup(
-                        UniversalVtfCacheHitKind.Completed,
-                        analysisReceipt,
-                        completionReceipt,
-                        Array.Empty<string>());
                 }
                 catch (Exception error) when (IsCacheEvidenceError(error))
                 {
-                    return Miss($"cache_completed_invalid:{error.Message}");
+                    return InvalidEntry(
+                        analysisDirectory,
+                        "analysis",
+                        analysisKey,
+                        "cache_analysis_invalid",
+                        error);
                 }
+
+                try
+                {
+                    await ValidateArtifactsAsync(
+                        completionReceipt.Profiles.Values.Select(profile => profile.FinalArtifact),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception error) when (IsCacheEvidenceError(error))
+                {
+                    return InvalidEntry(
+                        completionDirectory,
+                        "completed",
+                        completionKey,
+                        "cache_completed_artifact_invalid",
+                        error);
+                }
+
+                return new UniversalVtfCacheLookup(
+                    UniversalVtfCacheHitKind.Completed,
+                    analysisReceipt,
+                    completionReceipt,
+                    Array.Empty<string>());
             }
         }
 
-        string analysisReceiptPath = ReceiptPath(_analysisRoot, analysisKey);
         if (!File.Exists(analysisReceiptPath))
         {
             return Miss();
@@ -149,7 +284,12 @@ internal sealed class UniversalVtfPreparationCache
         }
         catch (Exception error) when (IsCacheEvidenceError(error))
         {
-            return Miss($"cache_analysis_invalid:{error.Message}");
+            return InvalidEntry(
+                analysisDirectory,
+                "analysis",
+                analysisKey,
+                "cache_analysis_invalid",
+                error);
         }
     }
 
@@ -497,6 +637,43 @@ internal sealed class UniversalVtfPreparationCache
         UniversalVtfCanonicalJson.Serialize(left).AsSpan()
             .SequenceEqual(UniversalVtfCanonicalJson.Serialize(right));
 
+    private async Task<FileStream> AcquireLockAsync(
+        string key,
+        CancellationToken cancellationToken)
+    {
+        UniversalVtfCacheKey.RequireSha(key, nameof(key));
+        string directory = Path.Combine(_locksRoot, key[..2]);
+        Directory.CreateDirectory(directory);
+        EnsureSafeExistingPath(directory);
+        string path = Path.Combine(directory, $"{key}.lock");
+        EnsureContained(path);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var stream = new FileStream(
+                    path,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    4096,
+                    FileOptions.Asynchronous | FileOptions.WriteThrough);
+                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                {
+                    await stream.DisposeAsync().ConfigureAwait(false);
+                    throw new InvalidDataException($"cache_lock_reparse_point:{path}");
+                }
+
+                return stream;
+            }
+            catch (IOException)
+            {
+                await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
     private string BlobPath(string sha256)
     {
         UniversalVtfCacheKey.RequireSha(sha256, nameof(sha256));
@@ -532,7 +709,8 @@ internal sealed class UniversalVtfPreparationCache
                      _analysisRoot,
                      _completionRoot,
                      _stagingRoot,
-                     _quarantineRoot
+                     _quarantineRoot,
+                     _locksRoot
                  })
         {
             Directory.CreateDirectory(path);
@@ -598,6 +776,68 @@ internal sealed class UniversalVtfPreparationCache
         Directory.Delete(full, recursive: true);
     }
 
+    private UniversalVtfCacheLookup InvalidEntry(
+        string entryDirectory,
+        string kind,
+        string key,
+        string prefix,
+        Exception error)
+    {
+        var issues = new List<string> { $"{prefix}:{error.Message}" };
+        bool quarantined = false;
+        try
+        {
+            quarantined = QuarantineEntry(entryDirectory, kind, key, issues[0]);
+            if (quarantined)
+            {
+                issues.Add($"cache_quarantined:{kind}:{key}");
+            }
+        }
+        catch (Exception quarantineError) when (IsCacheEvidenceError(quarantineError))
+        {
+            issues.Add($"cache_quarantine_failed:{quarantineError.Message}");
+        }
+
+        return new UniversalVtfCacheLookup(
+            UniversalVtfCacheHitKind.Miss,
+            null,
+            null,
+            issues,
+            quarantined);
+    }
+
+    private bool QuarantineEntry(
+        string entryDirectory,
+        string kind,
+        string key,
+        string reason)
+    {
+        string source = EnsureContained(entryDirectory);
+        if (!Directory.Exists(source))
+        {
+            return false;
+        }
+
+        EnsureSafeExistingPath(source);
+        string quarantine = Path.Combine(
+            _quarantineRoot,
+            $"owned-{Guid.NewGuid():N}");
+        EnsureContained(quarantine);
+        Directory.CreateDirectory(quarantine);
+        string evidence = Path.Combine(quarantine, $"{kind}-{key}");
+        Directory.Move(source, evidence);
+        var receipt = new UniversalVtfQuarantineReceipt(
+            "universal-vtf-cache-quarantine-v1",
+            kind,
+            key,
+            reason,
+            DateTimeOffset.UtcNow.ToString("O"));
+        WriteAndFlush(
+            Path.Combine(quarantine, "quarantine.json"),
+            UniversalVtfCanonicalJson.Serialize(receipt));
+        return true;
+    }
+
     private static string NormalizeRoot(string path) => Path.GetFullPath(path)
         .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
@@ -610,4 +850,11 @@ internal sealed class UniversalVtfPreparationCache
     private static bool IsCacheEvidenceError(Exception error) =>
         error is IOException or InvalidDataException or UnauthorizedAccessException or
             NotSupportedException;
+
+    private sealed record UniversalVtfQuarantineReceipt(
+        string Schema,
+        string Kind,
+        string Key,
+        string Reason,
+        string QuarantinedUtc);
 }
