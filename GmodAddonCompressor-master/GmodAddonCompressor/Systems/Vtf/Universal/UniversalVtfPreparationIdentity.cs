@@ -87,6 +87,14 @@ internal static class UniversalVtfCacheKey
     internal const string AnalysisSchema = "universal-vtf-analysis-identity-v1";
     internal const string CompletionSchema = "universal-vtf-completion-identity-v1";
     internal const string None = "none";
+    private static readonly IReadOnlySet<string> CanonicalSemanticClasses =
+        Enum.GetValues<UniversalVtfSemanticClass>()
+            .Select(value =>
+            {
+                string name = value.ToString();
+                return char.ToLowerInvariant(name[0]) + name[1..];
+            })
+            .ToHashSet(StringComparer.Ordinal);
 
     internal static string Analysis(UniversalVtfAnalysisIdentity identity)
     {
@@ -117,7 +125,8 @@ internal static class UniversalVtfCacheKey
             identity.SemanticClasses.Distinct(StringComparer.Ordinal).Count() !=
             identity.SemanticClasses.Count ||
             identity.SemanticClasses.Any(value =>
-                string.IsNullOrWhiteSpace(value) || value != value.ToLowerInvariant()) ||
+                string.IsNullOrWhiteSpace(value) ||
+                !CanonicalSemanticClasses.Contains(value)) ||
             !Enum.IsDefined(typeof(UniversalVtfFilterRoute), identity.SemanticRoute))
         {
             throw new InvalidDataException(

@@ -114,6 +114,21 @@ public sealed class UniversalVtfPreparationIdentityTests
         Assert.Equal("cache_identity_invalid_path:Materials\\Models\\test.vtf", error.Message);
     }
 
+    [Fact]
+    public void CacheKeyAcceptsCanonicalLowerCamelSemanticClassAndRejectsUnknownClass()
+    {
+        UniversalVtfAnalysisIdentity scalarMask = Analysis() with
+        {
+            SemanticClasses = new[] { "scalarMask" }
+        };
+
+        Assert.Equal(64, UniversalVtfCacheKey.Analysis(scalarMask).Length);
+        Assert.Throws<InvalidDataException>(() => UniversalVtfCacheKey.Analysis(
+            scalarMask with { SemanticClasses = new[] { "ScalarMask" } }));
+        Assert.Throws<InvalidDataException>(() => UniversalVtfCacheKey.Analysis(
+            scalarMask with { SemanticClasses = new[] { "madeUpClass" } }));
+    }
+
     private static UniversalVtfAnalysisIdentity Analysis() => new(
         UniversalVtfCacheKey.AnalysisSchema,
         Sha('a'),
