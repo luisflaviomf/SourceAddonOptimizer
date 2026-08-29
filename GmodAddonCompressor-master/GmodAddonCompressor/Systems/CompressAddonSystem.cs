@@ -45,6 +45,7 @@ namespace GmodAddonCompressor.Systems
         private Queue<FileInfo> _registredFiles = new Queue<FileInfo>();
         private bool _hasStarted = false;
         private Thread? _compressThread = null;
+        private CancellationTokenSource? _maximumBatchCancellation;
         private List<string> _validFileExtensions = new List<string>();
         private string _directoryPath;
         private Dictionary<string, ICompress> _compressServices = new Dictionary<string, ICompress>();
@@ -94,7 +95,10 @@ namespace GmodAddonCompressor.Systems
             AddValidFileExtensions(extension);
             if (_pipelineOptions.IsMaximumMode)
             {
-                var maximum = new MaximumVTFEdit(_directoryPath);
+                var maximum = new MaximumVTFEdit(
+                    _directoryPath,
+                    _pipelineOptions.MaximumVtfProfile,
+                    _pipelineOptions.MaximumVtfParallelism);
                 maximum.ProgressChanged += progress => e_MaximumProgress?.Invoke(progress);
                 _compressServices.Add(extension, maximum);
             }
@@ -129,6 +133,9 @@ namespace GmodAddonCompressor.Systems
         {
             _hasStarted = true;
 
+            _maximumBatchCancellation?.Dispose();
+            _maximumBatchCancellation = new CancellationTokenSource();
+
             ParseDirectory(_directoryPath);
             PrepareServices();
 
@@ -140,6 +147,7 @@ namespace GmodAddonCompressor.Systems
 
         internal void StopCompress()
         {
+            _maximumBatchCancellation?.Cancel();
             if (_compressThread != null && _compressThread.IsAlive)
                 _compressThread.Interrupt();
         }
@@ -228,6 +236,33 @@ namespace GmodAddonCompressor.Systems
 
         private async Task ProcessBucketAsync(CompressionBucket bucket, int filesCount, ProgressCounter progressCounter)
         {
+            if (bucket.Name.Equals("vtf", StringComparison.OrdinalIgnoreCase) &&
+                bucket.Files.Count > 0 &&
+                GetService(bucket.Files[0].Extension) is ICompressBatch batchService)
+            {
+                try
+                {
+                    await RunBatchServiceAsync(
+                        batchService,
+                        bucket.Files,
+                        _maximumBatchCancellation?.Token ?? CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex.ToString());
+                    throw;
+                }
+
+                foreach (FileInfo file in bucket.Files)
+                {
+                    int fileIndex = Interlocked.Increment(ref progressCounter.Value);
+                    e_ProgressChanged?.Invoke(file.FullName, fileIndex, filesCount);
+                }
+
+                return;
+            }
+
             var options = new ParallelOptions
             {
                 MaxDegreeOfParallelism = bucket.MaxDegreeOfParallelism
@@ -251,6 +286,16 @@ namespace GmodAddonCompressor.Systems
                 int fileIndex = Interlocked.Increment(ref progressCounter.Value);
                 e_ProgressChanged?.Invoke(file.FullName, fileIndex, filesCount);
             });
+        }
+
+        internal static Task RunBatchServiceAsync(
+            ICompressBatch service,
+            IReadOnlyList<FileInfo> files,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(service);
+            ArgumentNullException.ThrowIfNull(files);
+            return service.CompressBatchAsync(files, cancellationToken);
         }
 
         private IReadOnlyList<CompressionBucket> BuildCompressionBuckets()

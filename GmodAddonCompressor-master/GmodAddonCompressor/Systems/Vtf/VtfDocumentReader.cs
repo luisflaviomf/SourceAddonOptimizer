@@ -10,6 +10,7 @@ namespace GmodAddonCompressor.Systems.Vtf
     {
         private const int TextureFlagsEnvMap = 0x00004000;
         private const int HighResolutionImageResourceTag = 0x000030;
+        private const byte ResourceHasNoDataChunk = 0x02;
 
         internal static bool TryRead(string filePath, out VtfDocumentInfo document, out string error)
         {
@@ -43,6 +44,12 @@ namespace GmodAddonCompressor.Systems.Vtf
                 int frames = reader.ReadUInt16();
                 int firstFrame = reader.ReadUInt16();
 
+                stream.Position = 32;
+                float reflectivityX = reader.ReadSingle();
+                float reflectivityY = reader.ReadSingle();
+                float reflectivityZ = reader.ReadSingle();
+                stream.Position = 48;
+                float bumpScale = reader.ReadSingle();
                 stream.Position = 52;
                 int highResFormat = reader.ReadInt32();
                 int mipCount = reader.ReadByte();
@@ -83,6 +90,9 @@ namespace GmodAddonCompressor.Systems.Vtf
                 {
                     if (resource.Tag == HighResolutionImageResourceTag)
                     {
+                        if ((resource.Flags & ResourceHasNoDataChunk) != 0)
+                            return Fail("VTF high-resolution image resource is inline.", out document, out error);
+
                         highResDataOffset = resource.Data;
                         break;
                     }
@@ -139,8 +149,13 @@ namespace GmodAddonCompressor.Systems.Vtf
                     height,
                     flags,
                     frames,
+                    firstFrame,
                     faces,
                     depth,
+                    reflectivityX,
+                    reflectivityY,
+                    reflectivityZ,
+                    bumpScale,
                     highResFormat,
                     mipCount,
                     lowResFormat,
@@ -158,7 +173,7 @@ namespace GmodAddonCompressor.Systems.Vtf
             }
         }
 
-        private static int GetImageByteCount(int format, int width, int height)
+        internal static int GetImageByteCount(int format, int width, int height)
         {
             if (width <= 0 || height <= 0 || format < 0)
                 return 0;
