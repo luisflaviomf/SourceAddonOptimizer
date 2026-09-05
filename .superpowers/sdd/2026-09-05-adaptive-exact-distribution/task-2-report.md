@@ -221,3 +221,46 @@ default case-insensitive Windows fixture directory; real junction branches are t
 Runtime warm zero-write evidence refers to reconstruction/cache writes, with the
 existing receipt write explicitly retained. Cross-family blob duplication is
 accounted physically and documented above.
+
+## Review fix round 1 — native/generated Windows directory spelling
+
+The reviewer reproduced valid input `Lua/autorun/native.lua` plus a compressible
+WAV failing final artifact identity verification: native publication creates `Lua`,
+and Windows reuses that spelling when generated code requests `lua`. The same
+defect affected shared `Data_Static` and nested `Autorun` directories.
+
+Builder publication now computes the exact physical artifact path plan from the
+retained native file directories before creating the output. Native directories
+and filenames retain their spelling. Generated artifact directories sharing those
+Windows paths use the planned native spelling; canonical lowercase GAME paths in
+the authenticated contracts and Lua remain intact. Publication and final identity
+checks use the same explicit plan. The final gate still compares exact spelling,
+byte length, SHA-256 and the complete expected file set; it does not substitute
+case-insensitive verification or remove any identity gate. POSIX `normcase` is a
+no-op, so distinct POSIX directory names are not silently merged by this plan.
+
+RED command:
+
+`python -m pytest -q -p no:faulthandler tests/test_exact_distribution_builder.py -k generated_artifacts_share`
+
+Result: **4 failed, 17 deselected in 1.00s**, all with the expected generated
+artifact identity error. Fixtures cover `Lua/autorun`, `lua/Autorun`, `Data_Static`,
+and combined `Lua/Autorun` + `Data_Static` native trees.
+
+The same command after implementation: **4 passed, 17 deselected in 0.81s**.
+Each regression verifies source bytes unchanged, retained native spelling/bytes,
+one selected WAV, exact measured candidate size, and successful full generated Lua
+execution that reconstructs the original WAV through its support GMA.
+
+Extended the same-size autorun tampering test to a native `Lua/Autorun` tree too;
+the generated artifact remains rejected with no success report. Final command:
+
+`python -m pytest -q -p no:faulthandler tests/test_exact_distribution_builder.py tests/test_exact_distribution_runtime.py tests/test_exact_distribution_codecs.py`
+
+Result: **45 passed in 6.49s**. Files changed in this round: builder, its filesystem
+tests, and this report. No runtime/frozen file edits, engine launch, integration
+corpus processing or source/approved tree changes. Real GMod validation remains pending.
+
+Integration path clarification: the lowercase support/contract/autorun paths above
+are canonical GAME paths. Their physical candidate directory spelling can inherit
+retained native `Lua`, `Autorun` or `Data_Static` directories on Windows.

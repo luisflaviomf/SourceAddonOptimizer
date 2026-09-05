@@ -202,15 +202,19 @@ def test_whole_candidate_manifest_gate_falls_back_without_deletion(tmp_path, mon
     assert not (tmp_path / "out/data_static").exists()
 
 
-def test_output_autorun_drift_is_not_reported_success(tmp_path, monkeypatch):
+@pytest.mark.parametrize("native_lua", [False, True])
+def test_output_autorun_drift_is_not_reported_success(tmp_path, monkeypatch, native_lua):
     import exact_distribution.builder as builder
     source = tmp_path / "source"; source.mkdir()
     engine = tmp_path / "engine"; engine.mkdir()
     (source / "sound").mkdir(); (source / "sound/a.wav").write_bytes(b"A" * 200000)
+    if native_lua:
+        (source / "Lua/Autorun").mkdir(parents=True)
+        (source / "Lua/Autorun/native.lua").write_bytes(b"-- native\n")
     original_write = builder._write
     def tamper(path, raw):
         original_write(path, raw)
-        if path.suffix == ".lua" and "out" in path.parts:
+        if path.name.startswith("000000_exact_") and path.suffix == ".lua" and "out" in path.parts:
             path.write_bytes(b"!" + raw[1:])
     monkeypatch.setattr(builder, "_write", tamper)
     with pytest.raises(ValueError, match="artifact identity"):
@@ -242,3 +246,33 @@ def test_real_cli_module_process_reports_small_independent_candidate(tmp_path):
     assert "EXACT_REPORT: " in result.stdout and "EXACT_OUTPUT: " in result.stdout
     report = json.loads((tmp_path / "work/candidate-report.json").read_bytes())
     assert report["status"] == "OFFLINE_PENDING_GMOD" and report["encoded_count"] == 1
+
+
+@pytest.mark.parametrize("native_paths", [
+    ["Lua/autorun/native.lua"],
+    ["lua/Autorun/native.lua"],
+    ["Data_Static/native.txt"],
+    ["Lua/Autorun/native.lua", "Data_Static/native.txt"],
+])
+def test_windows_generated_artifacts_share_native_directory_spelling(tmp_path, native_paths):
+    import os
+    from exact_runtime_harness import RuntimeHarness
+    if os.name != "nt":
+        pytest.skip("Windows directory casing regression")
+    payload = b"RIFF" + b"fixture" * 40000
+    files = {path: b"-- native file\n" for path in native_paths}
+    files["sound/example.wav"] = payload
+    _, out, report, before, after = _build(tmp_path, files)
+    assert before == after
+    assert report["encoded_count"] == 1 and report["native_count"] == len(native_paths)
+    physical = {p.relative_to(out).as_posix(): p.read_bytes() for p in out.rglob("*") if p.is_file()}
+    for path in native_paths:
+        assert physical[path] == files[path]
+    for root in {path.split("/")[0] for path in native_paths}:
+        assert root in {path.split("/")[0] for path in physical}
+        if root.lower() in ("lua", "data_static"):
+            assert all(path.split("/")[0] == root for path in physical if path.split("/")[0].lower() == root.lower())
+    assert report["candidate_bytes"] == sum(map(len, physical.values()))
+    harness = RuntimeHarness([out]); harness.run(out)
+    assert harness.game[b"sound/example.wav"] == payload
+    assert harness.receipts()[0]["status"] == "READY"

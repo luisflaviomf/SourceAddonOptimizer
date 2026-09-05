@@ -105,6 +105,35 @@ def _fingerprint(segments) -> dict:
     return {"size": size, "sha256": digest, "chunk_size": source_gma.CHUNK_BYTES, "chunks": chunks}
 
 
+def _artifact_physical_paths(native_rows: list[dict], artifact_paths: list[str]) -> dict[str, str]:
+    """Plan shared directory spelling before publication, keeping GAME paths intact.
+
+    Windows reuses a native `Lua` directory for a requested `lua` path. Bind the
+    exact expected physical spelling up front; do not weaken final hash/closed-set
+    verification to case-insensitive lookups. normcase is a no-op on POSIX.
+    """
+    directories = {}
+    for row in native_rows:
+        parts = row["source_path"].split("/")
+        for depth in range(1, len(parts)):
+            directory = "/".join(parts[:depth])
+            key = os.path.normcase(directory)
+            previous = directories.setdefault(key, directory)
+            if previous != directory:
+                raise ValueError("native directory spelling collision")
+    physical_paths = {}
+    for relative in artifact_paths:
+        parts = relative.split("/")
+        physical = relative
+        for depth in range(len(parts) - 1, 0, -1):
+            native_directory = directories.get(os.path.normcase("/".join(parts[:depth])))
+            if native_directory is not None:
+                physical = native_directory + "/" + "/".join(parts[depth:])
+                break
+        physical_paths[relative] = physical
+    return physical_paths
+
+
 def _family_artifacts(source, work, cid, folder, codec, selected):
     """Materialize only bounded support; reconstructed cache is fingerprinted."""
     family = f"{codec}_0000"
@@ -262,19 +291,19 @@ def build_candidate(source: Path, output: Path, work: Path, engine_root: Path, p
         fallback = "whole_candidate_no_net_gain"
         for family_report in family_reports:
             family_report["accepted"] = False
+    selected_paths = {row["source_path"] for row, _, _ in selected}
+    native_rows = [row for row in rows if row["source_path"] not in selected_paths | excluded_paths]
+    artifact_paths = _artifact_physical_paths(native_rows, list(artifacts) + ([MARKER] if selected else []))
     if _inventory(source) != rows:
         raise ValueError("input drift detected before publication")
     _checked_root(output, existing=False)
     output.mkdir(parents=True, exist_ok=False)
-    selected_paths = {row["source_path"] for row, _, _ in selected}
-    for row in rows:
-        rel = row["source_path"]
-        if rel not in selected_paths and rel not in excluded_paths:
-            _write(output / rel, _read_pinned(source, row))
+    for row in native_rows:
+        _write(output / row["source_path"], _read_pinned(source, row))
     for relative, value in artifacts.items():
-        _write(output / relative, value.read_bytes() if isinstance(value, Path) else value)
+        _write(output / artifact_paths[relative], value.read_bytes() if isinstance(value, Path) else value)
     if selected:
-        _write(output / MARKER, manifest)
+        _write(output / artifact_paths[MARKER], manifest)
     actual = _inventory(output)
     actual_map = {row["source_path"]: row for row in actual}
     candidate_bytes = sum(row["size"] for row in actual)
@@ -291,13 +320,15 @@ def build_candidate(source: Path, output: Path, work: Path, engine_root: Path, p
                       if row["source_path"] not in selected_paths | excluded_paths}
     for relative, value in artifacts.items():
         raw = value.read_bytes() if isinstance(value, Path) else value
-        if actual_map.get(relative) != {"source_path": relative, "size": len(raw), "sha256": _sha(raw)}:
-            raise ValueError("candidate artifact identity mismatch: " + relative)
-        expected_paths.add(relative)
+        physical = artifact_paths[relative]
+        if actual_map.get(physical) != {"source_path": physical, "size": len(raw), "sha256": _sha(raw)}:
+            raise ValueError("candidate artifact identity mismatch: " + physical)
+        expected_paths.add(physical)
     if selected:
-        if actual_map.get(MARKER) != {"source_path": MARKER, "size": len(manifest), "sha256": _sha(manifest)}:
+        physical_marker = artifact_paths[MARKER]
+        if actual_map.get(physical_marker) != {"source_path": physical_marker, "size": len(manifest), "sha256": _sha(manifest)}:
             raise ValueError("candidate artifact identity mismatch: manifest")
-        expected_paths.add(MARKER)
+        expected_paths.add(physical_marker)
     if set(actual_map) != expected_paths:
         raise ValueError("candidate closed set mismatch")
     if any(row["source_path"].lower().endswith((".dx80.vtx", ".sw.vtx")) for row in actual):
