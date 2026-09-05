@@ -48,3 +48,21 @@ Codec domains: `vvd-scalar-tiled-fixup-delta-exact-p1/v1`, `vvd-scalar-tiled-fix
 
 - VTF inputs may produce both the frozen P2 option and the general LZMA option; downstream selection must compare these alternatives rather than assume one option per source.
 - This task deliberately does not perform runtime activation or a broad product build, per the brief.
+
+## Review fix round 1
+
+Added strict per-option positive-gain filtering (`blob_size < source_size`) after independent reconstruction verification. Oversized-for-P2 VTF input now skips only P2 and continues through the general LZMA path. Tests additionally validate meaningful VTF runtime metadata fields and parameters.
+
+Fix RED command:
+
+`python -m pytest tests/test_exact_distribution_codecs.py -q`
+
+Fix RED output: `2 failed, 6 passed` (exit 1): the large compressible VTF returned no LZMA option, and an incompressible WAV returned a larger LZMA option.
+
+Fix GREEN command:
+
+`python -m pytest tests/test_exact_distribution_codecs.py -q`
+
+Fix GREEN output: `8 passed in 0.20s` (exit 0).
+
+Fix self-review: gain is checked independently for every VVD, VTF, and LZMA option; decoding and identity verification still happen before filtering, so a reconstruction mismatch cannot be hidden as native fallback. No vendored file changed.

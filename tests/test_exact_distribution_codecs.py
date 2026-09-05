@@ -10,9 +10,9 @@ VVD_HEADER = struct.Struct("<4sIII8I4I")
 FIXUP = struct.Struct("<III")
 
 
-def make_vvd(*, padding=0, active_lods=(3, 2, 1)):
+def make_vvd(*, padding=0, active_lods=(128, 64, 32)):
     count = active_lods[0]
-    rows = ((2, 0, 1), (1, 1, 1), (0, 2, 1)) if active_lods[-1] else ((1, 0, 2), (0, 2, 1))
+    rows = ((2, 0, 32), (1, 32, 32), (0, 64, 64)) if active_lods[-1] else ((1, 0, 64), (0, 64, 64))
     fixup_start = 64
     fixup_end = fixup_start + len(rows) * 12
     vertex_start = fixup_end + padding
@@ -27,10 +27,10 @@ def make_vvd(*, padding=0, active_lods=(3, 2, 1)):
     source.extend(b"\0" * padding)
     for cell in range(count):
         for lane in range(12):
-            source.extend(struct.pack("<I", 0x21000000 + lane * 0x1000 + cell))
+            source.extend(struct.pack("<I", 0x21000000 + lane * 0x1000))
     for cell in range(count):
         for lane in range(4):
-            source.extend(struct.pack("<I", 0x61000000 + lane * 0x1000 + cell))
+            source.extend(struct.pack("<I", 0x61000000 + lane * 0x1000))
     return bytes(source)
 
 
@@ -59,7 +59,20 @@ def make_vtf():
     return bytes(header) + payload
 
 
-@pytest.mark.parametrize("source", [make_vvd(), make_vvd(padding=8, active_lods=(3, 2, 0)), make_no_fixup_vvd()])
+def make_large_vtf():
+    width = height = 4096
+    payload = b"A" * (8 * 1024 * 1024)
+    header = bytearray(80)
+    header[:4] = b"VTF\0"
+    struct.pack_into("<IIIHHIHH", header, 4, 7, 2, 80, width, height, 0, 1, 0)
+    struct.pack_into("<I", header, 52, 13)
+    header[56] = 1
+    struct.pack_into("<i", header, 57, -1)
+    struct.pack_into("<H", header, 63, 1)
+    return bytes(header) + payload
+
+
+@pytest.mark.parametrize("source", [make_vvd(), make_vvd(padding=8, active_lods=(128, 64, 0)), make_no_fixup_vvd()])
 def test_vvd_layouts_roundtrip_from_arbitrarily_renamed_paths(source):
     options = encode_options("models/renamed/anything.vvd", source)
     assert options
@@ -78,13 +91,26 @@ def test_vtf_p2_and_lzma_roundtrip_with_complete_metadata():
             assert option["family"] and option["codec_domain"]
             assert option["blob_size"] == len(option["blob"])
             assert option["blob_sha256"] == hashlib.sha256(option["blob"]).hexdigest()
+    p2 = next(option for option in encode_options("materials/x.vtf", make_vtf())
+              if option["codec_domain"] == "vtf-bc-tiled-component-exact-p2/v1")
+    assert "width=64" in p2["layout"] and "high-format=13" in p2["layout"]
+    assert p2["codec_parameters"].startswith("strategy=")
+    assert ",tile=" in p2["codec_parameters"] and ",rank=" in p2["codec_parameters"]
 
 
 def test_native_unsupported_and_size_caps():
     assert encode_options("lua/example.lua", b"print(1)") == []
-    assert encode_options("materials/x.vtf", b"x" * (8 * 1024 * 1024 + 1)) == []
+    large_vtf = make_large_vtf()
+    options = encode_options("materials/x.vtf", large_vtf)
+    assert [option["codec_domain"] for option in options] == ["source-asset-lzma-known-size-exact/v1"]
+    assert decode_option(options[0]) == large_vtf
     with pytest.raises(ValueError, match="size"):
         encode_options("sound/x.wav", b"x" * (64 * 1024 * 1024 + 1))
+
+
+def test_non_smaller_transport_options_remain_native():
+    source = b"RIFF" + b"".join(hashlib.sha256(struct.pack("<I", index)).digest() for index in range(256))
+    assert encode_options("sound/random.wav", source) == []
 
 
 def test_corrupt_and_trailing_blobs_are_rejected():

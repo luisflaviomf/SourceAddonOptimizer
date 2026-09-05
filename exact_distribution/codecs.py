@@ -105,24 +105,26 @@ def encode_options(target_path: str, source: bytes) -> list[dict]:
             option = _option("vvd", domain, source, encoded.blob, **_vvd_metadata(encoded.blob, domain))
             if decode_option(option) != source:
                 raise ValueError("independent VVD reconstruction mismatch")
-            options.append(option)
+            if option["blob_size"] < option["source_size"]:
+                options.append(option)
         return options
     if path.endswith(".vtf"):
-        if len(source) > VTF_LIMIT:
-            return []
-        encoded = encode_vtf(source)
-        if encoded.blob is not None:
-            layout = encoded.layout
-            option = _option("vtf", VTF_DOMAIN, source, encoded.blob, **_vtf_metadata(layout, encoded))
-            if decode_option(option) != source:
-                raise ValueError("independent VTF reconstruction mismatch")
-            options.append(option)
+        if len(source) <= VTF_LIMIT:
+            encoded = encode_vtf(source)
+            if encoded.blob is not None:
+                layout = encoded.layout
+                option = _option("vtf", VTF_DOMAIN, source, encoded.blob, **_vtf_metadata(layout, encoded))
+                if decode_option(option) != source:
+                    raise ValueError("independent VTF reconstruction mismatch")
+                if option["blob_size"] < option["source_size"]:
+                    options.append(option)
     blob = _encode_lzma(source)
     option = _option(lzma_family, LZMA_DOMAIN, source, blob,
                      codec_meta={"format": "lzma-alone-known-size", "preset": 6})
     if decode_option(option) != source:
         raise ValueError("independent LZMA reconstruction mismatch")
-    options.append(option)
+    if option["blob_size"] < option["source_size"]:
+        options.append(option)
     return options
 
 
