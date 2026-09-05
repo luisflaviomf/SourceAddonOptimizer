@@ -11,6 +11,8 @@ O resultado é `OFFLINE_PENDING_GMOD`: reconstrução exata verificada offline, 
 
 As famílias codificadas incluem bootstrap Lua e suporte à reconstrução/cache no GMod. A primeira carga pode custar tempo e disco. Valide reconstrução fria/quente, integridade, montagem e comportamento visual/funcional antes de ativar manualmente. Não modifique originais, baselines, candidatos aprovados ou rollbacks para aplicar a política.
 
+Ao copiar o candidato para `garrysmod/addons`, preserve exatamente o nome final da pasta exportada. Esse nome faz parte do contrato/CID e dos caminhos de suporte do runtime; não renomeie a pasta do candidato.
+
 No **Pipeline**, marque **Distribuição exata no final (experimental)** para encadear Models → Compress → exportação exata. A opção começa desativada; ela e o diretório da engine são persistidos. A exportação só inicia após sucesso das duas etapas nativas, cria uma pasta irmã nova e preserva o intermediário. “Abrir output” aponta para o candidato exato apenas quando o worker e seu relatório confirmam sucesso. O resumo guarda saídas nativa/exata e relatório separadamente. A redução de qualidade escolhida nas etapas anteriores permanece responsabilidade dessas etapas.
 
 O work de cada exportação fica em `%LOCALAPPDATA%\GmodAddonOptimizer\work\exact_<id>`. O log persistente fica ao lado (`.log`) e é copiado para `wpf-worker.log` dentro do work quando essa pasta existe.

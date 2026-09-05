@@ -34,6 +34,8 @@ namespace GmodAddonCompressor.Systems.Optimizer
         {
             foreach (string path in new[] { options.SourcePath, options.OutputPath, options.WorkDir, options.EngineRoot })
                 if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Informe entrada, saída nova, engine e work.");
+            foreach (string path in new[] { options.SourcePath, options.OutputPath, options.WorkDir, options.EngineRoot, options.WorkDir + ".log" })
+                ValidateNoReparseAncestors(path);
             if (!Directory.Exists(options.SourcePath)) throw new DirectoryNotFoundException("Addon de entrada não encontrado.");
             if (!Directory.Exists(options.EngineRoot)) throw new DirectoryNotFoundException("Diretório da engine não encontrado.");
             if (Directory.Exists(options.OutputPath) || File.Exists(options.OutputPath))
@@ -50,6 +52,50 @@ namespace GmodAddonCompressor.Systems.Optimizer
                     if (i == 0 && j == 3) continue;
                     if (Overlap(paths[i], paths[j])) throw new IOException("Entrada, saída, work e engine não podem se sobrepor.");
                 }
+        }
+
+        private static void ValidateNoReparseAncestors(string path)
+        {
+            string? current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+            while (current != null)
+            {
+                try
+                {
+                    if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                        throw new IOException("Reparse point/junction não permitido: " + current);
+                }
+                catch (FileNotFoundException) { }
+                catch (DirectoryNotFoundException) { }
+                current = Path.GetDirectoryName(current);
+            }
+        }
+
+        internal static string PrepareWorkLog(ExactDistributionRunOptions options)
+        {
+            // Validate every generated destination before even creating the shared parent.
+            ValidatePaths(options);
+            string logPath = Path.GetFullPath(options.WorkDir) + ".log";
+            if (File.Exists(logPath) || Directory.Exists(logPath))
+                throw new IOException("O log da exportação deve ser novo.");
+            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+            ValidateNoReparseAncestors(logPath);
+            using (new FileStream(logPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read)) { }
+            return logPath;
+        }
+
+        internal static void AppendWorkLog(string logPath, string line)
+        {
+            ValidateNoReparseAncestors(logPath);
+            File.AppendAllText(logPath, line + Environment.NewLine);
+        }
+
+        internal static void CopyWorkLog(string logPath, string workDir)
+        {
+            string destination = Path.Combine(workDir, "wpf-worker.log");
+            ValidateNoReparseAncestors(logPath);
+            ValidateNoReparseAncestors(destination);
+            if (Directory.Exists(workDir) && File.Exists(logPath))
+                File.Copy(logPath, destination, overwrite: false);
         }
 
         private static bool Overlap(string first, string second)

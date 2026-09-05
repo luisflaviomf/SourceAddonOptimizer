@@ -69,6 +69,100 @@ public sealed class ExactDistributionIntegrationTests
     }
 
     [Theory]
+    [InlineData("work")]
+    [InlineData("output")]
+    [InlineData("log")]
+    public async Task JunctionsAreRejectedBeforeAnyGeneratedWrite(string redirectedPath)
+    {
+        using var fixture = new ExactFixture();
+        string referenced = Path.Combine(fixture.Root, "referenced");
+        Directory.CreateDirectory(referenced);
+        string sentinel = Path.Combine(referenced, "sentinel.txt");
+        File.WriteAllText(sentinel, "unchanged");
+        string work = Path.Combine(fixture.Root, "new_work_parent/work");
+        string output = fixture.Options.OutputPath;
+        string junction = Path.Combine(fixture.Root, "redirect");
+        if (redirectedPath == "work") work = Path.Combine(junction, "new_parent/work");
+        if (redirectedPath == "output") output = Path.Combine(junction, "candidate");
+        if (redirectedPath == "log")
+        {
+            work = Path.Combine(fixture.Root, "work");
+            junction = work + ".log";
+        }
+        await CreateJunction(junction, referenced);
+        try
+        {
+            var options = new ExactDistributionRunOptions { SourcePath = fixture.Options.SourcePath,
+                OutputPath = output, WorkDir = work, EngineRoot = fixture.Options.EngineRoot };
+            Assert.Throws<IOException>(() => ExactDistributionRunner.ValidatePaths(options));
+            Assert.Throws<IOException>(() => ExactDistributionRunner.PrepareWorkLog(options));
+            Assert.Equal(new[] { sentinel }, Directory.GetFileSystemEntries(referenced));
+            Assert.Equal("unchanged", File.ReadAllText(sentinel));
+            Assert.False(Directory.Exists(Path.Combine(fixture.Root, "new_work_parent")));
+        }
+        finally { Directory.Delete(junction); }
+    }
+
+    [Fact]
+    public void PreparedLogPreservesWorkerPreflightAndCanBeCopiedAfterCompletion()
+    {
+        using var fixture = new ExactFixture();
+        string log = ExactDistributionRunner.PrepareWorkLog(fixture.Options);
+        Assert.Equal(fixture.Options.WorkDir + ".log", log);
+        ExactDistributionRunner.CreateStartInfo(fixture.Options);
+        Assert.False(Directory.Exists(fixture.Options.WorkDir));
+        Assert.False(Directory.Exists(fixture.Options.OutputPath));
+        ExactDistributionRunner.AppendWorkLog(log, "progress");
+        Directory.CreateDirectory(fixture.Options.WorkDir);
+        ExactDistributionRunner.CopyWorkLog(log, fixture.Options.WorkDir);
+        Assert.Equal("progress" + Environment.NewLine, File.ReadAllText(Path.Combine(fixture.Options.WorkDir, "wpf-worker.log")));
+    }
+
+    [Fact]
+    public async Task LogWritesAndFinalCopyRefuseAJunctionIntroducedAfterPreflight()
+    {
+        using var fixture = new ExactFixture();
+        string logParent = Path.Combine(fixture.Root, "log_parent");
+        string backupParent = Path.Combine(fixture.Root, "original_log_parent");
+        var options = new ExactDistributionRunOptions { SourcePath = fixture.Options.SourcePath,
+            OutputPath = fixture.Options.OutputPath, WorkDir = Path.Combine(logParent, "work"), EngineRoot = fixture.Options.EngineRoot };
+        string log = ExactDistributionRunner.PrepareWorkLog(options);
+        string referenced = Path.Combine(fixture.Root, "referenced");
+        Directory.CreateDirectory(referenced);
+        string sentinel = Path.Combine(referenced, "work.log");
+        File.WriteAllText(sentinel, "unchanged");
+        Directory.Move(logParent, backupParent);
+        await CreateJunction(logParent, referenced);
+        try
+        {
+            Assert.Throws<IOException>(() => ExactDistributionRunner.AppendWorkLog(log, "must not write"));
+            Assert.Throws<IOException>(() => ExactDistributionRunner.CopyWorkLog(log, options.WorkDir));
+            Assert.Equal(new[] { sentinel }, Directory.GetFileSystemEntries(referenced));
+            Assert.Equal("unchanged", File.ReadAllText(sentinel));
+        }
+        finally { Directory.Delete(logParent); }
+        await CreateJunction(options.WorkDir, referenced);
+        try
+        {
+            Assert.Throws<IOException>(() => ExactDistributionRunner.CopyWorkLog(Path.Combine(backupParent, "work.log"), options.WorkDir));
+            Assert.Equal(new[] { sentinel }, Directory.GetFileSystemEntries(referenced));
+            Assert.Equal("unchanged", File.ReadAllText(sentinel));
+        }
+        finally { Directory.Delete(options.WorkDir); }
+    }
+
+    private static async Task CreateJunction(string junction, string target)
+    {
+        string command = "New-Item -ItemType Junction -Path '" + junction.Replace("'", "''") +
+            "' -Target '" + target.Replace("'", "''") + "' -ErrorAction Stop | Out-Null";
+        using var process = Process.Start(Powershell(command))!;
+        string errors = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        Assert.True(process.ExitCode == 0, errors);
+        Assert.True((File.GetAttributes(junction) & FileAttributes.ReparsePoint) != 0);
+    }
+
+    [Theory]
     [InlineData(false, true, false, true, "Failed")]
     [InlineData(true, false, false, true, "Failed")]
     [InlineData(true, true, true, true, "Canceled")]

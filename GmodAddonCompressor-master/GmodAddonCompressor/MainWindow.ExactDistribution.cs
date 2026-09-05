@@ -21,21 +21,9 @@ namespace GmodAddonCompressor
         private ExactDistributionResult? _pipelineExactResult;
         private string _pipelineExactStatus = "Desativada";
         private string? _exactWorkDir;
-        private string? _exactLogPath;
 
         private void InitializeExactDistribution()
         {
-            _exactRunner.LogLine += line => Dispatcher.Invoke(() =>
-            {
-                if (TextBox_ExactLog.Text.Length > 150000) TextBox_ExactLog.Clear();
-                TextBox_ExactLog.AppendText(line + Environment.NewLine);
-                TextBox_ExactLog.ScrollToEnd();
-                if (_exactLogPath != null)
-                {
-                    try { File.AppendAllText(_exactLogPath, line + Environment.NewLine); }
-                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
-                }
-            });
             _exactRunner.ProgressUpdate += progress => Dispatcher.Invoke(() =>
             {
                 ProgressBar_Exact.Maximum = Math.Max(1, progress.Total);
@@ -105,12 +93,23 @@ namespace GmodAddonCompressor
         {
             if (_exactRunning) throw new InvalidOperationException("Exportação exata já em andamento.");
             _exactRunning = true;
+            string? logPath = null;
+            Action<string>? logHandler = null;
             try
             {
                 _exactResult = null;
                 _exactWorkDir = options.WorkDir;
-                Directory.CreateDirectory(ToolPaths.WorkRoot);
-                _exactLogPath = options.WorkDir + ".log";
+                token.ThrowIfCancellationRequested();
+                logPath = ExactDistributionRunner.PrepareWorkLog(options);
+                logHandler = line => Dispatcher.Invoke(() =>
+                {
+                    if (TextBox_ExactLog.Text.Length > 150000) TextBox_ExactLog.Clear();
+                    TextBox_ExactLog.AppendText(line + Environment.NewLine);
+                    TextBox_ExactLog.ScrollToEnd();
+                    try { ExactDistributionRunner.AppendWorkLog(logPath, line); }
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
+                });
+                _exactRunner.LogLine += logHandler;
                 Button_ExactCancel.IsEnabled = true;
                 Button_ExactOpenOutput.IsEnabled = false;
                 Button_ExactOpenReport.IsEnabled = false;
@@ -140,9 +139,10 @@ namespace GmodAddonCompressor
             {
                 _exactRunning = false;
                 Button_ExactCancel.IsEnabled = false;
-                if (Directory.Exists(options.WorkDir) && File.Exists(_exactLogPath))
+                if (logHandler != null) _exactRunner.LogLine -= logHandler;
+                if (logPath != null)
                 {
-                    try { File.Copy(_exactLogPath, Path.Combine(options.WorkDir, "wpf-worker.log"), overwrite: false); }
+                    try { ExactDistributionRunner.CopyWorkLog(logPath, options.WorkDir); }
                     catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
                 }
             }
