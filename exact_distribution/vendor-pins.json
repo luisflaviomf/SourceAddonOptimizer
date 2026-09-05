@@ -1,0 +1,22 @@
+{
+  "source_root": "C:/WorkshopDL/steamcmd/steamapps/workshop/content/4000/3027256228/_runtime_validation/high_impact_research",
+  "files": {
+    "_runtime_validation/high_impact_research/vvd_scalar_tiled_fixup_delta_exact_p1/encoder.py": {"sha256":"07ad11e508c42e20617318f95356e3973a26bd6115e7a4351a27c1a4320ec7a6"},
+    "_runtime_validation/high_impact_research/vvd_scalar_tiled_fixup_delta_exact_p1/decoder.py": {"sha256":"031038bbd75dd11ffcf337e22270dbfa6d7cc14f1f3288050686d1392e349b64"},
+    "_runtime_validation/high_impact_research/vvd_scalar_tiled_fixup_delta_exact_p1/format.py": {"sha256":"e596390ed1019451eb177b820ddf8a6871cb69e26b5a29091e7875dab6f7438c"},
+    "_runtime_validation/high_impact_research/vvd_scalar_tiled_fixup_delta_exact_p1/runtime_bootstrap.lua.in": {"sha256":"fc8844e64087548e2769e2d4638bd23f81be8f72324e4d71258141144cd7abc0"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/__init__.py": {"sha256":"fb1046369ef6f4d141a813c65d3cd77b9abeaf732b541c85732d86a45d4e5493"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/vvd_portable/__init__.py": {"sha256":"9d0975eea7a1a084d57be608d5b20c5e03a57114387d6bea2c0783cfef2d6dbc"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/vvd_portable/encoder.py": {"sha256":"b65d8b222e4e1c5aaa14b6072142e32541fb3a712e9c342e77dcb8c74a1ac193"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/vvd_portable/decoder.py": {"sha256":"7daca3b86e88c1afc54c31311a1a8113e227431a0236ce0936c116e3d43fbed5"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/vvd_portable/format.py": {"sha256":"2c79e43c88ed54fc8b6b266e70431ae690aaa2b3e5925bf9d4279dfc75990e71"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/vtf_p2_encoder.py": {"sha256":"b8bb2dd9b8d712739eae895e17516e4afce903016094fb516eb1fe4079cc4212"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/vtf_p2_independent_decoder.py": {"sha256":"cf0129122029f9109ecd7f1ab25cf192a30092c6bbab5b17aa683beb622cbbdd"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/vtf_p2_format.py": {"sha256":"ee1512d980113760ed527ce6df5cc7726599fef85c6dbd397866eb8dadb8ee48"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/source_gma.py": {"sha256":"dff95dbdbf612b7e086474a905e42b7f800ab76beecb03c32532a8bfd6e3cf02"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/engine_overlap.py": {"sha256":"8ca7283334d8772389d3404c7af0a32f5ae51971a325e848a3d3da91ae0f9e08"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/runtime_templates/runtime.lua.in": {"sha256":"3e0737d678a5552952e5c0b9255a5ec9c5efda20433ad0389f55c086fa920081"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/runtime_templates/vtf_decoder.lua": {"sha256":"92828973cb4817c79fe3ff9f8a94f3d6d610c39ce93c378a60ed019fc54d3510"},
+    "_runtime_validation/high_impact_research/tacrp_compression_portability_v1/runtime_templates/vvd_decoder.lua": {"sha256":"31e90ad02e00d4fb802072a60f34e695a774d6dd96bcad5a2630094c6ca3cbb7"}
+  }
+}

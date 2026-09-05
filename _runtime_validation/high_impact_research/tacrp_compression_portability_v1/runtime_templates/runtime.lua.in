@@ -1,0 +1,278 @@
+-- generated: tacrp compression portability runtime v1
+@@REALM_GUARD@@
+
+local CONTRACT_POINTER = @@CONTRACT_POINTER@@
+local contract_handle = file.Open(CONTRACT_POINTER.path, "rb", "GAME")
+if contract_handle == nil then error("contract:open", 0) end
+local contract_bytes = contract_handle:Read(CONTRACT_POINTER.size)
+local contract_trailing = contract_handle:Read(1)
+contract_handle:Close()
+if type(contract_bytes) ~= "string" or #contract_bytes ~= CONTRACT_POINTER.size or
+    (contract_trailing ~= nil and contract_trailing ~= "") or
+    string.lower(util.SHA256(contract_bytes)) ~= CONTRACT_POINTER.sha256 then error("contract:identity", 0) end
+local CONTRACT = util.JSONToTable(contract_bytes, true)
+if type(CONTRACT) ~= "table" then error("contract:json", 0) end
+local ENGINE_PREEXISTING = CONTRACT.engine_preexisting or {}
+local realm = SERVER and "server" or "client"
+local started = SysTime()
+local counters = { blob_opens = 0, decode_invocations = 0, reconstruction_writes = 0,
+    support_mounts = 0, cache_mounts = 0 }
+local timings = { support_ms = 0, cache_ms = 0, decode_ms = 0, mount_ms = 0, total_ms = 0 }
+local cache_path = "codex_tacrp_portability/" .. CONTRACT.content_id .. "/" .. realm .. "/" .. CONTRACT.family .. ".gma"
+local receipt_path = "codex_tacrp_portability/" .. CONTRACT.content_id .. "/" .. realm .. "/" .. CONTRACT.family .. ".receipt.json"
+local temporary_path = cache_path .. ".publishing.dat"
+local SUPPORT_ALIAS = "data_static/codex_tacrp_portability/" .. CONTRACT.family .. "_support.gma"
+local support_path = CONTRACT.support_path
+local pre_support_targets_absent = false
+local pre_cache_targets_absent = false
+local pre_support_engine_matches = 0
+local pre_cache_engine_matches = 0
+
+_G.CODEX_TACRP_PORTABILITY = _G.CODEX_TACRP_PORTABILITY or {}
+_G.CODEX_TACRP_PORTABILITY[CONTRACT.family] = _G.CODEX_TACRP_PORTABILITY[CONTRACT.family] or {}
+local previous = _G.CODEX_TACRP_PORTABILITY[CONTRACT.family][realm]
+if previous ~= nil then
+    if previous.status == "READY" then return end
+    error("tacrp_portability:duplicate_or_failed:" .. CONTRACT.family .. ":" .. realm, 0)
+end
+local terminal = { status = "RUNNING", family = CONTRACT.family, realm = realm }
+_G.CODEX_TACRP_PORTABILITY[CONTRACT.family][realm] = terminal
+
+local decode_entry = (function()
+@@DECODER@@
+end)()
+
+local function now_ms() return (SysTime() - started) * 1000 end
+local function sha(data)
+    local value = util.SHA256(data)
+    if type(value) ~= "string" or #value ~= 64 then error("sha256:unavailable") end
+    return string.lower(value)
+end
+local function dirname(path)
+    local index = string.match(path, "^.*()/")
+    if index == nil then return "" end
+    return string.sub(path, 1, index - 1)
+end
+local function api_gate()
+    if type(SysTime) ~= "function" or not util or type(util.SHA256) ~= "function" or
+        type(util.TableToJSON) ~= "function" or not file or type(file.Open) ~= "function" or
+        type(file.Exists) ~= "function" or type(file.CreateDir) ~= "function" or
+        type(file.Rename) ~= "function" or type(file.Delete) ~= "function" or
+        not game or type(game.MountGMA) ~= "function" then error("api:required_unavailable") end
+end
+local function hex_decode(value)
+    if type(value) ~= "string" or #value % 2 ~= 0 then error("hex:shape") end
+    local output = {}
+    for index = 1, #value, 2 do
+        local byte = tonumber(string.sub(value, index, index + 1), 16)
+        if byte == nil then error("hex:digit") end
+        output[#output + 1] = string.char(byte)
+    end
+    return table.concat(output)
+end
+local function audit_chunks(path, realm_name, identity, label)
+    local handle = file.Open(path, "rb", realm_name)
+    if handle == nil then error(label .. ":open") end
+    local ok, failure = pcall(function()
+        if handle:Size() ~= identity.size then error(label .. ":size") end
+        local remaining = identity.size
+        for index, expected in ipairs(identity.chunks) do
+            local count = math.min(identity.chunk_size, remaining)
+            local bytes = handle:Read(count)
+            if type(bytes) ~= "string" or #bytes ~= count or sha(bytes) ~= expected then
+                error(label .. ":chunk:" .. tostring(index))
+            end
+            remaining = remaining - count
+        end
+        if remaining ~= 0 then error(label .. ":chunk_coverage") end
+        local trailing = handle:Read(1)
+        if trailing ~= nil and trailing ~= "" then error(label .. ":trailing") end
+    end)
+    handle:Close()
+    if not ok then error(failure) end
+end
+local function read_blob(entry)
+    local handle = file.Open(entry.blob_path, "rb", "GAME")
+    if handle == nil then error("blob:open:" .. entry.target_path) end
+    counters.blob_opens = counters.blob_opens + 1
+    local ok, value = pcall(function()
+        if handle:Size() ~= entry.blob_size then error("blob:size:" .. entry.target_path) end
+        local bytes = handle:Read(entry.blob_size)
+        local trailing = handle:Read(1)
+        if type(bytes) ~= "string" or #bytes ~= entry.blob_size or
+            (trailing ~= nil and trailing ~= "") or sha(bytes) ~= entry.blob_sha256 then
+            error("blob:identity:" .. entry.target_path)
+        end
+        return bytes
+    end)
+    handle:Close()
+    if not ok then error(value) end
+    return value
+end
+local function verify_target_baseline(label)
+    local matches = 0
+    for _, entry in ipairs(CONTRACT.entries) do
+        local exists = file.Exists(entry.target_path, "GAME")
+        local handle = file.Open(entry.target_path, "rb", "GAME")
+        if exists == false then
+            if handle ~= nil then handle:Close(); error(label .. ":presence:" .. entry.target_path) end
+        else
+            if handle == nil then error(label .. ":open:" .. entry.target_path) end
+            local allowed = ENGINE_PREEXISTING[entry.target_path]
+            if type(allowed) ~= "table" then
+                handle:Close()
+                error(label .. ":unmapped:" .. entry.target_path)
+            end
+            local ok, failure = pcall(function()
+                if handle:Size() ~= allowed.size then error(label .. ":identity:" .. entry.target_path) end
+                local bytes = handle:Read(allowed.size)
+                local trailing = handle:Read(1)
+                if type(bytes) ~= "string" or #bytes ~= allowed.size or
+                    (trailing ~= nil and trailing ~= "") or sha(bytes) ~= allowed.sha256 then
+                    error(label .. ":identity:" .. entry.target_path)
+                end
+            end)
+            handle:Close()
+            if not ok then error(failure) end
+            matches = matches + 1
+        end
+    end
+    return matches
+end
+local function verify_mounted(files)
+    if type(files) ~= "table" or #files ~= #CONTRACT.entries then error("cache:mount_closed_set_count") end
+    for index, entry in ipairs(CONTRACT.entries) do
+        if files[index] ~= entry.target_path then error("cache:mount_closed_set_order") end
+    end
+end
+local function verify_sources()
+    for _, entry in ipairs(CONTRACT.entries) do
+        local handle = file.Open(entry.target_path, "rb", "GAME")
+        if handle == nil then error("post_mount:open:" .. entry.target_path) end
+        local ok, failure = pcall(function()
+            if handle:Size() ~= entry.source_size then error("post_mount:size:" .. entry.target_path) end
+            local bytes = handle:Read(entry.source_size)
+            local trailing = handle:Read(1)
+            if type(bytes) ~= "string" or #bytes ~= entry.source_size or
+                (trailing ~= nil and trailing ~= "") or sha(bytes) ~= entry.source_sha256 then
+                error("post_mount:identity:" .. entry.target_path)
+            end
+        end)
+        handle:Close()
+        if not ok then error(failure) end
+    end
+end
+local function write_receipt(status, mode, failure)
+    timings.total_ms = now_ms()
+    local receipt = {
+        schema = "tacrp-compression-portability-runtime-receipt/v1",
+        status = status, mode = mode, family = CONTRACT.family, realm = realm,
+        content_id = CONTRACT.content_id,
+        counts = counters, timings = timings,
+        zero_fallback = {
+            originals = false, workshop = false,
+            pre_support_targets_absent = pre_support_targets_absent,
+            pre_cache_targets_absent = pre_cache_targets_absent,
+            pre_support_engine_matches = pre_support_engine_matches,
+            pre_cache_engine_matches = pre_cache_engine_matches,
+        },
+        identity = {
+            support_path = CONTRACT.support_path,
+            support_mount_path = support_path,
+            support_sha256 = CONTRACT.support.sha256,
+            cache_path = cache_path,
+            cache_sha256 = CONTRACT.cache.sha256,
+        },
+        failure = failure,
+    }
+    local bytes = util.TableToJSON(receipt, false)
+    if type(bytes) ~= "string" or bytes == "" then error("receipt:encode") end
+    file.CreateDir(dirname(receipt_path))
+    local handle = file.Open(receipt_path, "wb", "DATA")
+    if handle == nil then error("receipt:open") end
+    local ok, write_failure = pcall(function() handle:Write(bytes) end)
+    handle:Close()
+    if not ok then error(write_failure) end
+end
+local function cold_build()
+    if file.Exists(temporary_path, "DATA") then error("cache:partial_temporary") end
+    file.CreateDir(dirname(cache_path))
+    local handle = file.Open(temporary_path, "wb", "DATA")
+    if handle == nil then error("cache:temporary_open") end
+    local ok, failure = pcall(function()
+        handle:Write(hex_decode(CONTRACT.cache.header_hex))
+        for _, entry in ipairs(CONTRACT.entries) do
+            local blob = read_blob(entry)
+            counters.decode_invocations = counters.decode_invocations + 1
+            local decode_started = SysTime()
+            local source = decode_entry(blob, entry)
+            timings.decode_ms = timings.decode_ms + (SysTime() - decode_started) * 1000
+            if type(source) ~= "string" or #source ~= entry.source_size or sha(source) ~= entry.source_sha256 then
+                error("decode:identity:" .. entry.target_path)
+            end
+            handle:Write(source)
+        end
+        handle:Write("\0\0\0\0")
+    end)
+    handle:Close()
+    if not ok then file.Delete(temporary_path); error(failure) end
+    counters.reconstruction_writes = 1
+    audit_chunks(temporary_path, "DATA", CONTRACT.cache, "cache:cold")
+    if file.Exists(cache_path, "DATA") then error("cache:final_appeared") end
+    if file.Rename(temporary_path, cache_path) ~= true then error("cache:publish") end
+    if file.Exists(temporary_path, "DATA") or not file.Exists(cache_path, "DATA") then error("cache:publish_state") end
+end
+local function run()
+    api_gate()
+    if not file.Exists(support_path, "GAME") then
+        support_path = SUPPORT_ALIAS
+        if not file.Exists(support_path, "GAME") then error("support:absent") end
+    end
+    pre_support_engine_matches = verify_target_baseline("pre_support")
+    pre_support_targets_absent = pre_support_engine_matches == 0
+    local support_started = SysTime()
+    audit_chunks(support_path, "GAME", CONTRACT.support, "support")
+    local support_ok, support_files = game.MountGMA(support_path)
+    counters.support_mounts = counters.support_mounts + 1
+    if support_ok ~= true or type(support_files) ~= "table" then error("support:mount") end
+    for _, entry in ipairs(CONTRACT.entries) do
+        if not file.Exists(entry.blob_path, "GAME") then error("support:blob_missing:" .. entry.target_path) end
+    end
+    timings.support_ms = (SysTime() - support_started) * 1000
+    pre_cache_engine_matches = verify_target_baseline("pre_cache")
+    pre_cache_targets_absent = pre_cache_engine_matches == 0
+    local cache_started = SysTime()
+    local mode
+    if file.Exists(cache_path, "DATA") then
+        mode = "warm"
+        audit_chunks(cache_path, "DATA", CONTRACT.cache, "cache:warm")
+        if counters.blob_opens ~= 0 or counters.decode_invocations ~= 0 or counters.reconstruction_writes ~= 0 then
+            error("cache:warm_blob_activity")
+        end
+    else
+        mode = "cold"
+        cold_build()
+        if counters.blob_opens ~= #CONTRACT.entries or counters.decode_invocations ~= #CONTRACT.entries or
+            counters.reconstruction_writes ~= 1 then error("cache:cold_activity") end
+    end
+    timings.cache_ms = (SysTime() - cache_started) * 1000
+    local mount_started = SysTime()
+    local mount_ok, mounted_files = game.MountGMA("data/" .. cache_path)
+    counters.cache_mounts = counters.cache_mounts + 1
+    timings.mount_ms = (SysTime() - mount_started) * 1000
+    if mount_ok ~= true then error("cache:mount") end
+    verify_mounted(mounted_files)
+    verify_sources()
+    terminal.status, terminal.mode = "READY", mode
+    write_receipt("READY", mode, nil)
+    print("[CODEX_TACRP_PORTABILITY] " .. CONTRACT.family .. " " .. realm .. " READY " .. mode)
+end
+
+local ok, failure = pcall(run)
+if not ok then
+    if file and type(file.Exists) == "function" and type(file.Delete) == "function" and
+        file.Exists(temporary_path, "DATA") then file.Delete(temporary_path) end
+    terminal.status, terminal.mode, terminal.failure = "FAILED", "fail_closed", tostring(failure)
+    pcall(write_receipt, "FAILED", "fail_closed", tostring(failure))
+    error("[CODEX_TACRP_PORTABILITY] " .. CONTRACT.family .. " " .. realm .. " FAILED " .. tostring(failure), 0)
+end

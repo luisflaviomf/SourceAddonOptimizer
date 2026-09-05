@@ -1,0 +1,883 @@
+if SERVER then AddCSLuaFile() end
+
+local CONTRACT = @@CONTRACT@@
+local realm_name = SERVER and "server" or "client"
+local REALM = CONTRACT.binding[realm_name]
+local MODE_CONST, MODE_RAW, MODE_DICT = 0, 1, 2
+local TILE_SCOPES = { [0] = 0, [1] = 128, [2] = 512, [3] = 2048,
+    [4] = 8192, [5] = 32768, [6] = 65536 }
+local LAYOUT_NAMES = {
+    [1] = "overlay",
+    [2] = "suffix_overlay_tail",
+    [3] = "disjoint",
+}
+local CHUNK_SIZE = 1048576
+local MAX_ENTRY_BYTES = 16 * 1024 * 1024
+local MAX_GMA_BYTES = 257 * 1024 * 1024
+local counters = { blob_opens = 0, decodes = 0, reconstruction_writes = 0,
+    mounts = 0, cache_state = "unprobed",
+    timings = { decode_ms = 0, reconstruction_ms = 0, gma_write_ms = 0,
+        gma_audit_ms = 0, mount_ms = 0, total_ready_ms = 0 },
+    heap = { current_kb = 0, peak_kb = 0 } }
+local bootstrap_started = SysTime()
+
+local active_entry_by_path
+local active_ordered_entries
+local active_chunks
+
+local function now_ms() return SysTime() * 1000 end
+local function update_heap()
+    local current = collectgarbage("count")
+    counters.heap.current_kb = current
+    if current > counters.heap.peak_kb then counters.heap.peak_kb = current end
+end
+
+local function is_integer(value)
+    return type(value) == "number" and value >= 0 and value == math.floor(value) and
+        value <= 9007199254740991
+end
+
+local function is_sha256(value)
+    return type(value) == "string" and #value == 64 and
+        string.match(value, "^[0-9a-f]+$") ~= nil
+end
+
+local function lower_sha(data)
+    local value = util.SHA256(data)
+    if type(value) ~= "string" or #value ~= 64 then error("sha256:native_failed") end
+    return string.lower(value)
+end
+
+local function byte_hex(data)
+    local output = {}
+    for index = 1, #data do
+        output[index] = string.format("%02x", string.byte(data, index))
+    end
+    return table.concat(output)
+end
+
+local function le32(value)
+    if not is_integer(value) or value > 4294967295 then error("le32:bounds") end
+    local a = value % 256; value = math.floor(value / 256)
+    local b = value % 256; value = math.floor(value / 256)
+    local c = value % 256; value = math.floor(value / 256)
+    local d = value % 256
+    return string.char(a, b, c, d)
+end
+
+local function le64(value)
+    if not is_integer(value) then error("le64:bounds") end
+    local low = value % 4294967296
+    local high = math.floor(value / 4294967296)
+    return le32(low) .. le32(high)
+end
+
+local Reader = {}
+Reader.__index = Reader
+function Reader.new(data, label)
+    if type(data) ~= "string" then error(label .. ":not_string") end
+    return setmetatable({ data = data, pos = 1, label = label }, Reader)
+end
+function Reader:take(count)
+    if not is_integer(count) or self.pos + count - 1 > #self.data then
+        error(self.label .. ":truncated")
+    end
+    local value = string.sub(self.data, self.pos, self.pos + count - 1)
+    self.pos = self.pos + count
+    return value
+end
+function Reader:u8() return string.byte(self:take(1), 1) end
+function Reader:u16()
+    local a, b = string.byte(self:take(2), 1, 2)
+    return a + b * 256
+end
+function Reader:u32()
+    local a, b, c, d = string.byte(self:take(4), 1, 4)
+    return a + b * 256 + c * 65536 + d * 16777216
+end
+function Reader:u64()
+    local low, high = self:u32(), self:u32()
+    if high > 2097151 then error(self.label .. ":u64_precision") end
+    return low + high * 4294967296
+end
+function Reader:eof()
+    if self.pos ~= #self.data + 1 then error(self.label .. ":extra_bytes") end
+end
+
+local function bounded_read(path, realm, maximum, expected_size, expected_sha, label)
+    local handle = file.Open(path, "rb", realm)
+    if handle == nil then error(label .. ":open") end
+    local ok, value = pcall(function()
+        if type(handle.Size) ~= "function" or handle:Size() ~= expected_size or expected_size < 1 or
+            expected_size > maximum then error(label .. ":size") end
+        local data = handle:Read(expected_size)
+        local trailing = handle:Read(1)
+        if type(data) ~= "string" or #data ~= expected_size or
+            (trailing ~= nil and trailing ~= "") or lower_sha(data) ~= expected_sha then
+            error(label .. ":identity")
+        end
+        return data
+    end)
+    handle:Close()
+    if not ok then error(value) end
+    return value
+end
+
+local function bit_width(count)
+    local value, width = count - 1, 0
+    while value > 0 do width = width + 1; value = math.floor(value / 2) end
+    return width
+end
+
+local function packed_index(packed, index_zero, width)
+    local value, first_bit = 0, index_zero * width
+    for bit = 0, width - 1 do
+        local absolute = first_bit + bit
+        local byte = string.byte(packed, math.floor(absolute / 8) + 1)
+        value = value + (math.floor(byte / (2 ^ (absolute % 8))) % 2) * (2 ^ bit)
+    end
+    return value
+end
+
+local function word_u32(word)
+    local reader = Reader.new(word, "word")
+    local value = reader:u32(); reader:eof()
+    return value
+end
+
+local function decode_tile(reader, expected_words)
+    local mode = reader:u8()
+    local index_bits = reader:u8()
+    if reader:u16() ~= 0 then error("tile:reserved") end
+    local word_count, dictionary_count, payload_bytes = reader:u32(), reader:u32(), reader:u32()
+    if word_count ~= expected_words or word_count < 1 then error("tile:word_count") end
+    local payload = reader:take(payload_bytes)
+    if mode == MODE_CONST then
+        if index_bits ~= 0 or dictionary_count ~= 0 or payload_bytes ~= 4 then error("tile:const") end
+        return string.rep(payload, word_count)
+    end
+    if mode == MODE_RAW then
+        if index_bits ~= 0 or dictionary_count ~= 0 or payload_bytes ~= word_count * 4 then error("tile:raw") end
+        return payload
+    end
+    if mode ~= MODE_DICT then error("tile:mode") end
+    if dictionary_count < 2 or index_bits ~= bit_width(dictionary_count) then error("tile:dict_shape") end
+    local index_bytes = math.floor((word_count * index_bits + 7) / 8)
+    if payload_bytes ~= dictionary_count * 4 + index_bytes then error("tile:dict_size") end
+    local payload_reader = Reader.new(payload, "tile_dict")
+    local dictionary, previous = {}, -1
+    for index = 1, dictionary_count do
+        local word = payload_reader:take(4)
+        local numeric = word_u32(word)
+        if numeric <= previous then error("tile:dictionary_sorted_unique") end
+        previous = numeric
+        dictionary[index] = word
+    end
+    local packed = payload_reader:take(index_bytes); payload_reader:eof()
+    local output = {}
+    for index = 0, word_count - 1 do
+        local id = packed_index(packed, index, index_bits)
+        if id >= dictionary_count then error("tile:dict_index") end
+        output[index + 1] = dictionary[id + 1]
+    end
+    local used_bits = word_count * index_bits
+    local padding_bits = (8 - (used_bits % 8)) % 8
+    if padding_bits > 0 then
+        local final = string.byte(packed, #packed)
+        local used = 8 - padding_bits
+        if math.floor(final / (2 ^ used)) ~= 0 then error("tile:padding_bits") end
+    end
+    return table.concat(output)
+end
+
+local function decode_lane(reader, expected_words)
+    local scope_code = reader:u8()
+    if reader:u8() ~= 0 or reader:u16() ~= 0 then error("lane:reserved") end
+    local word_count, tile_count, payload_bytes = reader:u32(), reader:u32(), reader:u32()
+    if word_count ~= expected_words or word_count < 1 then error("lane:word_count") end
+    local scope = TILE_SCOPES[scope_code]
+    if scope == nil then error("lane:scope") end
+    local expected_tiles = scope == 0 and 1 or math.floor((word_count + scope - 1) / scope)
+    if tile_count ~= expected_tiles or tile_count < 1 then error("lane:tile_count") end
+    local payload_reader = Reader.new(reader:take(payload_bytes), "lane_payload")
+    local output, remaining = {}, word_count
+    for index = 1, tile_count do
+        local words = scope == 0 and remaining or math.min(scope, remaining)
+        output[index] = decode_tile(payload_reader, words)
+        remaining = remaining - words
+    end
+    if remaining ~= 0 then error("lane:remaining") end
+    payload_reader:eof()
+    local decoded = table.concat(output)
+    if #decoded ~= word_count * 4 then error("lane:decoded_size") end
+    return decoded
+end
+
+local function decode_uleb(reader, maximum)
+    local value, multiplier, count = 0, 1, 0
+    while true do
+        local byte = reader:u8(); count = count + 1
+        value = value + (byte % 128) * multiplier
+        if value > maximum or count > 10 then error("fixup:uleb_overflow") end
+        if byte < 128 then
+            if count > 1 and byte == 0 then error("fixup:uleb_noncanonical") end
+            return value
+        end
+        multiplier = multiplier * 128
+    end
+end
+
+local function unzigzag(value)
+    if value % 2 == 0 then return value / 2 end
+    return -((value + 1) / 2)
+end
+
+local function word_is_fixup_owned(offset, fixup_start, fixup_end)
+    return fixup_start <= offset and offset + 4 <= fixup_end
+end
+
+local function tangent_lane_word_count(lane_zero, physical_count, tangent_start, fixup_start, fixup_end)
+    local count = 0
+    for cell = 0, physical_count - 1 do
+        local offset = tangent_start + cell * 16 + lane_zero * 4
+        if not word_is_fixup_owned(offset, fixup_start, fixup_end) then count = count + 1 end
+    end
+    return count
+end
+
+local function decode_fixups(lod_words, delta_payload, row_count, physical_count, active_lods)
+    if #lod_words ~= row_count * 4 then error("fixup:lod_lane_size") end
+    local reader = Reader.new(delta_payload, "fixups")
+    local parts, previous_end = {}, 0
+    local expanded = {}
+    for root = 1, #active_lods do expanded[root] = 0 end
+    for index = 1, row_count do
+        local source = previous_end + unzigzag(decode_uleb(reader, 8589934591))
+        local count = decode_uleb(reader, physical_count)
+        if count < 1 or source < 0 or source >= physical_count or count > physical_count - source then
+            error("fixup:physical_bounds")
+        end
+        local lod_word = string.sub(lod_words, (index - 1) * 4 + 1, index * 4)
+        local lod = word_u32(lod_word)
+        parts[index] = lod_word .. le32(source) .. le32(count)
+        previous_end = source + count
+        for root = 0, #active_lods - 1 do
+            if lod >= root then expanded[root + 1] = expanded[root + 1] + count end
+        end
+    end
+    reader:eof()
+    for root = 1, #active_lods do
+        if expanded[root] ~= active_lods[root] then error("fixup:lod_expansion") end
+    end
+    return table.concat(parts)
+end
+
+local function interleave_lanes(lanes, cells)
+    local chunks, chunk_index = {}, 0
+    for first = 0, cells - 1, 512 do
+        local last = math.min(cells - 1, first + 511)
+        local parts, cursor = {}, 0
+        for cell = first, last do
+            for lane = 1, #lanes do
+                cursor = cursor + 1
+                local offset = cell * 4 + 1
+                parts[cursor] = string.sub(lanes[lane], offset, offset + 3)
+            end
+        end
+        chunk_index = chunk_index + 1
+        chunks[chunk_index] = table.concat(parts)
+    end
+    return table.concat(chunks)
+end
+
+local function interleave_tangent_lanes(lanes, physical_count, tangent_start, fixup_start, fixup_end)
+    local chunks, chunk_index, lane_words = {}, 0, { 0, 0, 0, 0 }
+    for first = 0, physical_count - 1, 512 do
+        local last = math.min(physical_count - 1, first + 511)
+        local parts, cursor = {}, 0
+        for cell = first, last do
+            for lane = 1, 4 do
+                local target = tangent_start + cell * 16 + (lane - 1) * 4
+                if not word_is_fixup_owned(target, fixup_start, fixup_end) then
+                    lane_words[lane] = lane_words[lane] + 1
+                    local offset = (lane_words[lane] - 1) * 4 + 1
+                    cursor = cursor + 1
+                    parts[cursor] = string.sub(lanes[lane], offset, offset + 3)
+                end
+            end
+        end
+        chunk_index = chunk_index + 1
+        chunks[chunk_index] = table.concat(parts)
+    end
+    for lane = 1, 4 do
+        if lane_words[lane] * 4 ~= #lanes[lane] then error("tangent:lane_consumption") end
+    end
+    return table.concat(chunks)
+end
+
+local function classify_layout(source_size, vertex_start, tangent_start, tangent_end, fixup_start, fixup_end)
+    if fixup_start == 64 and fixup_end == vertex_start and tangent_end == source_size then
+        return "disjoint"
+    end
+    if vertex_start ~= 64 then error("physical_ownership:vertex_start") end
+    if fixup_start == tangent_start and fixup_end <= tangent_end and tangent_end == source_size then
+        return "overlay"
+    end
+    if tangent_start <= fixup_start and fixup_start < tangent_end and
+        tangent_end < fixup_end and fixup_end == source_size then
+        return "suffix_overlay_tail"
+    end
+    error("physical_ownership:layout")
+end
+
+local function decode_cvvd_p101(blob, entry)
+    local reader = Reader.new(blob, "container")
+    if reader:take(8) ~= "CVVDP101" or reader:u16() ~= 1 or reader:u16() ~= 192 or reader:u32() ~= 0 then
+        error("container:fixed_header")
+    end
+    local source_size = reader:u64()
+    local physical_count, fixup_count, num_lods = reader:u32(), reader:u32(), reader:u32()
+    local vertex_start, tangent_start, tangent_end = reader:u32(), reader:u32(), reader:u32()
+    local fixup_start, fixup_end, layout_code = reader:u32(), reader:u32(), reader:u32()
+    local base_lane_count, tangent_lane_count = reader:u16(), reader:u16()
+    local lane_record_count, reserved16 = reader:u16(), reader:u16()
+    local lod_lane_bytes, delta_bytes = reader:u32(), reader:u32()
+    local original_header, embedded_sha = reader:take(64), reader:take(32)
+    if reader:take(20) ~= string.rep("\0", 20) then error("container:reserved") end
+    if source_size ~= entry.source_size or source_size < 64 or source_size > MAX_ENTRY_BYTES or
+        physical_count < 1 or fixup_count < 1 or num_lods < 1 or num_lods > 8 or
+        base_lane_count ~= 12 or tangent_lane_count ~= 4 or lane_record_count ~= 17 or
+        reserved16 ~= 0 or lod_lane_bytes < 16 or delta_bytes < 1 then
+        error("container:geometry")
+    end
+    if vertex_start % 4 ~= 0 or tangent_start % 4 ~= 0 or tangent_end % 4 ~= 0 or
+        fixup_start % 4 ~= 0 or fixup_end % 4 ~= 0 then error("physical_ownership:alignment") end
+    if tangent_start <= vertex_start or tangent_start - vertex_start ~= physical_count * 48 or
+        tangent_end - tangent_start ~= physical_count * 16 or
+        fixup_end - fixup_start ~= fixup_count * 12 then error("physical_ownership:extent") end
+    local layout = classify_layout(source_size, vertex_start, tangent_start, tangent_end, fixup_start, fixup_end)
+    if LAYOUT_NAMES[layout_code] ~= layout or entry.layout ~= layout then error("container:layout_binding") end
+    local meta = entry.codec_meta
+    if type(meta) ~= "table" or meta.physical_count ~= physical_count or meta.fixup_count ~= fixup_count or
+        meta.num_lods ~= num_lods or meta.vertex_start ~= vertex_start or meta.tangent_start ~= tangent_start or
+        meta.tangent_end ~= tangent_end or meta.fixup_start ~= fixup_start or meta.fixup_end ~= fixup_end or
+        meta.layout_code ~= layout_code then error("container:contract_binding") end
+    local overlap_start = math.max(tangent_start, fixup_start)
+    local overlap_end = math.min(tangent_end, fixup_end)
+    local overlap_bytes = math.max(0, overlap_end - overlap_start)
+    local owned_bytes = 64 + physical_count * 48 + fixup_count * 12 +
+        physical_count * 16 - overlap_bytes
+    if owned_bytes ~= source_size then error("physical_ownership:union") end
+
+    local header_reader = Reader.new(original_header, "vvd_header")
+    if header_reader:take(4) ~= "IDSV" or header_reader:u32() ~= 4 then error("vvd:header") end
+    header_reader:u32()
+    if header_reader:u32() ~= num_lods then error("vvd:lod_count") end
+    local lod_counts = {}
+    for index = 1, 8 do lod_counts[index] = header_reader:u32() end
+    if header_reader:u32() ~= fixup_count or header_reader:u32() ~= fixup_start or
+        header_reader:u32() ~= vertex_start or header_reader:u32() ~= tangent_start then
+        error("vvd:offset_binding")
+    end
+    header_reader:eof()
+    local active_lods = {}
+    for index = 1, num_lods do
+        active_lods[index] = lod_counts[index]
+        if active_lods[index] < 1 or (index > 1 and active_lods[index - 1] < active_lods[index]) then
+            error("vvd:lod_vertices")
+        end
+    end
+
+    local base_lanes = {}
+    for lane = 1, 12 do base_lanes[lane] = decode_lane(reader, physical_count) end
+    local tangent_lanes = {}
+    for lane = 1, 4 do
+        local words = tangent_lane_word_count(lane - 1, physical_count, tangent_start, fixup_start, fixup_end)
+        if words < 1 then error("tangent:empty_lane") end
+        tangent_lanes[lane] = decode_lane(reader, words)
+    end
+    local lod_start = reader.pos
+    local lod_words = decode_lane(reader, fixup_count)
+    if reader.pos - lod_start ~= lod_lane_bytes then error("fixup:lod_lane_bytes") end
+    local delta_payload = reader:take(delta_bytes)
+    reader:eof()
+
+    local fixups = decode_fixups(lod_words, delta_payload, fixup_count, physical_count, active_lods)
+    local base = interleave_lanes(base_lanes, physical_count)
+    local tangents = interleave_tangent_lanes(
+        tangent_lanes, physical_count, tangent_start, fixup_start, fixup_end)
+    if #base ~= physical_count * 48 or #fixups ~= fixup_count * 12 or
+        #tangents ~= physical_count * 16 - overlap_bytes then error("physical_ownership:decoded_size") end
+
+    local source
+    if layout == "overlay" then
+        source = original_header .. base .. fixups .. tangents
+    elseif layout == "suffix_overlay_tail" then
+        source = original_header .. base .. tangents .. fixups
+    elseif layout == "disjoint" then
+        source = original_header .. fixups .. base .. tangents
+    else
+        error("physical_ownership:unreachable_layout")
+    end
+    local embedded_sha256 = byte_hex(embedded_sha)
+    local source_sha256 = lower_sha(source)
+    if #source ~= source_size or source_sha256 ~= entry.source_sha256 or
+        source_sha256 ~= embedded_sha256 then error("container:source_sha256") end
+    return source
+end
+
+local function split_lines(data)
+    if string.sub(data, -1) ~= "\n" or string.find(data, "\r", 1, true) then error("ledger:encoding") end
+    local lines = {}
+    for line in string.gmatch(data, "([^\n]*)\n") do lines[#lines + 1] = line end
+    return lines
+end
+
+local function parse_decimal(line, prefix)
+    if type(line) ~= "string" or string.sub(line, 1, #prefix) ~= prefix then error("ledger:field") end
+    local value = string.sub(line, #prefix + 1)
+    if value == "" or not string.match(value, "^[0-9]+$") or
+        (#value > 1 and string.sub(value, 1, 1) == "0") then error("ledger:decimal") end
+    local number = tonumber(value)
+    if not is_integer(number) then error("ledger:number") end
+    return number
+end
+
+local function parse_ledger(data)
+    local lines, cursor = split_lines(data), 1
+    local function next_line() local value = lines[cursor]; cursor = cursor + 1; return value end
+    if next_line() ~= "vvd-p1-gma-chunk-ledger/v1" then error("ledger:domain") end
+    if parse_decimal(next_line(), "chunk-size=") ~= CHUNK_SIZE or
+        CONTRACT.gma.ledger.chunk_size ~= CHUNK_SIZE then error("ledger:chunk_size") end
+    local count = parse_decimal(next_line(), "chunk-count=")
+    local total = parse_decimal(next_line(), "total-size=")
+    local last = parse_decimal(next_line(), "last-chunk-size=")
+    local expected_count = math.floor((total + CHUNK_SIZE - 1) / CHUNK_SIZE)
+    local expected_last = total - (expected_count - 1) * CHUNK_SIZE
+    local ledger_contract = CONTRACT.gma.ledger
+    if total ~= CONTRACT.gma.size or total ~= ledger_contract.total_size or count ~= expected_count or
+        count ~= ledger_contract.chunk_count or last ~= expected_last or
+        last ~= ledger_contract.last_chunk_size or #ledger_contract.chunks ~= count then
+        error("ledger:shape")
+    end
+    local chunks = {}
+    for index = 0, count - 1 do
+        if next_line() ~= "chunk" or parse_decimal(next_line(), "index=") ~= index then error("ledger:index") end
+        local size = parse_decimal(next_line(), "size=")
+        local sha_line = next_line()
+        local sha = string.sub(sha_line or "", 8)
+        if string.sub(sha_line or "", 1, 7) ~= "sha256=" or not is_sha256(sha) then error("ledger:sha") end
+        local expected_size = index == count - 1 and last or CHUNK_SIZE
+        local bound = ledger_contract.chunks[index + 1]
+        if size ~= expected_size or type(bound) ~= "table" or bound.index ~= index or
+            bound.size ~= size or bound.sha256 ~= sha then error("ledger:chunk_binding") end
+        chunks[index + 1] = { index = index, size = size, sha256 = sha }
+    end
+    if cursor ~= #lines + 1 then error("ledger:extra") end
+    return chunks
+end
+
+local FileReader = {}
+FileReader.__index = FileReader
+function FileReader.new(handle, size, label)
+    return setmetatable({ handle = handle, size = size, pos = 0, label = label }, FileReader)
+end
+function FileReader:take(count)
+    if not is_integer(count) or self.pos + count > self.size then error(self.label .. ":truncated") end
+    local value = self.handle:Read(count)
+    if type(value) ~= "string" or #value ~= count then error(self.label .. ":short_read") end
+    self.pos = self.pos + count
+    return value
+end
+function FileReader:u8() return string.byte(self:take(1), 1) end
+function FileReader:u32()
+    local data = self:take(4)
+    local a, b, c, d = string.byte(data, 1, 4)
+    return a + b * 256 + c * 65536 + d * 16777216
+end
+function FileReader:u64()
+    local low, high = self:u32(), self:u32()
+    if high > 2097151 then error(self.label .. ":u64_precision") end
+    return low + high * 4294967296
+end
+function FileReader:cstring(maximum)
+    local chunks = {}
+    for index = 1, maximum + 1 do
+        local value = self:take(1)
+        if value == "\0" then return table.concat(chunks) end
+        local byte = string.byte(value, 1)
+        if byte < 32 or byte > 126 then error(self.label .. ":cstring_ascii") end
+        chunks[index] = value
+    end
+    error(self.label .. ":cstring_unterminated")
+end
+function FileReader:discard(count)
+    local remaining = count
+    while remaining > 0 do
+        local step = math.min(remaining, CHUNK_SIZE)
+        self:take(step)
+        remaining = remaining - step
+    end
+end
+function FileReader:eof()
+    if self.pos ~= self.size then error(self.label .. ":extra_bytes") end
+    local trailing = self.handle:Read(1)
+    if trailing ~= nil and trailing ~= "" then error(self.label .. ":trailing") end
+end
+
+local function audit_gma_chunks(path, chunks)
+    local handle = file.Open(path, "rb", "DATA")
+    if handle == nil then error("cache:gma_open") end
+    local ok, failure = pcall(function()
+        if type(handle.Size) ~= "function" or handle:Size() ~= CONTRACT.gma.size or
+            CONTRACT.gma.size < 1 or CONTRACT.gma.size > MAX_GMA_BYTES then error("cache:gma_size") end
+        local consumed = 0
+        for index, chunk in ipairs(chunks) do
+            local bytes = handle:Read(chunk.size)
+            if type(bytes) ~= "string" or #bytes ~= chunk.size or
+                lower_sha(bytes) ~= chunk.sha256 then error("cache:gma_chunk:" .. index) end
+            consumed = consumed + chunk.size
+        end
+        local trailing = handle:Read(1)
+        if consumed ~= CONTRACT.gma.size or (trailing ~= nil and trailing ~= "") then
+            error("cache:gma_chunks_eof")
+        end
+    end)
+    handle:Close()
+    if not ok then error(failure) end
+end
+
+local function audit_gma_structure(path)
+    local handle = file.Open(path, "rb", "DATA")
+    if handle == nil then error("gma:open") end
+    local ok, failure = pcall(function()
+        if type(handle.Size) ~= "function" or handle:Size() ~= CONTRACT.gma.size then error("gma:size") end
+        local reader = FileReader.new(handle, CONTRACT.gma.size, "gma")
+        if reader:take(4) ~= "GMAD" or reader:u8() ~= 3 or
+            reader:take(16) ~= string.rep("\0", 16) or reader:u8() ~= 0 or
+            reader:cstring(64) ~= "codex_vvd_p1_13" or
+            reader:cstring(256) ~= '{"domain":"vvd-scalar-tiled-fixup-delta-exact-p1/v1"}' or
+            reader:cstring(64) ~= "codex-vvd-p1" or reader:u32() ~= 1 then error("gma:header") end
+        for index, entry in ipairs(active_ordered_entries) do
+            if reader:u32() ~= index or reader:cstring(180) ~= entry.target_path or
+                reader:u64() ~= entry.source_size or reader:u32() ~= 0 then error("gma:table") end
+        end
+        if reader:u32() ~= 0 then error("gma:table_terminator") end
+        for _, entry in ipairs(active_ordered_entries) do reader:discard(entry.source_size) end
+        if reader:u32() ~= 0 then error("gma:footer") end
+        reader:eof()
+    end)
+    handle:Close()
+    if not ok then error(failure) end
+end
+
+local function audit_gma(path, chunks)
+    audit_gma_chunks(path, chunks)
+    audit_gma_structure(path)
+end
+
+local function dirname(path)
+    local value = string.match(path, "^(.*)/[^/]+$")
+    if value == nil or value == "" then error("path:dirname") end
+    return value
+end
+
+local function write_exact(path, bytes)
+    if file.Exists(path, "DATA") then error("write:collision") end
+    file.CreateDir(dirname(path))
+    local handle = file.Open(path, "wb", "DATA")
+    if handle == nil then error("write:open") end
+    local ok, failure = pcall(function() handle:Write(bytes) end)
+    handle:Close()
+    if not ok then error(failure) end
+end
+
+local function timed_write(handle, bytes)
+    local started = now_ms()
+    handle:Write(bytes)
+    counters.timings.gma_write_ms = counters.timings.gma_write_ms + now_ms() - started
+end
+
+local function write_gma(path)
+    if file.Exists(path, "DATA") then error("gma:write_collision") end
+    file.CreateDir(dirname(path))
+    local handle = file.Open(path, "wb", "DATA")
+    if handle == nil then error("gma:write_open") end
+    local ok, failure = pcall(function()
+        timed_write(handle, "GMAD" .. string.char(3) .. string.rep("\0", 17))
+        timed_write(handle, "codex_vvd_p1_13\0")
+        timed_write(handle, '{"domain":"vvd-scalar-tiled-fixup-delta-exact-p1/v1"}\0')
+        timed_write(handle, "codex-vvd-p1\0")
+        timed_write(handle, le32(1))
+        for index, entry in ipairs(active_ordered_entries) do
+            timed_write(handle, le32(index) .. entry.target_path .. "\0" ..
+                le64(entry.source_size) .. le32(0))
+        end
+        timed_write(handle, le32(0))
+        for _, entry in ipairs(active_ordered_entries) do
+            local blob = bounded_read(entry.blob_path, "GAME", MAX_ENTRY_BYTES,
+                entry.blob_size, entry.blob_sha256, "blob:" .. entry.target_path)
+            counters.blob_opens = counters.blob_opens + 1
+            counters.decodes = counters.decodes + 1
+            local decode_started = now_ms()
+            local source = decode_cvvd_p101(blob, entry)
+            local decode_elapsed = now_ms() - decode_started
+            counters.timings.decode_ms = counters.timings.decode_ms + decode_elapsed
+            counters.timings.reconstruction_ms = counters.timings.reconstruction_ms + decode_elapsed
+            update_heap()
+            blob = nil
+            if #source ~= entry.source_size or lower_sha(source) ~= entry.source_sha256 then
+                error("source:identity:" .. entry.target_path)
+            end
+            timed_write(handle, source)
+            source = nil
+            collectgarbage("collect")
+            update_heap()
+        end
+        timed_write(handle, le32(0))
+    end)
+    handle:Close()
+    if not ok then error(failure) end
+    counters.reconstruction_writes = counters.reconstruction_writes + 1
+end
+
+local function canonical_target_path(path)
+    if type(path) ~= "string" or #path < 12 or #path > 180 or path ~= string.lower(path) or
+        string.sub(path, 1, 7) ~= "models/" or string.sub(path, -4) ~= ".vvd" or
+        string.find(path, "\\", 1, true) or string.find(path, "//", 1, true) or
+        string.find(path, "\0", 1, true) then return false end
+    for part in string.gmatch(path, "[^/]+") do
+        if part == "." or part == ".." or string.sub(part, 1, 1) == " " or
+            string.sub(part, -1) == " " or string.sub(part, 1, 1) == "." or
+            string.sub(part, -1) == "." then return false end
+    end
+    return true
+end
+
+local function validate_contract()
+    if type(CONTRACT) ~= "table" or
+        CONTRACT.schema ~= "vvd-scalar-tiled-fixup-delta-exact-p1/runtime-contract/v1" or
+        CONTRACT.version ~= 1 or
+        CONTRACT.codec_domain ~= "vvd-scalar-tiled-fixup-delta-exact-p1/v1" or
+        CONTRACT.entry_count ~= 13 or type(CONTRACT.entries) ~= "table" or
+        #CONTRACT.entries ~= CONTRACT.entry_count then error("contract:root") end
+    if not is_sha256(CONTRACT.content_id) or not is_sha256(CONTRACT.baseline_tree_sha256) or
+        not is_sha256(CONTRACT.manifest_sha256) or not is_sha256(CONTRACT.runtime_index_sha256) or
+        not is_sha256(CONTRACT.ledger_sha256) then error("contract:root_sha") end
+    local entry_by_path, class_count = {}, 0
+    for index, entry in ipairs(CONTRACT.entries) do
+        if type(entry) ~= "table" or type(entry.family) ~= "string" or
+            not canonical_target_path(entry.target_path) or entry_by_path[entry.target_path] ~= nil or
+            not is_integer(entry.source_size) or entry.source_size < 1 or entry.source_size > MAX_ENTRY_BYTES or
+            not is_sha256(entry.source_sha256) or type(entry.blob_path) ~= "string" or
+            not is_integer(entry.blob_size) or entry.blob_size < 1 or entry.blob_size > MAX_ENTRY_BYTES or
+            not is_sha256(entry.blob_sha256) or LAYOUT_NAMES[entry.codec_meta.layout_code] ~= entry.layout or
+            type(entry.entity_classes) ~= "table" then error("contract:entry:" .. index) end
+        local meta = entry.codec_meta
+        for _, field in ipairs({ "physical_count", "fixup_count", "num_lods", "vertex_start",
+            "tangent_start", "tangent_end", "fixup_start", "fixup_end", "layout_code" }) do
+            if not is_integer(meta[field]) then error("contract:codec_meta:" .. index) end
+        end
+        for _, class_name in ipairs(entry.entity_classes) do
+            if type(class_name) ~= "string" or class_name == "" then error("contract:entity_class") end
+            class_count = class_count + 1
+        end
+        entry_by_path[entry.target_path] = entry
+    end
+    if class_count ~= 15 then error("contract:entity_closed_set") end
+    if type(CONTRACT.gma) ~= "table" or not is_integer(CONTRACT.gma.size) or
+        CONTRACT.gma.size < 1 or CONTRACT.gma.size > MAX_GMA_BYTES or
+        not is_sha256(CONTRACT.gma.sha256) or type(CONTRACT.gma.ordered_paths) ~= "table" or
+        #CONTRACT.gma.ordered_paths ~= CONTRACT.entry_count or
+        type(CONTRACT.gma.ledger) ~= "table" then error("contract:gma") end
+    local ordered_entries, previous = {}, nil
+    for index, path in ipairs(CONTRACT.gma.ordered_paths) do
+        if not canonical_target_path(path) or entry_by_path[path] == nil or
+            (previous ~= nil and path <= previous) then error("contract:gma_order:" .. index) end
+        ordered_entries[index] = entry_by_path[path]
+        previous = path
+    end
+    if type(CONTRACT.binding) ~= "table" or type(REALM) ~= "table" then error("contract:binding") end
+    for _, field in ipairs({ "template_path", "cache_gma_path", "cache_binding_path", "receipt_path" }) do
+        if type(REALM[field]) ~= "string" or REALM[field] == "" then error("contract:realm_path") end
+    end
+    if not is_integer(REALM.template_size) or REALM.template_size < 1 or
+        not is_sha256(REALM.template_sha256) then error("contract:realm_template") end
+    return entry_by_path, ordered_entries
+end
+
+local function validate_support()
+    active_entry_by_path, active_ordered_entries = validate_contract()
+    bounded_read(CONTRACT.manifest_path, "GAME", 4 * 1024 * 1024, CONTRACT.manifest_size,
+        CONTRACT.manifest_sha256, "support:manifest")
+    bounded_read(CONTRACT.runtime_index_path, "GAME", 4 * 1024 * 1024, CONTRACT.runtime_index_size,
+        CONTRACT.runtime_index_sha256, "support:index")
+    local ledger = bounded_read(CONTRACT.ledger_path, "GAME", 65536, CONTRACT.ledger_size,
+        CONTRACT.ledger_sha256, "support:ledger")
+    bounded_read(REALM.template_path, "GAME", 65536, REALM.template_size,
+        REALM.template_sha256, "support:binding")
+    return parse_ledger(ledger)
+end
+
+local function prove_targets_absent()
+    for _, entry in ipairs(CONTRACT.entries) do
+        if file.Exists(entry.target_path, "GAME") ~= false then error("origin:exists:" .. entry.target_path) end
+        if file.Read(entry.target_path, "GAME") ~= nil then error("origin:read:" .. entry.target_path) end
+    end
+end
+
+local function verify_cache_pair()
+    bounded_read(REALM.cache_binding_path, "DATA", 65536, REALM.template_size,
+        REALM.template_sha256, "cache:binding_identity")
+    local audit_started = now_ms()
+    audit_gma(REALM.cache_gma_path, active_chunks)
+    counters.timings.gma_audit_ms = counters.timings.gma_audit_ms + now_ms() - audit_started
+    update_heap()
+end
+
+local function cold_build()
+    local suffix = realm_name .. "." .. tostring(math.floor(SysTime() * 1000000))
+    local gma_temp = REALM.cache_gma_path .. "." .. suffix .. ".publishing.gma"
+    local binding_temp = REALM.cache_binding_path .. "." .. suffix .. ".publishing.dat"
+    if file.Exists(gma_temp, "DATA") or file.Exists(binding_temp, "DATA") then
+        error("cache:temporary_collision")
+    end
+    write_gma(gma_temp)
+    local audit_started = now_ms()
+    audit_gma(gma_temp, active_chunks)
+    counters.timings.gma_audit_ms = counters.timings.gma_audit_ms + now_ms() - audit_started
+    update_heap()
+    local binding = bounded_read(REALM.template_path, "GAME", 65536, REALM.template_size,
+        REALM.template_sha256, "binding:template")
+    write_exact(binding_temp, binding)
+    local binding_readback = bounded_read(binding_temp, "DATA", 65536, REALM.template_size,
+        REALM.template_sha256, "binding:temporary")
+    if binding_readback ~= binding then error("binding:temporary_bytes") end
+    binding_readback = nil
+    if file.Exists(REALM.cache_gma_path, "DATA") or file.Exists(REALM.cache_binding_path, "DATA") then
+        error("cache:final_appeared")
+    end
+    if file.Rename(gma_temp, REALM.cache_gma_path) ~= true then error("cache:gma_publish") end
+    if file.Exists(gma_temp, "DATA") or not file.Exists(REALM.cache_gma_path, "DATA") then
+        error("cache:gma_publish_state")
+    end
+    if file.Rename(binding_temp, REALM.cache_binding_path) ~= true then error("cache:binding_publish") end
+    if file.Exists(binding_temp, "DATA") or not file.Exists(REALM.cache_binding_path, "DATA") then
+        error("cache:binding_publish_state")
+    end
+    verify_cache_pair()
+end
+
+local function probe_and_prepare_cache()
+    local gma_exists = file.Exists(REALM.cache_gma_path, "DATA")
+    local binding_exists = file.Exists(REALM.cache_binding_path, "DATA")
+    if gma_exists ~= binding_exists then error("cache:incomplete_pair") end
+    if gma_exists then
+        verify_cache_pair()
+        counters.cache_state = "warm_valid"
+        if counters.blob_opens ~= 0 or counters.decodes ~= 0 or counters.reconstruction_writes ~= 0 then
+            error("cache:warm_activity")
+        end
+        if counters.timings.decode_ms ~= 0 or counters.timings.reconstruction_ms ~= 0 or
+            counters.timings.gma_write_ms ~= 0 then error("cache:warm_activity") end
+    else
+        counters.cache_state = "cold_miss"
+        cold_build()
+        if counters.blob_opens ~= CONTRACT.entry_count then error("cache:cold_blob_opens") end
+        if counters.decodes ~= CONTRACT.entry_count then error("cache:cold_decodes") end
+        if counters.reconstruction_writes ~= 1 then error("cache:cold_reconstruction_writes") end
+    end
+end
+
+local function verify_mounted_closed_set(files)
+    if type(files) ~= "table" or #files ~= CONTRACT.entry_count then error("mount:not_closed") end
+    for index, path in ipairs(CONTRACT.gma.ordered_paths) do
+        if files[index] ~= path then error("mount:not_closed_order") end
+    end
+    local count = 0
+    for key, value in pairs(files) do
+        if not is_integer(key) or key < 1 or key > CONTRACT.entry_count or
+            value ~= CONTRACT.gma.ordered_paths[key] then error("mount:not_closed_shape") end
+        count = count + 1
+    end
+    if count ~= CONTRACT.entry_count then error("mount:not_closed_count") end
+end
+
+local function post_mount_verify()
+    for _, entry in ipairs(CONTRACT.entries) do
+        bounded_read(entry.target_path, "GAME", MAX_ENTRY_BYTES, entry.source_size,
+            entry.source_sha256, "post_mount:source:" .. entry.target_path)
+    end
+end
+
+local function persist_receipt(status, failure)
+    counters.timings.total_ready_ms = (SysTime() - bootstrap_started) * 1000
+    update_heap()
+    file.CreateDir(dirname(REALM.receipt_path))
+    local entries = {}
+    if type(CONTRACT.entries) == "table" then
+        for index, entry in ipairs(CONTRACT.entries) do
+            entries[index] = {
+                target_path = entry.target_path,
+                source_size = entry.source_size,
+                source_sha256 = entry.source_sha256,
+                layout = entry.layout,
+            }
+        end
+    end
+    local document = {
+        schema = "vvd-scalar-tiled-fixup-delta-exact-p1-runtime-receipt-v1",
+        realm = realm_name,
+        status = status,
+        failure = failure,
+        content_id = CONTRACT.content_id,
+        entry_count = CONTRACT.entry_count,
+        entries = entries,
+        gma_sha256 = CONTRACT.gma.sha256,
+        cache_state = counters.cache_state,
+        blob_opens = counters.blob_opens,
+        decode_invocations = counters.decodes,
+        reconstruction_writes = counters.reconstruction_writes,
+        mount_calls = counters.mounts,
+        timings = counters.timings,
+        heap = counters.heap,
+    }
+    local bytes = util.TableToJSON(document, true)
+    if type(bytes) ~= "string" then return end
+    local handle = file.Open(REALM.receipt_path, "wb", "DATA")
+    if handle ~= nil then handle:Write(bytes); handle:Close() end
+end
+
+local function api_gate()
+    if not util or type(util.SHA256) ~= "function" or type(util.TableToJSON) ~= "function" or
+        not file or type(file.Open) ~= "function" or type(file.Exists) ~= "function" or
+        type(file.Read) ~= "function" or type(file.Rename) ~= "function" or
+        type(file.CreateDir) ~= "function" or not game or type(game.MountGMA) ~= "function" or
+        type(SysTime) ~= "function" or type(collectgarbage) ~= "function" then
+        error("api:required_unavailable")
+    end
+end
+
+local function run()
+    api_gate()
+    active_chunks = validate_support()
+    prove_targets_absent()
+    probe_and_prepare_cache()
+    prove_targets_absent()
+    counters.mounts = counters.mounts + 1
+    if counters.mounts ~= 1 then error("mount:duplicate") end
+    local mount_started = now_ms()
+    local mount_ok, mounted_files = game.MountGMA("data/" .. REALM.cache_gma_path)
+    counters.timings.mount_ms = now_ms() - mount_started
+    if mount_ok ~= true then error("mount:failed") end
+    verify_mounted_closed_set(mounted_files)
+    post_mount_verify()
+    persist_receipt("ready", nil)
+    print("[CODEX_VVD_P1] " .. realm_name .. " READY " .. counters.cache_state)
+end
+
+local ok, failure = pcall(run)
+if not ok then
+    persist_receipt("failed", tostring(failure))
+    print("[CODEX_VVD_P1] " .. realm_name .. " FAIL_CLOSED " .. tostring(failure))
+end
