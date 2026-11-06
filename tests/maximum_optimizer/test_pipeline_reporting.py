@@ -223,8 +223,14 @@ class AdaptivePipelineTests(unittest.TestCase):
             validate_candidate=validate,
         )
 
-    def _install_flat_source(self, options: MaximumRunOptions, *, bodygroup: bool) -> QcOccurrence:
-        document = flat_document()
+    def _install_flat_source(
+        self,
+        options: MaximumRunOptions,
+        *,
+        bodygroup: bool,
+        grid_size: int = 9,
+    ) -> QcOccurrence:
+        document = flat_document(grid_size)
         text = serialize_smd(document)
         for source_root in (options.original_source_root, options.normal_source_root):
             (source_root / "vehicle.smd").write_text(text, encoding="utf-8")
@@ -410,10 +416,11 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertGreater(detail.target_ratio, 0.08 + 0.57 * detail.risk_score)
 
     def test_direct_state_schedules_one_bounded_region_and_failure_restores_only_it(self) -> None:
+        self.assertEqual(pipeline_module._MIN_RUNTIME_VALIDATION_TRIANGLES, 5000)
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             options = replace(self._fixture_options(root), validate_candidate=None)
-            occurrence = self._install_flat_source(options, bodygroup=True)
+            occurrence = self._install_flat_source(options, bodygroup=True, grid_size=51)
             calls = []
 
             def simplify(region, _ratio, _budget):
@@ -452,6 +459,34 @@ class AdaptivePipelineTests(unittest.TestCase):
         self.assertTrue(runtime_region["regional_recovery"])
         self.assertEqual(payload["runtime_profile"]["scheduled_validations"], 1)
         self.assertEqual(payload["runtime_profile"]["regional_recoveries"], 1)
+
+    def test_direct_state_does_not_schedule_small_region(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            options = replace(self._fixture_options(root), validate_candidate=None)
+            occurrence = self._install_flat_source(options, bodygroup=True)
+            calls = []
+
+            def simplify(region, _ratio, _budget):
+                calls.append(region.key.value)
+                return replace(region, triangles=region.triangles[:64])
+
+            report = run_maximum_adaptive(
+                replace(
+                    options,
+                    simplify_region=simplify,
+                    runtime_evidence=runtime_map(
+                        occurrence,
+                        model_importance=1.0,
+                        bodygroup=("wheels", 0),
+                        bodygroup_importance=1.0,
+                    ),
+                )
+            )
+
+        self.assertEqual(calls, [])
+        self.assertEqual(report.runtime_profile.scheduled_validations, 0)
+        self.assertEqual(report.regions.normal_fallback, 1)
 
     def test_report_is_atomic_recomputable_and_dx80_neutral(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

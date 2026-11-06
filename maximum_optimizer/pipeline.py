@@ -54,6 +54,14 @@ from .search import RegionDecision, RegionRequest, optimize_region
 from .smd import SmdDocument, SmdInfluence, SmdTriangle, SmdVertex, parse_smd, serialize_smd
 
 
+# Direct evidence may add one existing validator pass, but small/medium material
+# islands are expensive in aggregate and overstate what a model-level focus event
+# proves. Real LVS calibration rejected 128 on Caterham and 1024 on Ferrari; 5000
+# keeps this extra path for genuinely dominant regions while the moderated model
+# baseline still tightens every already-scheduled geometric validation.
+_MIN_RUNTIME_VALIDATION_TRIANGLES = 5000
+
+
 STAGES = (
     "normal-seed",
     "regional-inventory",
@@ -865,7 +873,7 @@ def _optimize_source(
         runtime_scheduled_validation = (
             not geometric_validation
             and direct_runtime_signal >= 0.50
-            and len(pair.original.triangles) >= 128
+            and len(pair.original.triangles) >= _MIN_RUNTIME_VALIDATION_TRIANGLES
         )
         needs_validation = (
             validate_injected is not None

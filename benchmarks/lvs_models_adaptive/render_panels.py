@@ -219,10 +219,14 @@ def main() -> int:
     unknown_families = selected_family_ids - known_family_ids
     if unknown_families:
         raise ValueError(f"unknown families: {sorted(unknown_families)}")
+    results = load_family_results(results_root)
     selected_lanes = tuple(value.strip() for value in args.lanes.split(",") if value.strip()) if args.lanes else tuple(
         lane.id for lane in LANES
     )
-    known_lanes = {lane.id for lane in LANES}
+    # Paired experiment drivers may assign descriptive lane IDs while retaining
+    # the canonical optimizer implementation. Accept only IDs actually present
+    # in the supplied result set; typos still fail closed.
+    known_lanes = {lane.id for lane in LANES} | {result.lane for result in results}
     unknown_lanes = set(selected_lanes) - known_lanes
     if unknown_lanes:
         raise ValueError(f"unknown lanes: {sorted(unknown_lanes)}")
@@ -230,7 +234,6 @@ def main() -> int:
         raise ValueError("at least one lane is required")
     if args.model_name and len(selected_family_ids) != 1:
         raise ValueError("--model-name requires exactly one selected family")
-    results = load_family_results(results_root)
     by_key = {(result.family_id, result.lane): result for result in results}
     manifest = {"schema": 1, "resolution": 1024, "panels": [], "missing_categories": ["weapon_sights"]}
     for family in corpus.families:
