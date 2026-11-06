@@ -93,6 +93,11 @@ def _find_studiomdl_in_root(root: Path) -> Path | None:
     return cand if cand.exists() else None
 
 
+def _find_gmad_in_root(root: Path) -> Path | None:
+    cand = root / "bin" / "gmad.exe"
+    return cand if cand.exists() else None
+
+
 def detect_studiomdl() -> Path | None:
     env = _first_existing(
         [
@@ -127,6 +132,45 @@ def detect_studiomdl() -> Path | None:
         # Also check the Steam root library itself.
         gmod = root / "steamapps" / "common" / "GarrysMod"
         p = _find_studiomdl_in_root(gmod)
+        if p:
+            return p.resolve()
+
+    return None
+
+
+def detect_gmad() -> Path | None:
+    env = _first_existing(
+        [
+            os.environ.get("GMAD_EXE"),
+            os.environ.get("GMAD_PATH"),
+        ]
+    )
+    if env:
+        return env.resolve()
+
+    gmod_env = os.environ.get("GARRYSMOD_DIR")
+    if gmod_env:
+        p = _find_gmad_in_root(Path(gmod_env))
+        if p:
+            return p.resolve()
+
+    default = Path(
+        r"C:\Program Files (x86)\Steam\steamapps\common\GarrysMod\bin\gmad.exe"
+    )
+    if default.exists():
+        return default.resolve()
+
+    for root in _steam_root_candidates():
+        vdf = root / "steamapps" / "libraryfolders.vdf"
+        libs = _parse_libraryfolders(vdf) if vdf.exists() else []
+        for lib in libs:
+            gmod = Path(lib) / "steamapps" / "common" / "GarrysMod"
+            p = _find_gmad_in_root(gmod)
+            if p:
+                return p.resolve()
+
+        gmod = root / "steamapps" / "common" / "GarrysMod"
+        p = _find_gmad_in_root(gmod)
         if p:
             return p.resolve()
 

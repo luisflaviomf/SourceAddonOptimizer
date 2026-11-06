@@ -4,7 +4,7 @@ import random
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.paths import detect_blender, detect_studiomdl
+from gui.paths import detect_blender, detect_gmad, detect_studiomdl
 from gui.process_runner import ProcessRunner
 from gui.settings import (
     APP_NAME,
@@ -48,12 +48,15 @@ from gui.settings import (
     DEFAULT_RESUME_OPT,
     DEFAULT_STRICT,
     DEFAULT_SUFFIX,
+    DEFAULT_UNPACK_EXISTING,
+    DEFAULT_UNPACK_OPEN_ON_FINISH,
     KEY_ADDON_PATH,
     KEY_AUTOSMOOTH,
     KEY_BLENDER_PATH,
     KEY_COMPRESS,
     KEY_DECOMPILE_JOBS,
     KEY_FORMAT,
+    KEY_GMAD_PATH,
     KEY_JOBS,
     KEY_MERGE,
     KEY_OPEN_ON_FINISH,
@@ -64,6 +67,9 @@ from gui.settings import (
     KEY_STRICT,
     KEY_STUDIOMDL_PATH,
     KEY_SUFFIX,
+    KEY_UNPACK_EXISTING,
+    KEY_UNPACK_OPEN_ON_FINISH,
+    KEY_UNPACK_ROOT_PATH,
     ORG_NAME,
 )
 
@@ -80,9 +86,13 @@ class MainWindow(QMainWindow):
         self._settings = QSettings(ORG_NAME, APP_NAME)
         self._runner = ProcessRunner(self)
         self._preview_runner = ProcessRunner(self)
+        self._unpack_runner = ProcessRunner(self)
+        self._unpack_runner.set_progress_profile({1: 0.20, 2: 0.75, 3: 0.05}, packaging_weight=0.0)
         self._output_path = None
         self._preview_output_path = None
         self._preview_summary_path = None
+        self._unpack_summary_path = None
+        self._unpack_summary_data = None
         self._preview_car_dirs = []
         self._preview_car_mdls = []
         self._preview_base_auto = None
@@ -92,10 +102,15 @@ class MainWindow(QMainWindow):
         self._preview_index = 0
         self._max_log_blocks = 20000
         self._preview_max_log_blocks = 15000
+        self._unpack_max_log_blocks = 15000
         self._syncing = False
         self._preset_applying = False
         self._loading_settings = False
         self._last_addon_path = ""
+        self._unpack_supported_total = 0
+        self._unpack_last_action = ""
+        self._unpack_cancel_file = None
+        self._unpack_cancel_requested = False
 
         self._build_ui()
         self._runner.log_line.connect(self._append_log)
@@ -109,6 +124,11 @@ class MainWindow(QMainWindow):
         self._preview_runner.finished.connect(self._on_preview_finished)
         self._preview_runner.output_path.connect(self._on_preview_output_path)
         self._preview_runner.preview_summary.connect(self._on_preview_summary_path)
+        self._unpack_runner.log_line.connect(self._append_unpack_log)
+        self._unpack_runner.progress_changed.connect(self._unpack_progress.setValue)
+        self._unpack_runner.phase_changed.connect(self._unpack_phase_label.setText)
+        self._unpack_runner.finished.connect(self._on_unpack_finished)
+        self._unpack_runner.unpack_summary.connect(self._on_unpack_summary_path)
         self._load_settings()
         self._auto_detect_paths_if_empty()
 
@@ -116,6 +136,7 @@ class MainWindow(QMainWindow):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_main_tab(), "Build")
         self._tabs.addTab(self._build_preview_tab(), "Teste rapido")
+        self._tabs.addTab(self._build_unpack_tab(), "Descompactar addons")
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
@@ -508,6 +529,145 @@ class MainWindow(QMainWindow):
         preview_root_layout.addWidget(buttons)
         return preview_root
 
+    def _build_unpack_tab(self) -> QWidget:
+        splitter = QSplitter(self)
+        splitter.setOrientation(Qt.Horizontal)
+
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_contents = QWidget()
+        unpack_form = QVBoxLayout(scroll_contents)
+        scroll.setWidget(scroll_contents)
+        left_layout.addWidget(scroll)
+
+        source_group = QGroupBox("Origem")
+        source_layout = QFormLayout(source_group)
+        self._unpack_root_path = QLineEdit()
+        self._unpack_root_path.textChanged.connect(self._on_unpack_root_changed)
+        unpack_browse = QPushButton("Procurar...")
+        unpack_browse.clicked.connect(self._browse_unpack_root)
+        root_row = QHBoxLayout()
+        root_row.addWidget(self._unpack_root_path)
+        root_row.addWidget(unpack_browse)
+        source_layout.addRow("Pasta raiz", root_row)
+        unpack_form.addWidget(source_group)
+
+        tools_group = QGroupBox("Ferramenta")
+        tools_layout = QFormLayout(tools_group)
+        self._unpack_gmad_path = QLineEdit()
+        self._unpack_gmad_path.textChanged.connect(self._update_unpack_action_states)
+        gmad_detect = QPushButton("Auto-detect")
+        gmad_browse = QPushButton("Procurar...")
+        gmad_detect.clicked.connect(self._auto_detect_gmad)
+        gmad_browse.clicked.connect(self._browse_gmad)
+        gmad_row = QHBoxLayout()
+        gmad_row.addWidget(self._unpack_gmad_path)
+        gmad_row.addWidget(gmad_detect)
+        gmad_row.addWidget(gmad_browse)
+        tools_layout.addRow("gmad.exe", gmad_row)
+        unpack_form.addWidget(tools_group)
+
+        output_group = QGroupBox("Saida")
+        output_layout = QVBoxLayout(output_group)
+        self._unpack_output_hint = QLabel(
+            "Cada arquivo encontrado sera extraido em uma pasta '<arquivo>_extraido' ao lado do proprio arquivo."
+        )
+        self._unpack_output_hint.setWordWrap(True)
+        output_layout.addWidget(self._unpack_output_hint)
+        unpack_form.addWidget(output_group)
+
+        opts_group = QGroupBox("Opcoes")
+        opts_layout = QFormLayout(opts_group)
+        self._unpack_existing = QComboBox()
+        self._unpack_existing.addItem("Pular existentes", "skip")
+        self._unpack_existing.addItem("Sobrescrever existentes", "overwrite")
+        self._unpack_existing.addItem("Falhar se existir", "fail")
+        opts_layout.addRow("Destino existente", self._unpack_existing)
+        self._unpack_open_on_finish = QCheckBox("Abrir pasta raiz ao concluir extracao")
+        opts_layout.addRow("", self._unpack_open_on_finish)
+        unpack_form.addWidget(opts_group)
+
+        summary_group = QGroupBox("Resumo")
+        summary_layout = QFormLayout(summary_group)
+        self._unpack_summary_status = QLabel("Nenhum scan executado.")
+        self._unpack_summary_status.setWordWrap(True)
+        self._unpack_found_label = QLabel("0")
+        self._unpack_gma_label = QLabel("0/0")
+        self._unpack_bin_supported_label = QLabel("0")
+        self._unpack_bin_unsupported_label = QLabel("0")
+        self._unpack_ok_label = QLabel("0")
+        self._unpack_skipped_label = QLabel("0")
+        self._unpack_failed_label = QLabel("0")
+        summary_layout.addRow("Status", self._unpack_summary_status)
+        summary_layout.addRow("Encontrados", self._unpack_found_label)
+        summary_layout.addRow("GMA", self._unpack_gma_label)
+        summary_layout.addRow("BIN suportados", self._unpack_bin_supported_label)
+        summary_layout.addRow("BIN nao suportados", self._unpack_bin_unsupported_label)
+        summary_layout.addRow("OK", self._unpack_ok_label)
+        summary_layout.addRow("Skipped", self._unpack_skipped_label)
+        summary_layout.addRow("Failed", self._unpack_failed_label)
+        unpack_form.addWidget(summary_group)
+
+        unpack_form.addStretch(1)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        self._unpack_log = QPlainTextEdit()
+        self._unpack_log.setReadOnly(True)
+        self._unpack_log.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self._unpack_log.setFont(QFont("Consolas", 9))
+        right_layout.addWidget(self._unpack_log)
+        unpack_log_buttons = QHBoxLayout()
+        self._unpack_log_clear = QPushButton("Limpar")
+        self._unpack_log_clear.clicked.connect(self._unpack_log.clear)
+        unpack_log_buttons.addWidget(self._unpack_log_clear)
+        unpack_log_buttons.addStretch(1)
+        right_layout.addLayout(unpack_log_buttons)
+
+        splitter.addWidget(left)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([520, 760])
+
+        footer = QWidget()
+        footer_layout = QHBoxLayout(footer)
+        self._unpack_phase_label = QLabel("Idle")
+        self._unpack_progress = QProgressBar()
+        self._unpack_progress.setRange(0, 100)
+        self._unpack_status_label = QLabel("Idle")
+        footer_layout.addWidget(self._unpack_phase_label)
+        footer_layout.addWidget(self._unpack_progress, 1)
+        footer_layout.addWidget(self._unpack_status_label)
+
+        buttons = QWidget()
+        buttons_layout = QHBoxLayout(buttons)
+        self._unpack_scan_btn = QPushButton("Escanear")
+        self._unpack_scan_btn.clicked.connect(self._start_unpack_scan)
+        self._unpack_run_btn = QPushButton("Descompactar encontrados")
+        self._unpack_run_btn.clicked.connect(self._start_unpack)
+        self._unpack_run_btn.setEnabled(False)
+        self._unpack_cancel_btn = QPushButton("Cancelar")
+        self._unpack_cancel_btn.clicked.connect(self._cancel_unpack)
+        self._unpack_cancel_btn.setEnabled(False)
+        self._unpack_open_btn = QPushButton("Abrir pasta raiz")
+        self._unpack_open_btn.clicked.connect(self._open_unpack_root_folder)
+        self._unpack_open_btn.setEnabled(False)
+        buttons_layout.addWidget(self._unpack_scan_btn)
+        buttons_layout.addWidget(self._unpack_run_btn)
+        buttons_layout.addWidget(self._unpack_cancel_btn)
+        buttons_layout.addWidget(self._unpack_open_btn)
+
+        unpack_root = QWidget()
+        unpack_root_layout = QVBoxLayout(unpack_root)
+        unpack_root_layout.addWidget(splitter)
+        unpack_root_layout.addWidget(footer)
+        unpack_root_layout.addWidget(buttons)
+        return unpack_root
+
     def _help_button(self, text: str) -> QToolButton:
         btn = QToolButton()
         btn.setText("?")
@@ -647,6 +807,16 @@ class MainWindow(QMainWindow):
         self._last_addon_path = current
         self._load_addon_settings(current)
 
+    def _browse_unpack_root(self):
+        path = QFileDialog.getExistingDirectory(self, "Selecionar pasta raiz")
+        if path:
+            self._unpack_root_path.setText(path)
+
+    def _browse_gmad(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Selecionar gmad.exe", filter="gmad.exe (*.exe)")
+        if path:
+            self._unpack_gmad_path.setText(path)
+
     def _browse_blender(self):
         path, _ = QFileDialog.getOpenFileName(self, "Selecionar Blender", filter="blender.exe (*.exe)")
         if path:
@@ -664,6 +834,13 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Blender", "Nao foi possivel localizar o Blender automaticamente.")
 
+    def _auto_detect_gmad(self, silent: bool = False):
+        p = detect_gmad()
+        if p:
+            self._unpack_gmad_path.setText(str(p))
+        elif not silent:
+            QMessageBox.warning(self, "gmad.exe", "Nao foi possivel localizar o gmad.exe automaticamente.")
+
     def _auto_detect_studiomdl(self):
         p = detect_studiomdl()
         if p:
@@ -676,10 +853,13 @@ class MainWindow(QMainWindow):
             self._auto_detect_blender()
         if not self._studiomdl_path.text().strip():
             self._auto_detect_studiomdl()
+        if not self._unpack_gmad_path.text().strip():
+            self._auto_detect_gmad(silent=True)
         self._update_crowbar_status()
         if self._preview_use_main.isChecked():
             self._preview_addon_path.setText(self._addon_path.text())
             self._refresh_preview_cars()
+        self._update_unpack_action_states()
 
     def _update_crowbar_status(self):
         crowbar = self._find_crowbar()
@@ -732,7 +912,17 @@ class MainWindow(QMainWindow):
         self._open_on_finish.setChecked(
             bool(self._settings.value(KEY_OPEN_ON_FINISH, DEFAULT_OPEN_ON_FINISH, bool))
         )
+        unpack_existing = self._settings.value(KEY_UNPACK_EXISTING, DEFAULT_UNPACK_EXISTING, str)
+        unpack_idx = self._unpack_existing.findData(unpack_existing)
+        if unpack_idx < 0:
+            unpack_idx = self._unpack_existing.findData(DEFAULT_UNPACK_EXISTING)
+        self._unpack_existing.setCurrentIndex(max(0, unpack_idx))
+        self._unpack_open_on_finish.setChecked(
+            bool(self._settings.value(KEY_UNPACK_OPEN_ON_FINISH, DEFAULT_UNPACK_OPEN_ON_FINISH, bool))
+        )
         self._blender_path.setText(self._settings.value(KEY_BLENDER_PATH, "", str))
+        self._unpack_root_path.setText(self._settings.value(KEY_UNPACK_ROOT_PATH, "", str))
+        self._unpack_gmad_path.setText(self._settings.value(KEY_GMAD_PATH, "", str))
         self._studiomdl_path.setText(self._settings.value(KEY_STUDIOMDL_PATH, "", str))
         self._loading_settings = False
 
@@ -745,9 +935,12 @@ class MainWindow(QMainWindow):
         self._preview_format.setCurrentText(self._format.currentText())
         self._update_preview_compress_label()
         self._toggle_preview_use_main(self._preview_use_main.isChecked())
+        self._reset_unpack_summary()
+        self._update_unpack_action_states()
 
     def _save_settings(self):
         self._settings.setValue(KEY_ADDON_PATH, self._addon_path.text().strip())
+        self._settings.setValue(KEY_UNPACK_ROOT_PATH, self._unpack_root_path.text().strip())
         self._settings.setValue(KEY_SUFFIX, self._suffix.text().strip())
         self._settings.setValue(KEY_COMPRESS, self._compress_value())
         self._settings.setValue(KEY_MERGE, self._merge.value())
@@ -762,7 +955,10 @@ class MainWindow(QMainWindow):
         self._settings.setValue(KEY_RESUME_OPT, self._resume_opt.isChecked())
         self._settings.setValue(KEY_OPEN_ON_FINISH, self._open_on_finish.isChecked())
         self._settings.setValue(KEY_BLENDER_PATH, self._blender_path.text().strip())
+        self._settings.setValue(KEY_GMAD_PATH, self._unpack_gmad_path.text().strip())
         self._settings.setValue(KEY_STUDIOMDL_PATH, self._studiomdl_path.text().strip())
+        self._settings.setValue(KEY_UNPACK_EXISTING, self._unpack_existing.currentData())
+        self._settings.setValue(KEY_UNPACK_OPEN_ON_FINISH, self._unpack_open_on_finish.isChecked())
         self._save_addon_settings(self._addon_path.text().strip())
 
     def _compress_value(self) -> float:
@@ -859,6 +1055,101 @@ class MainWindow(QMainWindow):
             w.setProperty("error", False)
             w.style().unpolish(w)
             w.style().polish(w)
+
+    def _clear_unpack_field_errors(self):
+        for w in [self._unpack_root_path, self._unpack_gmad_path]:
+            w.setProperty("error", False)
+            w.style().unpolish(w)
+            w.style().polish(w)
+
+    def _has_valid_unpack_root(self) -> bool:
+        root_text = self._unpack_root_path.text().strip()
+        return bool(root_text) and Path(root_text).is_dir()
+
+    def _has_valid_unpack_gmad(self) -> bool:
+        gmad_text = self._unpack_gmad_path.text().strip()
+        return bool(gmad_text) and Path(gmad_text).is_file()
+
+    def _new_unpack_cancel_file(self) -> Path:
+        base = Path.cwd() / "work" / "_unpack_cancel_tokens"
+        base.mkdir(parents=True, exist_ok=True)
+        return base / f"cancel_{random.getrandbits(48):012x}.flag"
+
+    def _clear_unpack_cancel_file(self):
+        if not self._unpack_cancel_file:
+            return
+        try:
+            if self._unpack_cancel_file.exists():
+                self._unpack_cancel_file.unlink()
+        except OSError:
+            pass
+        try:
+            self._unpack_cancel_file.parent.rmdir()
+        except OSError:
+            pass
+        self._unpack_cancel_file = None
+
+    def _reset_unpack_summary(self):
+        self._unpack_summary_path = None
+        self._unpack_summary_data = None
+        self._unpack_supported_total = 0
+        self._unpack_summary_status.setText("Nenhum scan executado.")
+        self._unpack_found_label.setText("0")
+        self._unpack_gma_label.setText("0/0")
+        self._unpack_bin_supported_label.setText("0")
+        self._unpack_bin_unsupported_label.setText("0")
+        self._unpack_ok_label.setText("0")
+        self._unpack_skipped_label.setText("0")
+        self._unpack_failed_label.setText("0")
+        self._unpack_phase_label.setText("Idle")
+        self._unpack_status_label.setText("Idle")
+        self._unpack_progress.setValue(0)
+
+    def _update_unpack_action_states(self):
+        running = self._unpack_runner.is_running() if hasattr(self, "_unpack_runner") else False
+        root_exists = self._has_valid_unpack_root() if hasattr(self, "_unpack_root_path") else False
+        gmad_ready = self._has_valid_unpack_gmad() if hasattr(self, "_unpack_gmad_path") else False
+        self._unpack_scan_btn.setEnabled(not running and root_exists)
+        self._unpack_run_btn.setEnabled(
+            not running and root_exists and gmad_ready and self._unpack_supported_total > 0
+        )
+        self._unpack_cancel_btn.setEnabled(running and not self._unpack_cancel_requested)
+        self._unpack_open_btn.setEnabled(root_exists and not running)
+
+    def _on_unpack_root_changed(self):
+        if self._loading_settings:
+            self._update_unpack_action_states()
+            return
+        self._reset_unpack_summary()
+        self._update_unpack_action_states()
+
+    def _validate_unpack_scan_inputs(self) -> list[str]:
+        errors = []
+        self._clear_unpack_field_errors()
+
+        root_text = self._unpack_root_path.text().strip()
+        root = Path(root_text) if root_text else None
+        if not root_text or root is None or not root.exists() or not root.is_dir():
+            self._mark_error(self._unpack_root_path)
+            errors.append("Pasta raiz invalida.")
+
+        if getattr(sys, "frozen", False):
+            worker = Path(self._worker_path())
+            if not worker.exists():
+                errors.append("Worker exe nao encontrado (GModAddonOptimizerWorker.exe).")
+
+        return errors
+
+    def _validate_unpack_inputs(self) -> list[str]:
+        errors = self._validate_unpack_scan_inputs()
+
+        gmad_text = self._unpack_gmad_path.text().strip()
+        gmad = Path(gmad_text) if gmad_text else None
+        if not gmad_text or gmad is None or not gmad.exists() or not gmad.is_file():
+            self._mark_error(self._unpack_gmad_path)
+            errors.append("gmad.exe nao encontrado.")
+
+        return errors
 
     def _toggle_preview_use_main(self, checked: bool):
         self._preview_addon_path.setEnabled(not checked)
@@ -1258,6 +1549,248 @@ class MainWindow(QMainWindow):
             return
         self._preview_index = (self._preview_index - 1) % len(self._preview_angles)
         self._update_preview_images()
+
+    def _build_unpack_command(self, *, scan_only: bool, cancel_file: Path | None = None) -> list[str]:
+        args = [
+            self._worker_path(),
+            "unpack",
+            self._unpack_root_path.text().strip(),
+            "--existing",
+            str(self._unpack_existing.currentData()),
+        ]
+        gmad = self._unpack_gmad_path.text().strip()
+        if gmad:
+            args.extend(["--gmad", gmad])
+        if cancel_file:
+            args.extend(["--cancel-file", str(cancel_file)])
+        if scan_only:
+            args.append("--scan-only")
+
+        if getattr(sys, "frozen", False):
+            return args
+        return [sys.executable, "-u"] + args
+
+    def _prepare_unpack_run(self, *, action: str, status_text: str, summary_text: str):
+        self._save_settings()
+        self._clear_unpack_cancel_file()
+        self._unpack_cancel_requested = False
+        self._unpack_cancel_file = self._new_unpack_cancel_file()
+        self._unpack_last_action = action
+        self._unpack_summary_path = None
+        self._unpack_progress.setValue(0)
+        self._unpack_phase_label.setText("Starting")
+        self._unpack_status_label.setText(status_text)
+        self._unpack_summary_status.setText(summary_text)
+        self._unpack_scan_btn.setEnabled(False)
+        self._unpack_run_btn.setEnabled(False)
+        self._unpack_open_btn.setEnabled(False)
+        self._unpack_cancel_btn.setEnabled(True)
+        self._append_unpack_log("")
+        self._append_unpack_log(f"=== {summary_text} ===")
+
+    def _cancel_unpack(self):
+        if not self._unpack_runner.is_running() or self._unpack_cancel_requested:
+            return
+        self._unpack_cancel_requested = True
+        if self._unpack_cancel_file:
+            self._unpack_cancel_file.parent.mkdir(parents=True, exist_ok=True)
+            self._unpack_cancel_file.write_text("cancel\n", encoding="utf-8")
+        self._unpack_status_label.setText("Cancelando")
+        self._unpack_summary_status.setText("Cancelamento solicitado. Aguardando o worker finalizar com limpeza.")
+        self._append_unpack_log("[GUI] Cancelamento solicitado. Aguardando encerramento seguro...")
+        self._update_unpack_action_states()
+        QTimer.singleShot(5000, self._force_stop_unpack_if_needed)
+
+    def _force_stop_unpack_if_needed(self):
+        if not self._unpack_runner.is_running():
+            return
+        self._append_unpack_log("[GUI] Worker ainda ativo apos timeout. Encerrando processo.")
+        self._unpack_runner.stop()
+
+    def _start_unpack_scan(self):
+        if self._unpack_runner.is_running():
+            return
+        errors = self._validate_unpack_scan_inputs()
+        if errors:
+            self._unpack_status_label.setText("Erro")
+            self._unpack_summary_status.setText("\n".join(errors))
+            QMessageBox.warning(self, "Erro", "\n".join(errors))
+            return
+
+        self._prepare_unpack_run(
+            action="scan",
+            status_text="Executando",
+            summary_text="Executando scan dos add-ons...",
+        )
+
+        cmd = self._build_unpack_command(scan_only=True, cancel_file=self._unpack_cancel_file)
+        env = {"PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
+        self._unpack_runner.start(cmd, workdir=Path.cwd(), env=env)
+        self._update_unpack_action_states()
+
+    def _start_unpack(self):
+        if self._unpack_runner.is_running():
+            return
+        errors = self._validate_unpack_inputs()
+        if errors:
+            self._unpack_status_label.setText("Erro")
+            self._unpack_summary_status.setText("\n".join(errors))
+            QMessageBox.warning(self, "Erro", "\n".join(errors))
+            return
+
+        self._prepare_unpack_run(
+            action="run",
+            status_text="Executando",
+            summary_text="Executando descompactacao dos add-ons...",
+        )
+
+        cmd = self._build_unpack_command(scan_only=False, cancel_file=self._unpack_cancel_file)
+        env = {"PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
+        self._unpack_runner.start(cmd, workdir=Path.cwd(), env=env)
+        self._update_unpack_action_states()
+
+    def _append_unpack_log(self, line: str):
+        self._unpack_log.appendPlainText(line)
+        if self._unpack_log.document().blockCount() > self._unpack_max_log_blocks:
+            cursor = QTextCursor(self._unpack_log.document())
+            cursor.movePosition(QTextCursor.Start)
+            for _ in range(self._unpack_log.document().blockCount() - self._unpack_max_log_blocks):
+                cursor.select(QTextCursor.LineUnderCursor)
+                cursor.removeSelectedText()
+                cursor.deleteChar()
+
+    def _on_unpack_summary_path(self, path: str):
+        self._unpack_summary_path = path
+
+    def _load_unpack_summary(self, show_error: bool = True) -> bool:
+        if not self._unpack_summary_path:
+            self._unpack_summary_data = None
+            if show_error:
+                QMessageBox.information(self, "Unpack", "Nao encontrei unpack_summary.json para carregar.")
+            return False
+
+        summary_path = Path(self._unpack_summary_path)
+        if not summary_path.exists():
+            self._unpack_summary_data = None
+            if show_error:
+                QMessageBox.information(self, "Unpack", "Nao encontrei unpack_summary.json para carregar.")
+            return False
+
+        try:
+            data = json.loads(summary_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            self._unpack_summary_data = None
+            if show_error:
+                QMessageBox.warning(self, "Unpack", "Falha ao ler unpack_summary.json.")
+            return False
+
+        self._unpack_summary_data = data
+        counts = data.get("counts") or {}
+        run = data.get("run") or {}
+        self._unpack_supported_total = int(counts.get("supported_total", 0) or 0)
+        self._unpack_found_label.setText(str(counts.get("found_total", 0)))
+        self._unpack_gma_label.setText(
+            f"{counts.get('gma_supported', 0)}/{counts.get('gma_total', 0)}"
+        )
+        self._unpack_bin_supported_label.setText(str(counts.get("bin_supported", 0)))
+        self._unpack_bin_unsupported_label.setText(str(counts.get("bin_unsupported", 0)))
+        self._unpack_ok_label.setText(str(counts.get("ok", 0)))
+        self._unpack_skipped_label.setText(str(counts.get("skipped", 0)))
+        self._unpack_failed_label.setText(str(counts.get("failed", 0)))
+
+        root = run.get("root") or self._unpack_root_path.text().strip()
+        found_total = int(counts.get("found_total", 0) or 0)
+        supported_total = int(counts.get("supported_total", 0) or 0)
+        ok_count = int(counts.get("ok", 0) or 0)
+        skipped_count = int(counts.get("skipped", 0) or 0)
+        failed_count = int(counts.get("failed", 0) or 0)
+        unsupported_count = int(counts.get("unsupported", 0) or 0)
+        cancelled_items = int(counts.get("cancelled_items", 0) or 0)
+        scan_warning_count = int(counts.get("scan_errors", 0) or 0)
+        cancelled = bool(counts.get("cancelled"))
+        scan_only = bool(run.get("scan_only"))
+        if cancelled and scan_only:
+            self._unpack_supported_total = 0
+
+        if scan_only:
+            if cancelled:
+                status_text = "Scan cancelado pelo usuario."
+            elif found_total == 0:
+                status_text = "Scan concluido: nenhum arquivo .gma ou .bin encontrado."
+            elif supported_total == 0:
+                status_text = f"Scan concluido: {found_total} arquivo(s) encontrados, nenhum suportado."
+            else:
+                status_text = (
+                    f"Scan concluido: {found_total} encontrado(s), {supported_total} suportado(s) para extracao."
+                )
+        else:
+            if cancelled:
+                status_text = (
+                    f"Extracao cancelada: ok={ok_count}, skipped={skipped_count}, failed={failed_count}, "
+                    f"cancelled={cancelled_items}."
+                )
+            elif failed_count > 0:
+                status_text = f"Extracao concluida com falhas: ok={ok_count}, failed={failed_count}, skipped={skipped_count}."
+            elif ok_count == 0 and skipped_count == 0 and unsupported_count > 0:
+                status_text = f"Extracao concluida sem itens suportados: unsupported={unsupported_count}."
+            else:
+                status_text = f"Extracao concluida: ok={ok_count}, skipped={skipped_count}."
+
+        if scan_warning_count:
+            status_text += f"\nAvisos de scan: {scan_warning_count}."
+        if run.get("gmad_error") and not scan_only:
+            status_text += f"\n{run.get('gmad_error')}"
+        status_text += f"\nRaiz: {root}"
+        self._unpack_summary_status.setText(status_text)
+        self._update_unpack_action_states()
+        return True
+
+    def _on_unpack_finished(self, exit_code: int):
+        self._unpack_cancel_requested = False
+        self._clear_unpack_cancel_file()
+        self._unpack_cancel_btn.setEnabled(False)
+        self._unpack_scan_btn.setEnabled(True)
+        loaded_summary = self._load_unpack_summary(show_error=False)
+
+        if loaded_summary:
+            summary = self._unpack_summary_data or {}
+            counts = summary.get("counts") or {}
+            cancelled = bool(counts.get("cancelled"))
+            failed_count = int(counts.get("failed", 0) or 0)
+            if cancelled or exit_code == 130:
+                self._unpack_status_label.setText("Cancelado")
+            elif failed_count > 0 or exit_code != 0:
+                self._unpack_status_label.setText("Concluido com falhas")
+            else:
+                self._unpack_status_label.setText("OK")
+                self._unpack_progress.setValue(100)
+        else:
+            if exit_code == 130:
+                self._unpack_status_label.setText("Cancelado")
+                self._unpack_summary_status.setText("Execucao cancelada antes de gerar resumo. Verifique o log.")
+            elif exit_code == 0:
+                self._unpack_status_label.setText("OK")
+                self._unpack_progress.setValue(100)
+            else:
+                self._unpack_status_label.setText(f"FAIL ({exit_code})")
+                self._unpack_summary_status.setText("Execucao encerrada sem resumo. Verifique o log.")
+
+        if (
+            exit_code == 0
+            and self._unpack_last_action == "run"
+            and self._unpack_open_on_finish.isChecked()
+        ):
+            self._open_unpack_root_folder()
+
+        self._update_unpack_action_states()
+
+    def _open_unpack_root_folder(self):
+        root_text = self._unpack_root_path.text().strip()
+        if not root_text:
+            return
+        root = Path(root_text)
+        if root.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
     def _start_build(self):
         if self._runner.is_running():

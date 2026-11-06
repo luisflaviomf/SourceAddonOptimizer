@@ -11,6 +11,7 @@ class ProcessRunner(QObject):
     finished = Signal(int)
     output_path = Signal(str)
     preview_summary = Signal(str)
+    unpack_summary = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -18,27 +19,41 @@ class ProcessRunner(QObject):
         self._proc.setProcessChannelMode(QProcess.MergedChannels)
         self._proc.readyReadStandardOutput.connect(self._on_output)
         self._proc.finished.connect(self._on_finished)
+        self._default_step_weights = {1: 0.15, 2: 0.55, 3: 0.25}
+        self._default_packaging_weight = 0.05
         self._buffer = ""
         self._step_index = None
         self._step_total = None
         self._phase = ""
         self._item_current = None
         self._item_total = None
-        self._step_weights = {1: 0.15, 2: 0.55, 3: 0.25}
-        self._packaging_weight = 0.05
+        self._step_weights = dict(self._default_step_weights)
+        self._packaging_weight = self._default_packaging_weight
 
         self._re_step = re.compile(r"^== Step (\d+)/(\d+): (.+) ==$")
         self._re_preview_step = re.compile(r"^== Preview Step (\d+)/(\d+): (.+) ==$")
         self._re_packaging = re.compile(r"^== Packaging: (.+) ==$")
-        self._re_item = re.compile(r"^=== \((\d+)/(\d+)\) (MDL|QC):")
+        self._re_item = re.compile(r"^=== \((\d+)/(\d+)\) ([A-Z_]+):")
         self._re_found_mdl = re.compile(r"Found\s+(\d+)\s+\.mdl\s+file", re.IGNORECASE)
         self._re_found_qc = re.compile(r"(?:Found|Encontrados?)\s+(\d+)\s+.*QC", re.IGNORECASE)
-        self._re_output = re.compile(r"^Output addon:\\s+(.+)$")
-        self._re_preview_output = re.compile(r"^PREVIEW_OUTPUT_DIR:\\s+(.+)$")
-        self._re_preview_summary = re.compile(r"^PREVIEW_SUMMARY:\\s+(.+)$")
+        self._re_found_addons = re.compile(r"Found\s+(\d+)\s+addon archive", re.IGNORECASE)
+        self._re_output = re.compile(r"^Output addon:\s+(.+)$")
+        self._re_preview_output = re.compile(r"^PREVIEW_OUTPUT_DIR:\s+(.+)$")
+        self._re_preview_summary = re.compile(r"^PREVIEW_SUMMARY:\s+(.+)$")
+        self._re_unpack_summary = re.compile(r"^UNPACK_SUMMARY:\s+(.+)$")
 
     def is_running(self) -> bool:
         return self._proc.state() != QProcess.NotRunning
+
+    def set_progress_profile(
+        self,
+        step_weights: dict[int, float] | None = None,
+        packaging_weight: float | None = None,
+    ):
+        self._step_weights = dict(step_weights or self._default_step_weights)
+        self._packaging_weight = (
+            self._default_packaging_weight if packaging_weight is None else float(packaging_weight)
+        )
 
     def start(self, cmd: list[str], workdir: Path | None = None, env: dict | None = None):
         self._buffer = ""
@@ -134,6 +149,16 @@ class ProcessRunner(QObject):
             self._emit_progress()
             return
 
+        m = self._re_found_addons.match(line)
+        if m:
+            self._item_total = int(m.group(1))
+            phase = self._phase.lower()
+            if "scan" in phase:
+                self._emit_progress(self._completed_weight() + self._current_step_weight())
+            else:
+                self._emit_progress()
+            return
+
         m = self._re_output.match(line)
         if m:
             self.output_path.emit(m.group(1).strip())
@@ -147,6 +172,11 @@ class ProcessRunner(QObject):
         m = self._re_preview_summary.match(line)
         if m:
             self.preview_summary.emit(m.group(1).strip())
+            return
+
+        m = self._re_unpack_summary.match(line)
+        if m:
+            self.unpack_summary.emit(m.group(1).strip())
 
     def _emit_progress(self, force_value: float | None = None):
         if force_value is not None:
