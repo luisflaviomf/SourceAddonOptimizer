@@ -24,6 +24,7 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal bool ExperimentalGroundPolicy { get; init; }
         internal bool ExperimentalRoundPartsPolicy { get; init; }
         internal bool ExperimentalSteerTurnBasisFix { get; init; }
+        internal bool UseVtxTriStrips { get; init; }
         internal string? Format { get; init; }
         internal int? Jobs { get; init; }
         internal int? DecompileJobs { get; init; }
@@ -133,6 +134,9 @@ namespace GmodAddonCompressor.Systems.Optimizer
 
             if (options.ExperimentalSteerTurnBasisFix)
                 startInfo.ArgumentList.Add("--experimental-steer-turn-basis-fix");
+
+            if (options.UseVtxTriStrips)
+                startInfo.ArgumentList.Add("--vtx-tristrips");
 
             if (!string.IsNullOrWhiteSpace(options.Format))
             {

@@ -6,7 +6,7 @@ namespace GmodAddonCompressor.Systems.Tools
         internal static class ToolPaths
         {
             internal const string ToolName = "SourceAddonOptimizer";
-        internal const string ToolVersion = "0.1.17";
+        internal const string ToolVersion = "0.1.18";
 
         internal static string AppDataRoot =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GmodAddonOptimizer");

@@ -1,0 +1,1514 @@
+[
+  {
+    "state": "empty",
+    "width": 1280,
+    "height": 720,
+    "text_count": 32,
+    "texts": [
+      {
+        "text": "g",
+        "x": 31,
+        "y": 13,
+        "width": 13,
+        "height": 30,
+        "font": 21
+      },
+      {
+        "text": "GMod Addon Optimizer",
+        "x": 62,
+        "y": 18,
+        "width": 176,
+        "height": 21,
+        "font": 16
+      },
+      {
+        "text": "/  Bancada guiada",
+        "x": 256,
+        "y": 20,
+        "width": 106,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Outras ferramentas \u25BE",
+        "x": 1074,
+        "y": 19,
+        "width": 135,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "C2",
+        "x": 1243,
+        "y": 22,
+        "width": 13,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Compress\u00E3o completa",
+        "x": 24,
+        "y": 72,
+        "width": 942,
+        "height": 32,
+        "font": 24
+      },
+      {
+        "text": "Comece escolhendo o addon original.",
+        "x": 24,
+        "y": 109,
+        "width": 942,
+        "height": 20,
+        "font": 14
+      },
+      {
+        "text": "1  Preparar",
+        "x": 983,
+        "y": 94,
+        "width": 55,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "2  Processar",
+        "x": 1066,
+        "y": 94,
+        "width": 63,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "3  Testar no jogo",
+        "x": 1157,
+        "y": 94,
+        "width": 88,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Addon original \u00B7 somente leitura",
+        "x": 24,
+        "y": 161,
+        "width": 604,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Escolher\u2026",
+        "x": 554,
+        "y": 199,
+        "width": 60,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Onde salvar \u00B7 uma pasta nova",
+        "x": 652,
+        "y": 161,
+        "width": 604,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Escolher\u2026",
+        "x": 1182,
+        "y": 199,
+        "width": 60,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Seu addon come\u00E7a aqui",
+        "x": 346,
+        "y": 395,
+        "width": 260,
+        "height": 32,
+        "font": 24
+      },
+      {
+        "text": "Escolha a pasta original acima. Voc\u00EA vai trabalhar em uma c\u00F3pia e salvar o resultado em um novo local.",
+        "x": 252,
+        "y": 439,
+        "width": 449,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "Nenhum arquivo selecionado",
+        "x": 398,
+        "y": 502,
+        "width": 156,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Resumo do processamento",
+        "x": 977,
+        "y": 274,
+        "width": 264,
+        "height": 23,
+        "font": 17
+      },
+      {
+        "text": "Completo \u00B7 Safe",
+        "x": 977,
+        "y": 312,
+        "width": 264,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "C\u00F3pia \u2192 modelos \u2192 m\u00EDdia \u2192 etapa exata",
+        "x": 977,
+        "y": 339,
+        "width": 264,
+        "height": 20,
+        "font": 14
+      },
+      {
+        "text": "O que muda na qualidade?",
+        "x": 977,
+        "y": 394,
+        "width": 264,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "A redu\u00E7\u00E3o de modelos, imagens e \u00E1udio pode alterar a qualidade.",
+        "x": 977,
+        "y": 421,
+        "width": 264,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "A etapa exata preserva o resultado dessa redu\u00E7\u00E3o.",
+        "x": 977,
+        "y": 471,
+        "width": 264,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "Configurar jogo e ferramentas",
+        "x": 1002,
+        "y": 529,
+        "width": 184,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Detalhes t\u00E9cnicos",
+        "x": 1002,
+        "y": 569,
+        "width": 106,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "\u25B8  Atividade e detalhes",
+        "x": 24,
+        "y": 594,
+        "width": 137,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Nenhuma instala\u00E7\u00E3o autom\u00E1tica",
+        "x": 1084,
+        "y": 595,
+        "width": 172,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Pr\u00F3ximo passo: escolher o addon",
+        "x": 24,
+        "y": 638,
+        "width": 1042,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Originais preservados \u00B7 sa\u00EDda em uma pasta nova",
+        "x": 24,
+        "y": 662,
+        "width": 1042,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Escolher addon original\u2026",
+        "x": 1082,
+        "y": 648,
+        "width": 158,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Pr\u00E9via visual \u00B7 dados ilustrativos \u00B7 processamento desconectado",
+        "x": 24,
+        "y": 701,
+        "width": 276,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "Apresenta\u00E7\u00E3o WPF / C2",
+        "x": 1153,
+        "y": 701,
+        "width": 103,
+        "height": 12,
+        "font": 10
+      }
+    ]
+  },
+  {
+    "state": "setup",
+    "width": 1280,
+    "height": 720,
+    "text_count": 50,
+    "texts": [
+      {
+        "text": "g",
+        "x": 31,
+        "y": 13,
+        "width": 13,
+        "height": 30,
+        "font": 21
+      },
+      {
+        "text": "GMod Addon Optimizer",
+        "x": 62,
+        "y": 18,
+        "width": 176,
+        "height": 21,
+        "font": 16
+      },
+      {
+        "text": "/  Bancada guiada",
+        "x": 256,
+        "y": 20,
+        "width": 106,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Outras ferramentas \u25BE",
+        "x": 1074,
+        "y": 19,
+        "width": 135,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "C2",
+        "x": 1243,
+        "y": 22,
+        "width": 13,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Compress\u00E3o completa",
+        "x": 24,
+        "y": 72,
+        "width": 942,
+        "height": 32,
+        "font": 24
+      },
+      {
+        "text": "Confira as pastas e as ferramentas antes de come\u00E7ar.",
+        "x": 24,
+        "y": 109,
+        "width": 942,
+        "height": 20,
+        "font": 14
+      },
+      {
+        "text": "1  Preparar",
+        "x": 983,
+        "y": 94,
+        "width": 55,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "2  Processar",
+        "x": 1066,
+        "y": 94,
+        "width": 63,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "3  Testar no jogo",
+        "x": 1157,
+        "y": 94,
+        "width": 88,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Addon original \u00B7 somente leitura",
+        "x": 24,
+        "y": 161,
+        "width": 604,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Escolher\u2026",
+        "x": 554,
+        "y": 199,
+        "width": 60,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Onde salvar \u00B7 uma pasta nova",
+        "x": 652,
+        "y": 161,
+        "width": 604,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Escolher\u2026",
+        "x": 1182,
+        "y": 199,
+        "width": 60,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Arquivos do addon",
+        "x": 14,
+        "y": 270,
+        "width": 140,
+        "height": 21,
+        "font": 16
+      },
+      {
+        "text": "EXEMPLO ILUSTRATIVO",
+        "x": 835,
+        "y": 274,
+        "width": 105,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "ARQUIVO",
+        "x": 14,
+        "y": 314,
+        "width": 703,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TIPO",
+        "x": 717,
+        "y": 314,
+        "width": 60,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TRATAMENTO PREVISTO",
+        "x": 777,
+        "y": 314,
+        "width": 163,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "models/example/prop.mdl",
+        "x": 14,
+        "y": 346,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "MDL",
+        "x": 700,
+        "y": 348,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Otimizar modelos",
+        "x": 760,
+        "y": 347,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "models/example/prop.dx90.vtx",
+        "x": 14,
+        "y": 388,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "VTX",
+        "x": 700,
+        "y": 390,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Preservar DX90",
+        "x": 760,
+        "y": 389,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "materials/example/body.vtf",
+        "x": 14,
+        "y": 430,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "VTF",
+        "x": 700,
+        "y": 432,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Reduzir \u2192 etapa exata",
+        "x": 760,
+        "y": 431,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "sound/example/loop.wav",
+        "x": 14,
+        "y": 472,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "WAV",
+        "x": 700,
+        "y": 474,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "\u00C1udio \u2192 etapa exata",
+        "x": 760,
+        "y": 473,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "lua/autorun/example.lua",
+        "x": 14,
+        "y": 514,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "LUA",
+        "x": 700,
+        "y": 516,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Manter nativo",
+        "x": 760,
+        "y": 515,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Dados de exemplo; n\u00E3o representam um scan ou resultado medido.",
+        "x": 14,
+        "y": 560,
+        "width": 909,
+        "height": 20,
+        "font": 14
+      },
+      {
+        "text": "Resumo do processamento",
+        "x": 977,
+        "y": 274,
+        "width": 264,
+        "height": 23,
+        "font": 17
+      },
+      {
+        "text": "Completo \u00B7 Safe",
+        "x": 977,
+        "y": 312,
+        "width": 264,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "C\u00F3pia \u2192 modelos \u2192 m\u00EDdia \u2192 etapa exata",
+        "x": 977,
+        "y": 339,
+        "width": 264,
+        "height": 20,
+        "font": 14
+      },
+      {
+        "text": "O que muda na qualidade?",
+        "x": 977,
+        "y": 394,
+        "width": 264,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "A redu\u00E7\u00E3o de modelos, imagens e \u00E1udio pode alterar a qualidade.",
+        "x": 977,
+        "y": 421,
+        "width": 264,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "A etapa exata preserva o resultado dessa redu\u00E7\u00E3o.",
+        "x": 977,
+        "y": 471,
+        "width": 264,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "Configurar jogo e ferramentas",
+        "x": 1002,
+        "y": 529,
+        "width": 184,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Detalhes t\u00E9cnicos",
+        "x": 1002,
+        "y": 569,
+        "width": 106,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "\u25B8  Atividade e detalhes",
+        "x": 24,
+        "y": 594,
+        "width": 137,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Nenhuma instala\u00E7\u00E3o autom\u00E1tica",
+        "x": 1084,
+        "y": 595,
+        "width": 172,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Pr\u00F3ximo passo: conferir pastas e ferramentas",
+        "x": 24,
+        "y": 638,
+        "width": 1027,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Originais preservados \u00B7 sa\u00EDda em uma pasta nova",
+        "x": 24,
+        "y": 662,
+        "width": 1027,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Comprimir addon completo",
+        "x": 1067,
+        "y": 648,
+        "width": 173,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Pr\u00E9via visual \u00B7 dados ilustrativos \u00B7 processamento desconectado",
+        "x": 24,
+        "y": 701,
+        "width": 276,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "Apresenta\u00E7\u00E3o WPF / C2",
+        "x": 1153,
+        "y": 701,
+        "width": 103,
+        "height": 12,
+        "font": 10
+      }
+    ]
+  },
+  {
+    "state": "running",
+    "width": 1280,
+    "height": 720,
+    "text_count": 52,
+    "texts": [
+      {
+        "text": "g",
+        "x": 31,
+        "y": 13,
+        "width": 13,
+        "height": 30,
+        "font": 21
+      },
+      {
+        "text": "GMod Addon Optimizer",
+        "x": 62,
+        "y": 18,
+        "width": 176,
+        "height": 21,
+        "font": 16
+      },
+      {
+        "text": "/  Bancada guiada",
+        "x": 256,
+        "y": 20,
+        "width": 106,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Outras ferramentas \u25BE",
+        "x": 1074,
+        "y": 19,
+        "width": 135,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "C2",
+        "x": 1243,
+        "y": 22,
+        "width": 13,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Processando a c\u00F3pia",
+        "x": 24,
+        "y": 72,
+        "width": 942,
+        "height": 32,
+        "font": 24
+      },
+      {
+        "text": "O original permanece intacto durante o processamento.",
+        "x": 24,
+        "y": 109,
+        "width": 942,
+        "height": 20,
+        "font": 14
+      },
+      {
+        "text": "1  Preparar",
+        "x": 983,
+        "y": 94,
+        "width": 55,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "2  Processar",
+        "x": 1066,
+        "y": 94,
+        "width": 63,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "3  Testar no jogo",
+        "x": 1157,
+        "y": 94,
+        "width": 88,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Addon original \u00B7 somente leitura",
+        "x": 24,
+        "y": 161,
+        "width": 604,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Escolher\u2026",
+        "x": 554,
+        "y": 199,
+        "width": 60,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Onde salvar \u00B7 uma pasta nova",
+        "x": 652,
+        "y": 161,
+        "width": 604,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Escolher\u2026",
+        "x": 1182,
+        "y": 199,
+        "width": 60,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Arquivos do addon",
+        "x": 14,
+        "y": 270,
+        "width": 140,
+        "height": 21,
+        "font": 16
+      },
+      {
+        "text": "EXEMPLO ILUSTRATIVO",
+        "x": 835,
+        "y": 274,
+        "width": 105,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "ARQUIVO",
+        "x": 14,
+        "y": 314,
+        "width": 703,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TIPO",
+        "x": 717,
+        "y": 314,
+        "width": 60,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TRATAMENTO PREVISTO",
+        "x": 777,
+        "y": 314,
+        "width": 163,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "models/example/prop.mdl",
+        "x": 14,
+        "y": 346,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "MDL",
+        "x": 700,
+        "y": 348,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Otimizar modelos",
+        "x": 760,
+        "y": 347,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "models/example/prop.dx90.vtx",
+        "x": 14,
+        "y": 388,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "VTX",
+        "x": 700,
+        "y": 390,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Preservar DX90",
+        "x": 760,
+        "y": 389,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "materials/example/body.vtf",
+        "x": 14,
+        "y": 430,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "VTF",
+        "x": 700,
+        "y": 432,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Reduzir \u2192 etapa exata",
+        "x": 760,
+        "y": 431,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "sound/example/loop.wav",
+        "x": 14,
+        "y": 472,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "WAV",
+        "x": 700,
+        "y": 474,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "\u00C1udio \u2192 etapa exata",
+        "x": 760,
+        "y": 473,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "lua/autorun/example.lua",
+        "x": 14,
+        "y": 514,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "LUA",
+        "x": 700,
+        "y": 516,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Manter nativo",
+        "x": 760,
+        "y": 515,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Dados de exemplo; n\u00E3o representam um scan ou resultado medido.",
+        "x": 14,
+        "y": 560,
+        "width": 909,
+        "height": 20,
+        "font": 14
+      },
+      {
+        "text": "Etapa atual",
+        "x": 977,
+        "y": 274,
+        "width": 264,
+        "height": 23,
+        "font": 17
+      },
+      {
+        "text": "Texturas e \u00E1udio",
+        "x": 990,
+        "y": 324,
+        "width": 238,
+        "height": 25,
+        "font": 18
+      },
+      {
+        "text": "Progresso ilustrativo",
+        "x": 990,
+        "y": 377,
+        "width": 238,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "O que muda na qualidade?",
+        "x": 977,
+        "y": 439,
+        "width": 264,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "A redu\u00E7\u00E3o de modelos, imagens e \u00E1udio pode alterar a qualidade.",
+        "x": 977,
+        "y": 466,
+        "width": 264,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "A etapa exata preserva o resultado dessa redu\u00E7\u00E3o.",
+        "x": 977,
+        "y": 516,
+        "width": 264,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "Cancelar aguarda o encerramento seguro da opera\u00E7\u00E3o atual.",
+        "x": 977,
+        "y": 571,
+        "width": 264,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "Detalhes t\u00E9cnicos",
+        "x": 1002,
+        "y": 630,
+        "width": 106,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Atividade",
+        "x": 24,
+        "y": 551,
+        "width": 110,
+        "height": 57,
+        "font": 14
+      },
+      {
+        "text": "Exemplo: processando texturas e \u00E1udio na c\u00F3pia de trabalho.",
+        "x": 134,
+        "y": 551,
+        "width": 1029,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Tempos, arquivos atuais e mensagens vir\u00E3o da execu\u00E7\u00E3o real.",
+        "x": 134,
+        "y": 575,
+        "width": 1029,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Abrir log",
+        "x": 1189,
+        "y": 559,
+        "width": 53,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Execu\u00E7\u00E3o ilustrativa em andamento",
+        "x": 24,
+        "y": 638,
+        "width": 1065,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Originais preservados \u00B7 sa\u00EDda em uma pasta nova",
+        "x": 24,
+        "y": 662,
+        "width": 1065,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Solicitar cancelamento",
+        "x": 1105,
+        "y": 648,
+        "width": 135,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Pr\u00E9via visual \u00B7 dados ilustrativos \u00B7 processamento desconectado",
+        "x": 24,
+        "y": 701,
+        "width": 276,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "Apresenta\u00E7\u00E3o WPF / C2",
+        "x": 1153,
+        "y": 701,
+        "width": 103,
+        "height": 12,
+        "font": 10
+      }
+    ]
+  },
+  {
+    "state": "result",
+    "width": 1280,
+    "height": 720,
+    "text_count": 51,
+    "texts": [
+      {
+        "text": "g",
+        "x": 31,
+        "y": 13,
+        "width": 13,
+        "height": 30,
+        "font": 21
+      },
+      {
+        "text": "GMod Addon Optimizer",
+        "x": 62,
+        "y": 18,
+        "width": 176,
+        "height": 21,
+        "font": 16
+      },
+      {
+        "text": "/  Bancada guiada",
+        "x": 256,
+        "y": 20,
+        "width": 106,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Outras ferramentas \u25BE",
+        "x": 1074,
+        "y": 19,
+        "width": 135,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "C2",
+        "x": 1243,
+        "y": 22,
+        "width": 13,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Candidato preparado",
+        "x": 24,
+        "y": 72,
+        "width": 942,
+        "height": 32,
+        "font": 24
+      },
+      {
+        "text": "O pr\u00F3ximo passo \u00E9 testar o candidato no Garry\u2019s Mod.",
+        "x": 24,
+        "y": 109,
+        "width": 942,
+        "height": 20,
+        "font": 14
+      },
+      {
+        "text": "1  Preparar",
+        "x": 983,
+        "y": 94,
+        "width": 55,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "2  Processar",
+        "x": 1066,
+        "y": 94,
+        "width": 63,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "3  Testar no jogo",
+        "x": 1157,
+        "y": 94,
+        "width": 88,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Addon original \u00B7 somente leitura",
+        "x": 24,
+        "y": 161,
+        "width": 604,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Escolher\u2026",
+        "x": 554,
+        "y": 199,
+        "width": 60,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Onde salvar \u00B7 uma pasta nova",
+        "x": 652,
+        "y": 161,
+        "width": 604,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Escolher\u2026",
+        "x": 1182,
+        "y": 199,
+        "width": 60,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Arquivos do candidato",
+        "x": 14,
+        "y": 270,
+        "width": 166,
+        "height": 21,
+        "font": 16
+      },
+      {
+        "text": "EXEMPLO ILUSTRATIVO",
+        "x": 835,
+        "y": 274,
+        "width": 105,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "ARQUIVO",
+        "x": 14,
+        "y": 314,
+        "width": 703,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TIPO",
+        "x": 717,
+        "y": 314,
+        "width": 60,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TRATAMENTO PREVISTO",
+        "x": 777,
+        "y": 314,
+        "width": 163,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "models/example/prop.mdl",
+        "x": 14,
+        "y": 346,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "MDL",
+        "x": 700,
+        "y": 348,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Otimizar modelos",
+        "x": 760,
+        "y": 347,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "models/example/prop.dx90.vtx",
+        "x": 14,
+        "y": 388,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "VTX",
+        "x": 700,
+        "y": 390,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Preservar DX90",
+        "x": 760,
+        "y": 389,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "materials/example/body.vtf",
+        "x": 14,
+        "y": 430,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "VTF",
+        "x": 700,
+        "y": 432,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Reduzir \u2192 etapa exata",
+        "x": 760,
+        "y": 431,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "sound/example/loop.wav",
+        "x": 14,
+        "y": 472,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "WAV",
+        "x": 700,
+        "y": 474,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "\u00C1udio \u2192 etapa exata",
+        "x": 760,
+        "y": 473,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "lua/autorun/example.lua",
+        "x": 14,
+        "y": 514,
+        "width": 686,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "LUA",
+        "x": 700,
+        "y": 516,
+        "width": 60,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Manter nativo",
+        "x": 760,
+        "y": 515,
+        "width": 163,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Dados de exemplo; n\u00E3o representam um scan ou resultado medido.",
+        "x": 14,
+        "y": 560,
+        "width": 909,
+        "height": 20,
+        "font": 14
+      },
+      {
+        "text": "Antes de distribuir",
+        "x": 977,
+        "y": 274,
+        "width": 264,
+        "height": 23,
+        "font": 17
+      },
+      {
+        "text": "Valida\u00E7\u00E3o no GMod pendente",
+        "x": 992,
+        "y": 316,
+        "width": 237,
+        "height": 50,
+        "font": 18
+      },
+      {
+        "text": "OFFLINE_PENDING_GMOD",
+        "x": 992,
+        "y": 375,
+        "width": 237,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "O que muda na qualidade?",
+        "x": 977,
+        "y": 427,
+        "width": 264,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "A redu\u00E7\u00E3o de modelos, imagens e \u00E1udio pode alterar a qualidade.",
+        "x": 977,
+        "y": 454,
+        "width": 264,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "A etapa exata preserva o resultado dessa redu\u00E7\u00E3o.",
+        "x": 977,
+        "y": 504,
+        "width": 264,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "Teste apenas o candidato e preserve o nome da pasta final.",
+        "x": 977,
+        "y": 559,
+        "width": 264,
+        "height": 40,
+        "font": 14
+      },
+      {
+        "text": "Detalhes t\u00E9cnicos",
+        "x": 1002,
+        "y": 618,
+        "width": 106,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "\u25B8  Atividade e detalhes",
+        "x": 24,
+        "y": 594,
+        "width": 137,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Economia: \u2014  sem medi\u00E7\u00E3o nesta apresenta\u00E7\u00E3o",
+        "x": 1004,
+        "y": 595,
+        "width": 252,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Pr\u00F3ximo passo: validar no jogo",
+        "x": 24,
+        "y": 638,
+        "width": 961,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "A conclus\u00E3o offline n\u00E3o aprova o candidato.",
+        "x": 24,
+        "y": 662,
+        "width": 961,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Relat\u00F3rios e logs",
+        "x": 1001,
+        "y": 648,
+        "width": 100,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Abrir candidato",
+        "x": 1143,
+        "y": 648,
+        "width": 97,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Pr\u00E9via visual \u00B7 dados ilustrativos \u00B7 processamento desconectado",
+        "x": 24,
+        "y": 701,
+        "width": 276,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "Apresenta\u00E7\u00E3o WPF / C2",
+        "x": 1153,
+        "y": 701,
+        "width": 103,
+        "height": 12,
+        "font": 10
+      }
+    ]
+  }
+]

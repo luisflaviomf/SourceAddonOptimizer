@@ -25,6 +25,8 @@ namespace GmodAddonCompressor.Systems.Tools
                 {
                     "SourceAddonOptimizerWorker.exe",
                     "CrowbarCommandLineDecomp.exe",
+                    "_internal/meshopt_stripify.dll",
+                    "_internal/LICENSE.meshoptimizer.txt",
                     "_internal/base_library.zip",
                     "_internal/python311.dll"
                 }

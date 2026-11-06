@@ -44,6 +44,8 @@ namespace GmodAddonCompressor.Systems
 
         private Queue<FileInfo> _registredFiles = new Queue<FileInfo>();
         private bool _hasStarted = false;
+        private int _failureCount;
+        internal bool HasFailures => Volatile.Read(ref _failureCount) != 0;
         private Thread? _compressThread = null;
         private CancellationTokenSource? _maximumBatchCancellation;
         private List<string> _validFileExtensions = new List<string>();
@@ -132,6 +134,7 @@ namespace GmodAddonCompressor.Systems
         internal void StartCompress()
         {
             _hasStarted = true;
+            Interlocked.Exchange(ref _failureCount, 0);
 
             _maximumBatchCancellation?.Dispose();
             _maximumBatchCancellation = new CancellationTokenSource();
@@ -179,6 +182,7 @@ namespace GmodAddonCompressor.Systems
                     }
                     catch (Exception ex)
                     {
+                        Interlocked.Increment(ref _failureCount);
                         _logger.LogError(ex.ToString());
                     }
                 }
@@ -193,6 +197,7 @@ namespace GmodAddonCompressor.Systems
             }
             catch (Exception ex)
             {
+                Interlocked.Increment(ref _failureCount);
                 _logger.LogError(ex.ToString());
                 _hasStarted = false;
                 e_CompletedCompress?.Invoke();
@@ -225,6 +230,7 @@ namespace GmodAddonCompressor.Systems
                 }
                 catch (Exception ex)
                 {
+                    Interlocked.Increment(ref _failureCount);
                     _logger.LogError(ex.ToString());
                 }
             }
@@ -275,10 +281,12 @@ namespace GmodAddonCompressor.Systems
                 {
                     try
                     {
-                        await Task.WhenAny(service.Compress(file.FullName), Task.Delay(TimeSpan.FromMinutes(2)));
+                        // Observe task faults/timeouts so Pipeline cannot export a failed native stage.
+                        await service.Compress(file.FullName).WaitAsync(TimeSpan.FromMinutes(2));
                     }
                     catch (Exception ex)
                     {
+                        Interlocked.Increment(ref _failureCount);
                         _logger.LogError(ex.ToString());
                     }
                 }

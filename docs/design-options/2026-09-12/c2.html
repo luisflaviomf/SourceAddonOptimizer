@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>C2 · Bancada guiada</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#202326;color:#f1f2f3;font:15px/1.5 'Segoe UI',sans-serif}main{max-width:1424px;margin:auto;padding:28px 32px}h1{font-size:26px;font-weight:600;margin:0 0 8px}p{color:#bfc6cc;margin:0 0 18px;max-width:95ch}.controls{display:flex;gap:8px;flex-wrap:wrap;margin:24px 0 16px}button{font:inherit;padding:10px 16px;border:1px solid #51575e;background:#282c30;color:#f1f2f3;border-radius:5px;cursor:pointer}button[aria-pressed=true]{background:#d7b78b;color:#28231c;border-color:#d7b78b}button:focus-visible,a:focus-visible{outline:3px solid #d7b78b;outline-offset:3px}img{width:100%;display:block;border:1px solid #41484f}a{color:#e2c59f}.caption{display:flex;justify-content:space-between;gap:16px;margin:10px 0 24px;font-size:13px;color:#bfc6cc}.note{font-size:13px}h2{font-size:19px;font-weight:600;margin:26px 0 10px}.changes{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:24px}.changes p{flex:1;min-width:220px}strong{color:#f1f2f3;font-weight:600}@media(max-width:700px){main{padding:18px}.caption{display:block}}
+</style>
+<main>
+<h1>C2 · Bancada guiada</h1>
+<p>O visual técnico da Bancada, com uma sequência mais clara: escolher o addon, conferir o processamento e gerar um candidato para testar.</p>
+<div class="controls" aria-label="Telas de comparação">
+<button data-state="empty" aria-pressed="true">Ao abrir</button>
+<button data-state="setup" aria-pressed="false">Preparar</button>
+<button data-state="running" aria-pressed="false">Executando</button>
+<button data-state="result" aria-pressed="false">Resultado</button>
+<button data-state="previous" aria-pressed="false">Comparar com C anterior</button>
+</div>
+<img id="screen" src="renders-c2/C2-r2/empty.png" alt="Bancada guiada — ao abrir">
+<div class="caption"><span id="caption">C2 · Ao abrir</span><a id="full" href="renders-c2/C2-r2/empty.png" target="_blank">Abrir em tamanho original · 1280 × 720</a></div>
+<div class="changes">
+<p><strong>Começar sem procurar</strong><br>Origem e destino em destaque, com uma ação separada para cada pasta.</p>
+<p><strong>Entender antes de executar</strong><br>Resumo do que será aplicado, com detalhes técnicos recolhidos.</p>
+<p><strong>Acompanhar o próximo passo</strong><br>Preparação, execução e resultado têm ações próprias e claramente identificadas.</p>
+</div>
+<p class="note">Telas renderizadas diretamente dos controles WPF. Dados e progresso são ilustrativos; nenhum processamento está conectado nesta apresentação. A integração no programa aguarda aprovação. A referência é a área cliente em 1280 × 720 a 96 DPI, sem a moldura do Windows.</p>
+<p class="note"><a href="C2-NOTES.md">Decisões da revisão</a> · <a href="index.html">Três opções anteriores</a></p>
+</main>
+<script>
+const labels={empty:'Ao abrir',setup:'Preparar',running:'Executando',result:'Resultado',previous:'C anterior · Preparar'};
+document.querySelectorAll('[data-state]').forEach(button=>button.addEventListener('click',()=>{const state=button.dataset.state;const path=state==='previous'?'renders-final/C-Bancada-r2/setup.png':`renders-c2/C2-r2/${state}.png`;document.querySelectorAll('[data-state]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));document.getElementById('screen').src=path;document.getElementById('screen').alt=labels[state];document.getElementById('full').href=path;document.getElementById('caption').textContent=state==='previous'?labels[state]:`C2 · ${labels[state]}`;}));
+</script>
+</html>

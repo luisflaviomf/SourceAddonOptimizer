@@ -1,0 +1,1634 @@
+[
+  {
+    "state": "setup",
+    "width": 1280,
+    "height": 720,
+    "text_count": 66,
+    "texts": [
+      {
+        "text": "g",
+        "x": 24,
+        "y": 14,
+        "width": 12,
+        "height": 25,
+        "font": 19
+      },
+      {
+        "text": "GMod Addon Optimizer",
+        "x": 53,
+        "y": 16,
+        "width": 163,
+        "height": 20,
+        "font": 15
+      },
+      {
+        "text": "/   Bancada de arquivos",
+        "x": 234,
+        "y": 18,
+        "width": 139,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "C / BANCADA",
+        "x": 1193,
+        "y": 20,
+        "width": 69,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Arquivo",
+        "x": 20,
+        "y": 64,
+        "width": 48,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Processar",
+        "x": 94,
+        "y": 64,
+        "width": 58,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Distribui\u00E7\u00E3o",
+        "x": 178,
+        "y": 64,
+        "width": 72,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Mapas",
+        "x": 276,
+        "y": 64,
+        "width": 41,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Ferramentas",
+        "x": 343,
+        "y": 64,
+        "width": 76,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Perfil completo \u00B7 Safe",
+        "x": 1147,
+        "y": 65,
+        "width": 112,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Compress\u00E3o completa",
+        "x": 18,
+        "y": 111,
+        "width": 219,
+        "height": 30,
+        "font": 22
+      },
+      {
+        "text": "PREPARAR",
+        "x": 256,
+        "y": 120,
+        "width": 48,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "Comprimir addon completo",
+        "x": 1073,
+        "y": 116,
+        "width": 173,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "ORIGEM",
+        "x": 14,
+        "y": 181,
+        "width": 143,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "\u25BE  addon_exemplo",
+        "x": 14,
+        "y": 203,
+        "width": 143,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  models",
+        "x": 28,
+        "y": 237,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  materials",
+        "x": 28,
+        "y": 271,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  sound",
+        "x": 28,
+        "y": 305,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  lua",
+        "x": 28,
+        "y": 339,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "SA\u00CDDA",
+        "x": 14,
+        "y": 404,
+        "width": 143,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "\u25B8  candidato novo",
+        "x": 14,
+        "y": 426,
+        "width": 143,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Criado ap\u00F3s executar",
+        "x": 28,
+        "y": 450,
+        "width": 129,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "Arquivos de exemplo",
+        "x": 189,
+        "y": 179,
+        "width": 156,
+        "height": 21,
+        "font": 16
+      },
+      {
+        "text": "POL\u00CDTICA PREVISTA",
+        "x": 887,
+        "y": 183,
+        "width": 86,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "NOME",
+        "x": 186,
+        "y": 227,
+        "width": 607,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TIPO",
+        "x": 793,
+        "y": 227,
+        "width": 56,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TRATAMENTO",
+        "x": 849,
+        "y": 227,
+        "width": 127,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "models/example/prop.mdl",
+        "x": 186,
+        "y": 262,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "MDL",
+        "x": 776,
+        "y": 264,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Models Safe",
+        "x": 832,
+        "y": 263,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "models/example/prop.vvd",
+        "x": 186,
+        "y": 306,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "VVD",
+        "x": 776,
+        "y": 308,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Etapa exata",
+        "x": 832,
+        "y": 307,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "models/example/prop.dx90.vtx",
+        "x": 186,
+        "y": 350,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "VTX",
+        "x": 776,
+        "y": 352,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Preservar DX90",
+        "x": 832,
+        "y": 351,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "materials/example/body.vtf",
+        "x": 186,
+        "y": 394,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "VTF",
+        "x": 776,
+        "y": 396,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "M\u00EDdia \u2192 exata",
+        "x": 832,
+        "y": 395,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "materials/example/icon.png",
+        "x": 186,
+        "y": 438,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "PNG",
+        "x": 776,
+        "y": 440,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Redu\u00E7\u00E3o nativa",
+        "x": 832,
+        "y": 439,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "sound/example/loop.wav",
+        "x": 186,
+        "y": 482,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "WAV",
+        "x": 776,
+        "y": 484,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "M\u00EDdia \u2192 exata",
+        "x": 832,
+        "y": 483,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "lua/autorun/example.lua",
+        "x": 186,
+        "y": 526,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "LUA",
+        "x": 776,
+        "y": 528,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Manter nativo",
+        "x": 832,
+        "y": 527,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Arquivos e pol\u00EDticas ilustrativos; nenhum invent\u00E1rio foi executado.",
+        "x": 189,
+        "y": 579,
+        "width": 767,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "DX80 e SW ficam fora da sele\u00E7\u00E3o de distribui\u00E7\u00E3o. Essa economia \u00E9 registrada separadamente.",
+        "x": 189,
+        "y": 609,
+        "width": 767,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "INSPECTOR DA OPERA\u00C7\u00C3O",
+        "x": 1012,
+        "y": 181,
+        "width": 230,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Configurar candidato",
+        "x": 1012,
+        "y": 203,
+        "width": 230,
+        "height": 28,
+        "font": 20
+      },
+      {
+        "text": "Entrada \u00B7 somente leitura",
+        "x": 1012,
+        "y": 252,
+        "width": 230,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Pasta final nova",
+        "x": 1012,
+        "y": 326,
+        "width": 230,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Escolher pastas",
+        "x": 1024,
+        "y": 408,
+        "width": 93,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Engine e ferramentas",
+        "x": 1037,
+        "y": 451,
+        "width": 129,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Completo \u00B7 Safe",
+        "x": 1012,
+        "y": 511,
+        "width": 230,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "Staging \u2192 modelos \u2192 m\u00EDdia \u2192 exata",
+        "x": 1012,
+        "y": 535,
+        "width": 230,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "A redu\u00E7\u00E3o nativa pode alterar a qualidade. A etapa exata reconstr\u00F3i o intermedi\u00E1rio selecionado.",
+        "x": 1012,
+        "y": 573,
+        "width": 230,
+        "height": 60,
+        "font": 13
+      },
+      {
+        "text": "Atividade",
+        "x": 18,
+        "y": 606,
+        "width": 157,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "EXEMPLO VISUAL",
+        "x": 18,
+        "y": 630,
+        "width": 157,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "\u2014  Aguardando configura\u00E7\u00E3o de entrada e sa\u00EDda.",
+        "x": 175,
+        "y": 606,
+        "width": 988,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "\u2014  Medi\u00E7\u00F5es, tempos e hashes aparecem ap\u00F3s uma execu\u00E7\u00E3o real.",
+        "x": 175,
+        "y": 628,
+        "width": 988,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Abrir log",
+        "x": 1195,
+        "y": 614,
+        "width": 53,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Pr\u00E9via visual \u00B7 dados ilustrativos \u00B7 processamento desconectado",
+        "x": 18,
+        "y": 701,
+        "width": 276,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "Somente leitura na origem   |   Pasta nova na sa\u00EDda",
+        "x": 1039,
+        "y": 701,
+        "width": 223,
+        "height": 12,
+        "font": 10
+      }
+    ]
+  },
+  {
+    "state": "running",
+    "width": 1280,
+    "height": 720,
+    "text_count": 66,
+    "texts": [
+      {
+        "text": "g",
+        "x": 24,
+        "y": 14,
+        "width": 12,
+        "height": 25,
+        "font": 19
+      },
+      {
+        "text": "GMod Addon Optimizer",
+        "x": 53,
+        "y": 16,
+        "width": 163,
+        "height": 20,
+        "font": 15
+      },
+      {
+        "text": "/   Bancada de arquivos",
+        "x": 234,
+        "y": 18,
+        "width": 139,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "C / BANCADA",
+        "x": 1193,
+        "y": 20,
+        "width": 69,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Arquivo",
+        "x": 20,
+        "y": 64,
+        "width": 48,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Processar",
+        "x": 94,
+        "y": 64,
+        "width": 58,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Distribui\u00E7\u00E3o",
+        "x": 178,
+        "y": 64,
+        "width": 72,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Mapas",
+        "x": 276,
+        "y": 64,
+        "width": 41,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Ferramentas",
+        "x": 343,
+        "y": 64,
+        "width": 76,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Perfil completo \u00B7 Safe",
+        "x": 1147,
+        "y": 65,
+        "width": 112,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Compress\u00E3o completa",
+        "x": 18,
+        "y": 111,
+        "width": 219,
+        "height": 30,
+        "font": 22
+      },
+      {
+        "text": "EXECU\u00C7\u00C3O ILUSTRATIVA",
+        "x": 256,
+        "y": 120,
+        "width": 112,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "Processando a c\u00F3pia\u2026",
+        "x": 1112,
+        "y": 116,
+        "width": 134,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "ORIGEM",
+        "x": 14,
+        "y": 181,
+        "width": 143,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "\u25BE  addon_exemplo",
+        "x": 14,
+        "y": 203,
+        "width": 143,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  models",
+        "x": 28,
+        "y": 237,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  materials",
+        "x": 28,
+        "y": 271,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  sound",
+        "x": 28,
+        "y": 305,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  lua",
+        "x": 28,
+        "y": 339,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "SA\u00CDDA",
+        "x": 14,
+        "y": 404,
+        "width": 143,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "\u25B8  candidato novo",
+        "x": 14,
+        "y": 426,
+        "width": 143,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Criado ap\u00F3s executar",
+        "x": 28,
+        "y": 450,
+        "width": 129,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "Arquivos de exemplo",
+        "x": 189,
+        "y": 179,
+        "width": 156,
+        "height": 21,
+        "font": 16
+      },
+      {
+        "text": "POL\u00CDTICA PREVISTA",
+        "x": 887,
+        "y": 183,
+        "width": 86,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "NOME",
+        "x": 186,
+        "y": 227,
+        "width": 607,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TIPO",
+        "x": 793,
+        "y": 227,
+        "width": 56,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TRATAMENTO",
+        "x": 849,
+        "y": 227,
+        "width": 127,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "models/example/prop.mdl",
+        "x": 186,
+        "y": 262,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "MDL",
+        "x": 776,
+        "y": 264,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Models Safe",
+        "x": 832,
+        "y": 263,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "models/example/prop.vvd",
+        "x": 186,
+        "y": 306,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "VVD",
+        "x": 776,
+        "y": 308,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Etapa exata",
+        "x": 832,
+        "y": 307,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "models/example/prop.dx90.vtx",
+        "x": 186,
+        "y": 350,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "VTX",
+        "x": 776,
+        "y": 352,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Preservar DX90",
+        "x": 832,
+        "y": 351,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "materials/example/body.vtf",
+        "x": 186,
+        "y": 394,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "VTF",
+        "x": 776,
+        "y": 396,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "M\u00EDdia \u2192 exata",
+        "x": 832,
+        "y": 395,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "materials/example/icon.png",
+        "x": 186,
+        "y": 438,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "PNG",
+        "x": 776,
+        "y": 440,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Redu\u00E7\u00E3o nativa",
+        "x": 832,
+        "y": 439,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "sound/example/loop.wav",
+        "x": 186,
+        "y": 482,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "WAV",
+        "x": 776,
+        "y": 484,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "M\u00EDdia \u2192 exata",
+        "x": 832,
+        "y": 483,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "lua/autorun/example.lua",
+        "x": 186,
+        "y": 526,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "LUA",
+        "x": 776,
+        "y": 528,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Manter nativo",
+        "x": 832,
+        "y": 527,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Arquivos e pol\u00EDticas ilustrativos; nenhum invent\u00E1rio foi executado.",
+        "x": 189,
+        "y": 579,
+        "width": 767,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "DX80 e SW ficam fora da sele\u00E7\u00E3o de distribui\u00E7\u00E3o. Essa economia \u00E9 registrada separadamente.",
+        "x": 189,
+        "y": 609,
+        "width": 767,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "INSPECTOR DA OPERA\u00C7\u00C3O",
+        "x": 1012,
+        "y": 181,
+        "width": 230,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Execu\u00E7\u00E3o em andamento",
+        "x": 1012,
+        "y": 203,
+        "width": 230,
+        "height": 28,
+        "font": 20
+      },
+      {
+        "text": "ETAPA ATUAL",
+        "x": 1026,
+        "y": 266,
+        "width": 202,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Texturas e \u00E1udio",
+        "x": 1026,
+        "y": 288,
+        "width": 202,
+        "height": 25,
+        "font": 18
+      },
+      {
+        "text": "Barra ilustrativa",
+        "x": 1026,
+        "y": 345,
+        "width": 202,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "addon_exemplo",
+        "x": 1012,
+        "y": 420,
+        "width": 230,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "O processamento usa a c\u00F3pia de trabalho.",
+        "x": 1012,
+        "y": 444,
+        "width": 230,
+        "height": 40,
+        "font": 13
+      },
+      {
+        "text": "Cancelar aguarda o encerramento seguro da opera\u00E7\u00E3o atual.",
+        "x": 1012,
+        "y": 500,
+        "width": 230,
+        "height": 40,
+        "font": 13
+      },
+      {
+        "text": "Solicitar cancelamento",
+        "x": 1060,
+        "y": 574,
+        "width": 135,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Atividade",
+        "x": 18,
+        "y": 606,
+        "width": 157,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "EXEMPLO VISUAL",
+        "x": 18,
+        "y": 630,
+        "width": 157,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "\u2014  Etapa ilustrativa: processamento de texturas e \u00E1udio.",
+        "x": 175,
+        "y": 606,
+        "width": 988,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "\u2014  Medi\u00E7\u00F5es, tempos e hashes aparecem ap\u00F3s uma execu\u00E7\u00E3o real.",
+        "x": 175,
+        "y": 628,
+        "width": 988,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Abrir log",
+        "x": 1195,
+        "y": 614,
+        "width": 53,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Pr\u00E9via visual \u00B7 dados ilustrativos \u00B7 processamento desconectado",
+        "x": 18,
+        "y": 701,
+        "width": 276,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "Somente leitura na origem   |   Pasta nova na sa\u00EDda",
+        "x": 1039,
+        "y": 701,
+        "width": 223,
+        "height": 12,
+        "font": 10
+      }
+    ]
+  },
+  {
+    "state": "result",
+    "width": 1280,
+    "height": 720,
+    "text_count": 69,
+    "texts": [
+      {
+        "text": "g",
+        "x": 24,
+        "y": 14,
+        "width": 12,
+        "height": 25,
+        "font": 19
+      },
+      {
+        "text": "GMod Addon Optimizer",
+        "x": 53,
+        "y": 16,
+        "width": 163,
+        "height": 20,
+        "font": 15
+      },
+      {
+        "text": "/   Bancada de arquivos",
+        "x": 234,
+        "y": 18,
+        "width": 139,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "C / BANCADA",
+        "x": 1193,
+        "y": 20,
+        "width": 69,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Arquivo",
+        "x": 20,
+        "y": 64,
+        "width": 48,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Processar",
+        "x": 94,
+        "y": 64,
+        "width": 58,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Distribui\u00E7\u00E3o",
+        "x": 178,
+        "y": 64,
+        "width": 72,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Mapas",
+        "x": 276,
+        "y": 64,
+        "width": 41,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Ferramentas",
+        "x": 343,
+        "y": 64,
+        "width": 76,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Perfil completo \u00B7 Safe",
+        "x": 1147,
+        "y": 65,
+        "width": 112,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Compress\u00E3o completa",
+        "x": 18,
+        "y": 111,
+        "width": 219,
+        "height": 30,
+        "font": 22
+      },
+      {
+        "text": "RESULTADO ILUSTRATIVO",
+        "x": 256,
+        "y": 120,
+        "width": 118,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "Preparar outro addon",
+        "x": 1113,
+        "y": 116,
+        "width": 133,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "ORIGEM",
+        "x": 14,
+        "y": 181,
+        "width": 143,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "\u25BE  addon_exemplo",
+        "x": 14,
+        "y": 203,
+        "width": 143,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  models",
+        "x": 28,
+        "y": 237,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  materials",
+        "x": 28,
+        "y": 271,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  sound",
+        "x": 28,
+        "y": 305,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u25B8  lua",
+        "x": 28,
+        "y": 339,
+        "width": 129,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "SA\u00CDDA",
+        "x": 14,
+        "y": 404,
+        "width": 143,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "\u25B8  candidato novo",
+        "x": 14,
+        "y": 426,
+        "width": 143,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Criado ap\u00F3s executar",
+        "x": 28,
+        "y": 450,
+        "width": 129,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "Arquivos de exemplo",
+        "x": 189,
+        "y": 179,
+        "width": 156,
+        "height": 21,
+        "font": 16
+      },
+      {
+        "text": "POL\u00CDTICA PREVISTA",
+        "x": 887,
+        "y": 183,
+        "width": 86,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "NOME",
+        "x": 186,
+        "y": 227,
+        "width": 607,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TIPO",
+        "x": 793,
+        "y": 227,
+        "width": 56,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "TRATAMENTO",
+        "x": 849,
+        "y": 227,
+        "width": 127,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "models/example/prop.mdl",
+        "x": 186,
+        "y": 262,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "MDL",
+        "x": 776,
+        "y": 264,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Models Safe",
+        "x": 832,
+        "y": 263,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "models/example/prop.vvd",
+        "x": 186,
+        "y": 306,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "VVD",
+        "x": 776,
+        "y": 308,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Etapa exata",
+        "x": 832,
+        "y": 307,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "models/example/prop.dx90.vtx",
+        "x": 186,
+        "y": 350,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "VTX",
+        "x": 776,
+        "y": 352,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Preservar DX90",
+        "x": 832,
+        "y": 351,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "materials/example/body.vtf",
+        "x": 186,
+        "y": 394,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "VTF",
+        "x": 776,
+        "y": 396,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "M\u00EDdia \u2192 exata",
+        "x": 832,
+        "y": 395,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "materials/example/icon.png",
+        "x": 186,
+        "y": 438,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "PNG",
+        "x": 776,
+        "y": 440,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Redu\u00E7\u00E3o nativa",
+        "x": 832,
+        "y": 439,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "sound/example/loop.wav",
+        "x": 186,
+        "y": 482,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "WAV",
+        "x": 776,
+        "y": 484,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "M\u00EDdia \u2192 exata",
+        "x": 832,
+        "y": 483,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "lua/autorun/example.lua",
+        "x": 186,
+        "y": 526,
+        "width": 590,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "LUA",
+        "x": 776,
+        "y": 528,
+        "width": 56,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Manter nativo",
+        "x": 832,
+        "y": 527,
+        "width": 127,
+        "height": 15,
+        "font": 12
+      },
+      {
+        "text": "Arquivos e pol\u00EDticas ilustrativos; nenhum invent\u00E1rio foi executado.",
+        "x": 189,
+        "y": 579,
+        "width": 767,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "DX80 e SW ficam fora da sele\u00E7\u00E3o de distribui\u00E7\u00E3o. Essa economia \u00E9 registrada separadamente.",
+        "x": 189,
+        "y": 609,
+        "width": 767,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "INSPECTOR DA OPERA\u00C7\u00C3O",
+        "x": 1012,
+        "y": 181,
+        "width": 230,
+        "height": 13,
+        "font": 11
+      },
+      {
+        "text": "Resultado offline",
+        "x": 1012,
+        "y": 203,
+        "width": 230,
+        "height": 28,
+        "font": 20
+      },
+      {
+        "text": "GMod pendente",
+        "x": 1027,
+        "y": 255,
+        "width": 203,
+        "height": 25,
+        "font": 19
+      },
+      {
+        "text": "OFFLINE_PENDING_GMOD",
+        "x": 1027,
+        "y": 288,
+        "width": 203,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "Candidato",
+        "x": 1012,
+        "y": 352,
+        "width": 230,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "addon_exemplo_opt",
+        "x": 1012,
+        "y": 376,
+        "width": 230,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "Redu\u00E7\u00E3o de tamanho",
+        "x": 1012,
+        "y": 396,
+        "width": 230,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "\u2014",
+        "x": 1012,
+        "y": 420,
+        "width": 230,
+        "height": 41,
+        "font": 30
+      },
+      {
+        "text": "N\u00E3o medida nesta apresenta\u00E7\u00E3o",
+        "x": 1012,
+        "y": 461,
+        "width": 230,
+        "height": 20,
+        "font": 13
+      },
+      {
+        "text": "Abrir candidato",
+        "x": 1078,
+        "y": 514,
+        "width": 97,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Relat\u00F3rios e logs",
+        "x": 1077,
+        "y": 565,
+        "width": 100,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Nenhuma instala\u00E7\u00E3o autom\u00E1tica. Teste o candidato isoladamente no jogo.",
+        "x": 1012,
+        "y": 612,
+        "width": 230,
+        "height": 40,
+        "font": 13
+      },
+      {
+        "text": "Atividade",
+        "x": 18,
+        "y": 606,
+        "width": 157,
+        "height": 17,
+        "font": 13
+      },
+      {
+        "text": "EXEMPLO VISUAL",
+        "x": 18,
+        "y": 630,
+        "width": 157,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "\u2014  Estado ilustrativo: candidato offline, valida\u00E7\u00E3o no GMod pendente.",
+        "x": 175,
+        "y": 606,
+        "width": 988,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "\u2014  Medi\u00E7\u00F5es, tempos e hashes aparecem ap\u00F3s uma execu\u00E7\u00E3o real.",
+        "x": 175,
+        "y": 628,
+        "width": 988,
+        "height": 14,
+        "font": 12
+      },
+      {
+        "text": "Abrir log",
+        "x": 1195,
+        "y": 614,
+        "width": 53,
+        "height": 19,
+        "font": 14
+      },
+      {
+        "text": "Pr\u00E9via visual \u00B7 dados ilustrativos \u00B7 processamento desconectado",
+        "x": 18,
+        "y": 701,
+        "width": 276,
+        "height": 12,
+        "font": 10
+      },
+      {
+        "text": "Somente leitura na origem   |   Pasta nova na sa\u00EDda",
+        "x": 1039,
+        "y": 701,
+        "width": 223,
+        "height": 12,
+        "font": 10
+      }
+    ]
+  }
+]

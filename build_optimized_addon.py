@@ -14,6 +14,7 @@ from pathlib import Path
 
 import selective_policy_models
 import vehicle_steer_turn_basis_fix
+import vtx_tristrip_optimizer
 
 
 OPTIMIZER_MODE_NORMAL = "normal"
@@ -255,6 +256,20 @@ def _runtime_root() -> Path:
             return Path(base).resolve()
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
+
+
+def _resolve_vtx_stripifier_dll(repo_root: Path) -> Path:
+    candidates = (
+        repo_root / "meshopt_stripify.dll",
+        repo_root / "tools" / "vtx" / "meshopt_stripify.dll",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    searched = ", ".join(str(candidate) for candidate in candidates)
+    raise vtx_tristrip_optimizer.VtxOptimizeError(
+        f"meshoptimizer stripifier DLL was not packaged; searched: {searched}"
+    )
 
 
 _ADDON_MARKER_DIRS = {
@@ -785,6 +800,35 @@ def _run_single_addon(
         if removed_dx80:
             print(f"[INFO] Removed .dx80.vtx files: {removed_dx80}")
 
+        if args.vtx_tristrips:
+            print("== Packaging: VTX TRI_STRIP exact-topology compression ==")
+            vtx_report_path = work_dir / "logs" / "vtx_tristrip_summary.json"
+            vtx_dll_path = _resolve_vtx_stripifier_dll(repo_root)
+            vtx_summary = vtx_tristrip_optimizer.optimize_tree(
+                out_models_dir,
+                vtx_dll_path,
+                report_path=vtx_report_path,
+            )
+            print(
+                "[VTX-TRISTRIP] "
+                f"scanned={vtx_summary.scanned_files} "
+                f"optimized={vtx_summary.optimized_files} "
+                f"already={vtx_summary.already_tristrip_files} "
+                f"skipped={vtx_summary.skipped_files} "
+                f"failed={vtx_summary.failed_files}"
+            )
+            print(
+                "[VTX-TRISTRIP] "
+                f"bytes={vtx_summary.source_bytes}->{vtx_summary.candidate_bytes} "
+                f"saved={vtx_summary.saved_bytes}; report={vtx_report_path}"
+            )
+            if vtx_summary.failed_files:
+                print(
+                    "[WARN] VTX TRI_STRIP left "
+                    f"{vtx_summary.failed_files} unsupported/failed file(s) byte-identical; "
+                    f"see {vtx_report_path}"
+                )
+
         if args.cleanup_work_model_artifacts:
             print("\n== Finalize: Cleanup heavy work folders ==")
             cleanup_targets = [compiled_dir, src_root]
@@ -957,6 +1001,11 @@ def main(argv: list[str]) -> int:
         help="Experimental opt-in: preserve wheels and embedded round parts such as steering wheels/gauges using the current ratio, while keeping the standard pipeline unchanged when disabled.",
     )
     ap.add_argument(
+        "--vtx-tristrips",
+        action="store_true",
+        help="Automatically compress every compatible dx90.vtx using GMod-tested triangle strips. Each file is topology-verified and transactionally kept original on failure.",
+    )
+    ap.add_argument(
         "--single-addon-only",
         action="store_true",
         help="Reject folders that contain multiple addon subfolders instead of running batch mode.",
@@ -980,6 +1029,15 @@ def main(argv: list[str]) -> int:
     for p in required_scripts:
         if not p.exists():
             print(f"[ERROR] Missing required script: {p}")
+            return 2
+
+    if args.vtx_tristrips:
+        try:
+            vtx_tristrip_optimizer.validate_stripifier(
+                _resolve_vtx_stripifier_dll(repo_root)
+            )
+        except vtx_tristrip_optimizer.VtxOptimizeError as error:
+            print(f"[ERROR] {error}")
             return 2
 
     addon_path = Path(args.addon).expanduser().resolve()

@@ -24,6 +24,9 @@ function Get-WorkerSourceFiles {
         (Join-Path $PWD "render_previews.py"),
         (Join-Path $PWD "selective_policy_models.py"),
         (Join-Path $PWD "vehicle_steer_turn_basis_fix.py"),
+        (Join-Path $PWD "vtx_tristrip_optimizer.py"),
+        (Join-Path $PWD "tools\\vtx\\meshopt_stripify.dll"),
+        (Join-Path $PWD "tools\\vtx\\LICENSE.meshoptimizer.txt"),
         (Join-Path $PWD "pyinstaller\\worker.spec")
     )
 
@@ -31,6 +34,13 @@ function Get-WorkerSourceFiles {
         if (Test-Path $path) {
             Get-Item $path
         }
+    }
+    Get-ChildItem -LiteralPath (Join-Path $PWD "exact_distribution") -File -Filter "*.py"
+    $pinsPath = Join-Path $PWD "exact_distribution/vendor-pins.json"
+    Get-Item -LiteralPath $pinsPath
+    $pins = Get-Content -LiteralPath $pinsPath -Raw | ConvertFrom-Json
+    foreach ($relative in $pins.files.PSObject.Properties.Name) {
+        Get-Item -LiteralPath (Join-Path $PWD $relative)
     }
 }
 
@@ -97,9 +107,16 @@ function Assert-PackageZip {
     $requiredEntries = @(
         "SourceAddonOptimizerWorker.exe",
         "CrowbarCommandLineDecomp.exe",
+        "_internal/meshopt_stripify.dll",
+        "_internal/LICENSE.meshoptimizer.txt",
         "_internal/base_library.zip",
         "_internal/python311.dll"
     )
+    $requiredEntries += "_internal/exact_distribution/vendor-pins.json"
+    $requiredEntries += Get-ChildItem -LiteralPath (Join-Path $PWD "exact_distribution") -File -Filter "*.py" |
+        ForEach-Object { "_internal/exact_distribution/" + $_.Name }
+    $pins = Get-Content -LiteralPath (Join-Path $PWD "exact_distribution/vendor-pins.json") -Raw | ConvertFrom-Json
+    $requiredEntries += $pins.files.PSObject.Properties.Name | ForEach-Object { "_internal/" + $_ }
 
     foreach ($entry in $requiredEntries) {
         if (!(Test-ZipHasEntry -ZipFile $ZipFile -EntryPath $entry)) {

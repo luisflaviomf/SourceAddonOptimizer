@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GMod Addon Optimizer — três direções de design</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101215;color:#edf0f3;font:15px/1.5 'Segoe UI',sans-serif}main{max-width:1440px;margin:auto;padding:28px 32px}h1{font-size:25px;line-height:1.2;margin:0 0 8px;font-weight:600}p{color:#bac2cc;margin:0 0 20px;max-width:85ch}.controls{display:flex;align-items:center;gap:24px;flex-wrap:wrap;margin:24px 0 16px}.group{display:flex;gap:6px;flex-wrap:wrap}button{font:inherit;border:1px solid #414750;border-radius:6px;color:#dce1e7;background:transparent;padding:9px 14px;cursor:pointer}button:hover{background:#252a32}button[aria-pressed=true]{background:#e5ebf1;color:#15191f;border-color:#e5ebf1}button:focus-visible,a:focus-visible{outline:3px solid #6cbde8;outline-offset:3px}.screen{width:100%;display:block;background:#1b2026;border:1px solid #414750}a{color:#90ccec}.detail{display:flex;justify-content:space-between;gap:16px;margin:10px 0 24px;color:#bac2cc}h2{font-size:20px;margin:24px 0 8px}.compare{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.compare img{width:100%;display:block}.compare a{display:block;text-decoration:none}.compare span{display:block;margin:8px 0}.fine{font-size:13px}.tag{color:#9ed2b7}@media(max-width:800px){main{padding:18px}.compare{grid-template-columns:1fr}.detail{display:block}}
+</style>
+<main>
+<h1>GMod Addon Optimizer · Escolha de design</h1>
+<p>Três apresentações desenhadas pelo Astra e renderizadas diretamente em WPF. São layouts de aprovação, isolados do programa atual. Os controles mostrados nas imagens não executam operações; o motor será conectado após sua escolha.</p>
+<div class="controls">
+  <div class="group" aria-label="Estilo">
+    <button data-style="A-Studio" aria-pressed="true">A · Studio</button>
+    <button data-style="B-Fluxo" aria-pressed="false">B · Fluxo</button>
+    <button data-style="C-Bancada" aria-pressed="false">C · Bancada</button>
+  </div>
+  <div class="group" aria-label="Estado da tela">
+    <button data-state="setup" aria-pressed="true">Preparar</button>
+    <button data-state="running" aria-pressed="false">Executando</button>
+    <button data-state="result" aria-pressed="false">Resultado</button>
+  </div>
+</div>
+<img class="screen" id="screen" src="renders-final/A-Studio/setup.png" alt="Opção A Studio — preparação da compressão">
+<div class="detail"><span id="caption">A · Studio — Preparar</span><a id="original" href="renders-final/A-Studio/setup.png" target="_blank">Abrir imagem em tamanho original · 1280 × 720</a></div>
+<p id="description">Navegação lateral, área de trabalho limpa e resumo da operação: a opção equilibrada entre simplicidade e controle.</p>
+<h2>As três organizações lado a lado</h2>
+<div class="compare">
+  <a href="renders-final/A-Studio/setup.png" target="_blank"><img src="renders-final/A-Studio/setup.png" alt="Studio"><span>A · Studio — foco na operação principal</span></a>
+  <a href="renders-final/B-Fluxo/setup.png" target="_blank"><img src="renders-final/B-Fluxo/setup.png" alt="Fluxo"><span>B · Fluxo — uma decisão por etapa</span></a>
+  <a href="renders-final/C-Bancada-r2/setup.png" target="_blank"><img src="renders-final/C-Bancada-r2/setup.png" alt="Bancada"><span>C · Bancada — arquivos e detalhes visíveis</span></a>
+</div>
+<p class="fine">Referência: área de conteúdo de 1280 × 720 unidades WPF, renderizada a 96 DPI. A moldura nativa da janela varia com o Windows. Os mesmos XAML acompanham a apresentação para preservar o desenho aprovado; redimensionamento e escala de tela serão tratados na implementação. Estados de execução e resultado são ilustrativos, não novas medições ou aprovações de candidatos.</p>
+<p class="fine"><a href="SPEC.md">Especificação das opções</a> · <a href="AUDIT.md">Análise da interface atual e escopo</a></p>
+</main>
+<script>
+let style='A-Studio',state='setup';
+const titles={'A-Studio':'A · Studio','B-Fluxo':'B · Fluxo','C-Bancada':'C · Bancada'};
+const states={setup:'Preparar',running:'Executando',result:'Resultado'};
+const descriptions={'A-Studio':'Navegação lateral, área de trabalho limpa e resumo da operação: a opção equilibrada entre simplicidade e controle.','B-Fluxo':'Fluxo claro e guiado. Preparação, execução e resultado têm hierarquia própria; ferramentas especializadas ficam acessíveis sem ocupar a tela principal.','C-Bancada':'Ambiente compacto para usuários experientes: arquivos no centro, propriedades no painel lateral e atividade embaixo.'};
+function update(){document.querySelectorAll('[data-style]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.style===style)));document.querySelectorAll('[data-state]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.state===state)));const folder=style==='C-Bancada'?'C-Bancada-r2':style;const path=`renders-final/${folder}/${state}.png`;document.getElementById('screen').src=path;document.getElementById('screen').alt=`${titles[style]} — ${states[state]}`;document.getElementById('original').href=path;document.getElementById('caption').textContent=`${titles[style]} — ${states[state]}`;document.getElementById('description').textContent=descriptions[style];}
+document.querySelectorAll('[data-style]').forEach(b=>b.addEventListener('click',()=>{style=b.dataset.style;update()}));document.querySelectorAll('[data-state]').forEach(b=>b.addEventListener('click',()=>{state=b.dataset.state;update()}));
+</script>
+</html>

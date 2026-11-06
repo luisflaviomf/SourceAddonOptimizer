@@ -126,7 +126,8 @@ namespace GmodAddonCompressor
         {
             None,
             Models,
-            Compress
+            Compress,
+            ExactDistribution
         }
 
         public MainWindow()
@@ -173,6 +174,8 @@ namespace GmodAddonCompressor
             _mapBspBuildRunner.OutputDirFound += MapBuildOutputDirFound;
             _mapBspBuildRunner.LogLine += MapScanLogLine;
             InitializeAddonMerge();
+            InitializeExactDistribution();
+            InitializeFullCompression();
 
             LoadSettings();
         }
@@ -2324,6 +2327,7 @@ namespace GmodAddonCompressor
                 ExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
                 ExperimentalRoundPartsPolicy = _context.OptimizerUseExperimentalRoundPartsPolicy,
                 ExperimentalSteerTurnBasisFix = _context.OptimizerUseExperimentalSteerTurnBasisFix,
+                UseVtxTriStrips = _context.OptimizerUseVtxTriStrips,
                 Format = GetOptimizerFormat(),
                 Jobs = _context.OptimizerJobs,
                 DecompileJobs = _context.OptimizerDecompileJobs,
@@ -2391,8 +2395,16 @@ namespace GmodAddonCompressor
 
         private async void Button_StartPipeline_Click(object sender, RoutedEventArgs e)
         {
-            if (_pipelineRunning)
+            if (_pipelineRunning || _exactRunning || !_context.UnlockedUI)
                 return;
+
+            _pipelineExactRequested = CheckBox_PipelineExact.IsChecked == true;
+            _pipelineExactEngine = TextBox_ExactEngine.Text.Trim();
+            if (_pipelineExactRequested && !Directory.Exists(_pipelineExactEngine))
+            {
+                MessageBox.Show("Selecione o diretório da engine na aba Distribuição exata.", "Pipeline", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
 
             string addonDirectoryPath = _context.AddonDirectoryPath;
             if (!ValidateModelsInputs(addonDirectoryPath, out var errorMessage))
@@ -2431,6 +2443,8 @@ namespace GmodAddonCompressor
             _pipelineLogsDir = null;
             _pipelineModelsOk = false;
             _pipelineCompressOk = false;
+            _pipelineExactResult = null;
+            _pipelineExactStatus = _pipelineExactRequested ? "Aguardando etapas nativas" : "Desativada";
             _pipelineCompressFilesProcessed = 0;
             _pipelineCompressFilesTotal = 0;
             _pipelineCancelRequested = false;
@@ -2477,6 +2491,11 @@ namespace GmodAddonCompressor
 
             _pipelineCancelRequested = true;
             _context.PipelineStatusText = "Canceling...";
+            if (_pipelineStage == PipelineStage.ExactDistribution)
+            {
+                _pipelineCts?.Cancel();
+                return;
+            }
             if (_pipelineStage == PipelineStage.Models)
             {
                 _pipelineModelsExitCode = 130;
@@ -2515,6 +2534,7 @@ namespace GmodAddonCompressor
                     ExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
                     ExperimentalRoundPartsPolicy = _context.OptimizerUseExperimentalRoundPartsPolicy,
                     ExperimentalSteerTurnBasisFix = _context.OptimizerUseExperimentalSteerTurnBasisFix,
+                    UseVtxTriStrips = _context.OptimizerUseVtxTriStrips,
                     Format = GetOptimizerFormat(),
                     Jobs = _context.OptimizerJobs,
                     DecompileJobs = _context.OptimizerDecompileJobs,
@@ -2577,7 +2597,20 @@ namespace GmodAddonCompressor
                 else if (!_pipelineCompressExitCode.HasValue)
                     _pipelineCompressExitCode = 0;
 
-                _context.PipelineStatusText = "OK";
+                var outcome = PipelineCompletion.Evaluate(_pipelineModelsOk, _pipelineCompressOk,
+                    _pipelineCancelRequested || token.IsCancellationRequested, _pipelineExactRequested, _pipelineExactResult);
+                if (outcome == PipelineOutcome.ReadyForExact)
+                {
+                    await RunPipelineExactAsync(outputPath, token);
+                    outcome = PipelineCompletion.Evaluate(_pipelineModelsOk, _pipelineCompressOk,
+                        _pipelineCancelRequested || token.IsCancellationRequested, _pipelineExactRequested, _pipelineExactResult);
+                }
+                _context.PipelineStatusText = outcome switch
+                {
+                    PipelineOutcome.Success => _pipelineExactRequested ? "OK offline — distribuição exata pendente de GMod" : "OK",
+                    PipelineOutcome.Canceled => "Canceled.",
+                    _ => "FAIL: uma etapa do Pipeline falhou. Consulte os logs."
+                };
             }
             catch (OperationCanceledException)
             {
@@ -2594,6 +2627,8 @@ namespace GmodAddonCompressor
             finally
             {
                 _pipelineRunning = false;
+                if (_pipelineExactRequested && _pipelineStage != PipelineStage.ExactDistribution)
+                    _pipelineExactStatus = _pipelineCancelRequested ? "SKIPPED (cancelado antes da etapa)" : "SKIPPED (etapas nativas sem sucesso)";
                 _pipelineStage = PipelineStage.None;
                 _pipelineCompressSystem = null;
                 UpdatePipelineSummary();
@@ -2606,7 +2641,7 @@ namespace GmodAddonCompressor
                 _context.PipelineProgressMaxValue = 100;
                 if (_pipelineCancelRequested)
                 {
-                    _context.PipelineStatusText = "Ready";
+                    _context.PipelineStatusText = "Canceled.";
                     _context.PipelineProgressText = string.Empty;
                 }
                 _context.PipelineIsRunning = false;
@@ -2634,6 +2669,7 @@ namespace GmodAddonCompressor
 
             string compressMode = BuildCompressPipelineOptions().ModeLabel;
             _context.PipelineSummaryText = $"Summary: Models {modelsStatus} | Output: {modelsOutput} | Compress {compressStatus} | Files: {compressCount} | Mode: {compressMode}";
+            _context.PipelineSummaryText += Environment.NewLine + PipelineExactSummary();
             _context.PipelineSizeReportText = BuildPipelineSizeReportText(BuildCompressPipelineOptions());
         }
 
@@ -2795,7 +2831,7 @@ namespace GmodAddonCompressor
 
         private void Button_OpenPipelineOutput_Click(object sender, RoutedEventArgs e)
         {
-            OpenFolder(_pipelineOutputPath, "Pipeline");
+            OpenFolder(PipelineCompletion.FinalOutput(_pipelineOutputPath, _pipelineExactResult), "Pipeline");
         }
 
         private void Button_OpenPipelineWork_Click(object sender, RoutedEventArgs e)
@@ -3150,6 +3186,8 @@ namespace GmodAddonCompressor
                 _context.OptimizerUseExperimentalRoundPartsPolicy = _settings.OptimizerUseExperimentalRoundPartsPolicy.Value;
             if (_settings.OptimizerUseExperimentalSteerTurnBasisFix.HasValue)
                 _context.OptimizerUseExperimentalSteerTurnBasisFix = _settings.OptimizerUseExperimentalSteerTurnBasisFix.Value;
+            if (_settings.OptimizerUseVtxTriStrips.HasValue)
+                _context.OptimizerUseVtxTriStrips = _settings.OptimizerUseVtxTriStrips.Value;
             if (_settings.OptimizerRestoreSkins.HasValue)
                 _context.OptimizerRestoreSkins = _settings.OptimizerRestoreSkins.Value;
             if (_settings.OptimizerCompileVerbose.HasValue)
@@ -3233,6 +3271,14 @@ namespace GmodAddonCompressor
             ResetUnpackSummary();
             UpdateUnpackActionStates();
             LoadAddonMergeSettings();
+            TextBox_ExactEngine.Text = _settings.ExactEngineRoot ?? string.Empty;
+            TextBox_FullInput.Text = _settings.FullCompressionInput ?? string.Empty;
+            TextBox_FullOutput.Text = _settings.FullCompressionOutput ?? string.Empty;
+            TextBox_FullEngine.Text = _settings.FullCompressionEngine ?? string.Empty;
+            TextBox_FullBlender.Text = _settings.FullCompressionBlender ?? string.Empty;
+            TextBox_FullStudioMdl.Text = _settings.FullCompressionStudioMdl ?? string.Empty;
+            FillFullInstalledTools();
+            CheckBox_PipelineExact.IsChecked = _settings.PipelineExactDistribution;
             ResetMapScanSummary();
             UpdateMapScanActionStates();
             _ = RefreshAddonWorkshopWarningAsync(_context.AddonDirectoryPath, force: true);
@@ -3261,6 +3307,7 @@ namespace GmodAddonCompressor
                 OptimizerUseExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
                 OptimizerUseExperimentalRoundPartsPolicy = _context.OptimizerUseExperimentalRoundPartsPolicy,
                 OptimizerUseExperimentalSteerTurnBasisFix = _context.OptimizerUseExperimentalSteerTurnBasisFix,
+                OptimizerUseVtxTriStrips = _context.OptimizerUseVtxTriStrips,
                 OptimizerRestoreSkins = _context.OptimizerRestoreSkins,
                 OptimizerCompileVerbose = _context.OptimizerCompileVerbose,
                 OptimizerCleanupWorkModelArtifacts = _context.OptimizerCleanupWorkModelArtifacts,
@@ -3291,6 +3338,13 @@ namespace GmodAddonCompressor
                 CompressMagickUseAggressivePng = _context.CompressMagickUseAggressivePng
             };
             SaveAddonMergeSettings(settings);
+            settings.ExactEngineRoot = TextBox_ExactEngine.Text.Trim();
+            settings.FullCompressionInput = TextBox_FullInput.Text.Trim();
+            settings.FullCompressionOutput = TextBox_FullOutput.Text.Trim();
+            settings.FullCompressionEngine = TextBox_FullEngine.Text.Trim();
+            settings.FullCompressionBlender = TextBox_FullBlender.Text.Trim();
+            settings.FullCompressionStudioMdl = TextBox_FullStudioMdl.Text.Trim();
+            settings.PipelineExactDistribution = CheckBox_PipelineExact.IsChecked == true;
 
             SettingsSystem.Save(settings);
         }
@@ -3825,6 +3879,11 @@ namespace GmodAddonCompressor
                 }
 
                 CompressCompleted(unlockUiOnComplete);
+                if (isPipelineCompress)
+                {
+                    _pipelineCompressOk = !compressSystem.HasFailures && audioAvailable && !_pipelineCancelRequested;
+                    _pipelineCompressExitCode = _pipelineCancelRequested ? 130 : _pipelineCompressOk ? 0 : 1;
+                }
                 tcs.TrySetResult(true);
             };
             compressSystem.StartCompress();
@@ -3885,8 +3944,6 @@ namespace GmodAddonCompressor
             {
                 _context.PipelineProgressText = "Current: Completed.";
                 _context.PipelineStatusText = "Compress Phase: Completed";
-                _pipelineCompressOk = true;
-                _pipelineCompressExitCode = 0;
             }
         }
 
@@ -3975,7 +4032,7 @@ namespace GmodAddonCompressor
             var sizeReport = string.IsNullOrWhiteSpace(_context.PipelineSizeReportText)
                 ? "(none)"
                 : _context.PipelineSizeReportText;
-            return $"ModelsExitCode: {modelsExit}{newline}CompressExitCode: {compressExit}{newline}OutputPath: {outputPath}{newline}WorkPath: {workPath}{newline}LastErrorLine: {lastError}{newline}{newline}SizeReport:{newline}{sizeReport}";
+            return $"ModelsExitCode: {modelsExit}{newline}CompressExitCode: {compressExit}{newline}NativeOutputPath: {outputPath}{newline}FinalOutputPath: {PipelineCompletion.FinalOutput(_pipelineOutputPath, _pipelineExactResult)}{newline}WorkPath: {workPath}{newline}LastErrorLine: {lastError}{newline}{PipelineExactSummary()}{newline}{newline}SizeReport:{newline}{sizeReport}";
         }
 
         private static string FormatExitCode(int? exitCode)

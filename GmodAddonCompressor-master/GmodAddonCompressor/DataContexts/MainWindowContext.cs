@@ -51,6 +51,7 @@ namespace GmodAddonCompressor.DataContexts
         private bool _optimizerUseExperimentalGroundPolicy = false;
         private bool _optimizerUseExperimentalRoundPartsPolicy = false;
         private bool _optimizerUseExperimentalSteerTurnBasisFix = false;
+        private bool _optimizerUseVtxTriStrips = true;
         private int _optimizerFormatIndex = 0;
         private int _optimizerJobs = 0;
         private int _optimizerDecompileJobs = 1;
@@ -923,6 +924,16 @@ namespace GmodAddonCompressor.DataContexts
             set
             {
                 _optimizerUseExperimentalSteerTurnBasisFix = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public bool OptimizerUseVtxTriStrips
+        {
+            get { return _optimizerUseVtxTriStrips; }
+            set
+            {
+                _optimizerUseVtxTriStrips = value;
                 OnPropertyChanged();
             }
         }

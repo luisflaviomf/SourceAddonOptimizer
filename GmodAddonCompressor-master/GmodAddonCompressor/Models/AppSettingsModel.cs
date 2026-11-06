@@ -18,6 +18,13 @@ namespace GmodAddonCompressor.Models
     internal sealed class AppSettingsModel
     {
         public int SchemaVersion { get; set; } = 1;
+        public string? FullCompressionInput { get; set; }
+        public string? FullCompressionOutput { get; set; }
+        public string? FullCompressionEngine { get; set; }
+        public string? FullCompressionBlender { get; set; }
+        public string? FullCompressionStudioMdl { get; set; }
+        public string? ExactEngineRoot { get; set; }
+        public bool PipelineExactDistribution { get; set; } = false;
         public string? LastAddonPath { get; set; }
         public string? UnpackRootPath { get; set; }
         public string? UnpackOutputRootPath { get; set; }
@@ -45,6 +52,7 @@ namespace GmodAddonCompressor.Models
         public bool? OptimizerUseExperimentalGroundPolicy { get; set; }
         public bool? OptimizerUseExperimentalRoundPartsPolicy { get; set; }
         public bool? OptimizerUseExperimentalSteerTurnBasisFix { get; set; }
+        public bool? OptimizerUseVtxTriStrips { get; set; }
         public bool? OptimizerRestoreSkins { get; set; }
         public bool? OptimizerCompileVerbose { get; set; }
         public bool? OptimizerCleanupWorkModelArtifacts { get; set; }

@@ -62,3 +62,7 @@ teste*.zip
 
 # PyInstaller
 *.spec
+
+# Design renderer build outputs
+/docs/design-options/**/bin/
+/docs/design-options/**/obj/

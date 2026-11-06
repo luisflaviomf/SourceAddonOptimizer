@@ -79,6 +79,7 @@ Arquitetura real:
 3. O WPF chama o worker Python empacotado (`SourceAddonOptimizerWorker.exe`).
 4. O worker roteia comandos:
    - `unpack` -> `batch_unpack_addons.main(...)`
+   - `exactpack` -> `exact_distribution.cli.main(...)` (distribuicao exata experimental)
    - fluxo padrao -> `build_optimized_addon.main(...)`
 5. O WPF consome stdout/progresso/logs e atualiza a UI.
 
@@ -86,7 +87,9 @@ Pontos importantes:
 
 - A aba **Descompactar addons** ja existe no WPF e usa o worker `unpack`.
 - A aba **Models** usa o worker empacotado para o pipeline de otimizar/recompilar modelos.
-- A aba **Pipeline** encadeia Models -> Compress no frontend WPF.
+- A aba **Distribuição exata** exporta um candidato sem nova perda de qualidade, via `Systems/Optimizer/ExactDistributionRunner.cs`.
+- A aba **Compressão completa** tem entrada/saída/engine/ferramentas e perfil próprios: staging autenticado -> Models Safe -> VTF/PNG/WAV -> distribuição exata obrigatória. Usa `MainWindow.FullCompression.cs` e `Systems/Optimizer/FullCompression*.cs`, sem herdar o perfil das outras abas. Ver `docs/full-compression.md` para limites e instruções. Não confundir este fluxo com a promoção dos adaptadores estruturais do laboratório, nem chamar a redução nativa de byte-exact.
+- A aba **Pipeline** encadeia Models -> Compress e pode executar a distribuicao exata no final (opcao persistida, padrao desativado). Falha/cancelamento de qualquer etapa impede sucesso geral; o intermediario nativo permanece separado.
 
 ## Pipeline de build/release correto
 
@@ -115,7 +118,9 @@ Se voce alterou codigo em:
 - `batch_*`
 - outros scripts Python usados pelo worker
 
-garanta que o worker empacotado foi atualizado antes do release final. Hoje o `package_wpf_tools.ps1` reconstrui o worker apenas se o executavel empacotado estiver ausente. Se houver suspeita de `dist/GModAddonOptimizerWorker/` stale, refaca o PyInstaller antes do release.
+garanta que o worker empacotado foi atualizado antes do release final. `package_wpf_tools.ps1` reconstrui quando o executavel esta ausente ou anterior aos fontes rastreados, incluindo `exact_distribution/*.py`, pins e todos os arquivos vendor autenticados. Se houver timestamps restaurados ou suspeita de build stale, refaca o PyInstaller antes do release.
+
+Distribuicao exata: `worker.spec` deve incluir fontes Python reais, templates Lua e `vendor-pins.json` como data no `_internal`, alem dos imports. Os hashes de produtor e `verify_vendor()` leem os arquivos a partir de `__file__`; apenas bytecode no PYZ nao basta. Nao modificar os vendors congelados. ToolVersion 0.1.18 preserva a extracao anterior para rollback. Ver `docs/exact-distribution.md`.
 
 ### Nao usar como release principal
 

@@ -24,7 +24,7 @@ namespace GmodAddonCompressor.Systems
         private readonly string _ffmpegFilePath;
         private readonly ILogger _logger = LogSystem.CreateLogger<FFMpegSystem>();
 
-        private sealed class FfmpegRunResult
+        internal sealed class FfmpegRunResult
         {
             public int ExitCode { get; set; } = -1;
             public bool TimedOut { get; set; }
@@ -36,8 +36,16 @@ namespace GmodAddonCompressor.Systems
             Path.Combine(ToolPaths.AppDataRoot, "logs", "audio-compress.log");
 
         public FFMpegSystem()
+            : this(null)
+        {
+        }
+
+        private readonly Func<string, Task<FfmpegRunResult>> _runWav;
+
+        internal FFMpegSystem(Func<string, Task<FfmpegRunResult>>? runWav)
         {
             _ffmpegFilePath = _ffmpegFilePathCache.Value;
+            _runWav = runWav ?? StartFFMpegProcess;
         }
 
         internal static void AppendAudioLog(string message)
@@ -311,19 +319,9 @@ namespace GmodAddonCompressor.Systems
 
                 string codecArg = codec == AudioContext.WavCodecKind.AdpcmMs ? "adpcm_ms" : "pcm_s16le";
                 string arguments = $"-y -i \"{filePath}\" -c:a {codecArg} -ar {sampleRate} -ac {channels} \"{outputFilePath}\"";
-                var run = await StartFFMpegProcess(arguments);
+                var run = await _runWav(arguments);
                 WriteRunLog("wav", filePath, outputFilePath, arguments, run);
-
-                if (!File.Exists(outputFilePath))
-                    return false;
-
-                if (new FileInfo(outputFilePath).Length == 0)
-                {
-                    File.Delete(outputFilePath);
-                    return false;
-                }
-
-                return true;
+                return OutputLooksValid(outputFilePath, run);
             }
             catch (Exception ex)
             {
