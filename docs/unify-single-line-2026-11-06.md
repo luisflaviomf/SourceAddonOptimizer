@@ -17,7 +17,7 @@ Agora as duas apontam para o mesmo commit. A base de trabalho é a
 ## O que foi feito
 
 1. Commits do trabalho pendente: GUI legada (`113371f`), trabalho de setembro
-   (`3a5a43d`) e protocolo do Companion na `main` (`edc796b`).
+   (`2dccadf`) e protocolo do Companion na `main` (`edc796b`).
 2. Merge `00f958c` com estas decisões:
    - **Mídia e recursos → Maximum** continua sendo o Universal VTF. O runner de
      julho (`VtfMaximumLab`) não entra no produto. Só as partes de codec que o
