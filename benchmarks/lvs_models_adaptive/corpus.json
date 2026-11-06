@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "families": [
+    {
+      "id": "vw_beetle",
+      "partition": "development",
+      "include": ["models/diggercars/vw_beetle/"],
+      "focus_regions": ["wheels_tires", "glass_lenses", "headlights", "arches_curved_panels"],
+      "file_count": 75,
+      "total_bytes": 13469740,
+      "tree_sha256": "0fea65cd2e262fe4ad96d4045eb9949e7f1092505d058f87074a1ea496421e3f"
+    },
+    {
+      "id": "caterham_620r",
+      "partition": "development",
+      "include": ["models/diggercars/caterham_620r/"],
+      "focus_regions": ["wheels_tires", "steering_wheel", "headlights", "pipes_exhausts", "arches_curved_panels"],
+      "file_count": 55,
+      "total_bytes": 4885872,
+      "tree_sha256": "1aecfbaa111eb4e55aab42fec2f0ae2de7b2e70f260b538857692bd1990135d7"
+    },
+    {
+      "id": "ferrari_365_fullrig",
+      "partition": "development",
+      "include": ["models/diggercars/ferrari_365/"],
+      "focus_regions": ["wheels_tires", "steering_wheel", "glass_lenses", "headlights", "pipes_exhausts", "curved_panels"],
+      "file_count": 15,
+      "total_bytes": 11195773,
+      "tree_sha256": "843e2cbfbf094b379dd9c8e252489699c0a8904f4ae7ce9970ea736dcd9a668d"
+    },
+    {
+      "id": "ford_fairlane",
+      "partition": "development",
+      "include": ["models/diggercars/ford_fairlane/"],
+      "focus_regions": ["wheels_tires", "glass_lenses", "headlights", "arches_curved_panels"],
+      "file_count": 60,
+      "total_bytes": 20260331,
+      "tree_sha256": "b58fca1be93b9ece7d716b4558335c3d7f59a0709a80ae5a082ddfe6e2a9a5f8"
+    },
+    {
+      "id": "vw_touareg",
+      "partition": "development",
+      "include": ["models/diggercars/vw_touareg/"],
+      "focus_regions": ["wheels_tires", "steering_wheel", "glass_lenses", "headlights", "arches_curved_panels"],
+      "file_count": 10,
+      "total_bytes": 8687411,
+      "tree_sha256": "e5c3e7e24d5fcf740009edea7ca443649e6501d72d8d00c23b495daccc02ed02"
+    },
+    {
+      "id": "dodge_charger",
+      "partition": "holdout",
+      "include": ["models/diggercars/dodge_charger/"],
+      "focus_regions": ["wheels_tires", "steering_wheel", "glass_lenses", "headlights", "pipes_exhausts", "curved_panels"],
+      "file_count": 10,
+      "total_bytes": 26015536,
+      "tree_sha256": "29ee718ca32ea57d9b55e2b8181abf5c1153155f77281de32c74e0af8ebedbe8"
+    },
+    {
+      "id": "toyota_supra",
+      "partition": "holdout",
+      "include": ["models/diggercars/toyota_supra/"],
+      "focus_regions": ["wheels_tires", "steering_wheel", "glass_lenses", "headlights", "pipes_exhausts", "curved_panels"],
+      "file_count": 10,
+      "total_bytes": 22019305,
+      "tree_sha256": "2c3eba69a4828692d243e740e8a0d0b7c6bebeed65ae79b4ae62583d13c79a04"
+    },
+    {
+      "id": "pontiac_transam_wheel",
+      "partition": "holdout",
+      "include": ["models/diggercars/pontiac_transam3/wheel"],
+      "focus_regions": ["wheels_tires", "cylinders"],
+      "file_count": 5,
+      "total_bytes": 1187677,
+      "tree_sha256": "aa9abf5a3ff9138bc4ed80f21f0e00c9a83fd666ef7f4bcec90bc99dcc23f207"
+    }
+  ]
+}

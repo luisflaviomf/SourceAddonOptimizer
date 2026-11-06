@@ -6,7 +6,7 @@ from lupa.luajit21 import LuaError
 
 from exact_distribution.builder import build_candidate
 from exact_distribution.runtime import render_runtime
-from exact_runtime_harness import RuntimeHarness, unpack_gma
+from tests.exact_runtime_harness import RuntimeHarness, unpack_gma
 
 
 def candidate(tmp_path, name="candidate", files=None):

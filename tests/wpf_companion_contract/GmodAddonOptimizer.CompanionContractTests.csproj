@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\DataContexts\CompanionContext.cs" Link="CompanionContext.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Models\AppSettingsModel.cs" Link="AppSettingsModel.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Models\CompanionModels.cs" Link="CompanionModels.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionPathPolicy.cs" Link="CompanionPathPolicy.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionPackageInstaller.cs" Link="CompanionPackageInstaller.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionContract.cs" Link="CompanionContract.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionBundleReader.cs" Link="CompanionBundleReader.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionProfileService.cs" Link="CompanionProfileService.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionRuntimeProfileSnapshotService.cs" Link="CompanionRuntimeProfileSnapshotService.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionMaximumReportReader.cs" Link="CompanionMaximumReportReader.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionValidationPlanService.cs" Link="CompanionValidationPlanService.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Companion\CompanionResultService.cs" Link="CompanionResultService.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\companion_contract\fixtures\valid\sao-runtime-profile-v1.json" Link="fixtures\valid\sao-runtime-profile-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\companion_contract\fixtures\valid\sao-structural-result-v1.json" Link="fixtures\valid\sao-structural-result-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\companion_contract\fixtures\valid\sao-visual-result-v1.json" Link="fixtures\valid\sao-visual-result-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\companion_contract\fixtures\invalid\cases.json" Link="fixtures\invalid\cases.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

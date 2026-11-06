@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Optimizer\SourceAddonOptimizerRunner.cs" Link="SourceAddonOptimizerRunner.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Optimizer\SourceAddonOptimizerProgressParser.cs" Link="SourceAddonOptimizerProgressParser.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Optimizer\SourceAddonOptimizerCommandBuilder.cs" Link="SourceAddonOptimizerCommandBuilder.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Tools\SourceAddonOptimizerPackageManifest.cs" Link="SourceAddonOptimizerPackageManifest.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Tools\SourceAddonOptimizerPackageInstaller.cs" Link="SourceAddonOptimizerPackageInstaller.cs" />
+  </ItemGroup>
+</Project>

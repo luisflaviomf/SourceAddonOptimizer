@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sourceaddonoptimizer.local/contracts/sao-structural-result-v1.schema.json",
+  "title": "Source Addon Optimizer structural result chunk v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "contract", "run_id", "created_utc", "producer", "environment", "chunk", "payload"],
+  "properties": {
+    "schema": {"const": "sao-structural-result-v1"},
+    "contract": {"$ref": "#/$defs/contract"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "producer": {"$ref": "#/$defs/producer"},
+    "environment": {"$ref": "#/$defs/environment"},
+    "chunk": {"$ref": "#/$defs/chunk"},
+    "payload": {"type": "object", "additionalProperties": false, "required": ["plan_sha256", "overall_status", "resources", "performance", "truncation"], "properties": {"plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "overall_status": {"$ref": "#/$defs/status"}, "resources": {"type": "array", "maxItems": 5000, "items": {"$ref": "#/$defs/resource"}}, "performance": {"$ref": "#/$defs/performance"}, "truncation": {"$ref": "#/$defs/truncation"}}}
+  },
+  "$defs": {
+    "contract": {"type": "object", "additionalProperties": false, "required": ["major", "minor"], "properties": {"major": {"const": 1}, "minor": {"const": 0}}},
+    "producer": {"type": "object", "additionalProperties": false, "required": ["name", "version"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 64}, "version": {"type": "string", "minLength": 1, "maxLength": 32}}},
+    "environment": {"type": "object", "additionalProperties": false, "required": ["game_build", "map", "gamemode", "realm", "session_seconds", "mounted_addons"], "properties": {"game_build": {"type": "string", "maxLength": 64}, "map": {"type": "string", "maxLength": 128}, "gamemode": {"type": "string", "maxLength": 128}, "realm": {"enum": ["server", "client", "singleplayer"]}, "session_seconds": {"type": "number", "minimum": 0, "maximum": 604800}, "mounted_addons": {"type": "array", "maxItems": 4096, "items": {"type": "object", "additionalProperties": false, "required": ["workshop_id", "title"], "properties": {"workshop_id": {"type": "string", "pattern": "^[0-9]{1,20}$"}, "title": {"type": "string", "maxLength": 256}}}}}},
+    "chunk": {"type": "object", "additionalProperties": false, "required": ["sequence", "total"], "properties": {"sequence": {"type": "integer", "minimum": 1}, "total": {"type": "integer", "minimum": 1}}},
+    "status": {"enum": ["PASS", "WARNING", "FAILED", "INCOMPLETE"]},
+    "resource": {"type": "object", "additionalProperties": false, "required": ["id", "test_id", "path", "status", "reason", "warnings"], "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "test_id": {"type": "string", "minLength": 1, "maxLength": 64}, "path": {"type": "string", "minLength": 1, "maxLength": 512}, "status": {"$ref": "#/$defs/status"}, "reason": {"type": "string", "maxLength": 1024}, "warnings": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 512}}}},
+    "performance": {"type": "object", "additionalProperties": false, "required": ["tests", "wall_seconds"], "properties": {"tests": {"type": "integer", "minimum": 0}, "wall_seconds": {"type": "number", "minimum": 0}}},
+    "truncation": {"type": "object", "additionalProperties": false, "required": ["resources", "warnings"], "properties": {"resources": {"type": "integer", "minimum": 0}, "warnings": {"type": "integer", "minimum": 0}}}
+  }
+}

@@ -11,6 +11,15 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="AssemblyInfo.cs" />
+    <!-- Codec pieces (Candidates, Encoding, Inventory, Validation) are compiled into the WPF product for Magick+. -->
+    <Compile Include="Baseline/*.cs" />
+    <Compile Include="Experiment/*.cs" />
+    <Compile Include="Images/*.cs" />
+    <Compile Include="Metrics/*.cs" />
+    <Compile Include="Reporting/*.cs" />
+    <Compile Include="Sampling/*.cs" />
+    <Compile Include="Selection/*.cs" />
+    <Compile Include="Tools/*.cs" />
     <ProjectReference Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\GmodAddonCompressor.csproj" />
   </ItemGroup>
 </Project>

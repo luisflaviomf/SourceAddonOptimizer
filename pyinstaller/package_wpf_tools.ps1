@@ -42,6 +42,98 @@ function Get-WorkerSourceFiles {
     foreach ($relative in $pins.files.PSObject.Properties.Name) {
         Get-Item -LiteralPath (Join-Path $PWD $relative)
     }
+
+    $maximumRoot = Join-Path $PWD "maximum_optimizer"
+    if (Test-Path $maximumRoot) {
+        Get-ChildItem -LiteralPath $maximumRoot -Recurse -File |
+            Where-Object { $_.FullName -notmatch '[\\/]__pycache__[\\/]' -and $_.Extension -ne '.pyc' }
+    }
+}
+
+function Test-WorkerRuntimeFilesHealthy {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $WorkerExe
+    )
+
+    if (!(Test-Path -LiteralPath $WorkerExe)) {
+        return $false
+    }
+
+    $internalDir = Join-Path (Split-Path -Parent $WorkerExe) "_internal"
+    $pythonDll = Join-Path $internalDir "python311.dll"
+    $baseLibrary = Join-Path $internalDir "base_library.zip"
+    foreach ($path in @($pythonDll, $baseLibrary)) {
+        if (!(Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -le 0) {
+            return $false
+        }
+    }
+
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($baseLibrary)
+        try {
+            foreach ($entry in $archive.Entries) {
+                if ($entry.FullName.EndsWith("/")) {
+                    continue
+                }
+                $stream = $entry.Open()
+                try {
+                    $stream.CopyTo([System.IO.Stream]::Null)
+                }
+                finally {
+                    $stream.Dispose()
+                }
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    catch {
+        return $false
+    }
+
+    return $true
+}
+
+function Assert-WorkerStarts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $WorkerExe
+    )
+
+    if (!(Test-WorkerRuntimeFilesHealthy -WorkerExe $WorkerExe)) {
+        throw "Worker runtime is missing or corrupt: $WorkerExe"
+    }
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $WorkerExe
+    $startInfo.Arguments = "--help"
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (!$process.Start()) {
+            throw "Worker process could not be started: $WorkerExe"
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (!$process.WaitForExit(30000)) {
+            $process.Kill()
+            throw "Worker --help timed out after 30 seconds: $WorkerExe"
+        }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0 -or $stdout -notmatch "normal,fidelity,maximum") {
+            throw "Worker --help contract failed with exit $($process.ExitCode): $stderr$stdout"
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
 }
 
 function Test-WorkerRebuildNeeded {
@@ -51,6 +143,10 @@ function Test-WorkerRebuildNeeded {
     )
 
     if (!(Test-Path $WorkerExe)) {
+        return $true
+    }
+
+    if (!(Test-WorkerRuntimeFilesHealthy -WorkerExe $WorkerExe)) {
         return $true
     }
 
@@ -110,7 +206,10 @@ function Assert-PackageZip {
         "_internal/meshopt_stripify.dll",
         "_internal/LICENSE.meshoptimizer.txt",
         "_internal/base_library.zip",
-        "_internal/python311.dll"
+        "_internal/python311.dll",
+        "_internal/maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll",
+        "_internal/maximum_optimizer/native/tool-package-manifest.json",
+        "_internal/maximum_optimizer/profiles/maximum-adaptive-v2.json"
     )
     $requiredEntries += "_internal/exact_distribution/vendor-pins.json"
     $requiredEntries += Get-ChildItem -LiteralPath (Join-Path $PWD "exact_distribution") -File -Filter "*.py" |
@@ -135,14 +234,13 @@ function New-PackageZip {
     )
 
     $destinationDir = Split-Path -Parent $DestinationZip
-    $tempZip = Join-Path $destinationDir ([System.IO.Path]::GetFileNameWithoutExtension($DestinationZip) + ".tmp.zip")
+    $tempZip = Join-Path $destinationDir (
+        [System.IO.Path]::GetFileNameWithoutExtension($DestinationZip) + ".$PID.$([Guid]::NewGuid().ToString('N')).tmp.zip"
+    )
+    $backupZip = "$DestinationZip.$PID.bak"
 
     if (Test-Path $tempZip) {
         Remove-Item $tempZip -Force
-    }
-
-    if (Test-Path $DestinationZip) {
-        Remove-Item $DestinationZip -Force
     }
 
     $maxAttempts = 5
@@ -156,7 +254,17 @@ function New-PackageZip {
             )
 
             Assert-PackageZip -ZipFile $tempZip
-            Move-Item $tempZip $DestinationZip -Force
+            & python -m maximum_optimizer.tool_package_manifest $tempZip --zip
+            if ($LASTEXITCODE -ne 0) {
+                throw "Package ZIP manifest validation failed with exit code $LASTEXITCODE."
+            }
+            if (Test-Path -LiteralPath $DestinationZip) {
+                [System.IO.File]::Replace($tempZip, $DestinationZip, $backupZip, $true)
+                Remove-Item -LiteralPath $backupZip -Force -ErrorAction SilentlyContinue
+            }
+            else {
+                [System.IO.File]::Move($tempZip, $DestinationZip)
+            }
             Assert-PackageZip -ZipFile $DestinationZip
             return
         }
@@ -164,6 +272,7 @@ function New-PackageZip {
             if (Test-Path $tempZip) {
                 Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
             }
+            Remove-Item -LiteralPath $backupZip -Force -ErrorAction SilentlyContinue
 
             if ($attempt -eq $maxAttempts) {
                 throw "Failed to build package zip after $maxAttempts attempts. $($_.Exception.Message)"
@@ -184,11 +293,16 @@ $zipPath = Join-Path $resourcesDir "SourceAddonOptimizer.win-x64.zip"
 
 if (Test-WorkerRebuildNeeded -WorkerExe $workerExe) {
     Write-Host "Worker build is missing or stale, running PyInstaller..."
-    pyinstaller --noconfirm --clean pyinstaller/worker.spec
-    if ($LASTEXITCODE -ne 0) {
-        throw "PyInstaller worker build failed (exit $LASTEXITCODE)."
+    $pyinstaller = (Get-Command pyinstaller -ErrorAction Stop).Source
+    $process = Start-Process -FilePath $pyinstaller -ArgumentList @(
+        "--noconfirm", "--clean", "pyinstaller/worker.spec"
+    ) -WindowStyle Hidden -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "PyInstaller worker build failed (exit $($process.ExitCode))."
     }
 }
+
+Assert-WorkerStarts -WorkerExe $workerExe
 
 if (!(Test-Path $workerExe)) { throw "Worker exe not found: $workerExe" }
 if (!(Test-Path $internalDir)) { throw "Worker _internal folder not found: $internalDir" }
@@ -203,6 +317,13 @@ New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 Copy-Item $workerExe (Join-Path $stagingRoot "SourceAddonOptimizerWorker.exe") -Force
 Copy-Item $crowbarExe (Join-Path $stagingRoot "CrowbarCommandLineDecomp.exe") -Force
 Copy-Item $internalDir (Join-Path $stagingRoot "_internal") -Recurse -Force
+
+$manifestScript = Join-Path $PWD "pyinstaller\New-SourceAddonOptimizerManifest.ps1"
+& $manifestScript -PackageRoot $stagingRoot
+& python -m maximum_optimizer.tool_package_manifest $stagingRoot --verify-native-abi
+if ($LASTEXITCODE -ne 0) {
+    throw "Package staging manifest validation failed with exit code $LASTEXITCODE."
+}
 
 New-PackageZip -SourceDirectory $stagingRoot -DestinationZip $zipPath
 

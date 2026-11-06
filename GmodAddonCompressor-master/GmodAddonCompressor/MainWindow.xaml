@@ -296,12 +296,34 @@
                                                   Margin="0,0,16,0"
                                                   IsChecked="{Binding OptimizerModeNormalChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ><TextBlock Text="Normal" TextWrapping="Wrap" /></CheckBox>
                                         <CheckBox
+                                                  Margin="0,0,16,0"
                                                   IsChecked="{Binding OptimizerModeFidelityChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ><TextBlock Text="Fidelity" TextWrapping="Wrap" /></CheckBox>
+                                        <CheckBox
+                                                  IsChecked="{Binding OptimizerModeMaximumChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ><TextBlock Text="Maximum" TextWrapping="Wrap" /></CheckBox>
                                     </StackPanel>
                                     <TextBlock Style="{StaticResource MutedText}"
                                                Margin="0,8,0,0"
                                                TextWrapping="Wrap"
                                                Text="{Binding OptimizerModeDescriptionText}" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border x:Name="ModelsCompanionProfileCard"
+                                    Style="{StaticResource CardInnerPanel}"
+                                    Margin="0,12,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Runtime evidence (optional)" />
+                                    <CheckBox Margin="0,8,0,0"
+                                              IsChecked="{Binding UseWithMaximumV2, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              Content="Use with Models Maximum v2" IsEnabled="{Binding CanUseWithMaximumV2}" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,6,0,0"
+                                               Text="{Binding ProfileCompatibilityText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,3,0,0"
+                                               Text="{Binding ProfileMatchText}"
+                                               TextWrapping="Wrap" />
                                 </StackPanel>
                             </Border>
 
@@ -1084,7 +1106,7 @@
                         <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Options" />
                         <TextBlock Style="{StaticResource HintText}"
                                    Margin="0,0,0,12"
-                                   Text="Shared limits remain explicit for Standard/Magick. Maximum chooses VTF resolution adaptively per file; other selected types keep these settings." />
+                                   Text="Shared limits remain explicit for Standard/Magick/Magick+. Maximum chooses VTF resolution adaptively per file; other selected types keep these settings." />
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Style="{StaticResource LabelText}" Text="Image and routing rules" />
                             <Button Style="{StaticResource HelpIconButton}"
@@ -1150,7 +1172,7 @@
                         </StackPanel>
                         <TextBlock Style="{StaticResource MutedText}"
                                    Margin="0,6,0,0"
-                                   Text="These settings control Standard/Magick and non-VTF files. Maximum evaluates VTF resolution independently at original, 2x and 4x, never below 8x8."
+                                   Text="These settings control Standard, Magick, Magick+ and non-VTF files. Maximum ignores them for VTF and always reduces eligible textures at least 2x, going further only while quality gates pass."
                                    TextWrapping="Wrap" />
                         <ComboBox ItemsSource="{Binding ImageReducingResolutionList, Mode=OneTime}"
                                   Margin="0,10,0,0"
@@ -1207,7 +1229,7 @@
 
                         <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0" Visibility="{Binding CompressMagickOptionsVisibility}">
                             <StackPanel>
-                            <TextBlock Style="{StaticResource LabelText}" Text="Magick mode extras" />
+                            <TextBlock Style="{StaticResource LabelText}" Text="Magick / Magick+ extras" />
                             <CheckBox Margin="0,8,0,0"
                                       IsChecked="{Binding CompressMagickUseAggressivePng}"
                                       IsEnabled="{Binding CompressPNG}">
@@ -1216,7 +1238,7 @@
                             </CheckBox>
                             <TextBlock Style="{StaticResource MutedText}"
                                        Margin="0,6,0,0"
-                                       Text="VTF uses the same unified pipeline in both modes: raw-split first, export-split fallback when needed, then preserve unchanged on no gain or out-of-scope cases. JPG/JPEG and audio stay on Standard."
+                                       Text="VTF uses the same unified pipeline in Magick and Magick+: raw-split first, export-split fallback when needed, then preserve unchanged on no gain or out-of-scope cases. Magick+ additionally applies an exact BC3-to-BC1 post-pass for textures whose alpha is proven unused; otherwise it keeps the Magick result. JPG/JPEG and audio stay on Standard."
                                        TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
@@ -1226,7 +1248,7 @@
                                 <TextBlock Style="{StaticResource LabelText}" Text="Maximum VTF experiment" />
                                 <TextBlock Style="{StaticResource MutedText}"
                                            Margin="0,8,0,0"
-                                           Text="Evaluates the current Compress result plus BC1/BC3 candidates at original, 2x and 4x resolution. Exact VTF version and required semantics are preserved; every final candidate is decoded and the original is restored on failure or no valid gain."
+                                           Text="Maximum (Universal VTF, Balanced profile) reduces every eligible DXT1/DXT5 VTF at least 2x by promoting its authored mipmaps, then keeps going level by level only while semantic quality gates pass (normals, alpha/cutout, glass, emissive, text). Works on an external snapshot and replaces files transactionally with a JSON report. Every VTF must be DXT1/DXT5; any other format aborts the batch."
                                            TextWrapping="Wrap" />
                                 <TextBlock Style="{StaticResource LabelText}" Margin="0,12,0,0" Text="Live decision" />
                                 <TextBlock Style="{StaticResource MutedText}"
@@ -2552,6 +2574,25 @@
                             </StackPanel>
                         </Border>
 
+                        <Border x:Name="PipelineCompanionProfileCard"
+                                Style="{StaticResource CardInnerPanel}"
+                                Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Maximum v2 runtime evidence (optional)" />
+                                <CheckBox Margin="0,8,0,0"
+                                          IsChecked="{Binding UseWithMaximumV2, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          Content="Use with Models Maximum v2" IsEnabled="{Binding CanUseWithMaximumV2}" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,6,0,0"
+                                           Text="{Binding ProfileCompatibilityText}"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,3,0,0"
+                                           Text="{Binding ProfileMatchText}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
                         
                     </StackPanel>
                 </Border>
@@ -2678,6 +2719,354 @@
                                         IsEnabled="False" />
                             </StackPanel>
                         </Border></Border></Grid></TabItem>
+        <TabItem Header="Validação no jogo" x:Name="Tab_Companion">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          CanContentScroll="False"
+                          Background="{DynamicResource AppBackground}">
+                <Grid x:Name="CompanionTabRoot"
+                      Margin="8"
+                      Background="{DynamicResource AppBackground}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.08*" />
+                        <ColumnDefinition Width="0.92*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,14">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="IN-GAME BRIDGE" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Installation &amp; compatibility" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="Install the optional auditing addon directly into Garry's Mod. The optimizer works normally without it, and optimized addons never depend on it." />
+
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Garry's Mod folder" />
+                                    <Grid Margin="0,8,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Text="{Binding GarrysModRoot}"
+                                                 IsReadOnly="True"
+                                                 TextWrapping="NoWrap"
+                                                 HorizontalScrollBarVisibility="Auto" />
+                                        <Button x:Name="Button_CompanionBrowseGame"
+                                                Grid.Column="1"
+                                                Margin="8,0,0,0"
+                                                Content="Select"
+                                                Width="82"
+                                                IsEnabled="{Binding CanImportProfile}" />
+                                        <Button x:Name="Button_CompanionDetectGame"
+                                                Grid.Column="2"
+                                                Margin="8,0,0,0"
+                                                Content="Detect"
+                                                Width="82"
+                                                IsEnabled="{Binding CanImportProfile}" />
+                                    </Grid>
+
+                                    <Grid Margin="0,14,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource LabelText}" Text="State" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="1"
+                                                   Margin="14,0,0,0"
+                                                   Style="{StaticResource ValueText}"
+                                                   Text="{Binding InstallationStatusText}"
+                                                   VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="2" Style="{StaticResource LabelText}" Text="Installed" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="3"
+                                                   Margin="10,0,0,0"
+                                                   Style="{StaticResource ValueText}"
+                                                   Text="{Binding InstalledVersionText}"
+                                                   VerticalAlignment="Center" />
+                                    </Grid>
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               Text="{Binding InstallationDetailText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,6,0,0"
+                                               Text="{Binding InstallDestinationText}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,12,0,0">
+                                <WrapPanel>
+                                    <Button x:Name="Button_CompanionInstall"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Content="Install Companion"
+                                            Width="142"
+                                            IsEnabled="{Binding CanInstall}" />
+                                    <Button x:Name="Button_CompanionUpdate"
+                                            Margin="8,0,0,0"
+                                            Content="Update"
+                                            Width="88"
+                                            IsEnabled="{Binding CanUpdate}" />
+                                    <Button x:Name="Button_CompanionRemove"
+                                            Style="{StaticResource ButtonDanger}"
+                                            Margin="8,0,0,0"
+                                            Content="Remove"
+                                            Width="88"
+                                            IsEnabled="{Binding CanRemove}" />
+                                    <Button x:Name="Button_CompanionOpenData"
+                                            Margin="8,0,0,0"
+                                            Content="Open Data Folder"
+                                            Width="126"
+                                            IsEnabled="{Binding CanOpenDataFolder}" />
+                                </WrapPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,0,14">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="RUNTIME EVIDENCE" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Profile import" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="Bring back a bounded profile recorded while you drive, inspect and use the addon in Garry's Mod. Importing never enables it automatically." />
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Last selected profile" />
+                                    <TextBox Margin="0,8,0,0"
+                                             Text="{Binding LastProfilePath, Mode=OneWay}"
+                                             IsReadOnly="True"
+                                             TextWrapping="Wrap"
+                                             MinHeight="48" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,10,0,0"
+                                               Text="{Binding ProfileSummaryText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               Text="{Binding ProfileOriginText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,3,0,0"
+                                               Text="{Binding ProfileAgeText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,3,0,0"
+                                               Text="{Binding ProfileMatchText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,3,0,0"
+                                               Text="{Binding ProfileTruncationText}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,3,0,0"
+                                               Text="{Binding ProfileCompatibilityText}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <Button x:Name="Button_CompanionImportProfile"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Content="Import Runtime Profile"
+                                            HorizontalAlignment="Left"
+                                            Width="172"
+                                            IsEnabled="{Binding CanImportProfile}" />
+                                    <TextBlock Style="{StaticResource MutedText}"
+                                               Margin="0,8,0,0"
+                                               Text="Profile use is Maximum v2-only and remains off until you explicitly opt in."
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,0">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="VALIDATION LOOP" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Transfer &amp; results" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="Generate a declarative test plan for changed assets, run it in-game, then import structural and visual results. Remote servers use manual file transfer—no credentials are stored." />
+                            <Border Style="{StaticResource CardInnerPanel}" Margin="0,16,0,0">
+                                <TextBlock Text="{Binding ValidationSummaryText}"
+                                           TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextSecondary}" />
+                            </Border>
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,12,0,0">
+                                <WrapPanel>
+                                    <Button x:Name="Button_CompanionGeneratePlan"
+                                            Style="{StaticResource ButtonAccent}"
+                                            Content="Generate Plan"
+                                            Width="126"
+                                            IsEnabled="{Binding CanGeneratePlan}" />
+                                    <Button x:Name="Button_CompanionImportResults"
+                                            Margin="8,0,0,0"
+                                            Content="Import Results"
+                                            Width="126"
+                                            IsEnabled="{Binding CanImportResults}" />
+                                    <Button x:Name="Button_CompanionCopyPlan"
+                                            Margin="8,0,0,0"
+                                            Content="Copy Plan"
+                                            Width="104" />
+                                    <Button x:Name="Button_CompanionOpenPlan"
+                                            Margin="8,0,0,0"
+                                            Content="Open Plan"
+                                            Width="104" />
+                                </WrapPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="QUICK START" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="A closed, optional loop" />
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="32" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Foreground="{DynamicResource Accent}" FontWeight="Bold" Text="01" />
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="Install the Companion and restart Garry's Mod." TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="1" Margin="0,12,0,0" Foreground="{DynamicResource Accent}" FontWeight="Bold" Text="02" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,12,0,0" Text="Open Utilities → Source Addon Optimizer and record a representative session." TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="2" Margin="0,12,0,0" Foreground="{DynamicResource Accent}" FontWeight="Bold" Text="03" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,12,0,0" Text="Import the profile; enable it only if you want Maximum v2 to use positive importance evidence." TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="3" Margin="0,12,0,0" Foreground="{DynamicResource Accent}" FontWeight="Bold" Text="04" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,12,0,0" Text="Optimize, validate in-game, and import the result bundle." TextWrapping="Wrap" />
+                            </Grid>
+
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,18,0,0">
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource StatusTextBlockStyle}"
+                                                   Text="{Binding OperationStatusText}"
+                                                   TextWrapping="Wrap"
+                                                   VerticalAlignment="Center" />
+                                        <Button x:Name="Button_CompanionCancel"
+                                                Grid.Column="1"
+                                                Style="{StaticResource ButtonDanger}"
+                                                Margin="12,0,0,0"
+                                                Content="Cancel"
+                                                Width="82"
+                                                IsEnabled="{Binding CanCancel}" />
+                                    </Grid>
+                                    <ProgressBar Margin="0,12,0,0"
+                                                 Minimum="0"
+                                                 Maximum="100"
+                                                 Value="{Binding ProgressValue}" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource Card}" Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardEyebrowText}" Text="TRUSTED EVIDENCE" />
+                            <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Validation results" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="Structural and visual evidence is merged only when run ID and plan hash match. Conflicts and duplicate imports remain visible; screenshot files are opened only after path, size and SHA-256 verification." />
+
+                            <Border Style="{StaticResource ActionBarCard}" Margin="0,16,0,0">
+                                <WrapPanel VerticalAlignment="Center">
+                                    <TextBlock Style="{StaticResource LabelText}"
+                                               Text="Status filter"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,10,0" />
+                                    <ComboBox x:Name="Combo_CompanionResultFilter"
+                                              Width="130"
+                                              SelectedIndex="0">
+                                        <ComboBoxItem Content="All" Tag="ALL" />
+                                        <ComboBoxItem Content="FAILED" Tag="FAILED" />
+                                        <ComboBoxItem Content="WARNING" Tag="WARNING" />
+                                        <ComboBoxItem Content="INCOMPLETE" Tag="INCOMPLETE" />
+                                        <ComboBoxItem Content="PASS" Tag="PASS" />
+                                    </ComboBox>
+                                    <Button x:Name="Button_CompanionCopyResults"
+                                            Margin="12,0,0,0"
+                                            Content="Copy Summary"
+                                            Width="116"
+                                            IsEnabled="{Binding CanCopyValidationSummary}" />
+                                    <Button x:Name="Button_CompanionExportResults"
+                                            Margin="8,0,0,0"
+                                            Content="Export Summary"
+                                            Width="124"
+                                            IsEnabled="{Binding CanExportValidationSummary}" />
+                                    <Button x:Name="Button_CompanionOpenScreenshot"
+                                            Margin="8,0,0,0"
+                                            Content="Open Screenshot"
+                                            Width="132"
+                                            IsEnabled="{Binding CanOpenValidationScreenshot}" />
+                                </WrapPanel>
+                            </Border>
+
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.35*" />
+                                    <ColumnDefinition Width="0.65*" />
+                                </Grid.ColumnDefinitions>
+                                <ListBox Grid.Column="0"
+                                         MinHeight="220"
+                                         MaxHeight="430"
+                                         ItemsSource="{Binding ValidationResources}"
+                                         SelectedItem="{Binding SelectedValidationResource, Mode=TwoWay}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="{DynamicResource Border}"
+                                                    BorderThickness="0,0,0,1"
+                                                    Padding="8">
+                                                <StackPanel>
+                                                    <TextBlock FontWeight="Bold" Text="{Binding Status}" />
+                                                    <TextBlock Margin="0,3,0,0"
+                                                               Text="{Binding DetailText}"
+                                                               TextWrapping="Wrap" />
+                                                    <TextBlock Margin="0,3,0,0"
+                                                               Foreground="{DynamicResource TextSecondary}"
+                                                               Text="{Binding WarningText}"
+                                                               TextWrapping="Wrap" />
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <Border Grid.Column="1"
+                                        Style="{StaticResource CardInnerPanel}"
+                                        Margin="12,0,0,0"
+                                        MinHeight="220">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource LabelText}" Text="Verified screenshot" />
+                                        <Image Margin="0,10,0,0"
+                                               MaxHeight="330"
+                                               Stretch="Uniform"
+                                               Source="{Binding SelectedValidationResource.PrimaryScreenshotPath}" />
+                                        <TextBlock Margin="0,8,0,0"
+                                                   Style="{StaticResource MutedText}"
+                                                   Text="{Binding SelectedValidationResource.PrimaryScreenshotPath}"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </ScrollViewer>
+        </TabItem>
         </TabControl>
         <Border Grid.Row="2" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
             <DockPanel Margin="24,0">

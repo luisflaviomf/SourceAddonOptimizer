@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sourceaddonoptimizer.local/contracts/sao-visual-result-v1.schema.json",
+  "title": "Source Addon Optimizer visual result chunk v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "contract", "run_id", "created_utc", "producer", "environment", "chunk", "payload"],
+  "properties": {
+    "schema": {"const": "sao-visual-result-v1"},
+    "contract": {"$ref": "#/$defs/contract"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "producer": {"$ref": "#/$defs/producer"},
+    "environment": {"$ref": "#/$defs/environment"},
+    "chunk": {"$ref": "#/$defs/chunk"},
+    "payload": {"type": "object", "additionalProperties": false, "required": ["plan_sha256", "overall_status", "resources", "screenshots", "performance", "truncation"], "properties": {"plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "overall_status": {"$ref": "#/$defs/status"}, "resources": {"type": "array", "maxItems": 5000, "items": {"$ref": "#/$defs/resource"}}, "screenshots": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/$defs/screenshot"}}, "performance": {"$ref": "#/$defs/performance"}, "truncation": {"$ref": "#/$defs/truncation"}}}
+  },
+  "$defs": {
+    "contract": {"type": "object", "additionalProperties": false, "required": ["major", "minor"], "properties": {"major": {"const": 1}, "minor": {"const": 0}}},
+    "producer": {"type": "object", "additionalProperties": false, "required": ["name", "version"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 64}, "version": {"type": "string", "minLength": 1, "maxLength": 32}}},
+    "environment": {"type": "object", "additionalProperties": false, "required": ["game_build", "map", "gamemode", "realm", "session_seconds", "mounted_addons"], "properties": {"game_build": {"type": "string", "maxLength": 64}, "map": {"type": "string", "maxLength": 128}, "gamemode": {"type": "string", "maxLength": 128}, "realm": {"enum": ["server", "client", "singleplayer"]}, "session_seconds": {"type": "number", "minimum": 0, "maximum": 604800}, "mounted_addons": {"type": "array", "maxItems": 4096, "items": {"type": "object", "additionalProperties": false, "required": ["workshop_id", "title"], "properties": {"workshop_id": {"type": "string", "pattern": "^[0-9]{1,20}$"}, "title": {"type": "string", "maxLength": 256}}}}}},
+    "chunk": {"type": "object", "additionalProperties": false, "required": ["sequence", "total"], "properties": {"sequence": {"type": "integer", "minimum": 1}, "total": {"type": "integer", "minimum": 1}}},
+    "status": {"enum": ["PASS", "WARNING", "FAILED", "INCOMPLETE"]},
+    "resource": {"type": "object", "additionalProperties": false, "required": ["id", "test_id", "path", "status", "reason", "warnings"], "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "test_id": {"type": "string", "minLength": 1, "maxLength": 64}, "path": {"type": "string", "minLength": 1, "maxLength": 512}, "status": {"$ref": "#/$defs/status"}, "reason": {"type": "string", "maxLength": 1024}, "warnings": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 512}}}},
+    "screenshot": {"type": "object", "additionalProperties": false, "required": ["id", "test_id", "path", "sha256", "bytes", "view", "retry_count", "status", "camera", "state"], "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "test_id": {"type": "string", "minLength": 1, "maxLength": 64}, "path": {"type": "string", "minLength": 1, "maxLength": 512}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "bytes": {"type": "integer", "minimum": 0}, "view": {"enum": ["front", "side", "rear", "isometric", "closeup"]}, "retry_count": {"type": "integer", "minimum": 0, "maximum": 1}, "status": {"$ref": "#/$defs/status"}, "camera": {"$ref": "#/$defs/camera"}, "state": {"$ref": "#/$defs/model_state"}}},
+    "camera": {"type": "object", "additionalProperties": false, "required": ["fov", "distance", "crop_width", "crop_height"], "properties": {"fov": {"type": "number", "minimum": 1, "maximum": 120}, "distance": {"type": "number", "minimum": 0, "maximum": 1000000}, "crop_width": {"type": "integer", "minimum": 1, "maximum": 4096}, "crop_height": {"type": "integer", "minimum": 1, "maximum": 4096}}},
+    "model_state": {"type": "object", "additionalProperties": false, "required": ["skin", "bodygroups"], "properties": {"skin": {"type": "integer", "minimum": 0, "maximum": 255}, "bodygroups": {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/bodygroup_state"}}}},
+    "bodygroup_state": {"type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "value": {"type": "integer", "minimum": 0, "maximum": 255}}},
+    "performance": {"type": "object", "additionalProperties": false, "required": ["models", "screenshots", "wall_seconds"], "properties": {"models": {"type": "integer", "minimum": 0}, "screenshots": {"type": "integer", "minimum": 0}, "wall_seconds": {"type": "number", "minimum": 0}}},
+    "truncation": {"type": "object", "additionalProperties": false, "required": ["models", "screenshots"], "properties": {"models": {"type": "integer", "minimum": 0}, "screenshots": {"type": "integer", "minimum": 0}}}
+  }
+}

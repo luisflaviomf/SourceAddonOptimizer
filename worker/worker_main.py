@@ -4,6 +4,15 @@ import os
 import re
 import subprocess
 import sys
+
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+sys.dont_write_bytecode = True
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
+
 import traceback
 from datetime import datetime
 from pathlib import Path

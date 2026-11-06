@@ -1,0 +1,16 @@
+{
+  "schema": "sao-runtime-profile-v1",
+  "contract": {"major": 1, "minor": 0},
+  "run_id": "11111111-1111-4111-8111-111111111111",
+  "created_utc": "2026-08-15T12:00:00Z",
+  "producer": {"name": "Source Addon Optimizer Companion", "version": "1.0.0"},
+  "environment": {"game_build": "2026.08", "map": "gm_flatgrass", "gamemode": "sandbox", "realm": "singleplayer", "session_seconds": 120.0, "mounted_addons": [{"workshop_id": "3027256228", "title": "LVS Cars Pack"}]},
+  "chunk": {"sequence": 1, "total": 1},
+  "payload": {
+    "models": [{"id": "model-1", "path": "models/lvs/example.mdl", "evidence": "focused", "skins": [0, 1], "bodygroups": [{"name": "wheels", "value": 1, "evidence": "focused"}], "submaterials": [{"slot": 0, "material": "materials/models/lvs/tire.vmt", "evidence": "repeated_visible"}], "materials": ["materials/models/lvs/tire.vmt"]}],
+    "materials": [{"id": "material-1", "path": "materials/models/lvs/tire.vmt", "evidence": "repeated_visible"}],
+    "lua_errors": [],
+    "performance": {"samples": 240, "average_ms": 0.15, "p95_ms": 0.45, "max_ms": 1.2, "queue_high_water": 24},
+    "truncation": {"models": 0, "materials": 0, "lua_errors": 0, "bytes": 0}
+  }
+}

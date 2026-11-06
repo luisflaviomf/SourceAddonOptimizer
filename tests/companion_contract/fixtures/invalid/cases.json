@@ -1,0 +1,22 @@
+{
+  "unsafe_paths": [
+    "../models/car.mdl",
+    "models/../car.mdl",
+    "/models/car.mdl",
+    "C:/models/car.mdl",
+    "//server/share/car.mdl",
+    "models//car.mdl",
+    "models/car.mdl ",
+    "models/cár.mdl",
+    "models/car.exe",
+    "screenshots/run/car.png",
+    "unknown/car.mdl"
+  ],
+  "safe_paths": {
+    "MODELS\\LVS\\CAR.MDL": "models/lvs/car.mdl",
+    "materials/models/lvs/tire.vmt": "materials/models/lvs/tire.vmt",
+    "sound/lvs/engine.wav": "sound/lvs/engine.wav",
+    "lua/autorun/lvs.lua": "lua/autorun/lvs.lua",
+    "maps/gm_flatgrass.bsp": "maps/gm_flatgrass.bsp"
+  }
+}

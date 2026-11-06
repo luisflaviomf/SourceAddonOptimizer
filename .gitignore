@@ -52,6 +52,8 @@ teste*.zip
 /experiments/VtfUniversal.Tests/**/obj/
 /experiments/VtfUniversalCorpusDriver/**/bin/
 /experiments/VtfUniversalCorpusDriver/**/obj/
+/tests/**/bin/
+/tests/**/obj/
 
 # Large local archives (do not commit)
 /*.zip
@@ -66,3 +68,4 @@ teste*.zip
 # Design renderer build outputs
 /docs/design-options/**/bin/
 /docs/design-options/**/obj/
+!pyinstaller/worker.spec

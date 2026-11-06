@@ -57,7 +57,12 @@ public sealed class MaximumVtfIntegrationTests
             "Objects",
             "MaximumVTFEdit.cs"));
 
-        Assert.DoesNotContain("VtfMaximumLab", project, StringComparison.OrdinalIgnoreCase);
+        // Magick+ reuses the lab codec pieces (exact BC3->BC1 repack); the July
+        // Maximum runner itself must never be linked into production.
+        foreach (string runnerFolder in new[] { "Experiment", "Baseline", "Sampling", "Selection", "Metrics", "Reporting" })
+        {
+            Assert.DoesNotContain($@"VtfMaximumLab\{runnerFolder}\", project, StringComparison.OrdinalIgnoreCase);
+        }
         Assert.DoesNotContain("VtfMaximumLab", facade, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("new VTFEdit", facade, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("VtfMaximumExperimentRunner", facade,

@@ -256,7 +256,7 @@ def test_real_cli_module_process_reports_small_independent_candidate(tmp_path):
 ])
 def test_windows_generated_artifacts_share_native_directory_spelling(tmp_path, native_paths):
     import os
-    from exact_runtime_harness import RuntimeHarness
+    from tests.exact_runtime_harness import RuntimeHarness
     if os.name != "nt":
         pytest.skip("Windows directory casing regression")
     payload = b"RIFF" + b"fixture" * 40000

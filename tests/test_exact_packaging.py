@@ -39,11 +39,21 @@ def test_packager_staleness_tracks_pinned_code_templates_and_product_sources(tmp
     worker_path = str(tmp_path / "worker.exe").replace("'", "''")
     script = f"""
     $ErrorActionPreference = 'Stop'
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $tree = [System.Management.Automation.Language.Parser]::ParseFile('{script_path}', [ref]$null, [ref]$null)
     foreach ($statement in $tree.EndBlock.Statements) {{
         if ($statement -is [System.Management.Automation.Language.FunctionDefinitionAst]) {{ Invoke-Expression $statement.Extent.Text }}
     }}
     [System.IO.File]::WriteAllText('{worker_path}', 'test')
+    $internal = Join-Path (Split-Path -Parent '{worker_path}') '_internal'
+    New-Item -ItemType Directory -Force -Path $internal | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $internal 'python311.dll'), 'test')
+    $zip = [System.IO.Compression.ZipFile]::Open((Join-Path $internal 'base_library.zip'), 'Create')
+    $writer = [System.IO.StreamWriter]::new($zip.CreateEntry('stub.py').Open())
+    $writer.Write('x = 1')
+    $writer.Dispose()
+    $zip.Dispose()
     (Get-Item -LiteralPath '{worker_path}').LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(1)
     $fresh = Test-WorkerRebuildNeeded -WorkerExe '{worker_path}'
     (Get-Item -LiteralPath '{worker_path}').LastWriteTimeUtc = [DateTime]::MinValue.AddYears(2000)

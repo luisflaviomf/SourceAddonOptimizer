@@ -3,6 +3,9 @@ using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("VtfUniversal.Tests")]
 [assembly: InternalsVisibleTo("VtfUniversalCorpusDriver")]
+[assembly: InternalsVisibleTo("VtfMaximumLab")]
+[assembly: InternalsVisibleTo("VtfMaximumLab.Tests")]
+[assembly: InternalsVisibleTo("GmodAddonOptimizer.ContractTests")]
 
 [assembly: ThemeInfo(
     ResourceDictionaryLocation.None, //where theme specific resource dictionaries are located

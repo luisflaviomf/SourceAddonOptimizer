@@ -14,11 +14,21 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="bin\**\*.cs;obj\**\*.cs" />
     <Content Include="icon.ico" />
     <EmbeddedResource Include="Resources\VtfMaximumTools.zip"
                       LogicalName="GmodAddonCompressor.Resources.VtfMaximumTools.zip" />
     <EmbeddedResource Include="Resources\universal-vtf-v1-fixtures.json"
                       LogicalName="GmodAddonCompressor.Resources.universal-vtf-v1-fixtures.json" />
+    <EmbeddedResource Include="Resources\SourceAddonOptimizerCompanion.zip"
+                      LogicalName="GmodAddonCompressor.Resources.SourceAddonOptimizerCompanion.zip" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\experiments\VtfMaximumLab\Candidates\*.cs" Link="Systems\Vtf\Maximum\Candidates\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Encoding\*.cs" Link="Systems\Vtf\Maximum\Encoding\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Inventory\*.cs" Link="Systems\Vtf\Maximum\Inventory\%(Filename)%(Extension)" />
+    <Compile Include="..\..\experiments\VtfMaximumLab\Validation\*.cs" Link="Systems\Vtf\Maximum\Validation\%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

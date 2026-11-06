@@ -168,13 +168,15 @@ namespace GmodAddonCompressor.DataContexts
         private string[] _optimizerModeList = new string[]
         {
             "Normal",
-            "Fidelity"
+            "Fidelity",
+            "Maximum"
         };
         private string[] _compressModeList = new string[]
         {
             "Padrao",
             "Magick",
-            "Maximum"
+            "Maximum",
+            "Magick+"
         };
 
         public uint ImageSkipHeight
@@ -241,6 +243,7 @@ namespace GmodAddonCompressor.DataContexts
 
         public bool OptimizerModeIsNormal => _optimizerModeIndex == 0;
         public bool OptimizerModeIsFidelity => _optimizerModeIndex == 1;
+        public bool OptimizerModeIsMaximum => _optimizerModeIndex == 2;
         public bool OptimizerModeNormalChecked
         {
             get { return _optimizerModeIndex == 0; }
@@ -273,16 +276,35 @@ namespace GmodAddonCompressor.DataContexts
             }
         }
 
+        public bool OptimizerModeMaximumChecked
+        {
+            get { return _optimizerModeIndex == 2; }
+            set
+            {
+                if (value)
+                {
+                    OptimizerModeIndex = 2;
+                    return;
+                }
+
+                if (_optimizerModeIndex == 2)
+                    OnPropertyChanged();
+            }
+        }
+
         public string OptimizerModeDescriptionText =>
-            OptimizerModeIsFidelity
+            OptimizerModeIsMaximum
+                ? "Maximum starts from the aggressive Normal result, validates curvature, silhouette, normals, UVs, materials and skinning by region, then restores only regions that fail. Blender renders are reserved for uncertain regions."
+                : OptimizerModeIsFidelity
                 ? "Fidelity mode keeps the current outer run settings such as ratio/jobs, but routes optimization through the validated sandbox stack: selective ground policy, round-parts wheel handling, and the steer turn-basis fix."
                 : "Normal mode keeps the current Models pipeline exactly as it works today. The existing presets, tuning fields, and opt-in experimental toggles behave the same as before.";
 
         public bool CompressModeIsStandard => _compressModeIndex == 0;
         public bool CompressModeIsMagick => _compressModeIndex == 1;
         public bool CompressModeIsMaximum => _compressModeIndex == 2;
+        public bool CompressModeIsMagickPlus => _compressModeIndex == 3;
         public Visibility CompressStandardOptionsVisibility => CompressModeIsStandard ? Visibility.Visible : Visibility.Collapsed;
-        public Visibility CompressMagickOptionsVisibility => CompressModeIsMagick ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility CompressMagickOptionsVisibility => CompressModeIsMagick || CompressModeIsMagickPlus ? Visibility.Visible : Visibility.Collapsed;
         public Visibility CompressMaximumOptionsVisibility => CompressModeIsMaximum ? Visibility.Visible : Visibility.Collapsed;
 
         public bool CompressMagickUseAggressivePng
@@ -298,7 +320,9 @@ namespace GmodAddonCompressor.DataContexts
 
         public string CompressModeDescriptionText =>
             CompressModeIsMaximum
-                ? "Maximum is the validated experimental VTF mode: it tries original, 2x and 4x resolution per texture and keeps only decoded candidates that pass semantic and visual quality gates."
+                ? "Maximum (Universal VTF, Balanced profile) reduces every eligible DXT1/DXT5 VTF at least 2x by promoting its authored mipmaps, then keeps going level by level only while semantic quality gates pass (normals, alpha/cutout, glass, emissive, text)."
+                : CompressModeIsMagickPlus
+                ? "Magick+ keeps every current Magick setting and adds an exact BC3-to-BC1 repack when shader analysis proves the alpha channel is unused. Decoded RGB, resolution and mipmaps remain identical."
                 : CompressModeIsMagick
                 ? "Magick mode keeps the same unified VTF pipeline as Standard and only extends PNG when aggressive q256 is enabled."
                 : "Standard mode now uses the unified VTF pipeline by default: raw-split first, export-split fallback when needed, selective FX-safe guardrails for sensitive particles, then preserve unchanged when no gain or unsafe.";
@@ -311,7 +335,15 @@ namespace GmodAddonCompressor.DataContexts
                     return "Selected types use the Standard compressor. VTF now uses one unified pipeline: raw-split first, export-split fallback when needed, selective FX-safe DXT/alpha-aware resize/resolution guardrails for sensitive particle-style materials, then preserve unchanged on no gain or out-of-scope cases. PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on the Standard path.";
 
                 if (CompressModeIsMaximum)
-                    return "VTF uses adaptive per-file candidates with exact original VTF version, semantic alpha/normal/cutout handling, decoded-output metrics, safe parallelism and original fallback. Other selected types keep Standard routing.";
+                    return "VTF uses the Universal VTF batch: semantic VMT/Lua/PCF analysis, a mandatory 2x floor, consecutive-level quality gates, structural audit and transactional replacement. Other selected types keep Standard routing.";
+
+                if (CompressModeIsMagickPlus)
+                {
+                    string plusPngText = CompressMagickUseAggressivePng
+                        ? "PNG: Magick q256 aggressive path first, with Standard fallback on failure or no gain."
+                        : "PNG: Standard path only.";
+                    return $"VTF first uses the same unified Magick pipeline and user resolution limits. A lossless post-pass removes only proven-unused BC3 alpha blocks when that beats Magick; all decoded RGB pixels and mipmaps are verified before replacement. {plusPngText}";
+                }
 
                 string pngText = CompressMagickUseAggressivePng
                     ? "PNG: Magick q256 aggressive path first, with Standard fallback on failure or no gain."
@@ -1195,6 +1227,7 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(CompressModeIsStandard));
             OnPropertyChanged(nameof(CompressModeIsMagick));
             OnPropertyChanged(nameof(CompressModeIsMaximum));
+            OnPropertyChanged(nameof(CompressModeIsMagickPlus));
             OnPropertyChanged(nameof(CompressStandardOptionsVisibility));
             OnPropertyChanged(nameof(CompressMagickOptionsVisibility));
             OnPropertyChanged(nameof(CompressMaximumOptionsVisibility));
@@ -1206,8 +1239,10 @@ namespace GmodAddonCompressor.DataContexts
         {
             OnPropertyChanged(nameof(OptimizerModeIsNormal));
             OnPropertyChanged(nameof(OptimizerModeIsFidelity));
+            OnPropertyChanged(nameof(OptimizerModeIsMaximum));
             OnPropertyChanged(nameof(OptimizerModeNormalChecked));
             OnPropertyChanged(nameof(OptimizerModeFidelityChecked));
+            OnPropertyChanged(nameof(OptimizerModeMaximumChecked));
             OnPropertyChanged(nameof(OptimizerModeDescriptionText));
         }
 

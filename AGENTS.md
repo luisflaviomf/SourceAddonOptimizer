@@ -86,10 +86,16 @@ Arquitetura real:
 Pontos importantes:
 
 - A aba **Descompactar addons** ja existe no WPF e usa o worker `unpack`.
-- A aba **Models** usa o worker empacotado para o pipeline de otimizar/recompilar modelos.
+- A aba **Models** usa o worker empacotado para o pipeline de otimizar/recompilar modelos. Modos: `normal`, `fidelity` e `maximum` (Models Maximum adaptive v2 em `maximum_optimizer/`, com meshoptimizer nativo via ctypes e perfil `maximum_optimizer/profiles/maximum-adaptive-v2.json`). O TRI_STRIP de VTX (`--vtx-tristrips`) roda no empacotamento de todos os modos.
+- A aba **Mídia e recursos** (Compress) tem os modos Padrao, Magick, Maximum (Universal VTF, perfil Balanced) e Magick+ (Magick + repack exato BC3->BC1 quando o alpha comprovadamente nao e usado).
+- A aba **Validação no jogo** (Companion) instala/remove o addon `companion/sourceaddonoptimizer_companion`, importa perfis de runtime opcionais para o Models Maximum e gera/importa planos de validacao. Codigo em `MainWindow.Companion.cs` e `Systems/Companion/*`.
 - A aba **Distribuição exata** exporta um candidato sem nova perda de qualidade, via `Systems/Optimizer/ExactDistributionRunner.cs`.
 - A aba **Compressão completa** tem entrada/saída/engine/ferramentas e perfil próprios: staging autenticado -> Models Safe -> VTF/PNG/WAV -> distribuição exata obrigatória. Usa `MainWindow.FullCompression.cs` e `Systems/Optimizer/FullCompression*.cs`, sem herdar o perfil das outras abas. Ver `docs/full-compression.md` para limites e instruções. Não confundir este fluxo com a promoção dos adaptadores estruturais do laboratório, nem chamar a redução nativa de byte-exact.
 - A aba **Pipeline** encadeia Models -> Compress e pode executar a distribuicao exata no final (opcao persistida, padrao desativado). Falha/cancelamento de qualquer etapa impede sucesso geral; o intermediario nativo permanece separado.
+
+## Linha de desenvolvimento
+
+Desde 2026-11-06 existe uma unica linha: `publish/2026-03` (a `main` local aponta para o mesmo commit). Ela junta o trabalho de setembro (Universal VTF, distribuicao exata, Compressao completa, interface Bancada) com o que estava apenas na `main` (Models Maximum v2, Magick+, Companion). Tags `backup/pre-unify-20261106-*` guardam o estado anterior das duas linhas. Branches `spike/*` e `feature/*` antigos continuam separados e nao fazem parte do produto ate serem portados.
 
 ## Pipeline de build/release correto
 
@@ -120,7 +126,7 @@ Se voce alterou codigo em:
 
 garanta que o worker empacotado foi atualizado antes do release final. `package_wpf_tools.ps1` reconstrui quando o executavel esta ausente ou anterior aos fontes rastreados, incluindo `exact_distribution/*.py`, pins e todos os arquivos vendor autenticados. Se houver timestamps restaurados ou suspeita de build stale, refaca o PyInstaller antes do release.
 
-Distribuicao exata: `worker.spec` deve incluir fontes Python reais, templates Lua e `vendor-pins.json` como data no `_internal`, alem dos imports. Os hashes de produtor e `verify_vendor()` leem os arquivos a partir de `__file__`; apenas bytecode no PYZ nao basta. Nao modificar os vendors congelados. ToolVersion 0.1.18 preserva a extracao anterior para rollback. Ver `docs/exact-distribution.md`.
+Distribuicao exata: `worker.spec` deve incluir fontes Python reais, templates Lua e `vendor-pins.json` como data no `_internal`, alem dos imports. Os hashes de produtor e `verify_vendor()` leem os arquivos a partir de `__file__`; apenas bytecode no PYZ nao basta. Nao modificar os vendors congelados. ToolVersion 0.1.19 (linha unificada); o instalador `SourceAddonOptimizerPackageInstaller` extrai por hash de conteudo, entao versoes anteriores continuam disponiveis para rollback. A versao precisa ser a mesma em `ToolPaths.cs`, `maximum_optimizer/tool_package_manifest.py`, `maximum_optimizer/silhouette_native.py`, `pyinstaller/New-SourceAddonOptimizerManifest.ps1` e nos testes de contrato. Ver `docs/exact-distribution.md`.
 
 ### Nao usar como release principal
 
@@ -152,7 +158,7 @@ Eles servem para builds parciais/legados e podem induzir erro de fluxo.
 ## Regras para evitar regressao
 
 - Nao mexer no frontend Python antigo para features novas, salvo pedido explicito.
-- Nao quebrar as abas existentes do WPF: `Compress`, `Models`, `Descompactar addons`, `Pipeline`.
+- Nao quebrar as abas existentes do WPF: Compressão completa, Modelos, Mídia e recursos, Descompactar, Juntar addons, Mapas, Distribuição exata, Pipeline e Validação no jogo.
 - Preservar integracao com settings, logs e size reports existentes.
 - Preservar extracao de tools em `%LOCALAPPDATA%`; nao voltar a depender da pasta do exe para runtime.
 - Sempre preferir integracao incremental no WPF em vez de reestruturar arquitetura.
