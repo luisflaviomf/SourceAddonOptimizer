@@ -4038,10 +4038,13 @@ namespace GmodAddonCompressor
             bool isMagickMode = _context.CompressModeIsMagick;
             bool isMaximumMode = _context.CompressModeIsMaximum;
             bool isMagickPlusMode = _context.CompressModeIsMagickPlus;
+            bool isScreenMode = _context.CompressModeIsScreen;
 
             return new CompressPipelineOptions
             {
-                Mode = isMaximumMode
+                Mode = isScreenMode
+                    ? CompressPipelineMode.Screen
+                    : isMaximumMode
                     ? CompressPipelineMode.Maximum
                     : isMagickPlusMode
                         ? CompressPipelineMode.MagickPlus

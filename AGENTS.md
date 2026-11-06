@@ -80,6 +80,7 @@ Arquitetura real:
 4. O worker roteia comandos:
    - `unpack` -> `batch_unpack_addons.main(...)`
    - `exactpack` -> `exact_distribution.cli.main(...)` (distribuicao exata experimental)
+   - `texscreen` -> `texlab.screen_compress.main(...)` (modo Tela de VTF)
    - fluxo padrao -> `build_optimized_addon.main(...)`
 5. O WPF consome stdout/progresso/logs e atualiza a UI.
 
@@ -87,7 +88,7 @@ Pontos importantes:
 
 - A aba **Descompactar addons** ja existe no WPF e usa o worker `unpack`.
 - A aba **Models** usa o worker empacotado para o pipeline de otimizar/recompilar modelos. Modos: `normal`, `fidelity` e `maximum` (Models Maximum adaptive v2 em `maximum_optimizer/`, com meshoptimizer nativo via ctypes e perfil `maximum_optimizer/profiles/maximum-adaptive-v2.json`). O TRI_STRIP de VTX (`--vtx-tristrips`) roda no empacotamento de todos os modos.
-- A aba **Mídia e recursos** (Compress) tem os modos Padrao, Magick, Maximum (Universal VTF, perfil Balanced) e Magick+ (Magick + repack exato BC3->BC1 quando o alpha comprovadamente nao e usado).
+- A aba **Mídia e recursos** (Compress) tem os modos Padrao, Magick, Maximum (Universal VTF, perfil Balanced), Magick+ (Magick + repack exato BC3->BC1 quando o alpha comprovadamente nao e usado) e Tela (indice 4: worker `texscreen` em `texlab/screen_compress.py`, reducao por textura pela densidade na tela, mips menores originais exatos, alpha preservado; ver `docs/texlab-vtf-screen-aware-2026-11-06.md`). O worker so pode importar os modulos numpy de `texlab` (nunca `render`, `evaluate`, `downscale`, `build_opt`, que usam torch/numba).
 - A aba **Validação no jogo** (Companion) instala/remove o addon `companion/sourceaddonoptimizer_companion`, importa perfis de runtime opcionais para o Models Maximum e gera/importa planos de validacao. Codigo em `MainWindow.Companion.cs` e `Systems/Companion/*`.
 - A aba **Distribuição exata** exporta um candidato sem nova perda de qualidade, via `Systems/Optimizer/ExactDistributionRunner.cs`.
 - A aba **Compressão completa** tem entrada/saída/engine/ferramentas e perfil próprios: staging autenticado -> Models Safe -> VTF/PNG/WAV -> distribuição exata obrigatória. Usa `MainWindow.FullCompression.cs` e `Systems/Optimizer/FullCompression*.cs`, sem herdar o perfil das outras abas. Ver `docs/full-compression.md` para limites e instruções. Não confundir este fluxo com a promoção dos adaptadores estruturais do laboratório, nem chamar a redução nativa de byte-exact.

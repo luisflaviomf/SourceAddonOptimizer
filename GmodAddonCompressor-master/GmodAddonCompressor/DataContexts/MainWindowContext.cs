@@ -176,7 +176,8 @@ namespace GmodAddonCompressor.DataContexts
             "Padrao",
             "Magick",
             "Maximum",
-            "Magick+"
+            "Magick+",
+            "Tela"
         };
 
         public uint ImageSkipHeight
@@ -303,6 +304,7 @@ namespace GmodAddonCompressor.DataContexts
         public bool CompressModeIsMagick => _compressModeIndex == 1;
         public bool CompressModeIsMaximum => _compressModeIndex == 2;
         public bool CompressModeIsMagickPlus => _compressModeIndex == 3;
+        public bool CompressModeIsScreen => _compressModeIndex == 4;
         public Visibility CompressStandardOptionsVisibility => CompressModeIsStandard ? Visibility.Visible : Visibility.Collapsed;
         public Visibility CompressMagickOptionsVisibility => CompressModeIsMagick || CompressModeIsMagickPlus ? Visibility.Visible : Visibility.Collapsed;
         public Visibility CompressMaximumOptionsVisibility => CompressModeIsMaximum ? Visibility.Visible : Visibility.Collapsed;
@@ -319,7 +321,9 @@ namespace GmodAddonCompressor.DataContexts
         }
 
         public string CompressModeDescriptionText =>
-            CompressModeIsMaximum
+            CompressModeIsScreen
+                ? "Tela (screen-aware) picks each VTF's resolution from how large it really appears on screen, using the addon's own models: at least 2x like Standard, deeper (4x/8x) only where the lost detail stays below a typical 2x loss. The new top level is rebuilt for the GPU's bilinear magnification, lower mipmaps are the original blocks, and DXT5 becomes DXT1 only when no material reads the alpha (keeps paint/phong masks)."
+                : CompressModeIsMaximum
                 ? "Maximum (Universal VTF, Balanced profile) reduces every eligible DXT1/DXT5 VTF at least 2x by promoting its authored mipmaps, then keeps going level by level only while semantic quality gates pass (normals, alpha/cutout, glass, emissive, text)."
                 : CompressModeIsMagickPlus
                 ? "Magick+ keeps every current Magick setting and adds an exact BC3-to-BC1 repack when shader analysis proves the alpha channel is unused. Decoded RGB, resolution and mipmaps remain identical."
@@ -333,6 +337,9 @@ namespace GmodAddonCompressor.DataContexts
             {
                 if (CompressModeIsStandard)
                     return "Selected types use the Standard compressor. VTF now uses one unified pipeline: raw-split first, export-split fallback when needed, selective FX-safe DXT/alpha-aware resize/resolution guardrails for sensitive particle-style materials, then preserve unchanged on no gain or out-of-scope cases. PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on the Standard path.";
+
+                if (CompressModeIsScreen)
+                    return "VTF uses the screen-aware engine in the worker (texscreen, profile q50). Non-DXT formats and NOMIP textures fall back to the Standard VTF path. PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on Standard.";
 
                 if (CompressModeIsMaximum)
                     return "VTF uses the Universal VTF batch: semantic VMT/Lua/PCF analysis, a mandatory 2x floor, consecutive-level quality gates, structural audit and transactional replacement. Other selected types keep Standard routing.";
@@ -1228,6 +1235,7 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(CompressModeIsMagick));
             OnPropertyChanged(nameof(CompressModeIsMaximum));
             OnPropertyChanged(nameof(CompressModeIsMagickPlus));
+            OnPropertyChanged(nameof(CompressModeIsScreen));
             OnPropertyChanged(nameof(CompressStandardOptionsVisibility));
             OnPropertyChanged(nameof(CompressMagickOptionsVisibility));
             OnPropertyChanged(nameof(CompressMaximumOptionsVisibility));

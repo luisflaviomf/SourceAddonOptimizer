@@ -43,6 +43,10 @@ function Get-WorkerSourceFiles {
         Get-Item -LiteralPath (Join-Path $PWD $relative)
     }
 
+    foreach ($name in @("screen_compress", "npsolve", "bcnp", "vtf", "density", "materials", "source_model", "allocate", "plan", "__init__")) {
+        Get-Item -LiteralPath (Join-Path $PWD ("texlab\" + $name + ".py"))
+    }
+
     $maximumRoot = Join-Path $PWD "maximum_optimizer"
     if (Test-Path $maximumRoot) {
         Get-ChildItem -LiteralPath $maximumRoot -Recurse -File |

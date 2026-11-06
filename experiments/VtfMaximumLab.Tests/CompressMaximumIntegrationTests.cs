@@ -16,11 +16,30 @@ public sealed class CompressMaximumIntegrationTests
 
         context.CompressModeIndex = 2;
 
-        Assert.Equal(new[] { "Padrao", "Magick", "Maximum", "Magick+" }, context.CompressModeList);
+        Assert.Equal(new[] { "Padrao", "Magick", "Maximum", "Magick+", "Tela" }, context.CompressModeList);
         Assert.True(context.CompressModeIsMaximum);
         Assert.False(context.CompressModeIsStandard);
         Assert.False(context.CompressModeIsMagick);
         Assert.Equal(modelsMode, context.OptimizerModeIndex);
+    }
+
+    [Fact]
+    public void ScreenModeIsAppendedAndRoutesVtfToTheWorkerEngine()
+    {
+        var context = new MainWindowContext();
+
+        context.CompressModeIndex = 4;
+
+        Assert.True(context.CompressModeIsScreen);
+        Assert.False(context.CompressModeIsMaximum);
+        Assert.False(context.CompressModeIsMagickPlus);
+        Assert.Contains("screen", context.CompressModeDescriptionText, StringComparison.OrdinalIgnoreCase);
+
+        var options = new CompressPipelineOptions { Mode = CompressPipelineMode.Screen };
+        Assert.True(options.IsScreenMode);
+        Assert.False(options.IsMagickFamilyMode);
+        Assert.Equal("Tela", options.ModeLabel);
+        Assert.Contains("texscreen", options.BuildRoutingSummary(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

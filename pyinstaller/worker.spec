@@ -57,6 +57,9 @@ a = Analysis(
         (str(repo_root / "tools" / "vtx" / "LICENSE.meshoptimizer.txt"), "."),
     ] + exact_datas,
     hiddenimports=collect_submodules("maximum_optimizer") + collect_submodules("exact_distribution") + [
+        # texlab screen-aware VTF engine: numpy-only core (lab modules with torch/numba stay out)
+        "texlab", "texlab.screen_compress", "texlab.npsolve", "texlab.bcnp", "texlab.vtf",
+        "texlab.density", "texlab.materials", "texlab.source_model", "texlab.allocate", "texlab.plan",
         "PIL.Image",
         "PIL.ImageChops",
         "PIL.ImageDraw",
@@ -65,7 +68,8 @@ a = Analysis(
     ],
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=["torch", "numba", "llvmlite", "flip_evaluator", "texlab.render", "texlab.evaluate",
+              "texlab.downscale", "texlab.build_opt"],
     noarchive=False,
 )
 

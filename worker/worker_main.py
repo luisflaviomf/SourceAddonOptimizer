@@ -498,6 +498,9 @@ def _run_preview(argv: list[str]) -> int:
 
 def main(argv: list[str]) -> int:
     _ensure_crowbar_env()
+    if argv and argv[0] == "texscreen":
+        from texlab.screen_compress import main as texscreen_main
+        return texscreen_main(argv[1:])
     if argv and argv[0] == "exactpack":
         from exact_distribution.cli import main as exactpack_main
         return exactpack_main(argv[1:])
