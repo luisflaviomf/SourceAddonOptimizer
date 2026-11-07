@@ -106,4 +106,39 @@ public sealed class CompressMaximumIntegrationTests
 
         Assert.Equal((expectedWidth, expectedHeight), bounds);
     }
+
+    [Fact]
+    public void ParallelVtfJobsOfOneFolderNeverLoseTheirTempFolder()
+    {
+        // Many VTFs of the same folder run in parallel; each creates a subfolder of the shared
+        // __split_vtf_tmp and, when done, removes it and the shared root if it became empty.
+        // Creating a subfolder while another job removes the empty root must never fail.
+        string folder = Path.Combine(Path.GetTempPath(), "vtf_split_race_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            string vtf = Path.Combine(folder, "skin.vtf");
+            var errors = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+            Parallel.For(0, 12000, new ParallelOptions { MaxDegreeOfParallelism = 16 }, _ =>
+            {
+                try
+                {
+                    string temp = GmodAddonCompressor.Objects.VTFEdit.CreateSplitTempDirectory(vtf);
+                    File.WriteAllText(Path.Combine(temp, "split_source.png"), "x");
+                    GmodAddonCompressor.Objects.VTFEdit.DeleteSplitTempDirectory(temp);
+                }
+                catch (Exception ex)
+                {
+                    errors.Add(ex);
+                }
+            });
+
+            Assert.Empty(errors);
+            Assert.False(Directory.Exists(Path.Combine(folder, "__split_vtf_tmp")));
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
 }

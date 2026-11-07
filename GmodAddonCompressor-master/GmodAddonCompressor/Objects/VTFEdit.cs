@@ -104,11 +104,7 @@ namespace GmodAddonCompressor.Objects
                 preliminaryFxProfile.PreferredSourceRoute == AddonVtfSourceRoutePreference.ExportSplitFirst;
 
             long oldFileSize = new FileInfo(vtfFilePath).Length;
-            string tempRoot = Path.Combine(
-                Path.GetDirectoryName(vtfFilePath) ?? Path.GetTempPath(),
-                "__split_vtf_tmp",
-                $"{Path.GetFileNameWithoutExtension(vtfFilePath)}_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempRoot);
+            string tempRoot = CreateSplitTempDirectory(vtfFilePath);
 
             try
             {
@@ -250,7 +246,7 @@ namespace GmodAddonCompressor.Objects
             }
             finally
             {
-                TryDelete(tempRoot);
+                DeleteSplitTempDirectory(tempRoot);
             }
         }
 
@@ -563,6 +559,27 @@ namespace GmodAddonCompressor.Objects
             return value.Trim().Replace(' ', '_');
         }
 
+        private const string SplitTempRootName = "__split_vtf_tmp";
+
+        // Every VTF of a folder works in its own subfolder of one shared __split_vtf_tmp next to it,
+        // and the last job to finish removes the shared folder. Creating a subfolder and removing the
+        // empty shared folder must not interleave: parallel jobs of the same folder used to fail with
+        // DirectoryNotFoundException (seen on the full LVS cars pack), leaving that VTF uncompressed.
+        private static readonly object SplitTempRootLock = new();
+
+        internal static string CreateSplitTempDirectory(string vtfFilePath)
+        {
+            string tempRoot = Path.Combine(
+                Path.GetDirectoryName(vtfFilePath) ?? Path.GetTempPath(),
+                SplitTempRootName,
+                $"{Path.GetFileNameWithoutExtension(vtfFilePath)}_{Guid.NewGuid():N}");
+            lock (SplitTempRootLock)
+                Directory.CreateDirectory(tempRoot);
+            return tempRoot;
+        }
+
+        internal static void DeleteSplitTempDirectory(string tempRoot) => TryDelete(tempRoot);
+
         private static void TryDelete(string path)
         {
             try
@@ -587,13 +604,16 @@ namespace GmodAddonCompressor.Objects
                 if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
                     return;
 
-                if (!string.Equals(Path.GetFileName(path), "__split_vtf_tmp", StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(Path.GetFileName(path), SplitTempRootName, StringComparison.OrdinalIgnoreCase))
                     return;
 
-                if (Directory.EnumerateFileSystemEntries(path).Any())
-                    return;
+                lock (SplitTempRootLock)
+                {
+                    if (!Directory.Exists(path) || Directory.EnumerateFileSystemEntries(path).Any())
+                        return;
 
-                Directory.Delete(path, false);
+                    Directory.Delete(path, false);
+                }
             }
             catch
             {
