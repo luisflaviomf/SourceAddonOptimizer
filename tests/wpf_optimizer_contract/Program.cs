@@ -134,7 +134,9 @@ Assert(screenProfileFlag >= 0 && screenArguments[screenProfileFlag + 1] == "stro
 Assert(!screenArguments.Contains("--blender") && !screenArguments.Contains("--studiomdl") && !screenArguments.Contains("--optimizer-mode"), "Tela mode must not pass Blender/StudioMDL/optimizer-mode.");
 Assert(screenArguments.Contains("--overwrite") && screenArguments.Contains("--jobs"), "Tela mode lost overwrite/jobs.");
 var screenDefault = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:\a", WorkDir = @"C:\w", OptimizerMode = "screen" }).ToArray();
-Assert(screenDefault[Array.IndexOf(screenDefault, "--profile") + 1] == "balanced", "Tela mode must default to the balanced profile.");
+Assert(screenDefault[Array.IndexOf(screenDefault, "--profile") + 1] == "strong", "Tela mode must default to the strong (Forte) profile.");
+var screenBalanced = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:\a", WorkDir = @"C:\w", OptimizerMode = "screen", ScreenProfile = "balanced" }).ToArray();
+Assert(screenBalanced[Array.IndexOf(screenBalanced, "--profile") + 1] == "balanced", "Tela mode lost the explicit balanced (Equilibrado) profile.");
 
 string runtimeProfileWithSpaces = @"C:\work folder\runtime profile snapshot";
 var maximumProfileOptions = new SourceAddonOptimizerRunOptions

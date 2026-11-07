@@ -60,9 +60,10 @@ namespace GmodAddonCompressor.Systems.Optimizer
         {
             var arguments = new List<string> { "modscreen", options.AddonPath, "--work", options.WorkDir };
             AddValue(arguments, "--suffix", options.Suffix);
-            string profile = string.Equals(options.ScreenProfile?.Trim(), "strong", StringComparison.OrdinalIgnoreCase)
-                ? "strong"
-                : "balanced";
+            // Forte ("strong") is the default; only an explicit "balanced" selects Equilibrado.
+            string profile = string.Equals(options.ScreenProfile?.Trim(), "balanced", StringComparison.OrdinalIgnoreCase)
+                ? "balanced"
+                : "strong";
             arguments.Add("--profile");
             arguments.Add(profile);
             AddInteger(arguments, "--jobs", options.Jobs);

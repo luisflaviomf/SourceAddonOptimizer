@@ -106,6 +106,11 @@ dx80/sw.vtx e faz strips no dx90.vtx. Modelo que falhar fica exatamente como era
 
 163 modelos, nenhuma falha, nenhum material com erro novo, ~2,5 min com 6 processos.
 
+**Forte é o padrão** (07/11, escolhido depois do teste no jogo): a interface abre com Forte e o
+`SourceAddonOptimizerCommandBuilder` só manda `balanced` quando Equilibrado é escolhido. Quem
+já salvou um perfil nas configurações continua com o perfil salvo. O worker chamado direto, sem
+`--profile`, continua `balanced`.
+
 Tangentes: o motor tem `HasTangentData()` e calcula/usa outro referencial quando o VVD não traz
 tangentes (25% do VVD). Na carroceria quase não muda; em lentes com normal map forte (setas
 laterais) e na banda de rodagem de pneus o relevo fica mais "liso" — por isso só no Forte.

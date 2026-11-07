@@ -177,7 +177,9 @@ namespace GmodAddonCompressor.DataContexts
             "Equilibrado",
             "Forte"
         };
-        private int _modelsScreenProfileIndex = 0;
+        // Default Tela profile: Forte (index 1), chosen after in-game tests on the LVS cars pack.
+        internal const int DefaultModelsScreenProfileIndex = 1;
+        private int _modelsScreenProfileIndex = DefaultModelsScreenProfileIndex;
         private string[] _compressModeList = new string[]
         {
             "Padrao",
@@ -277,7 +279,7 @@ namespace GmodAddonCompressor.DataContexts
             get { return _modelsScreenProfileIndex; }
             set
             {
-                _modelsScreenProfileIndex = value < 0 || value >= _modelsScreenProfileList.Length ? 0 : value;
+                _modelsScreenProfileIndex = value < 0 || value >= _modelsScreenProfileList.Length ? DefaultModelsScreenProfileIndex : value;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(OptimizerModeDescriptionText));
             }
