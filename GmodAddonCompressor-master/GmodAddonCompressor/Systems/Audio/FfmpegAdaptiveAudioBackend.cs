@@ -22,14 +22,21 @@ namespace GmodAddonCompressor.Systems.Audio
                 spec.Channels,
                 ToContextCodec(spec.Codec));
 
-        public Task<bool> EncodeCandidateAsync(string inputPath, string outputPath, AudioEncodingSpec spec) =>
-            _ffmpeg.ReencodeAdaptiveWavAsync(
+        public Task<bool> EncodeCandidateAsync(string inputPath, string outputPath, AudioEncodingSpec spec)
+        {
+            // 0 (unreadable header) counts as "resampled": the deterministic double path is used.
+            int sourceSampleRate = RiffWaveFormat.TryReadFile(inputPath, out RiffWaveFormat? format, out _)
+                ? format!.SampleRate
+                : 0;
+            return _ffmpeg.ReencodeAdaptiveWavAsync(
                 inputPath,
                 outputPath,
                 spec.SampleRate,
                 spec.Channels,
                 ToContextCodec(spec.Codec),
-                spec.BlockAlign);
+                spec.BlockAlign,
+                sourceSampleRate);
+        }
 
         public async Task<PcmAudio> DecodeAsync(string path, int sampleRate, int channels)
         {

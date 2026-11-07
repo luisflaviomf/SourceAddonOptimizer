@@ -330,13 +330,31 @@ namespace GmodAddonCompressor.Systems
             }
         }
 
+        /// <summary>
+        /// Resample filter of the adaptive WAV candidates. With s16 in and out, swr picks an S16P internal
+        /// format, so libsoxr gets INT16 I/O and applies its own TPDF dither to the output, seeded from
+        /// time(0) and a heap address (FFmpeg never passes SOXR_NO_DITHER; dither_method=none only covers
+        /// swr's own dither). That made every resampled candidate differ by up to 2 LSB between runs.
+        /// A double internal format keeps soxr on float I/O and swr rounds once at the end without dither,
+        /// so the bytes are the same on every run. Same-rate candidates never create a soxr context and
+        /// keep the S16P path, so their bytes stay what they were.
+        /// </summary>
+        internal static string BuildAdaptiveResampleFilter(int sourceSampleRate, int targetSampleRate)
+        {
+            string filter = $"aresample=osr={targetSampleRate}:resampler=soxr:precision=28:cheby=1:osf=s16:dither_method=none";
+            if (sourceSampleRate != targetSampleRate)
+                filter += ":internal_sample_fmt=dblp";
+            return filter;
+        }
+
         internal async Task<bool> ReencodeAdaptiveWavAsync(
             string filePath,
             string outputFilePath,
             int sampleRate,
             int channels,
             AudioContext.WavCodecKind codec,
-            int blockAlign)
+            int blockAlign,
+            int sourceSampleRate)
         {
             try
             {
@@ -344,7 +362,7 @@ namespace GmodAddonCompressor.Systems
                 string codecArguments = codec == AudioContext.WavCodecKind.AdpcmMs
                     ? $"-c:a adpcm_ms -block_size {blockAlign}"
                     : "-c:a pcm_s16le";
-                string filter = $"aresample=osr={sampleRate}:resampler=soxr:precision=28:cheby=1:osf=s16:dither_method=none";
+                string filter = BuildAdaptiveResampleFilter(sourceSampleRate, sampleRate);
                 string arguments =
                     $"-hide_banner -nostdin -y -loglevel warning -i \"{filePath}\" " +
                     $"-map_metadata -1 -vn -af \"{filter}\" -ac {channels} -ar {sampleRate} " +
