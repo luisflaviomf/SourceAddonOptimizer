@@ -25,6 +25,7 @@ function Get-WorkerSourceFiles {
         (Join-Path $PWD "selective_policy_models.py"),
         (Join-Path $PWD "vehicle_steer_turn_basis_fix.py"),
         (Join-Path $PWD "vtx_tristrip_optimizer.py"),
+        (Join-Path $PWD "vvd_engine_exact.py"),
         (Join-Path $PWD "tools\\vtx\\meshopt_stripify.dll"),
         (Join-Path $PWD "tools\\vtx\\LICENSE.meshoptimizer.txt"),
         (Join-Path $PWD "pyinstaller\\worker.spec")

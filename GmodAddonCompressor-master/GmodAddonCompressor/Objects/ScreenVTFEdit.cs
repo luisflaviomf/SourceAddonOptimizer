@@ -18,7 +18,7 @@ namespace GmodAddonCompressor.Objects
 {
     /// <summary>
     /// "Tela" VTF mode: screen-aware resolution per texture (texlab texscreen engine in the worker),
-    /// reconstruction-aware downscaling, exact lower mips and alpha-safe DXT1 selection. Files the
+    /// Lanczos top level, exact original lower mips and alpha-safe DXT1 selection. Files the
     /// engine reports as fallback (non-DXT formats, NOMIP) go through the regular VTF path.
     /// </summary>
     internal sealed class ScreenVTFEdit : ICompress, ICompressPreparation, ICompressBatch

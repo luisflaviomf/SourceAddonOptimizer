@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 import selective_policy_models
 import vehicle_steer_turn_basis_fix
 import vtx_tristrip_optimizer
+import vvd_engine_exact
 
 
 OPTIMIZER_MODE_NORMAL = "normal"
@@ -1033,6 +1034,18 @@ def _run_single_addon(
         if removed_dx80:
             print(f"[INFO] Removed .dx80.vtx files: {removed_dx80}")
 
+        if not args.no_vvd_exact_normals:
+            # Lossless on screen: normals/tangents snapped inside the engine's own UBYTE4 steps
+            # (same bytes reach the GPU); only the Workshop LZMA download gets smaller.
+            print("== Packaging: VVD engine-exact normals ==")
+            vvd_report_path = work_dir / "logs" / "vvd_engine_exact_summary.json"
+            vvd_summary = vvd_engine_exact.optimize_tree(out_models_dir, report_path=vvd_report_path)
+            print(
+                "[VVD-EXACT] "
+                f"scanned={vvd_summary.scanned_files} changed={vvd_summary.changed_files} "
+                f"failed={vvd_summary.failed_files} vertices={vvd_summary.vertices}; report={vvd_report_path}"
+            )
+
         if args.vtx_tristrips:
             print("== Packaging: VTX TRI_STRIP exact-topology compression ==")
             vtx_report_path = work_dir / "logs" / "vtx_tristrip_summary.json"
@@ -1250,6 +1263,12 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         "--vtx-tristrips",
         action="store_true",
         help="Automatically compress every compatible dx90.vtx using GMod-tested triangle strips. Each file is topology-verified and transactionally kept original on failure.",
+    )
+    ap.add_argument(
+        "--no-vvd-exact-normals",
+        action="store_true",
+        help="Keep VVD normals/tangents byte-identical. By default they are snapped inside the engine's own "
+             "UBYTE4 compression steps (identical image in game, smaller Workshop download).",
     )
     ap.add_argument(
         "--single-addon-only",

@@ -2,8 +2,10 @@
 
 Per texture it decides how many mip levels to drop (2x, 4x or 8x) from the
 texel density the addon's own models give it on screen, rebuilds the new top
-level with reconstruction-aware downscaling, encodes it with VTFCmd and keeps
-every lower mip level as the original encoded blocks. DXT5 becomes DXT1 only
+level as a Lanczos reduction of level 0 (method "lanczos", the default; the
+reconstruction-aware solver stays available as method "solver" but aliased fine
+meshes in game), encodes it with VTFCmd and keeps every lower mip level as the
+original encoded blocks. DXT5 becomes DXT1 only
 when no material reads the alpha (or it is constant 255).
 
 Files the engine does not handle (non-DXT formats, NOMIP, cubemaps...) are
