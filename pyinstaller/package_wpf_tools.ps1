@@ -26,6 +26,7 @@ function Get-WorkerSourceFiles {
         (Join-Path $PWD "vehicle_steer_turn_basis_fix.py"),
         (Join-Path $PWD "vtx_tristrip_optimizer.py"),
         (Join-Path $PWD "vvd_engine_exact.py"),
+        (Join-Path $PWD "tools\meshopt\meshopt_simplify.dll"),
         (Join-Path $PWD "tools\\vtx\\meshopt_stripify.dll"),
         (Join-Path $PWD "tools\\vtx\\LICENSE.meshoptimizer.txt"),
         (Join-Path $PWD "pyinstaller\\worker.spec")
@@ -44,6 +45,7 @@ function Get-WorkerSourceFiles {
         Get-Item -LiteralPath (Join-Path $PWD $relative)
     }
 
+    Get-ChildItem -LiteralPath (Join-Path $PWD "model_screen") -File -Filter "*.py"
     foreach ($name in @("screen_compress", "npsolve", "bcnp", "vtf", "density", "materials", "source_model", "allocate", "plan", "__init__")) {
         Get-Item -LiteralPath (Join-Path $PWD ("texlab\" + $name + ".py"))
     }

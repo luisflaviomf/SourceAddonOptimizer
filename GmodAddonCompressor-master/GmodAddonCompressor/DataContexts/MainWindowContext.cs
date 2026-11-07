@@ -169,8 +169,15 @@ namespace GmodAddonCompressor.DataContexts
         {
             "Normal",
             "Fidelity",
-            "Maximum"
+            "Maximum",
+            "Tela"
         };
+        private string[] _modelsScreenProfileList = new string[]
+        {
+            "Equilibrado",
+            "Forte"
+        };
+        private int _modelsScreenProfileIndex = 0;
         private string[] _compressModeList = new string[]
         {
             "Padrao",
@@ -245,6 +252,36 @@ namespace GmodAddonCompressor.DataContexts
         public bool OptimizerModeIsNormal => _optimizerModeIndex == 0;
         public bool OptimizerModeIsFidelity => _optimizerModeIndex == 1;
         public bool OptimizerModeIsMaximum => _optimizerModeIndex == 2;
+        public bool OptimizerModeIsScreen => _optimizerModeIndex == 3;
+
+        public bool OptimizerModeScreenChecked
+        {
+            get { return _optimizerModeIndex == 3; }
+            set
+            {
+                if (value)
+                {
+                    OptimizerModeIndex = 3;
+                    return;
+                }
+
+                if (_optimizerModeIndex == 3)
+                    OnPropertyChanged();
+            }
+        }
+
+        public string[] ModelsScreenProfileList => _modelsScreenProfileList;
+
+        public int ModelsScreenProfileIndex
+        {
+            get { return _modelsScreenProfileIndex; }
+            set
+            {
+                _modelsScreenProfileIndex = value < 0 || value >= _modelsScreenProfileList.Length ? 0 : value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(OptimizerModeDescriptionText));
+            }
+        }
         public bool OptimizerModeNormalChecked
         {
             get { return _optimizerModeIndex == 0; }
@@ -294,7 +331,11 @@ namespace GmodAddonCompressor.DataContexts
         }
 
         public string OptimizerModeDescriptionText =>
-            OptimizerModeIsMaximum
+            OptimizerModeIsScreen
+                ? (_modelsScreenProfileIndex == 1
+                    ? "Tela (Forte): simplifica direto nos arquivos compilados, sem Blender/Crowbar/studiomdl. Costuras simplificadas igualmente dos dois lados (sem frestas), peças redondas e finas protegidas; normal até 35°, UV até 3 texels e VVD sem tangentes. Modelos cerca de 50% menores; pequenas diferenças de perto."
+                    : "Tela (Equilibrado): simplifica direto nos arquivos compilados, sem Blender/Crowbar/studiomdl. Costuras simplificadas igualmente dos dois lados (sem frestas), peças redondas e finas protegidas; normal até 20° e UV até 1 texel da textura real. Aparência quase idêntica.")
+                : OptimizerModeIsMaximum
                 ? "Maximum starts from the aggressive Normal result, validates curvature, silhouette, normals, UVs, materials and skinning by region, then restores only regions that fail. Blender renders are reserved for uncertain regions."
                 : OptimizerModeIsFidelity
                 ? "Fidelity mode keeps the current outer run settings such as ratio/jobs, but routes optimization through the validated sandbox stack: selective ground policy, round-parts wheel handling, and the steer turn-basis fix."
@@ -1251,6 +1292,8 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(OptimizerModeNormalChecked));
             OnPropertyChanged(nameof(OptimizerModeFidelityChecked));
             OnPropertyChanged(nameof(OptimizerModeMaximumChecked));
+            OnPropertyChanged(nameof(OptimizerModeIsScreen));
+            OnPropertyChanged(nameof(OptimizerModeScreenChecked));
             OnPropertyChanged(nameof(OptimizerModeDescriptionText));
         }
 

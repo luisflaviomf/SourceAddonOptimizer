@@ -299,7 +299,16 @@
                                                   Margin="0,0,16,0"
                                                   IsChecked="{Binding OptimizerModeFidelityChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ><TextBlock Text="Fidelity" TextWrapping="Wrap" /></CheckBox>
                                         <CheckBox
+                                                  Margin="0,0,16,0"
                                                   IsChecked="{Binding OptimizerModeMaximumChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ><TextBlock Text="Maximum" TextWrapping="Wrap" /></CheckBox>
+                                        <CheckBox
+                                                  Margin="0,0,12,0"
+                                                  IsChecked="{Binding OptimizerModeScreenChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ><TextBlock Text="Tela" TextWrapping="Wrap" /></CheckBox>
+                                        <ComboBox MinWidth="130"
+                                                  ToolTip="Perfil do modo Tela"
+                                                  ItemsSource="{Binding ModelsScreenProfileList}"
+                                                  SelectedIndex="{Binding ModelsScreenProfileIndex, Mode=TwoWay}"
+                                                  Visibility="{Binding OptimizerModeIsScreen, Converter={StaticResource BooleanToVisibilityConverter}}" />
                                     </StackPanel>
                                     <TextBlock Style="{StaticResource MutedText}"
                                                Margin="0,8,0,0"

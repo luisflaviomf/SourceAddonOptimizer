@@ -498,6 +498,9 @@ def _run_preview(argv: list[str]) -> int:
 
 def main(argv: list[str]) -> int:
     _ensure_crowbar_env()
+    if argv and argv[0] == "modscreen":
+        from model_screen.cli import main as modscreen_main
+        return modscreen_main(argv[1:])
     if argv and argv[0] == "texscreen":
         from texlab.screen_compress import main as texscreen_main
         return texscreen_main(argv[1:])
@@ -518,6 +521,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # model_screen runs models in worker processes; frozen Windows builds need this first
+    import multiprocessing
+    multiprocessing.freeze_support()
     try:
         raise SystemExit(main(sys.argv[1:]))
     except SystemExit:

@@ -112,6 +112,30 @@ Assert(!arguments.Contains("--experimental-ground-policy"), "Maximum leaked the 
 Assert(!arguments.Contains("--experimental-round-parts-policy"), "Maximum leaked the experimental round-parts policy.");
 Assert(!arguments.Contains("--experimental-steer-turn-basis-fix"), "Maximum leaked the experimental steer policy.");
 
+// Models "Tela" mode: worker command modscreen, no Blender/StudioMDL, profile mapped to balanced/strong.
+var screenOptions = new SourceAddonOptimizerRunOptions
+{
+    AddonPath = @"C:\addon folder",
+    WorkDir = @"C:\work",
+    OptimizerMode = "screen",
+    ScreenProfile = "strong",
+    Suffix = "_optimized",
+    BlenderPath = @"C:\blender.exe",
+    StudioMdlPath = @"C:\studiomdl.exe",
+    Jobs = 4,
+    Overwrite = true,
+    RestoreSkins = true,
+};
+var screenArguments = SourceAddonOptimizerCommandBuilder.BuildArguments(screenOptions).ToArray();
+Assert(screenArguments[0] == "modscreen", "Tela mode must start the modscreen worker command.");
+Assert(screenArguments[1] == @"C:\addon folder", "Tela mode lost the addon path.");
+int screenProfileFlag = Array.IndexOf(screenArguments, "--profile");
+Assert(screenProfileFlag >= 0 && screenArguments[screenProfileFlag + 1] == "strong", "Tela strong profile missing.");
+Assert(!screenArguments.Contains("--blender") && !screenArguments.Contains("--studiomdl") && !screenArguments.Contains("--optimizer-mode"), "Tela mode must not pass Blender/StudioMDL/optimizer-mode.");
+Assert(screenArguments.Contains("--overwrite") && screenArguments.Contains("--jobs"), "Tela mode lost overwrite/jobs.");
+var screenDefault = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:\a", WorkDir = @"C:\w", OptimizerMode = "screen" }).ToArray();
+Assert(screenDefault[Array.IndexOf(screenDefault, "--profile") + 1] == "balanced", "Tela mode must default to the balanced profile.");
+
 string runtimeProfileWithSpaces = @"C:\work folder\runtime profile snapshot";
 var maximumProfileOptions = new SourceAddonOptimizerRunOptions
 {

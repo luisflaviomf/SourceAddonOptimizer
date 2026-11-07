@@ -81,13 +81,14 @@ Arquitetura real:
    - `unpack` -> `batch_unpack_addons.main(...)`
    - `exactpack` -> `exact_distribution.cli.main(...)` (distribuicao exata experimental)
    - `texscreen` -> `texlab.screen_compress.main(...)` (modo Tela de VTF)
+   - `modscreen` -> `model_screen.cli.main(...)` (modo Tela de Models)
    - fluxo padrao -> `build_optimized_addon.main(...)`
 5. O WPF consome stdout/progresso/logs e atualiza a UI.
 
 Pontos importantes:
 
 - A aba **Descompactar addons** ja existe no WPF e usa o worker `unpack`.
-- A aba **Models** usa o worker empacotado para o pipeline de otimizar/recompilar modelos. Modos: `normal`, `fidelity` e `maximum` (Models Maximum adaptive v2 em `maximum_optimizer/`, com meshoptimizer nativo via ctypes e perfil `maximum_optimizer/profiles/maximum-adaptive-v2.json`). O TRI_STRIP de VTX (`--vtx-tristrips`) roda no empacotamento de todos os modos. Também no empacotamento, por padrão, `vvd_engine_exact.py` troca normais/tangentes do VVD por valores "redondos" dentro do mesmo degrau do `PackNormal_UBYTE4` do motor: imagem idêntica no jogo, download da Workshop menor (`--no-vvd-exact-normals` desliga; ver `docs/modlab-modelos-2026-11-06.md`).
+- A aba **Models** usa o worker empacotado para o pipeline de otimizar/recompilar modelos. Modo **Tela** (índice 3, worker `modscreen` em `model_screen/`): simplifica direto nos binários MDL/VVD/VTX, sem Blender/Crowbar/studiomdl; perfis `balanced` (Equilibrado, quase idêntico) e `strong` (Forte, modelos ~50% menores, VVD sem tangentes); usa `tools/meshopt/meshopt_simplify.dll` (meshoptimizer v1.2 de `third_party/`). Modos de recompilação: `normal`, `fidelity` e `maximum` (Models Maximum adaptive v2 em `maximum_optimizer/`, com meshoptimizer nativo via ctypes e perfil `maximum_optimizer/profiles/maximum-adaptive-v2.json`). O TRI_STRIP de VTX (`--vtx-tristrips`) roda no empacotamento de todos os modos. Também no empacotamento, por padrão, `vvd_engine_exact.py` troca normais/tangentes do VVD por valores "redondos" dentro do mesmo degrau do `PackNormal_UBYTE4` do motor: imagem idêntica no jogo, download da Workshop menor (`--no-vvd-exact-normals` desliga; ver `docs/modlab-modelos-2026-11-06.md`).
 - A aba **Mídia e recursos** (Compress) tem os modos Padrao, Magick, Maximum (Universal VTF, perfil Balanced), Magick+ (Magick + repack exato BC3->BC1 quando o alpha comprovadamente nao e usado) e Tela (indice 4: worker `texscreen` em `texlab/screen_compress.py`, reducao por textura pela densidade na tela, mips menores originais exatos, alpha preservado; ver `docs/texlab-vtf-screen-aware-2026-11-06.md`). O worker so pode importar os modulos numpy de `texlab` (nunca `render`, `evaluate`, `downscale`, `build_opt`, que usam torch/numba).
 - A aba **Validação no jogo** (Companion) instala/remove o addon `companion/sourceaddonoptimizer_companion`, importa perfis de runtime opcionais para o Models Maximum e gera/importa planos de validacao. Codigo em `MainWindow.Companion.cs` e `Systems/Companion/*`.
 - A aba **Distribuição exata** exporta um candidato sem nova perda de qualidade, via `Systems/Optimizer/ExactDistributionRunner.cs`.

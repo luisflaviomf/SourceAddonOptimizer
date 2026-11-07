@@ -36,6 +36,8 @@ a = Analysis(
             "maximum_optimizer/native/bin/win-x64",
         ),
         (str(repo_root / "tools" / "vtx" / "meshopt_stripify.dll"), "."),
+        # Models "Tela" mode: meshoptimizer v1.2 C API (third_party/meshoptimizer)
+        (str(repo_root / "tools" / "meshopt" / "meshopt_simplify.dll"), "."),
     ],
     datas=[
         (str(repo_root / "build_optimized_addon.py"), "."),
@@ -58,6 +60,8 @@ a = Analysis(
     ] + exact_datas,
     hiddenimports=collect_submodules("maximum_optimizer") + collect_submodules("exact_distribution") + [
         # texlab screen-aware VTF engine: numpy-only core (lab modules with torch/numba stay out)
+        "model_screen", "model_screen.cli", "model_screen.simplify", "model_screen.binary",
+        "model_screen.uvtol", "model_screen.meshopt", "vvd_engine_exact",
         "texlab", "texlab.screen_compress", "texlab.npsolve", "texlab.bcnp", "texlab.vtf",
         "texlab.density", "texlab.materials", "texlab.source_model", "texlab.allocate", "texlab.plan",
         "PIL.Image",

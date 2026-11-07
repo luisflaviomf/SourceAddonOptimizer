@@ -92,6 +92,33 @@ Toda simplificação que respeita textura e sombreamento para nesse piso; afroux
 Defeitos vistos e corrigidos no caminho: contorno do capô do Charger (UV), calota da roda Alpina
 virando polígono com frestas (tolerância pela peça inteira → passou a ser pela costura/ilha).
 
+## No produto (07/11): modo **Tela** da aba Modelos
+
+Worker `modscreen` (`model_screen/`), botão "Optimize Models" com o modo **Tela** marcado
+(também vale para a aba Pipeline). Não usa Blender, Crowbar nem studiomdl: edita os binários.
+Copia o addon para `<addon><sufixo>`, simplifica cada modelo, aplica normais exatas, apaga
+dx80/sw.vtx e faz strips no dx90.vtx. Modelo que falhar fica exatamente como era.
+
+| Perfil | O que muda | lvs_cars_pack: modelos | No jogo (FLIP médio) |
+|---|---|---:|---:|
+| **Equilibrado** | normal ≤ 20°, UV ≤ 1 texel real, 2 px a 40 u | 549 → **349 MB (−36%)** | 0,007 perto / 0,010 longe |
+| **Forte** | normal ≤ 35°, UV ≤ 3 texels, 6 px a 40 u, **VVD sem tangentes** | 549 → **257 MB (−53%)** | 0,018 perto / 0,023 longe |
+
+163 modelos, nenhuma falha, nenhum material com erro novo, ~2,5 min com 6 processos.
+
+Tangentes: o motor tem `HasTangentData()` e calcula/usa outro referencial quando o VVD não traz
+tangentes (25% do VVD). Na carroceria quase não muda; em lentes com normal map forte (setas
+laterais) e na banda de rodagem de pneus o relevo fica mais "liso" — por isso só no Forte.
+
+Por que não 70–90% sem estragar: piso das ilhas (acima) + LVS troca materiais de luz por Lua
+(`SubMaterialID`) com a UV original, então refazer UV com bake de texturas quebraria as luzes.
+O modo permissivo do meshoptimizer 1.2 (atravessar costuras) foi testado: mesma redução, porque
+UVs de ilhas diferentes não podem se juntar sem distorcer a textura.
+
+Testes: `tests/test_model_screen.py`, contrato C# (`tests/wpf_optimizer_contract`), harness de
+interface `experiments/BancadaUiSmoke --tela <pasta>` (render da aba) e `--tela-run <addon>`
+(botão real, worker real).
+
 ## Ferramentas do laboratório
 
 - `srcmodel_io.py`: reescreve MDL/VVD/VTX direto no binário (subconjunto de vértices + nova

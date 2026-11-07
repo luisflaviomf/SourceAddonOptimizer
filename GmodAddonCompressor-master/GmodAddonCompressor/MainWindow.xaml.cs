@@ -122,6 +122,7 @@ namespace GmodAddonCompressor
         private const int PresetCustomIndex = 2;
         private const int OptimizerModeFidelityIndex = 1;
         private const int OptimizerModeMaximumIndex = 2;
+        private const int OptimizerModeScreenIndex = 3;
 
         private enum PipelineStage
         {
@@ -3197,6 +3198,8 @@ namespace GmodAddonCompressor
                 if (index >= 0 && index < _context.OptimizerModeList.Length)
                     _context.OptimizerModeIndex = index;
             }
+            if (_settings.ModelsScreenProfileIndex.HasValue)
+                _context.ModelsScreenProfileIndex = _settings.ModelsScreenProfileIndex.Value;
             if (_settings.OptimizerUsePlanar.HasValue)
                 _context.OptimizerUsePlanar = _settings.OptimizerUsePlanar.Value;
             if (_settings.OptimizerPlanarAngle.HasValue)
@@ -3324,6 +3327,7 @@ namespace GmodAddonCompressor
                 OptimizerSuffix = _context.OptimizerSuffix,
                 OptimizerPreset = PresetNameFromIndex(_context.OptimizerPresetIndex),
                 OptimizerModeIndex = _context.OptimizerModeIndex,
+                ModelsScreenProfileIndex = _context.ModelsScreenProfileIndex,
                 OptimizerUsePlanar = _context.OptimizerUsePlanar,
                 OptimizerPlanarAngle = _context.OptimizerPlanarAngle,
                 OptimizerUseExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
@@ -3485,6 +3489,7 @@ namespace GmodAddonCompressor
             {
                 OptimizerModeFidelityIndex => "fidelity",
                 OptimizerModeMaximumIndex => "maximum",
+                OptimizerModeScreenIndex => "screen",
                 _ => "normal"
             };
         }
@@ -3510,6 +3515,7 @@ namespace GmodAddonCompressor
                 Suffix = _context.OptimizerSuffix,
                 OptimizerMode = GetOptimizerModeArgument(),
                 MaximumRuntimeProfilePath = selectedRuntimeProfile,
+                ScreenProfile = _context.ModelsScreenProfileIndex == 1 ? "strong" : "balanced",
                 BlenderPath = string.IsNullOrWhiteSpace(_context.BlenderPath) ? null : _context.BlenderPath.Trim(),
                 StudioMdlPath = string.IsNullOrWhiteSpace(_context.StudioMdlPath) ? null : _context.StudioMdlPath.Trim(),
                 Ratio = _context.OptimizerRatio,
@@ -3579,11 +3585,15 @@ namespace GmodAddonCompressor
             if (!Directory.Exists(addonDirectoryPath))
                 errors.Add("Addon folder not found.");
 
-            if (string.IsNullOrWhiteSpace(_context.BlenderPath) || !File.Exists(_context.BlenderPath))
-                errors.Add("Blender path is invalid.");
+            // The "Tela" mode edits the compiled files directly: no Blender/StudioMDL needed.
+            if (!_context.OptimizerModeIsScreen)
+            {
+                if (string.IsNullOrWhiteSpace(_context.BlenderPath) || !File.Exists(_context.BlenderPath))
+                    errors.Add("Blender path is invalid.");
 
-            if (string.IsNullOrWhiteSpace(_context.StudioMdlPath) || !File.Exists(_context.StudioMdlPath))
-                errors.Add("StudioMDL path is invalid.");
+                if (string.IsNullOrWhiteSpace(_context.StudioMdlPath) || !File.Exists(_context.StudioMdlPath))
+                    errors.Add("StudioMDL path is invalid.");
+            }
 
             if (string.IsNullOrWhiteSpace(_context.OptimizerSuffix))
                 errors.Add("Suffix is required.");
