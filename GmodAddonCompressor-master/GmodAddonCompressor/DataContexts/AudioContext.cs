@@ -8,6 +8,12 @@ namespace GmodAddonCompressor.DataContexts
             AdpcmMs = 1
         }
 
+        internal enum WavOptimizationKind
+        {
+            Manual = 0,
+            AdaptiveConservative = 1
+        }
+
         private const int MinSampleRate = 11025;
         private const int MaxSampleRate = 44100;
 
@@ -15,6 +21,7 @@ namespace GmodAddonCompressor.DataContexts
         private static int _wavSampleRate = 44100;
         private static int _wavChannels = 2;
         private static WavCodecKind _wavCodec = WavCodecKind.Pcm16;
+        private static WavOptimizationKind _wavOptimization = WavOptimizationKind.Manual;
         private static int _mp3SampleRate = 44100;
         private static int _mp3BitrateKbps = 96;
         private static int _oggSampleRate = 22050;
@@ -54,6 +61,12 @@ namespace GmodAddonCompressor.DataContexts
         {
             get { return _wavCodec; }
             set { _wavCodec = value; }
+        }
+
+        internal static WavOptimizationKind WavOptimization
+        {
+            get { return _wavOptimization; }
+            set { _wavOptimization = value; }
         }
 
         internal static int Mp3SampleRate

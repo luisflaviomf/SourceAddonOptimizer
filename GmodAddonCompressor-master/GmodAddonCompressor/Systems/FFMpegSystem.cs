@@ -329,5 +329,95 @@ namespace GmodAddonCompressor.Systems
                 return false;
             }
         }
+
+        internal async Task<bool> ReencodeAdaptiveWavAsync(
+            string filePath,
+            string outputFilePath,
+            int sampleRate,
+            int channels,
+            AudioContext.WavCodecKind codec,
+            int blockAlign)
+        {
+            try
+            {
+                TryDeleteFile(outputFilePath);
+                string codecArguments = codec == AudioContext.WavCodecKind.AdpcmMs
+                    ? $"-c:a adpcm_ms -block_size {blockAlign}"
+                    : "-c:a pcm_s16le";
+                string filter = $"aresample=osr={sampleRate}:resampler=soxr:precision=28:cheby=1:osf=s16:dither_method=none";
+                string arguments =
+                    $"-hide_banner -nostdin -y -loglevel warning -i \"{filePath}\" " +
+                    $"-map_metadata -1 -vn -af \"{filter}\" -ac {channels} -ar {sampleRate} " +
+                    $"{codecArguments} \"{outputFilePath}\"";
+                FfmpegRunResult run = await StartFFMpegProcess(arguments).ConfigureAwait(false);
+                WriteRunLog("wav-adaptive", filePath, outputFilePath, arguments, run);
+                return OutputLooksValid(outputFilePath, run);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex.ToString());
+                TryDeleteFile(outputFilePath);
+                return false;
+            }
+        }
+
+        internal async Task<float[]?> DecodeWavFloatAsync(string filePath, int sampleRate, int channels)
+        {
+            Process? process = null;
+            try
+            {
+                string arguments =
+                    $"-hide_banner -nostdin -loglevel error -i \"{filePath}\" -vn " +
+                    $"-ac {channels} -ar {sampleRate} -f f32le -acodec pcm_f32le pipe:1";
+                process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = _ffmpegFilePath,
+                        Arguments = arguments,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    }
+                };
+                if (!process.Start())
+                    return null;
+
+                using var pcm = new MemoryStream();
+                Task copyTask = process.StandardOutput.BaseStream.CopyToAsync(pcm);
+                Task<string> errorTask = process.StandardError.ReadToEndAsync();
+                Task waitTask = process.WaitForExitAsync();
+                Task all = Task.WhenAll(copyTask, errorTask, waitTask);
+                if (await Task.WhenAny(all, Task.Delay(TimeSpan.FromMinutes(2))).ConfigureAwait(false) != all)
+                {
+                    try { process.Kill(true); } catch { }
+                    AppendAudioLog($"WAV-ADAPTIVE-DECODE-TIMEOUT | {filePath}");
+                    return null;
+                }
+                await all.ConfigureAwait(false);
+                string stderr = await errorTask.ConfigureAwait(false);
+                if (process.ExitCode != 0)
+                {
+                    AppendAudioLog($"WAV-ADAPTIVE-DECODE-FAIL | {filePath} | exit={process.ExitCode} | {TrimLog(stderr, 20)}");
+                    return null;
+                }
+                byte[] bytes = pcm.ToArray();
+                if (bytes.Length == 0 || bytes.Length % (sizeof(float) * channels) != 0)
+                    return null;
+                var samples = new float[bytes.Length / sizeof(float)];
+                Buffer.BlockCopy(bytes, 0, samples, 0, bytes.Length);
+                return samples;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex.ToString());
+                return null;
+            }
+            finally
+            {
+                process?.Dispose();
+            }
+        }
     }
 }

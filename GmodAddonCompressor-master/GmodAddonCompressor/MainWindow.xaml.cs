@@ -1487,6 +1487,9 @@ namespace GmodAddonCompressor
                     WavSampleRate = _context.WavRateList[Math.Clamp(_context.WavRateListIndex, 0, _context.WavRateList.Length - 1)],
                     WavChannels = _context.WavChannelsIndex == 0 ? 2 : 1,
                     WavCodec = _context.WavCodecIndex == 1 ? AudioContext.WavCodecKind.AdpcmMs : AudioContext.WavCodecKind.Pcm16,
+                    WavOptimization = _context.WavOptimizationIndex == 1
+                        ? AudioContext.WavOptimizationKind.AdaptiveConservative
+                        : AudioContext.WavOptimizationKind.Manual,
                     Mp3SampleRate = _context.WavRateList[Math.Clamp(_context.Mp3RateIndex, 0, _context.WavRateList.Length - 1)],
                     Mp3BitrateKbps = _context.AudioBitrateList[Math.Clamp(_context.Mp3BitrateIndex, 0, _context.AudioBitrateList.Length - 1)],
                     OggSampleRate = _context.WavRateList[Math.Clamp(_context.OggRateIndex, 0, _context.WavRateList.Length - 1)],
@@ -1519,7 +1522,7 @@ namespace GmodAddonCompressor
                 if (needsAudioProcessing)
                 {
                     AppendMapScanLog(
-                        $"[MAP-OPT] AudioSettings | WAV {options.WavSampleRate}Hz {options.WavChannels}ch {options.WavCodec} | " +
+                        $"[MAP-OPT] AudioSettings | WAV {options.WavSampleRate}Hz {options.WavChannels}ch {options.WavCodec} {options.WavOptimization} | " +
                         $"MP3 {options.Mp3SampleRate}Hz {options.Mp3BitrateKbps}kbps | " +
                         $"OGG {options.OggSampleRate}Hz {options.OggChannels}ch q={options.OggQuality:0.0} (VBR) | Enabled={audioAvailable}");
                 }
@@ -3236,6 +3239,12 @@ namespace GmodAddonCompressor
                 if (index >= 0 && index < _context.WavCodecList.Length)
                     _context.WavCodecIndex = index;
             }
+            if (_settings.AudioWavOptimizationIndex.HasValue)
+            {
+                int index = _settings.AudioWavOptimizationIndex.Value;
+                if (index >= 0 && index < _context.WavOptimizationList.Length)
+                    _context.WavOptimizationIndex = index;
+            }
             if (_settings.AudioLoopSafe.HasValue)
                 _context.AudioLoopSafe = _settings.AudioLoopSafe.Value;
             if (_settings.AudioMp3SampleRateIndex.HasValue)
@@ -3354,6 +3363,7 @@ namespace GmodAddonCompressor
                 AudioWavSampleRateIndex = _context.WavRateListIndex,
                 AudioWavChannelsIndex = _context.WavChannelsIndex,
                 AudioWavCodecIndex = _context.WavCodecIndex,
+                AudioWavOptimizationIndex = _context.WavOptimizationIndex,
                 AudioLoopSafe = _context.AudioLoopSafe,
                 AudioMp3SampleRateIndex = _context.Mp3RateIndex,
                 AudioMp3BitrateIndex = _context.Mp3BitrateIndex,
@@ -3873,6 +3883,9 @@ namespace GmodAddonCompressor
             AudioContext.WavCodec = _context.WavCodecIndex == 1
                 ? AudioContext.WavCodecKind.AdpcmMs
                 : AudioContext.WavCodecKind.Pcm16;
+            AudioContext.WavOptimization = _context.WavOptimizationIndex == 1
+                ? AudioContext.WavOptimizationKind.AdaptiveConservative
+                : AudioContext.WavOptimizationKind.Manual;
 
             AudioContext.Mp3SampleRate = _context.WavRateList[Math.Clamp(_context.Mp3RateIndex, 0, _context.WavRateList.Length - 1)];
             AudioContext.Mp3BitrateKbps = _context.AudioBitrateList[Math.Clamp(_context.Mp3BitrateIndex, 0, _context.AudioBitrateList.Length - 1)];
@@ -3918,7 +3931,7 @@ namespace GmodAddonCompressor
             if (needsAudioProcessing)
             {
                 FFMpegSystem.AppendAudioLog(
-                    $"AudioSettings | WAV {AudioContext.WavSampleRate}Hz {AudioContext.WavChannels}ch {AudioContext.WavCodec} | " +
+                    $"AudioSettings | WAV {AudioContext.WavSampleRate}Hz {AudioContext.WavChannels}ch {AudioContext.WavCodec} {AudioContext.WavOptimization} | " +
                     $"MP3 {AudioContext.Mp3SampleRate}Hz {AudioContext.Mp3BitrateKbps}kbps | " +
                     $"OGG {AudioContext.OggSampleRate}Hz {AudioContext.OggChannels}ch q={AudioContext.OggQuality:0.0} (VBR) | Enabled={audioAvailable}");
             }

@@ -7,6 +7,8 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("VtfMaximumLab.Tests")]
 [assembly: InternalsVisibleTo("GmodAddonOptimizer.ContractTests")]
 [assembly: InternalsVisibleTo("TexLab.Baseline")]
+[assembly: InternalsVisibleTo("GmodAddonOptimizer.AudioAdaptive.Tests")]
+[assembly: InternalsVisibleTo("GmodAddonOptimizer.AudioAdaptive.Corpus")]
 
 [assembly: ThemeInfo(
     ResourceDictionaryLocation.None, //where theme specific resource dictionaries are located

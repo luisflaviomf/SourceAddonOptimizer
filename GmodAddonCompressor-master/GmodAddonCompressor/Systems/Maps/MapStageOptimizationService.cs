@@ -24,6 +24,7 @@ namespace GmodAddonCompressor.Systems.Maps
         internal int WavSampleRate { get; init; }
         internal int WavChannels { get; init; }
         internal AudioContext.WavCodecKind WavCodec { get; init; }
+        internal AudioContext.WavOptimizationKind WavOptimization { get; init; }
         internal int Mp3SampleRate { get; init; }
         internal int Mp3BitrateKbps { get; init; }
         internal int OggSampleRate { get; init; }
@@ -272,6 +273,7 @@ namespace GmodAddonCompressor.Systems.Maps
             AudioContext.WavSampleRate = options.WavSampleRate;
             AudioContext.WavChannels = options.WavChannels;
             AudioContext.WavCodec = options.WavCodec;
+            AudioContext.WavOptimization = options.WavOptimization;
             AudioContext.Mp3SampleRate = options.Mp3SampleRate;
             AudioContext.Mp3BitrateKbps = options.Mp3BitrateKbps;
             AudioContext.OggSampleRate = options.OggSampleRate;

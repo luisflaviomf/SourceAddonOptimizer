@@ -62,6 +62,7 @@ namespace GmodAddonCompressor.Models
         public int? AudioWavSampleRateIndex { get; set; }
         public int? AudioWavChannelsIndex { get; set; }
         public int? AudioWavCodecIndex { get; set; }
+        public int? AudioWavOptimizationIndex { get; set; }
         public bool? AudioLoopSafe { get; set; }
         public int? AudioMp3SampleRateIndex { get; set; }
         public int? AudioMp3BitrateIndex { get; set; }

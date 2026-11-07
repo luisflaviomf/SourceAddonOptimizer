@@ -83,6 +83,7 @@ namespace GmodAddonCompressor.DataContexts
         private int _wavRateListIndex = 0;
         private int _wavChannelsIndex = 0;
         private int _wavCodecIndex = 0;
+        private int _wavOptimizationIndex = 0;
         private int _mp3RateIndex = 0;
         private int _mp3BitrateIndex = 0;
         private int _oggRateIndex = 1;
@@ -131,6 +132,11 @@ namespace GmodAddonCompressor.DataContexts
         {
             "PCM 16-bit",
             "ADPCM (Microsoft)"
+        };
+        private string[] _wavOptimizationList = new string[]
+        {
+            "Manual",
+            "Adaptativo conservador"
         };
         private int[] _audioBitrateList = new int[]
         {
@@ -493,6 +499,16 @@ namespace GmodAddonCompressor.DataContexts
             }
         }
 
+        public string[] WavOptimizationList
+        {
+            get { return _wavOptimizationList; }
+            set
+            {
+                _wavOptimizationList = value;
+                OnPropertyChanged();
+            }
+        }
+
         public int[] AudioBitrateList
         {
             get { return _audioBitrateList; }
@@ -663,6 +679,16 @@ namespace GmodAddonCompressor.DataContexts
             set
             {
                 _wavCodecIndex = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public int WavOptimizationIndex
+        {
+            get { return _wavOptimizationIndex; }
+            set
+            {
+                _wavOptimizationIndex = value;
                 OnPropertyChanged();
             }
         }

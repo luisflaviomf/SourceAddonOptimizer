@@ -912,6 +912,9 @@
                                             IsEnabled="{Binding CompressWAV}"
                                             Visibility="{Binding CompressWavProfileVisibility}">
                                     <TextBlock Style="{StaticResource LabelText}" Text="WAV" />
+                                    <TextBlock Style="{StaticResource LabelText}" Margin="0,6,0,0" Text="Perfil WAV" />
+                                    <ComboBox ItemsSource="{Binding WavOptimizationList, Mode=OneTime}"
+                                              SelectedIndex="{Binding WavOptimizationIndex, Mode=TwoWay}" />
                                     <Grid Margin="0,6,0,0">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto" />
@@ -941,7 +944,8 @@
                                              
                                               IsChecked="{Binding AudioLoopSafe}" ><TextBlock Text="Protect WAV loop behavior when possible" TextWrapping="Wrap" /></CheckBox>
                                     <TextBlock Style="{StaticResource MutedText}" Margin="0,6,0,0"
-                                               Text="Recommended starting point: 22050 Hz, mono, ADPCM." />
+                                               TextWrapping="Wrap"
+                                               Text="Adaptativo conservador: usa as opções acima como referência e, para cada WAV, testa PCM16 e ADPCM (formatos do jogo) em 22050/44100 Hz; só troca quando o arquivo fica menor sem piorar a qualidade medida contra o original. Loops preservados. Testado no pack de carros com 22050 Hz, mono e PCM 16-bit: sons 28,3 → 9,5 MB." />
                                 </StackPanel>
 
                                 <StackPanel Margin="0,10,0,0"
@@ -2183,6 +2187,7 @@
                                             <RowDefinition Height="Auto" />
                                             <RowDefinition Height="Auto" />
                                             <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
                                         </Grid.RowDefinitions>
 
                                         <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="WAV sample rate" />
@@ -2190,13 +2195,18 @@
                                                   ItemsSource="{Binding WavRateList}"
                                                   SelectedIndex="{Binding WavRateListIndex, Mode=TwoWay}" />
 
-                                        <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="MP3 bitrate" />
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="Perfil WAV" />
                                         <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,10,0,0"
+                                                  ItemsSource="{Binding WavOptimizationList}"
+                                                  SelectedIndex="{Binding WavOptimizationIndex, Mode=TwoWay}" />
+
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="MP3 bitrate" />
+                                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,10,0,0"
                                                   ItemsSource="{Binding AudioBitrateList}"
                                                   SelectedIndex="{Binding Mp3BitrateIndex, Mode=TwoWay}" />
 
-                                        <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="OGG quality" />
-                                        <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,10,0,0"
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,10,0,0" Style="{StaticResource LabelText}" Text="OGG quality" />
+                                        <ComboBox Grid.Row="3" Grid.Column="1" Margin="0,10,0,0"
                                                   ItemsSource="{Binding OggQualityList}"
                                                   SelectedIndex="{Binding OggQualityIndex, Mode=TwoWay}" />
                                     </Grid>

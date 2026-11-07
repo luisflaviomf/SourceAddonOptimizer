@@ -2,24 +2,40 @@
 using GmodAddonCompressor.DataContexts;
 using GmodAddonCompressor.Interfaces;
 using GmodAddonCompressor.Systems;
+using GmodAddonCompressor.Systems.Audio;
+using GmodAddonCompressor.Systems.Tools;
 using Microsoft.Extensions.Logging;
 using NAudio.Wave;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace GmodAddonCompressor.Objects
 {
-    internal class WAVEdit : ICompress, ICompressPreparation
+    internal class WAVEdit : ICompress, ICompressPreparation, ICompressFinalizer
     {
         private readonly ILogger _logger = LogSystem.CreateLogger<WAVEdit>();
-        private readonly FFMpegSystem _ffmpegSystem = new FFMpegSystem();
+        private readonly FFMpegSystem _ffmpegSystem;
+        private readonly AdaptiveAudioOptimizer _adaptiveOptimizer;
         private readonly Lazy<AudioWebSafetyReport> _webAudioSafetyReport;
+        private readonly ConcurrentBag<AdaptiveWavFileRecord> _adaptiveRecords = new();
+        private readonly Stopwatch _adaptiveWallClock = new();
+
+        /// <summary>Report of the latest adaptive WAV run (under %LOCALAPPDATA%\GmodAddonOptimizer\work\audio).</summary>
+        internal static string? LastAdaptiveReportPath { get; private set; }
+
+        private sealed record AdaptiveWavFileRecord(string RelativePath, AdaptiveAudioResult Result);
 
         public WAVEdit()
         {
+            _ffmpegSystem = new FFMpegSystem();
+            _adaptiveOptimizer = new AdaptiveAudioOptimizer(new FfmpegAdaptiveAudioBackend(_ffmpegSystem));
             string addonRoot = CompressDirectoryContext.DirectoryPath;
             _webAudioSafetyReport = new Lazy<AudioWebSafetyReport>(
                 () => AudioWebSafetyClassifier.Analyze(addonRoot),
@@ -68,9 +84,86 @@ namespace GmodAddonCompressor.Objects
         public void Prepare()
         {
             _ = _webAudioSafetyReport.Value;
+            if (AudioContext.WavOptimization == AudioContext.WavOptimizationKind.AdaptiveConservative)
+                _adaptiveWallClock.Restart();
         }
 
         public async Task Compress(string wavFilePath)
+        {
+            if (AudioContext.WavOptimization == AudioContext.WavOptimizationKind.AdaptiveConservative)
+            {
+                await CompressAdaptive(wavFilePath).ConfigureAwait(false);
+                return;
+            }
+
+            await CompressManual(wavFilePath).ConfigureAwait(false);
+        }
+
+        private async Task CompressAdaptive(string wavFilePath)
+        {
+            try
+            {
+                if (!TryGetWaveInfo(wavFilePath, out WaveInfo info))
+                    return;
+
+                LoopMetadataSummary loopMetadata = AnalyzeLoopMetadata(wavFilePath);
+                int targetSampleRate = AudioContext.WavSampleRate;
+                int targetChannels = AudioContext.WavChannels;
+                AudioContext.WavCodecKind targetCodec = GetTargetCodec(wavFilePath);
+                if (AudioContext.PreserveLoopMetadata && loopMetadata.IsSingleCueLoopLabel)
+                {
+                    targetCodec = AudioContext.WavCodecKind.Pcm16;
+                    targetChannels = info.Channels;
+                }
+
+                AudioCodec codec = targetCodec == AudioContext.WavCodecKind.AdpcmMs
+                    ? AudioCodec.MsAdpcm
+                    : AudioCodec.Pcm16;
+                int blockAlign = codec == AudioCodec.MsAdpcm
+                    ? (targetChannels == 1 ? 1024 : 2048)
+                    : targetChannels * 2;
+                var options = new AdaptiveAudioOptions(
+                    new AudioEncodingSpec(codec, targetSampleRate, targetChannels, blockAlign),
+                    AudioContext.PreserveLoopMetadata);
+                AdaptiveAudioResult result = await _adaptiveOptimizer
+                    .OptimizeAsync(wavFilePath, options)
+                    .ConfigureAwait(false);
+
+                string relativePath = wavFilePath.GAC_ToLocalPath();
+                if (!result.BaselineCreated || !result.Replaced)
+                {
+                    _logger.LogWarning($"Adaptive WAV could not establish its baseline; using manual path: {relativePath}");
+                    await CompressManual(wavFilePath).ConfigureAwait(false);
+                    long manualBytes = File.Exists(wavFilePath) ? new FileInfo(wavFilePath).Length : result.OriginalBytes;
+                    result = result with
+                    {
+                        Replaced = File.Exists(wavFilePath),
+                        BaselineCreated = File.Exists(wavFilePath),
+                        UsedBaselineFallback = true,
+                        BaselineBytes = manualBytes,
+                        OutputBytes = manualBytes,
+                        Note = result.Note + " Manual fallback path completed."
+                    };
+                }
+
+                _adaptiveRecords.Add(new AdaptiveWavFileRecord(relativePath, result));
+                FFMpegSystem.AppendAudioLog(
+                    $"WAV-ADAPTIVE | {wavFilePath} | selected={result.SelectedSpec.Id} | " +
+                    $"original={result.OriginalBytes} | baseline={result.BaselineBytes} | output={result.OutputBytes} | " +
+                    $"candidates={result.Candidates.Count} | elapsed_ms={result.Elapsed.TotalMilliseconds:0} | {result.Note}");
+                string selection = result.UsedBaselineFallback ? "manual baseline" : result.SelectedSpec.Id;
+                _logger.LogInformation(
+                    $"Adaptive WAV selected {selection}: {relativePath} " +
+                    $"({result.BaselineBytes} -> {result.OutputBytes} bytes, {result.Elapsed.TotalMilliseconds:0} ms)");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex.ToString());
+                await CompressManual(wavFilePath).ConfigureAwait(false);
+            }
+        }
+
+        private async Task CompressManual(string wavFilePath)
         {
             string newWavFilePath = wavFilePath + "____TEMP.wav";
 
@@ -148,6 +241,74 @@ namespace GmodAddonCompressor.Objects
                 if (File.Exists(newWavFilePath))
                     File.Delete(newWavFilePath);
             }
+        }
+
+        public Task CompleteAsync()
+        {
+            if (AudioContext.WavOptimization != AudioContext.WavOptimizationKind.AdaptiveConservative)
+                return Task.CompletedTask;
+
+            _adaptiveWallClock.Stop();
+            AdaptiveWavFileRecord[] records = _adaptiveRecords
+                .OrderBy(record => record.RelativePath, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            long originalBytes = records.Sum(record => record.Result.OriginalBytes);
+            long baselineBytes = records.Sum(record => record.Result.BaselineBytes);
+            long outputBytes = records.Sum(record => record.Result.OutputBytes);
+            int selectedCandidates = records.Count(record => !record.Result.UsedBaselineFallback && record.Result.Replaced);
+            int baselineFallbacks = records.Count(record => record.Result.UsedBaselineFallback);
+            // The report never goes inside the addon: gmad rejects loose files at the addon root.
+            string reportDirectory = Path.Combine(ToolPaths.WorkRoot, "audio");
+            string reportPath = Path.Combine(
+                reportDirectory,
+                $"adaptive_audio_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.json");
+            LastAdaptiveReportPath = reportPath;
+
+            try
+            {
+                Directory.CreateDirectory(reportDirectory);
+                var report = new
+                {
+                    SchemaVersion = 1,
+                    Profile = "adaptive-conservative",
+                    Baseline = new
+                    {
+                        SampleRate = AudioContext.WavSampleRate,
+                        Channels = AudioContext.WavChannels,
+                        Codec = AudioContext.WavCodec.ToString()
+                    },
+                    PreserveLoopMetadata = AudioContext.PreserveLoopMetadata,
+                    FileCount = records.Length,
+                    SelectedCandidateCount = selectedCandidates,
+                    BaselineFallbackCount = baselineFallbacks,
+                    OriginalBytes = originalBytes,
+                    BaselineBytes = baselineBytes,
+                    OutputBytes = outputBytes,
+                    SavedVsBaselineBytes = baselineBytes - outputBytes,
+                    SavedVsBaselinePercent = baselineBytes == 0 ? 0 : 100.0 * (baselineBytes - outputBytes) / baselineBytes,
+                    WallClockMilliseconds = _adaptiveWallClock.Elapsed.TotalMilliseconds,
+                    SumFileMilliseconds = records.Sum(record => record.Result.Elapsed.TotalMilliseconds),
+                    Files = records
+                };
+                File.WriteAllText(
+                    reportPath,
+                    JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }),
+                    Encoding.UTF8);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex.ToString());
+            }
+
+            _logger.LogInformation(
+                $"Adaptive WAV summary: {records.Length} files, {selectedCandidates} candidates selected, " +
+                $"{baselineBytes} -> {outputBytes} bytes versus manual baseline " +
+                $"({baselineBytes - outputBytes} saved), wall {_adaptiveWallClock.Elapsed}. Report: {reportPath}");
+            FFMpegSystem.AppendAudioLog(
+                $"WAV-ADAPTIVE-SUMMARY | files={records.Length} | selected={selectedCandidates} | " +
+                $"fallbacks={baselineFallbacks} | baseline={baselineBytes} | output={outputBytes} | " +
+                $"saved={baselineBytes - outputBytes} | wall_ms={_adaptiveWallClock.Elapsed.TotalMilliseconds:0} | report={reportPath}");
+            return Task.CompletedTask;
         }
 
         private bool TryGetWaveInfo(string wavFilePath, out WaveInfo info)
