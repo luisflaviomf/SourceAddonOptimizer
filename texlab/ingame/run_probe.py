@@ -44,8 +44,15 @@ def _lua_models(models: list[dict]) -> str:
     return "{\n    " + ",\n    ".join(items) + "\n}"
 
 
+DEFAULT_VIEWS = [(35, 15, 1.3), (145, 15, 1.3), (215, 12, 1.3), (325, 12, 1.3), (60, 20, 0.6), (250, 10, 0.6)]
+
+
+def _lua_views(views) -> str:
+    return "{ " + ", ".join("{ yaw = %g, pitch = %g, dist = %g }" % v for v in views) + " }"
+
+
 def run(variant_root: Path, run_name: str, models: list[dict], out_dir: Path, timeout: int = 900,
-        convars: tuple = ()) -> dict:
+        convars: tuple = (), views=None) -> dict:
     addons = CLIENT / "garrysmod" / "addons"
     addons.mkdir(exist_ok=True)
     for old in addons.glob(PREFIX + "*"):
@@ -65,7 +72,8 @@ def run(variant_root: Path, run_name: str, models: list[dict], out_dir: Path, ti
         _link_tree(Path(variant_root), addons / (PREFIX + "variant"))
         probe = addons / (PREFIX + "probe") / "lua" / "autorun" / "client" / "texlab_probe.lua"
         probe.parent.mkdir(parents=True, exist_ok=True)
-        lua = PROBE_TEMPLATE.read_text(encoding="utf-8").replace("__MODELS__", _lua_models(models)).replace("__RUN__", run_name)
+        lua = (PROBE_TEMPLATE.read_text(encoding="utf-8").replace("__MODELS__", _lua_models(models))
+               .replace("__RUN__", run_name).replace("__VIEWS__", _lua_views(views or DEFAULT_VIEWS)))
         probe.write_text(lua, encoding="utf-8")
         args = [str(CLIENT / "bin" / "win64" / "gmod.exe"), "-multirun", "-allowquit", "-windowed", "-noborder",
                 "-x", "32000", "-y", "32000", "-w", "1600", "-h", "900", "-noworkshop", "-nomouse", "-novid",

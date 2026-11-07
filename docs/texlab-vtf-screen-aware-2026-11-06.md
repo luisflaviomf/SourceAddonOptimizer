@@ -50,6 +50,24 @@ com o worker extraído do ZIP embutido.
 Com `mat_forceaniso 16` (3 modelos) o modo Tela também ganha no pior caso
 (0,453 contra 0,540).
 
+## Pack inteiro (lvs_cars_pack, 163 modelos, 1152 VTFs)
+
+Rodado como no dia a dia (reparo de VMT + modo Tela pelo `CompressAddonSystem`)
+numa cópia: texturas 798,5 → 135,7 MB; addon 1375 → 712 MB (modelos e sons
+intactos). 502 s. Checagem: mesmos 3827 arquivos, não-VTF idênticos (exceto o
+VMT reparado), 1145 texturas com mips menores idênticos ao original. No jogo, os
+mesmos 3 materiais `___error` que o original já tem e nenhum novo.
+
+Achado e corrigido nesse teste: o caminho antigo (Padrao/Magick e o caminho de
+reserva do Tela) reduzia VTF de cor única para 1x1, e um topo DXT menor que um
+bloco 4x4 aparece preto no jogo (carroceria do Mercedes W123). Agora o mínimo é
+4x4 (`VTFEdit.SingleColorVtfBounds`).
+
+Ruído de captura: materiais `Refract` (lanternas) leem a cópia do quadro
+anterior; na primeira vista de cada modelo a captura varia entre execuções do
+mesmo pack. Usar as vistas de perto (estáveis) para comparar: FLIP médio 0,0315,
+pior região média 0,115 (147 capturas).
+
 ## O que foi tentado e descartado (com motivo medido)
 
 - **"Só o invisível"** (mip nunca amostrado a 40 cm): quase nada é invisível de

@@ -94,4 +94,16 @@ public sealed class CompressMaximumIntegrationTests
 
         Assert.Equal(10, compressor.GetMaxDegreeOfParallelism("vtf"));
     }
+
+    [Theory]
+    [InlineData(64, 64, 4, 4)]
+    [InlineData(1024, 8, 4, 4)]
+    [InlineData(2, 2, 2, 2)]
+    public void SingleColorVtfNeverShrinksBelowOneDxtBlock(int width, int height, int expectedWidth, int expectedHeight)
+    {
+        // 1x1 DXT top levels render black in game (LVS Mercedes W123 body).
+        var bounds = GmodAddonCompressor.Objects.VTFEdit.SingleColorVtfBounds(width, height);
+
+        Assert.Equal((expectedWidth, expectedHeight), bounds);
+    }
 }

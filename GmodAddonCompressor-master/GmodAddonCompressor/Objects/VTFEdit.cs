@@ -262,7 +262,13 @@ namespace GmodAddonCompressor.Objects
             out int resizeHeight)
         {
             if (_resizePolicy == null)
-                return TryGetResizeBounds(originalWidth, originalHeight, isSingleColor, out resizeWidth, out resizeHeight);
+            {
+                if (!TryGetResizeBounds(originalWidth, originalHeight, isSingleColor, out resizeWidth, out resizeHeight))
+                    return false;
+                if (isSingleColor)
+                    (resizeWidth, resizeHeight) = SingleColorVtfBounds(originalWidth, originalHeight);
+                return true;
+            }
 
             int factor = Math.Max(1, _resizePolicy.ResolutionFactor);
             resizeWidth = Math.Max(_resizePolicy.MinimumWidth, FloorPowerOfTwo(originalWidth / factor));
@@ -275,6 +281,14 @@ namespace GmodAddonCompressor.Objects
             }
             return true;
         }
+
+        // A single-colour image keeps its colour at any size, but a VTF whose top level is smaller
+        // than one 4x4 DXT block renders black in game (seen on the LVS Mercedes W123 body:
+        // a 64x64 single-colour skin collapsed to 1x1). One full block is the smallest safe size.
+        internal const int MinimumSingleColorVtfSide = 4;
+
+        internal static (int Width, int Height) SingleColorVtfBounds(int originalWidth, int originalHeight) =>
+            (Math.Min(originalWidth, MinimumSingleColorVtfSide), Math.Min(originalHeight, MinimumSingleColorVtfSide));
 
         private static int FloorPowerOfTwo(int value)
         {

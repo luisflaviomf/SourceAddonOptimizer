@@ -20,7 +20,10 @@ int parallelism = args.Length > 1 && int.TryParse(args[1], out int p) ? p : 4;
 if (args.Contains("--screen"))
 {
     // End-to-end product path: CompressAddonSystem in "Tela" mode (VTF only) -> ScreenVTFEdit -> worker.
+    // Like the Midia e recursos tab, VMT syntax is repaired first.
     CompressDirectoryContext.DirectoryPath = root;
+    int repaired = GmodAddonCompressor.Systems.VmtSyntaxRepairService.RepairUnder(root);
+    Console.WriteLine($"[screen] VMT syntax repaired: {repaired}");
     ImageContext.Resolution = 2;
     ImageContext.TaargetWidth = ImageContext.TargetHeight = 8;
     ImageContext.KeepImageAspectRatio = true;
