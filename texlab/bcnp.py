@@ -12,7 +12,18 @@ def _rgb565(c: np.ndarray):
 
 
 def decode_bc(data: bytes, w: int, h: int, fmt: int) -> np.ndarray:
-    """fmt 13 DXT1, 20 DXT1 one-bit alpha, 14 DXT3, 15 DXT5 -> (h, w, 4) uint8."""
+    """fmt 13 DXT1, 20 DXT1 one-bit alpha, 14 DXT3, 15 DXT5 -> (h, w, 4) uint8.
+
+    Uses the Rust decoder (texlab.native, bit-identical) when available, else numpy."""
+    from . import native
+    out = native.decode_bc(data, w, h, fmt) if fmt in (13, 14, 15, 20) else None
+    if out is not None:
+        return out
+    return decode_bc_numpy(data, w, h, fmt)
+
+
+def decode_bc_numpy(data: bytes, w: int, h: int, fmt: int) -> np.ndarray:
+    """Reference numpy implementation of decode_bc."""
     bsize = 8 if fmt in (13, 20) else 16
     bw, bh = max(1, (w + 3) // 4), max(1, (h + 3) // 4)
     nb = bw * bh

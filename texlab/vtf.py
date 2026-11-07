@@ -95,6 +95,17 @@ class Vtf:
         return sum(self.level_bytes(l) for l in range(self.mip_count))
 
 
+def read_vtf_size(path) -> tuple[int, int, int]:
+    """(width, height, mip_count) from the header only, same values read_vtf reports."""
+    with open(path, "rb") as fh:
+        raw = fh.read(64)
+    if raw[:4] != b"VTF\0":
+        raise VtfError("not a VTF")
+    width, height = struct.unpack_from("<HH", raw, 16)
+    mip_count = struct.unpack_from("<B", raw, 56)[0]
+    return width, height, mip_count
+
+
 def read_vtf(path_or_bytes) -> Vtf:
     if isinstance(path_or_bytes, (bytes, bytearray)):
         raw, path = bytes(path_or_bytes), None
@@ -190,10 +201,10 @@ def truncate_mips(v: Vtf, drop: int) -> bytes:
 def decode_level(v: Vtf, level: int = 0, frame: int = 0, face: int = 0) -> np.ndarray:
     """Decode one mip level to an (h,w,4) uint8 RGBA array."""
     w, h = v.mip_size(level)
-    data = np.frombuffer(v.level_data(level, frame, face), dtype=np.uint8)
-    out = np.zeros((h, w, 4), dtype=np.uint8)
     if v.fmt in (13, 14, 15, 20):
         return decode_bc(v.level_data(level, frame, face), w, h, v.fmt)
+    data = np.frombuffer(v.level_data(level, frame, face), dtype=np.uint8)
+    out = np.zeros((h, w, 4), dtype=np.uint8)
     if v.fmt in (0, 12, 16, 1):
         px = data.reshape(h, w, 4)
         order = {0: [0, 1, 2, 3], 12: [2, 1, 0, 3], 16: [2, 1, 0, 3], 1: [3, 2, 1, 0]}[v.fmt]

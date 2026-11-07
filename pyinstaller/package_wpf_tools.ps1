@@ -27,6 +27,7 @@ function Get-WorkerSourceFiles {
         (Join-Path $PWD "vtx_tristrip_optimizer.py"),
         (Join-Path $PWD "vvd_engine_exact.py"),
         (Join-Path $PWD "tools\meshopt\meshopt_simplify.dll"),
+        (Join-Path $PWD "tools\native\gmo_native.dll"),
         (Join-Path $PWD "tools\\vtx\\meshopt_stripify.dll"),
         (Join-Path $PWD "tools\\vtx\\LICENSE.meshoptimizer.txt"),
         (Join-Path $PWD "pyinstaller\\worker.spec")
@@ -46,7 +47,7 @@ function Get-WorkerSourceFiles {
     }
 
     Get-ChildItem -LiteralPath (Join-Path $PWD "model_screen") -File -Filter "*.py"
-    foreach ($name in @("screen_compress", "npsolve", "bcnp", "vtf", "density", "materials", "source_model", "allocate", "plan", "__init__")) {
+    foreach ($name in @("screen_compress", "npsolve", "bcnp", "vtf", "density", "materials", "source_model", "allocate", "plan", "native", "__init__")) {
         Get-Item -LiteralPath (Join-Path $PWD ("texlab\" + $name + ".py"))
     }
 

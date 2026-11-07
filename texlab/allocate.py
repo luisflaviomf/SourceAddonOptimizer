@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from . import native
 from .npsolve import up
 from .vtf import decode_level, read_vtf
 
@@ -29,10 +30,30 @@ DEFAULT_DISTANCES = (24.0, 48.0, 96.0, 192.0, 384.0)
 DEFAULT_WEIGHTS = (0.10, 0.20, 0.30, 0.25, 0.15)
 
 
-def band_energy_maps(vtf_path, max_levels: int = 4, contrast: bool = True) -> list[np.ndarray]:
-    """B_j maps (at mip j resolution, luminance-weighted RGB + alpha) for j = 0..max_levels-1."""
-    v = read_vtf(vtf_path)
-    levels = [decode_level(v, l).astype(np.float32) / 255.0 for l in range(min(v.mip_count, max_levels + 1))]
+def band_energy_maps(vtf_path, max_levels: int = 4, contrast: bool = True, vtf=None) -> list[np.ndarray]:
+    """B_j maps (at mip j resolution, luminance-weighted RGB + alpha) for j = 0..max_levels-1.
+
+    `vtf` (an already read Vtf of the same file) avoids reading it again."""
+    v = vtf if vtf is not None else read_vtf(vtf_path)
+    raw = [decode_level(v, l) for l in range(min(v.mip_count, max_levels + 1))]
+    if native.available():
+        # Rust path: same float32 operations in the same order (bit-identical maps)
+        maps = []
+        for j in range(len(raw) - 1):
+            hi, lo = raw[j], raw[j + 1]
+            if hi.shape[0] != lo.shape[0] * 2 or hi.shape[1] != lo.shape[1] * 2:
+                break
+            e = native.band_energy(hi, lo, contrast)
+            if e is None:
+                return _band_energy_maps_numpy(raw, contrast)
+            maps.append(e)
+        return maps
+    return _band_energy_maps_numpy(raw, contrast)
+
+
+def _band_energy_maps_numpy(raw: list[np.ndarray], contrast: bool = True) -> list[np.ndarray]:
+    """Reference numpy implementation (float32, NEP 50 scalars)."""
+    levels = [r.astype(np.float32) / 255.0 for r in raw]
     maps = []
     for j in range(len(levels) - 1):
         hi, lo = levels[j], levels[j + 1]
@@ -52,6 +73,14 @@ def band_energy_maps(vtf_path, max_levels: int = 4, contrast: bool = True) -> li
 
 def _sample_map(m: np.ndarray, uv: np.ndarray) -> np.ndarray:
     """Average band energy in a small neighbourhood around each UV (wrap addressing)."""
+    out = native.sample_map(m, uv)
+    if out is not None:
+        return out
+    return _sample_map_numpy(m, uv)
+
+
+def _sample_map_numpy(m: np.ndarray, uv: np.ndarray) -> np.ndarray:
+    """Reference numpy implementation of _sample_map."""
     h, w = m.shape
     # 4x4 box blur in texel space keeps the estimate stable for small triangles
     k = 4

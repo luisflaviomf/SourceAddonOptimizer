@@ -23,7 +23,7 @@ import numpy as np
 
 from .materials import MaterialResolver, TEXTURE_PARAMS
 from .source_model import SourceModel, load_model
-from .vtf import read_vtf
+from .vtf import read_vtf, read_vtf_size  # noqa: F401  (read_vtf kept for callers importing it here)
 
 UV_ROLES = {"base", "normal", "mask", "detail"}   # textures sampled through the mesh UVs
 
@@ -97,53 +97,98 @@ def triangle_density(mesh_positions, mesh_uvs, triangles, tex_w, tex_h, uv_scale
     return s_max[keep], s_min[keep], (nlen[keep] / 2.0), uvc[keep]
 
 
-def collect_usage(addon_root: Path, extra_roots: list[Path] | None = None) -> dict[str, TextureUse]:
-    """Scan every model in the addon and accumulate texel density per texture."""
-    addon_root = Path(addon_root)
-    resolver = MaterialResolver([addon_root] + list(extra_roots or []))
-    uses: dict[str, TextureUse] = {}
-    vtf_cache: dict[str, tuple] = {}
+_USAGE_STATE: dict = {}
 
-    def tex_info(ref: str):
-        if ref not in vtf_cache:
-            path = resolver.find(ref, "vtf")
-            if path is None:
-                vtf_cache[ref] = None
-            else:
-                v = read_vtf(path)
-                vtf_cache[ref] = (v.width, v.height, v.mip_count, path)
-        return vtf_cache[ref]
 
-    for mdl in sorted((addon_root / "models").rglob("*.mdl")):
-        model = load_model(mdl)
-        rel_model = mdl.relative_to(addon_root).as_posix()
-        for mesh in model.meshes:
-            if not len(mesh.triangles):
+def _init_usage_worker(roots: list[str]) -> None:
+    """Per-process resolver and texture-header cache (also used by the sequential path)."""
+    _USAGE_STATE["roots"] = list(roots)
+    _USAGE_STATE["resolver"] = MaterialResolver([Path(r) for r in roots])
+    _USAGE_STATE["tex"] = {}
+
+
+def _tex_info(ref: str):
+    cache = _USAGE_STATE["tex"]
+    if ref not in cache:
+        path = _USAGE_STATE["resolver"].find(ref, "vtf")
+        if path is None:
+            cache[ref] = None
+        else:
+            w, h, mips = read_vtf_size(path)
+            cache[ref] = (w, h, mips, path)
+    return cache[ref]
+
+
+def _model_usage(args) -> list[tuple]:
+    """Density rows of one model, in the exact order the sequential scan appends them."""
+    mdl, addon_root, roots = Path(args[0]), Path(args[1]), list(args[2])
+    if _USAGE_STATE.get("roots") != roots:
+        _init_usage_worker(roots)
+    resolver = _USAGE_STATE["resolver"]
+    model = load_model(mdl)
+    rel_model = mdl.relative_to(addon_root).as_posix()
+    rows = []
+    for mesh in model.meshes:
+        if not len(mesh.triangles):
+            continue
+        for tex_name in model.texture_names_for_slot(mesh.material_slot):
+            material = resolver.model_material(model.cdmaterials, tex_name)
+            if material is None:
                 continue
-            for tex_name in model.texture_names_for_slot(mesh.material_slot):
-                material = resolver.model_material(model.cdmaterials, tex_name)
-                if material is None:
+            for param, ref in material.textures.items():
+                role = TEXTURE_PARAMS[param]
+                if role not in UV_ROLES:
                     continue
-                for param, ref in material.textures.items():
-                    role = TEXTURE_PARAMS[param]
-                    if role not in UV_ROLES:
-                        continue
-                    info = tex_info(ref)
-                    if info is None:
-                        continue
-                    w, h, mips, _ = info
-                    use = uses.get(ref)
-                    if use is None:
-                        use = uses[ref] = TextureUse(ref, w, h, mips)
-                    use.roles.add(role)
-                    use.materials.add(material.path)
-                    use.models.add(rel_model)
-                    smax, smin, area, uvc = triangle_density(mesh.positions, mesh.uvs, mesh.triangles, w, h,
-                                                        material.texture_scale(param))
-                    use.s_max.append(smax)
-                    use.s_min.append(smin)
-                    use.area.append(area)
-                    use.uv.append(uvc)
+                info = _tex_info(ref)
+                if info is None:
+                    continue
+                w, h, mips, _ = info
+                smax, smin, area, uvc = triangle_density(mesh.positions, mesh.uvs, mesh.triangles, w, h,
+                                                         material.texture_scale(param))
+                rows.append((ref, w, h, mips, role, material.path, rel_model, smax, smin, area, uvc))
+    return rows
+
+
+def usage_tasks(addon_root: Path, extra_roots: list[Path] | None = None) -> list[tuple]:
+    """One task per model (sorted), for _model_usage on any executor."""
+    addon_root = Path(addon_root)
+    roots = tuple([str(addon_root)] + [str(r) for r in (extra_roots or [])])
+    return [(str(m), str(addon_root), roots) for m in sorted((addon_root / "models").rglob("*.mdl"))]
+
+
+def collect_usage(addon_root: Path, extra_roots: list[Path] | None = None, jobs: int = 1,
+                  executor=None) -> dict[str, TextureUse]:
+    """Scan every model in the addon and accumulate texel density per texture.
+
+    With jobs > 1 (or an executor) the models are read in worker processes; rows are merged in
+    model order, so the result is identical to the sequential scan."""
+    work = usage_tasks(addon_root, extra_roots)
+    if executor is not None:
+        per_model = list(executor.map(_model_usage, work, chunksize=1))
+    elif jobs > 1 and len(work) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=jobs) as ex:
+            per_model = list(ex.map(_model_usage, work, chunksize=1))
+    else:
+        per_model = [_model_usage(w) for w in work]
+    return merge_usage(per_model)
+
+
+def merge_usage(per_model: list[list[tuple]]) -> dict[str, TextureUse]:
+    """Accumulate _model_usage rows (models in sorted order) into TextureUse records."""
+    uses: dict[str, TextureUse] = {}
+    for rows in per_model:
+        for ref, w, h, mips, role, material_path, rel_model, smax, smin, area, uvc in rows:
+            use = uses.get(ref)
+            if use is None:
+                use = uses[ref] = TextureUse(ref, w, h, mips)
+            use.roles.add(role)
+            use.materials.add(material_path)
+            use.models.add(rel_model)
+            use.s_max.append(smax)
+            use.s_min.append(smin)
+            use.area.append(area)
+            use.uv.append(uvc)
     return uses
 
 

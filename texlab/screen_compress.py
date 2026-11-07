@@ -28,7 +28,7 @@ from PIL import Image
 
 from . import npsolve
 from .allocate import DEFAULT_DISTANCES, DEFAULT_WEIGHTS, band_energy_maps, texture_local_error
-from .density import ViewModel, collect_usage
+from .density import ViewModel, _model_usage, collect_usage, merge_usage, usage_tasks
 from .plan import alpha_coverage_refs, alpha_unused_refs, opaque_alpha
 from .vtf import (TEXTUREFLAGS_ENVMAP, bc3_blocks_to_bc1, decode_level, read_vtf, truncate_mips, write_vtf)
 
@@ -87,86 +87,128 @@ def _eligible(v) -> tuple[bool, str]:
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
+    # validate the exact bytes before they touch the disk (reading the temp file back only
+    # re-parsed these same bytes, and on Windows every read-back waits for the AV scan)
+    check = read_vtf(data)
+    if check.highres_offset + check.highres_bytes != len(data):
+        raise ValueError(f"rebuilt VTF failed validation: {path}")
     tmp = path.with_name(path.name + ".texscreen.tmp")
     tmp.write_bytes(data)
-    check = read_vtf(tmp)
-    if check.highres_offset + check.highres_bytes != len(data):
+    if tmp.stat().st_size != len(data):
         tmp.unlink(missing_ok=True)
-        raise ValueError(f"rebuilt VTF failed validation: {path}")
+        raise ValueError(f"rebuilt VTF was not fully written: {path}")
     os.replace(tmp, path)
 
 
-def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None) -> list[Item]:
+@dataclass
+class _Use:
+    """What plan_one needs from a TextureUse (picklable, arrays already concatenated)."""
+    s_eff: np.ndarray          # anisotropic effective density
+    area: np.ndarray
+    s_iso: np.ndarray          # isotropic (anisotropy 1) density
+    uv: np.ndarray | None      # per-triangle UV centroids, None when the use has none
+
+
+def _use_payload(use, view: ViewModel) -> _Use | None:
+    if use is None:
+        return None
+    s_eff, area = use.arrays(view.anisotropy)
+    return _Use(s_eff, area, use.arrays(1.0)[0], np.concatenate(use.uv) if use.uv else None)
+
+
+def _plan_one(task) -> Item:
+    """Decision for one texture (pure function of its file and the addon-wide usage)."""
+    p, root, ref, threshold, view, use, unused_alpha, coverage, need_map = task
+    item = Item(p.relative_to(root).as_posix(), ref, p, before=p.stat().st_size)
+    try:
+        v = read_vtf(p)
+    except Exception as exc:  # unreadable: leave it to the regular path
+        item.action, item.reason = "fallback", f"unreadable:{type(exc).__name__}"
+        return item
+    ok, why = _eligible(v)
+    if not ok:
+        item.action = "fallback" if why in ("non_dxt_format", "nomip") else "keep"
+        item.reason = why
+        return item
+    item.out_fmt = v.fmt
+    item.coverage_alpha = coverage
+    if v.fmt == 15 and v.frames == 1 and (unused_alpha or opaque_alpha(v)):
+        item.out_fmt = 13
+    limit = 0
+    while limit < MAX_DROP and limit + 1 < v.mip_count and min(v.width, v.height) >> (limit + 1) >= MIN_SIDE:
+        limit += 1
+    drop = 1 if limit >= 1 else 0
+    s_eff = area = None
+    if use is not None and v.frames == 1:
+        s_eff, area = use.s_eff, use.area
+        if not len(s_eff):
+            s_eff = area = None
+    if s_eff is not None and limit > 1:
+        uvc = use.uv if use.uv is not None else np.zeros((0, 2))
+        maps = band_energy_maps(p, max_levels=limit, vtf=v)
+        local = texture_local_error(s_eff, area, uvc, maps, view.focal_px, min(limit, len(maps)))
+        lam = np.log2(np.maximum(s_eff, 1e-12) * CLOSEST_DISTANCE / view.focal_px)
+        order = np.argsort(lam)
+        cum = np.cumsum(area[order]) / max(float(area.sum()), 1e-12)
+        lam_q01 = float(lam[order][min(int(np.searchsorted(cum, 0.01)), len(order) - 1)])
+        while drop + 1 <= min(limit, len(local) - 1):
+            k = drop + 1
+            invisible = lam_q01 >= k
+            if invisible or (k <= MAX_DROP_BY_ENERGY and local[k] <= threshold):
+                drop = k
+            else:
+                break
+        item.reason = "screen_density"
+    else:
+        item.reason = "not_seen_by_models" if use is None else ("single_step" if s_eff is not None
+                                                                 else "no_visible_triangles")
+    if s_eff is not None and drop:
+        pair = (s_eff, use.s_iso)
+        item.magnified = magnified_share(pair, area, drop, view)
+        uvc_all = use.uv
+        # the per-texel map only steers the "solver" method; Lanczos never reads it
+        if need_map and uvc_all is not None and len(uvc_all) == len(s_eff):
+            item.magnified_map = magnified_map(pair, area, uvc_all, drop, view,
+                                               max(1, v.height >> drop), max(1, v.width >> drop),
+                                               item.magnified)
+    item.drop = drop
+    item.action = "reduce" if drop else ("transcode" if item.out_fmt != v.fmt else "keep")
+    return item
+
+
+def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, jobs: int = 1,
+               need_map: bool = True) -> list[Item]:
+    """Per-texture plan. jobs > 1 spreads the models scan and the textures over processes;
+    the result is identical to the sequential plan (same order, same decisions)."""
     root = Path(root)
     view = view or ViewModel(screen_height=1080)
     threshold = PROFILES[profile]
     mat = next((p for p in root.iterdir() if p.is_dir() and p.name.lower() == "materials"), None)
     if mat is None:
         return []
-    uses = collect_usage(root)
-    unused_alpha = alpha_unused_refs(root, [])
-    coverage = alpha_coverage_refs(root, [])
-    items = []
-    for p in sorted(mat.rglob("*")):
-        if not p.is_file() or p.suffix.lower() != ".vtf":
-            continue
-        ref = p.relative_to(mat).as_posix()[:-4].lower()
-        item = Item(p.relative_to(root).as_posix(), ref, p, before=p.stat().st_size)
-        items.append(item)
-        try:
-            v = read_vtf(p)
-        except Exception as exc:  # unreadable: leave it to the regular path
-            item.action, item.reason = "fallback", f"unreadable:{type(exc).__name__}"
-            continue
-        ok, why = _eligible(v)
-        if not ok:
-            item.action = "fallback" if why in ("non_dxt_format", "nomip") else "keep"
-            item.reason = why
-            continue
-        item.out_fmt = v.fmt
-        item.coverage_alpha = ref in coverage
-        if v.fmt == 15 and v.frames == 1 and (ref in unused_alpha or opaque_alpha(v)):
-            item.out_fmt = 13
-        limit = 0
-        while limit < MAX_DROP and limit + 1 < v.mip_count and min(v.width, v.height) >> (limit + 1) >= MIN_SIDE:
-            limit += 1
-        drop = 1 if limit >= 1 else 0
-        use = uses.get(ref)
-        s_eff = area = None
-        if use is not None and v.frames == 1:
-            s_eff, area = use.arrays(view.anisotropy)
-            if not len(s_eff):
-                s_eff = area = None
-        if s_eff is not None and limit > 1:
-            uvc = np.concatenate(use.uv) if use.uv else np.zeros((0, 2))
-            maps = band_energy_maps(p, max_levels=limit)
-            local = texture_local_error(s_eff, area, uvc, maps, view.focal_px, min(limit, len(maps)))
-            lam = np.log2(np.maximum(s_eff, 1e-12) * CLOSEST_DISTANCE / view.focal_px)
-            order = np.argsort(lam)
-            cum = np.cumsum(area[order]) / max(float(area.sum()), 1e-12)
-            lam_q01 = float(lam[order][min(int(np.searchsorted(cum, 0.01)), len(order) - 1)])
-            while drop + 1 <= min(limit, len(local) - 1):
-                k = drop + 1
-                invisible = lam_q01 >= k
-                if invisible or (k <= MAX_DROP_BY_ENERGY and local[k] <= threshold):
-                    drop = k
-                else:
-                    break
-            item.reason = "screen_density"
-        else:
-            item.reason = "not_seen_by_models" if use is None else ("single_step" if s_eff is not None
-                                                                     else "no_visible_triangles")
-        if s_eff is not None and drop:
-            pair = (s_eff, use.arrays(1.0)[0])
-            item.magnified = magnified_share(pair, area, drop, view)
-            uvc_all = np.concatenate(use.uv) if use.uv else None
-            if uvc_all is not None and len(uvc_all) == len(s_eff):
-                item.magnified_map = magnified_map(pair, area, uvc_all, drop, view,
-                                                   max(1, v.height >> drop), max(1, v.width >> drop),
-                                                   item.magnified)
-        item.drop = drop
-        item.action = "reduce" if drop else ("transcode" if item.out_fmt != v.fmt else "keep")
-    return items
+    pool = None
+    if jobs > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        pool = ProcessPoolExecutor(max_workers=jobs)
+    try:
+        # the models scan runs in the pool while this process reads every material
+        futures = [pool.submit(_model_usage, t) for t in usage_tasks(root)] if pool else None
+        unused_alpha = alpha_unused_refs(root, [])
+        coverage = alpha_coverage_refs(root, [])
+        uses = merge_usage([f.result() for f in futures]) if pool else collect_usage(root)
+        tasks = []
+        for p in sorted(mat.rglob("*")):
+            if not p.is_file() or p.suffix.lower() != ".vtf":
+                continue
+            ref = p.relative_to(mat).as_posix()[:-4].lower()
+            tasks.append((p, root, ref, threshold, view, _use_payload(uses.get(ref), view), ref in unused_alpha,
+                          ref in coverage, need_map))
+        if pool is not None and len(tasks) > 1:
+            return list(pool.map(_plan_one, tasks, chunksize=1))
+    finally:
+        if pool is not None:
+            pool.shutdown()
+    return [_plan_one(t) for t in tasks]
 
 
 def _magnified_weight(s_eff, d: float, drop: int, view: ViewModel) -> np.ndarray:
@@ -226,22 +268,33 @@ def magnified_map(s_eff, area, uv, drop: int, view: ViewModel, h: int, w: int, f
     return np.clip(share, 0.0, 1.0).astype(np.float32)
 
 
-def _vtfcmd_encode(vtfcmd: Path, pngs: list[tuple[Path, str]], workdir: Path) -> dict[Path, bytes]:
-    out = {}
+def _vtfcmd_encode(vtfcmd: Path, pngs: list[tuple[Path, str]], workdir: Path, jobs: int = 1) -> dict[Path, bytes]:
+    """Encode every PNG with VTFCmd, chunks of up to 32 files, `jobs` VTFCmd processes at a time
+    (each chunk is an independent process with its own output folder: same bytes as one by one)."""
+    chunks = []
     for fmt in ("DXT1", "DXT5"):
         group = [p for p, f in pngs if f == fmt]
-        for start in range(0, len(group), 32):
-            chunk = group[start:start + 32]
-            outdir = workdir / f"enc_{fmt}_{start}"
-            outdir.mkdir()
-            cmd = [str(vtfcmd)]
-            for p in chunk:
-                cmd += ["-file", str(p)]
-            cmd += ["-output", str(outdir), "-format", fmt, "-alphaformat", fmt, "-nomipmaps",
-                    "-nothumbnail", "-noreflectivity", "-silent"]
-            subprocess.run(cmd, check=True, capture_output=True, timeout=1800)
-            for p in chunk:
-                out[p] = read_vtf(outdir / (p.stem + ".vtf")).level_data(0)
+        # smaller chunks keep every VTFCmd busy until the end (each image is encoded on its own)
+        size = 32 if jobs <= 1 else max(4, min(32, -(-len(group) // (jobs * 2))))
+        for start in range(0, len(group), size):
+            chunks.append((fmt, start, group[start:start + size]))
+
+    def encode(job):
+        fmt, start, chunk = job
+        outdir = workdir / f"enc_{fmt}_{start}"
+        outdir.mkdir()
+        cmd = [str(vtfcmd)]
+        for p in chunk:
+            cmd += ["-file", str(p)]
+        cmd += ["-output", str(outdir), "-format", fmt, "-alphaformat", fmt, "-nomipmaps",
+                "-nothumbnail", "-noreflectivity", "-silent"]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=1800)
+        return {p: read_vtf(outdir / (p.stem + ".vtf")).level_data(0) for p in chunk}
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        for part in pool.map(encode, chunks):
+            out.update(part)
     return out
 
 
@@ -254,10 +307,14 @@ def lanczos_down(H: np.ndarray, factor: int) -> np.ndarray:
 
 
 def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_path: Path | None = None,
-        method: str = "lanczos") -> dict:
+        method: str = "lanczos", encode_jobs: int | None = None) -> dict:
+    """`jobs`: analysis processes and image threads. `encode_jobs`: VTFCmd processes at a time
+    (default: every logical CPU but two; each VTFCmd is single-threaded and light on memory)."""
     root = Path(root)
+    if encode_jobs is None:
+        encode_jobs = max(1, jobs, (os.cpu_count() or 2) - 2)
     _emit("PROGRESS", "analyze", 0, 1, "")
-    items = plan_addon(root, profile)
+    items = plan_addon(root, profile, jobs=jobs, need_map=(method == "solver"))
     work = [i for i in items if i.action in ("reduce", "transcode")]
     _emit("PROGRESS", "analyze", 1, 1, f"{len(work)} textures planned")
     lock = threading.Lock()
@@ -292,7 +349,8 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
                 # moved edges, so the new top level carries the original mip's alpha as-is
                 L[..., 3] = Mk[..., 3]
             png = tmp / f"t{abs(hash(item.ref)) % 10**12:012d}_{item.drop}.png"
-            Image.fromarray(np.round(L * 255.0).astype(np.uint8), "RGBA").save(png)
+            # lossless either way; level 1 only trades PNG size for speed (VTFCmd reads the same pixels)
+            Image.fromarray(np.round(L * 255.0).astype(np.uint8), "RGBA").save(png, compress_level=1)
             with lock:
                 counter[0] += 1
                 _emit("PROGRESS", "rebuild", counter[0], len(work), item.rel)
@@ -301,8 +359,11 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
             prepared = list(pool.map(prepare, work))
         encoded = _vtfcmd_encode(vtfcmd, [(png, fmt_name[item.out_fmt]) for item, _, png in prepared
-                                          if isinstance(png, Path)], tmp)
-        for n, (item, v, png) in enumerate(prepared, 1):
+                                          if isinstance(png, Path)], tmp, encode_jobs)
+        written = [0]
+
+        def write(entry):
+            item, v, png = entry
             if item.action == "transcode":
                 levels = [bc3_blocks_to_bc1(v.level_data(l, f)) for l in range(v.mip_count) for f in [0]]
                 data = write_vtf(v, 13, v.width, v.height, levels, v.flags & ~EIGHTBITALPHA)
@@ -324,7 +385,13 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
                 _write_atomic(item.path, data)
             else:
                 item.action, item.reason = "keep", "no_gain"
-            _emit("PROGRESS", "write", n, len(prepared), item.rel)
+            with lock:
+                written[0] += 1
+                _emit("PROGRESS", "write", written[0], len(prepared), item.rel)
+
+        # each entry writes its own file; threads overlap the disk/antivirus latency
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            list(pool.map(write, prepared))
     for item in items:
         item.after = item.path.stat().st_size
     report = {
@@ -348,7 +415,7 @@ def main(argv=None) -> int:
     ap.add_argument("--vtfcmd", required=True)
     ap.add_argument("--profile", choices=sorted(PROFILES), default="q50")
     ap.add_argument("--method", choices=["lanczos", "solver"], default="lanczos")
-    ap.add_argument("--jobs", type=int, default=max(1, min(4, (os.cpu_count() or 2) // 2)))
+    ap.add_argument("--jobs", type=int, default=max(1, min(8, (os.cpu_count() or 2) // 2)))
     ap.add_argument("--report", required=True)
     args = ap.parse_args(argv)
     root = Path(args.addon)

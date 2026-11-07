@@ -38,6 +38,8 @@ a = Analysis(
         (str(repo_root / "tools" / "vtx" / "meshopt_stripify.dll"), "."),
         # Models "Tela" mode: meshoptimizer v1.2 C API (third_party/meshoptimizer)
         (str(repo_root / "tools" / "meshopt" / "meshopt_simplify.dll"), "."),
+        # Rust hot paths (native/gmo_native): bit-identical replacements loaded by texlab.native
+        (str(repo_root / "tools" / "native" / "gmo_native.dll"), "."),
     ],
     datas=[
         (str(repo_root / "build_optimized_addon.py"), "."),
@@ -64,6 +66,7 @@ a = Analysis(
         "model_screen.uvtol", "model_screen.meshopt", "vvd_engine_exact",
         "texlab", "texlab.screen_compress", "texlab.npsolve", "texlab.bcnp", "texlab.vtf",
         "texlab.density", "texlab.materials", "texlab.source_model", "texlab.allocate", "texlab.plan",
+        "texlab.native",
         "PIL.Image",
         "PIL.ImageChops",
         "PIL.ImageDraw",

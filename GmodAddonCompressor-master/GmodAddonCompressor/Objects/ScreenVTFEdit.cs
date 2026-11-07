@@ -62,7 +62,9 @@ namespace GmodAddonCompressor.Objects
             string workDir = Path.Combine(ToolPaths.WorkRoot, "texscreen");
             Directory.CreateDirectory(workDir);
             string report = Path.Combine(workDir, $"texscreen_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.json");
-            int jobs = Math.Clamp(Environment.ProcessorCount / 2, 1, 6);
+            // analysis processes + image threads; ~2.6 GB peak with 8 on the LVS cars pack. VTFCmd encodes
+            // use every logical CPU but two (texscreen --jobs only sets the analysis side).
+            int jobs = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
 
             var arguments = new List<string>
             {

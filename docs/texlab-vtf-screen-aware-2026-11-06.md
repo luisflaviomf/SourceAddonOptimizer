@@ -101,3 +101,18 @@ Dados: `C:\GModLab\texlab\v1\`.
 - O perfil q50 foi calibrado nessa amostra.
 - O codificador DXT continua sendo o VTFCmd.
 - Texturas não vistas por UV de modelo (HUD, Lua) recebem 2x como no modo atual.
+
+
+## Velocidade (07/11): Rust + paralelismo, saida identica
+
+`lvs_cars_pack` inteiro (1.152 VTFs), worker `texscreen --jobs 8`, mesmos bytes de antes
+(2.740 arquivos de materials e relatorio comparados byte a byte):
+
+| Etapa | Antes | Depois | O que mudou |
+|---|---:|---:|---|
+| Analise (plano) | 344 s | ~20 s | processos em paralelo (modelos e texturas no mesmo pool); DXT decode, band energy e `_sample_map` em Rust; cabecalho VTF sem ler o arquivo todo; mapa por texel so no metodo `solver` |
+| VTFCmd | 141 s | ~26 s | varios VTFCmd ao mesmo tempo (CPUs logicas - 2), lotes menores |
+| Preparar + gravar | 72 s | ~17 s | PNG temporario com compressao 1; gravacao em threads, validacao dos bytes antes de gravar (sem reler do disco) |
+| **Total** | **557 s** | **~63 s** | worker empacotado: 64,6 s; botao Comprimir (Tela) na interface: 79 s |
+
+Pico de memoria com 8 processos: 2,6 GB. O C# passa `--jobs` = metade das CPUs logicas, ate 8.
