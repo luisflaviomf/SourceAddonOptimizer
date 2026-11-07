@@ -46,11 +46,15 @@ class Profile:
     uv_texels: float = 1.0
     drop_tangents: bool = False
     min_tris: int = 4
+    engine: str = "seams"     # "seams": this module; "remesh": remesh.py + mirror.py (whole parts + mirror)
 
 
 PROFILES = {
     "balanced": Profile("balanced", px=2.0, normal_deg=20.0, uv_texels=1.0, rel_size=0.01),
     "strong": Profile("strong", px=6.0, normal_deg=35.0, uv_texels=3.0, rel_size=0.012, drop_tangents=True),
+    # Forte's limits with the remesh engine: whole-part simplification + mirror instancing
+    "strong_mirror": Profile("strong_mirror", px=6.0, normal_deg=35.0, uv_texels=3.0, rel_size=0.012,
+                             drop_tangents=True, engine="remesh"),
 }
 
 

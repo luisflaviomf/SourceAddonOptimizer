@@ -3525,7 +3525,7 @@ namespace GmodAddonCompressor
                 Suffix = _context.OptimizerSuffix,
                 OptimizerMode = GetOptimizerModeArgument(),
                 MaximumRuntimeProfilePath = selectedRuntimeProfile,
-                ScreenProfile = _context.ModelsScreenProfileIndex == 1 ? "strong" : "balanced",
+                ScreenProfile = _context.ModelsScreenProfileIndex switch { 0 => "balanced", 1 => "strong", _ => "strong_mirror" },
                 BlenderPath = string.IsNullOrWhiteSpace(_context.BlenderPath) ? null : _context.BlenderPath.Trim(),
                 StudioMdlPath = string.IsNullOrWhiteSpace(_context.StudioMdlPath) ? null : _context.StudioMdlPath.Trim(),
                 Ratio = _context.OptimizerRatio,

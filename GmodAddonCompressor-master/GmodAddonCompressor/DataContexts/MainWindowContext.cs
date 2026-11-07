@@ -181,10 +181,12 @@ namespace GmodAddonCompressor.DataContexts
         private string[] _modelsScreenProfileList = new string[]
         {
             "Equilibrado",
-            "Forte"
+            "Forte",
+            "Forte + espelho"
         };
-        // Default Tela profile: Forte (index 1), chosen after in-game tests on the LVS cars pack.
-        internal const int DefaultModelsScreenProfileIndex = 1;
+        // Default Tela profile: Forte + espelho (index 2): Forte's limits with the remesh engine and
+        // mirror instancing, chosen after in-game tests on the LVS cars pack (models -61% vs -53%).
+        internal const int DefaultModelsScreenProfileIndex = 2;
         private int _modelsScreenProfileIndex = DefaultModelsScreenProfileIndex;
         private string[] _compressModeList = new string[]
         {
@@ -340,7 +342,9 @@ namespace GmodAddonCompressor.DataContexts
 
         public string OptimizerModeDescriptionText =>
             OptimizerModeIsScreen
-                ? (_modelsScreenProfileIndex == 1
+                ? (_modelsScreenProfileIndex == 2
+                    ? "Tela (Forte + espelho): mesmos limites do Forte, mas cada peça é simplificada inteira (costuras e quinas acompanham os dois lados, sem frestas) e o lado direito de carros simétricos é desenhado como espelho do esquerdo por ossos-espelho, sem guardar os vértices dele. Só espelha onde a geometria e a textura são iguais nos dois lados (texto, sirenes e setas continuam certos). Modelos cerca de 60% menores; marcas de tiro podem não aparecer nas partes espelhadas."
+                    : _modelsScreenProfileIndex == 1
                     ? "Tela (Forte): simplifica direto nos arquivos compilados, sem Blender/Crowbar/studiomdl. Costuras simplificadas igualmente dos dois lados (sem frestas), peças redondas e finas protegidas; normal até 35°, UV até 3 texels e VVD sem tangentes. Modelos cerca de 50% menores; pequenas diferenças de perto."
                     : "Tela (Equilibrado): simplifica direto nos arquivos compilados, sem Blender/Crowbar/studiomdl. Costuras simplificadas igualmente dos dois lados (sem frestas), peças redondas e finas protegidas; normal até 20° e UV até 1 texel da textura real. Aparência quase idêntica.")
                 : OptimizerModeIsMaximum

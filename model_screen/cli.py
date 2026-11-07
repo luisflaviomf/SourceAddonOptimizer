@@ -1,9 +1,10 @@
 """Worker command `modscreen`: Models "Tela" mode.
 
-    modscreen <addon> [--work DIR] [--suffix _optimized] [--profile balanced|strong] [--jobs N]
+    modscreen <addon> [--work DIR] [--suffix _optimized] [--profile balanced|strong|strong_mirror] [--jobs N]
 
 Copies the addon to <addon><suffix> (next to it), simplifies every compiled model in the copy
-straight in the binaries, snaps VVD normals/tangents to the engine's own steps, removes
+straight in the binaries (strong_mirror: whole-part remesh + mirror instancing, see remesh.py and
+mirror.py), snaps VVD normals/tangents to the engine's own steps, removes
 .dx80/.sw VTX files and strips every .dx90.vtx. A model that fails (unsupported structure,
 validation error) is left exactly as it was. Progress lines follow the Models runner format.
 """
@@ -25,14 +26,32 @@ DONE = ">>> DONE ({i}/{n}) {path}"
 _RESOLVERS: dict = {}
 
 
-def _resolver(addon_root: str):
+def _sibling_roots(addon_root: str) -> list[Path]:
+    """Other addons next to this one (e.g. lvs_framework beside lvs_cars_pack): models often use
+    materials another addon ships. Our own outputs (<addon><suffix>, work folders) are skipped."""
+    src = Path(addon_root)
+    out = []
+    try:
+        for d in sorted(src.parent.iterdir(), key=lambda q: q.name.lower()):
+            if d.is_dir() and d != src and not d.name.lower().startswith(src.name.lower()) \
+                    and (d / "materials").is_dir():
+                out.append(d)
+    except OSError:
+        pass
+    return out
+
+
+def _resolver(addon_root: str, siblings: bool = False):
     """One material index per worker process and addon: building it walks every file under
     materials/ (about a quarter of the per-model time). Only models/ changes during this step,
-    so the index and the parsed materials stay valid for every model."""
+    so the index and the parsed materials stay valid for every model. siblings=True also looks in
+    the addons beside this one, after the addon itself (remesh engine only)."""
     from texlab.materials import MaterialResolver
-    res = _RESOLVERS.get(addon_root)
+    key = (addon_root, siblings)
+    res = _RESOLVERS.get(key)
     if res is None:
-        res = _RESOLVERS[addon_root] = MaterialResolver([Path(addon_root)])
+        roots = [Path(addon_root)] + (_sibling_roots(addon_root) if siblings else [])
+        res = _RESOLVERS[key] = MaterialResolver(roots)
     return res
 
 
@@ -46,11 +65,24 @@ def _process_one(args):
     mdl = Path(mdl_path)
     p = PROFILES[profile_name]
     sizes0 = {ext: _size(mdl, ext) for ext in (".mdl", ".vvd", ".dx90.vtx")}
+    mirror_stats = {}
     try:
-        resolver = _resolver(addon_root)
-        uvt = mesh_uv_tolerance(mdl, resolver)
-        new, st = simplify_model(mdl, p, uvt)
-        mdl_b, vvd_b, vtx_b, rst = rewrite_model_bytes(mdl, new, drop_tangents=p.drop_tangents)
+        if p.engine == "remesh":
+            from . import mirror, remesh
+            resolver = _resolver(addon_root, siblings=True)
+            uvt = mesh_uv_tolerance(mdl, resolver)
+            plan = remesh.build(mdl, p, uvt, remesh.mesh_uv_free(mdl, resolver), resolver)
+            if plan is None:
+                raise ValueError("model has no triangles")
+            st = plan["stats"]
+            mdl_b, vvd_b, vtx_b, rst = rewrite_model_bytes(mdl, plan["main"], drop_tangents=p.drop_tangents)
+            mdl_b, vtx_b, nbones = mirror.apply(mdl_b, vtx_b, plan)
+            mirror_stats = {"mirrored_triangles": st["mirrored_out"], "mirror_bones": nbones}
+        else:
+            resolver = _resolver(addon_root)
+            uvt = mesh_uv_tolerance(mdl, resolver)
+            new, st = simplify_model(mdl, p, uvt)
+            mdl_b, vvd_b, vtx_b, rst = rewrite_model_bytes(mdl, new, drop_tangents=p.drop_tangents)
         vvd_b, _ = vvd_engine_exact.snap_vvd(vvd_b)
         stem = Path(str(mdl.with_suffix("")))
         staged = {}
@@ -75,7 +107,7 @@ def _process_one(args):
             tmp.replace(Path(str(stem) + ext))
         return {"model": str(mdl), "ok": True, "vertices_before": st["vertices_before"],
                 "vertices_after": st["vertices_after"], "bytes_before": sum(sizes0.values()),
-                "bytes_after": sum(_size(mdl, e) for e in sizes0)}
+                "bytes_after": sum(_size(mdl, e) for e in sizes0), **mirror_stats}
     except Exception as exc:
         for tmp in Path(str(mdl.with_suffix(""))).parent.glob(mdl.stem + ".*.modscreen.tmp"):
             tmp.unlink(missing_ok=True)
@@ -125,7 +157,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("addon")
     ap.add_argument("--work", default=None)
     ap.add_argument("--suffix", default="_optimized")
-    ap.add_argument("--profile", choices=("balanced", "strong"), default="balanced")
+    ap.add_argument("--profile", choices=("balanced", "strong", "strong_mirror"), default="balanced")
     ap.add_argument("--jobs", type=int, default=0, help="worker processes (0 = automatic)")
     ap.add_argument("--in-place", action="store_true", help="process the given folder itself (no copy)")
     ap.add_argument("--overwrite", action="store_true", help="replace an existing output folder")

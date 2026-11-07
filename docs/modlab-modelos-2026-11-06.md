@@ -154,6 +154,54 @@ Testes: `tests/test_model_screen.py`, contrato C# (`tests/wpf_optimizer_contract
 interface `experiments/BancadaUiSmoke --tela <pasta>` (render da aba) e `--tela-run <addon>`
 (botão real, worker real).
 
+## Forte + espelho (07/11, noite): perfil `strong_mirror`
+
+Pedido: modelos 70–80% menores em disco, ainda bonitos. Estudo completo em `C:\GModLab\modlab3`.
+
+**Onde ficam os bytes (Forte, 260 MB):** VVD 78% (48 bytes fixos por vértice), VTX 20%, MDL+PHY 2%. Só
+menos vértices reduz disco. Por que sobram: os carros têm ~1 vértice por triângulo, e as divisões são
+quinas reais de ~90° (36–45%), bordas entre materiais (24–48%) e costuras de UV (13–29%). Mesmo com
+tolerâncias muito frouxas sobram ~52% dos vértices: o piso é a estrutura, não a tolerância.
+
+**Duas coisas novas:**
+1. **Simplificação por peça inteira** (`model_screen/remesh.py`): cada peça fisicamente conectada vai
+   inteira ao meshoptimizer; costuras de UV que importam, quinas, bordas de material e de osso são
+   "seams" (os dois lados colapsam juntos, sem frestas; bordas deslizam sobre si mesmas). Costuras de UV
+   de materiais cujas texturas não dependem de UV (cor lisa, máscara de "glitter" da pintura) somem.
+   Mesmos limites do Forte (6 px a 40 u, normal 35°, UV 3 texels, redondos/finos protegidos).
+2. **Espelhamento por osso** (`model_screen/mirror.py`): o lado direito não é guardado. Um strip extra
+   no mesmo grupo do VTX reusa os vértices do lado esquerdo; as trocas de osso desse strip apontam para
+   "ossos-espelho" (filhos do osso alvo, transformação local identidade, `poseToBone` = `poseToBone` do
+   alvo × reflexão). Portas mapeiam LD → RD. O motor desenha certo (testado no jogo). Só espelha
+   triângulos cujo parceiro existe no outro lado e cujas texturas mostram o mesmo nas duas UVs; todas
+   as texturas do material contam (inclusive `$refracttinttexture`: a sirene vermelha/azul da viatura
+   Monaco ficava errada antes dessa regra). Travas por posição (o meshoptimizer lê a trava de um único
+   registro por posição): interface entre parte espelhada e própria, seus parceiros e o plano central.
+
+`lvs_cars_pack` inteiro (163 modelos), no jogo contra o original (8 carros × 6 vistas; ruído de captura
+0,004):
+
+| | Disco (models) | Download | FLIP médio | Pior região |
+|---|---:|---:|---:|---:|
+| Original | 549 MB | 166 MB | — | — |
+| Forte | 260 MB (−53%) | 49,6 MB | 0,037 | 0,24 |
+| **Forte + espelho** | **213 MB (−61%)** | 42,4 MB | **0,038** | **0,17** |
+
+O espelho tem teto na própria simetria: 40–56% dos vértices do lado direito não têm par no esquerdo
+(interior assimétrico, triangulação diferente) e 11–16% estão em material separado de propósito
+(setas esquerda/direita). Refazer UV e reassar as texturas de AO daria só ~−65%; passar disso exige
+perda visível. Limite conhecido: marcas de tiro (decals) podem não aparecer nas partes espelhadas
+(o motor calcula decals na CPU com o osso do VVD).
+
+O perfil procura materiais também nos addons vizinhos da mesma pasta (ex. `lvs_framework` ao lado de
+`lvs_cars_pack`), com prioridade menor; sem isso o pack ficaria em ~230 MB. Os perfis Equilibrado e
+Forte não mudaram (mesma saída byte a byte). A busca de vizinhos de espelho usa grade em numpy
+(`model_screen/gridsearch.py`), sem scipy no worker. Pack inteiro: ~55 s (8 processos).
+
+Testes: `tests/test_model_screen_mirror.py` (busca em grade, inserção de ossos, E46 determinístico e
+carregável, imagens espelhadas caindo sobre o lado direito real, regra da textura de refração, CLI de
+ponta a ponta), contrato C# (perfil padrão `strong_mirror`).
+
 ## Ferramentas do laboratório
 
 - `srcmodel_io.py`: reescreve MDL/VVD/VTX direto no binário (subconjunto de vértices + nova

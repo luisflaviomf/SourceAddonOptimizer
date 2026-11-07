@@ -63,7 +63,8 @@ a = Analysis(
     hiddenimports=collect_submodules("maximum_optimizer") + collect_submodules("exact_distribution") + [
         # texlab screen-aware VTF engine: numpy-only core (lab modules with torch/numba stay out)
         "model_screen", "model_screen.cli", "model_screen.simplify", "model_screen.binary",
-        "model_screen.uvtol", "model_screen.meshopt", "vvd_engine_exact",
+        "model_screen.uvtol", "model_screen.meshopt", "model_screen.remesh", "model_screen.mirror",
+        "model_screen.gridsearch", "vvd_engine_exact",
         "texlab", "texlab.screen_compress", "texlab.npsolve", "texlab.bcnp", "texlab.vtf",
         "texlab.density", "texlab.materials", "texlab.source_model", "texlab.allocate", "texlab.plan",
         "texlab.native",

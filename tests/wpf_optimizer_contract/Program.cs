@@ -112,7 +112,7 @@ Assert(!arguments.Contains("--experimental-ground-policy"), "Maximum leaked the 
 Assert(!arguments.Contains("--experimental-round-parts-policy"), "Maximum leaked the experimental round-parts policy.");
 Assert(!arguments.Contains("--experimental-steer-turn-basis-fix"), "Maximum leaked the experimental steer policy.");
 
-// Models "Tela" mode: worker command modscreen, no Blender/StudioMDL, profile mapped to balanced/strong.
+// Models "Tela" mode: worker command modscreen, no Blender/StudioMDL, profile mapped to balanced/strong/strong_mirror.
 var screenOptions = new SourceAddonOptimizerRunOptions
 {
     AddonPath = @"C:\addon folder",
@@ -134,7 +134,11 @@ Assert(screenProfileFlag >= 0 && screenArguments[screenProfileFlag + 1] == "stro
 Assert(!screenArguments.Contains("--blender") && !screenArguments.Contains("--studiomdl") && !screenArguments.Contains("--optimizer-mode"), "Tela mode must not pass Blender/StudioMDL/optimizer-mode.");
 Assert(screenArguments.Contains("--overwrite") && screenArguments.Contains("--jobs"), "Tela mode lost overwrite/jobs.");
 var screenDefault = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:\a", WorkDir = @"C:\w", OptimizerMode = "screen" }).ToArray();
-Assert(screenDefault[Array.IndexOf(screenDefault, "--profile") + 1] == "strong", "Tela mode must default to the strong (Forte) profile.");
+Assert(screenDefault[Array.IndexOf(screenDefault, "--profile") + 1] == "strong_mirror", "Tela mode must default to the strong_mirror (Forte + espelho) profile.");
+var screenMirror = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:", WorkDir = @"C:\w", OptimizerMode = "screen", ScreenProfile = "strong_mirror" }).ToArray();
+Assert(screenMirror[Array.IndexOf(screenMirror, "--profile") + 1] == "strong_mirror", "Tela mode lost the explicit strong_mirror profile.");
+var screenUnknown = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:", WorkDir = @"C:\w", OptimizerMode = "screen", ScreenProfile = "whatever" }).ToArray();
+Assert(screenUnknown[Array.IndexOf(screenUnknown, "--profile") + 1] == "strong_mirror", "An unknown Tela profile must fall back to strong_mirror.");
 var screenBalanced = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:\a", WorkDir = @"C:\w", OptimizerMode = "screen", ScreenProfile = "balanced" }).ToArray();
 Assert(screenBalanced[Array.IndexOf(screenBalanced, "--profile") + 1] == "balanced", "Tela mode lost the explicit balanced (Equilibrado) profile.");
 
