@@ -462,6 +462,17 @@ class _WorkerCancellationProbe:
         return None
 
 
+def _packaging_jobs(jobs: int | None) -> int:
+    """Processes for the per-file packaging passes (VVD exact normals, VTX strips). Files are
+    independent and the results keep the sorted order, so the output does not depend on it.
+    None keeps the old sequential run; 0 means automatic, like --jobs."""
+    if jobs is None:
+        return 1
+    if jobs <= 0:
+        return max(1, min(8, (os.cpu_count() or 2) // 2))
+    return jobs
+
+
 def _run_single_addon(
     args: argparse.Namespace,
     *,
@@ -1039,7 +1050,9 @@ def _run_single_addon(
             # (same bytes reach the GPU); only the Workshop LZMA download gets smaller.
             print("== Packaging: VVD engine-exact normals ==")
             vvd_report_path = work_dir / "logs" / "vvd_engine_exact_summary.json"
-            vvd_summary = vvd_engine_exact.optimize_tree(out_models_dir, report_path=vvd_report_path)
+            vvd_summary = vvd_engine_exact.optimize_tree(
+                out_models_dir, report_path=vvd_report_path, jobs=_packaging_jobs(args.jobs)
+            )
             print(
                 "[VVD-EXACT] "
                 f"scanned={vvd_summary.scanned_files} changed={vvd_summary.changed_files} "
@@ -1054,6 +1067,7 @@ def _run_single_addon(
                 out_models_dir,
                 vtx_dll_path,
                 report_path=vtx_report_path,
+                jobs=_packaging_jobs(args.jobs),
             )
             print(
                 "[VTX-TRISTRIP] "

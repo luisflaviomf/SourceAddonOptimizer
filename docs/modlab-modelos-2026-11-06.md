@@ -104,7 +104,37 @@ dx80/sw.vtx e faz strips no dx90.vtx. Modelo que falhar fica exatamente como era
 | **Equilibrado** | normal ≤ 20°, UV ≤ 1 texel real, 2 px a 40 u | 549 → **349 MB (−36%)** | 0,007 perto / 0,010 longe |
 | **Forte** | normal ≤ 35°, UV ≤ 3 texels, 6 px a 40 u, **VVD sem tangentes** | 549 → **257 MB (−53%)** | 0,018 perto / 0,023 longe |
 
-163 modelos, nenhuma falha, nenhum material com erro novo, ~2,5 min com 6 processos.
+163 modelos, nenhuma falha, nenhum material com erro novo.
+
+### Velocidade (07/11): Rust + paralelismo, saída idêntica
+
+`lvs_cars_pack` inteiro, perfil Forte, `--jobs 8`. A pasta de saída inteira (3.392 arquivos) e
+os três relatórios (`modscreen`, `vvd_engine_exact`, `vtx_tristrip`) saem byte a byte iguais
+aos do código anterior:
+
+| Etapa | Antes | Depois | O que mudou |
+|---|---:|---:|---|
+| Copiar o addon | 13–30 s | 2–4 s | cópia em threads; `models/` primeiro, o resto copia em segundo plano enquanto os modelos são simplificados (os materiais são lidos da origem, mesmos bytes) |
+| Simplificar | 57 s | ~15–25 s | costuras (`_seams`) e componentes em Rust (`gmo_seams`, `gmo_components`); índice de materiais montado uma vez por processo (antes: uma vez por modelo); cabeçalho VTF sem ler o arquivo todo; ilhas sem `np.full` do tamanho do modelo; maiores modelos primeiro |
+| Normais exatas | 8 s | ~3 s | arquivos em paralelo no mesmo pool |
+| TRI_STRIP | 48 s | ~3–4 s | comparação de topologia em numpy, busca binária de blocos, arrays ctypes rápidos, relatório sem `asdict` (que copiava a lista de triângulos), arquivos em paralelo |
+| **Total** | **127 s** | **26–35 s** | |
+
+Tempo de CPU só de `simplify_model` nos 163 modelos: 512 s → 60 s (Forte), 530 s → 63 s
+(Equilibrado), resultado idêntico nos dois perfis.
+
+Como o Rust dá o mesmo resultado: a caminhada das costuras depende da ordem de iteração dos
+`set` do Python, então `seams.rs` reproduz a tabela de set do CPython 3.11 (mesmos slots,
+sondagem e redimensionamento; conferido contra sets reais). As contas seguem o numpy desta
+máquina: produto escalar de 3 elementos sequencial sem FMA (ddot do OpenBLAS) e, no
+Douglas-Peucker, `(k,3) @ (3,)` como `fma(a2,b2, fma(a0,b0, a1*b1))` (dgemv) — medido em 120 mil
+casos. O caminho Python continua como referência e reserva (sem a DLL ou com `GMO_NATIVE=0`),
+também idêntico nos 163 modelos. Observação: o numpy pode arredondar essas contas de outro jeito
+em outra CPU (kernel do OpenBLAS); a DLL dá o resultado desta máquina em qualquer CPU.
+
+`--jobs 0` (o padrão do WPF quando o usuário não escolheu) agora é automático (metade das CPUs
+lógicas, até 8); antes virava 1 processo. O empacotamento dos outros modos (normal, fidelity,
+maximum) também roda normais exatas e TRI_STRIP em paralelo (`--jobs`).
 
 **Forte é o padrão** (07/11, escolhido depois do teste no jogo): a interface abre com Forte e o
 `SourceAddonOptimizerCommandBuilder` só manda `balanced` quando Equilibrado é escolhido. Quem

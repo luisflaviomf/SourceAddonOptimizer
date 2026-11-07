@@ -369,7 +369,9 @@ namespace GmodAddonCompressor.Systems
             {
                 "vtf" when _pipelineOptions.IsMaximumMode => Math.Clamp(_pipelineOptions.MaximumVtfParallelism, 1, 10),
                 "vtf" => Math.Max(1, Math.Min(4, cpuCount / 2)),
-                "audio" => Math.Max(1, Math.Min(2, cpuCount / 4)),
+                // Each sound is independent (own ffmpeg processes and temp names), so more at once
+                // gives the same files; the adaptive WAV profile runs several encodes per sound.
+                "audio" => Math.Max(1, Math.Min(8, cpuCount / 2)),
                 "image" => Math.Max(2, Math.Min(8, cpuCount)),
                 "script" => 1,
                 _ => Math.Max(1, Math.Min(2, cpuCount / 4))

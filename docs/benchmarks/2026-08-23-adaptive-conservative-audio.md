@@ -59,3 +59,17 @@ PCM 16-bit + Adaptativo conservador: 28,271,118 -> 9,541,240 bytes).
 LVS cars pack with Tela textures + Tela Forte models + these sounds: 402.8 MB on disk, 94.9 MB
 download (per-file LZMA-6; the Steam log of the original pack shows 334,319,264 bytes downloaded for a
 1,442,181,498-byte .gma, matching the estimate of 321 MiB).
+
+### Speed and reproducibility (2026-11-07)
+
+The "audio" bucket of `CompressAddonSystem` now runs up to 8 sounds at once (half the logical
+CPUs) instead of 2. Real Compress button, 77 LVS WAVs, 22050 Hz mono PCM16 + adaptive:
+25.6 / 29.9 s with the old limit, 15.7 / 9.5 s with the new one; same candidates chosen, same
+bytes per file and in total (9,541,240).
+
+Finding: the soxr resampler of the bundled ffmpeg (2022-09-22) is not deterministic. Running the
+same `aresample=...:resampler=soxr:precision=28:...` command twice gives samples that differ by up to
+2 LSB in ~15% of positions (mono and stereo, one process, `OMP_NUM_THREADS=1` makes no difference).
+So the 8 LVS sounds whose chosen candidate is resampled differ byte-wise between any two runs, with
+the old limit too; their size and the choice do not change. Byte-for-byte reproducible output would
+need another resampler (a quality/size change, not done here).

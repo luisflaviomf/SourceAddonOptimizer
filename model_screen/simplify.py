@@ -79,11 +79,17 @@ def weld_ids(pos: np.ndarray, cell: float = WELD) -> np.ndarray:
     return inv.ravel()
 
 
-def components(n: int, edges: np.ndarray) -> np.ndarray:
-    """Connected component label per node (min-label propagation with pointer jumping)."""
+def components(n: int, edges: np.ndarray, use_native: bool = True) -> np.ndarray:
+    """Connected component label per node (min-label propagation with pointer jumping): the
+    smallest node index of the component. The Rust union-find gives the same labels."""
     lab = np.arange(n)
     if len(edges) == 0:
         return lab
+    if use_native:
+        from texlab import native
+        res = native.components(n, edges)
+        if res is not None:
+            return res
     a, b = edges[:, 0], edges[:, 1]
     while True:
         m = np.minimum(lab[a], lab[b])
@@ -130,7 +136,24 @@ def _eps_for(ext_sorted: np.ndarray, p: Profile) -> float:
 
 # ----------------------------------------------------------------------------- pass 1: seams
 
-def _seams(f, bkey, wid, T, uvtol_v, p: Profile):
+def _dot3(a, b) -> float:
+    # numpy's length-3 float64 dot (BLAS ddot): 0.0, then += a[i]*b[i] in order, no fused multiply-add
+    return 0.0 + a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _clip01(x: float) -> float:
+    # np.clip(x, 0, 1) on a float64: NaN passes through, -0.0 becomes 0.0
+    if x == x:
+        x = x if x > 0.0 else 0.0
+        x = x if x < 1.0 else 1.0
+    return x
+
+
+def _seams(f, bkey, wid, T, uvtol_v, p: Profile, use_native: bool = True):
+    """Pass 1. Runs in Rust (gmo_native.dll, `gmo_seams`) when available; the Python below is the
+    reference and the fallback. Both reproduce the original numpy code exactly: Python set
+    iteration order (the DLL emulates CPython's set table) and numpy's float operation order.
+    T is updated in place (callers read it afterwards)."""
     pos = f[:, 0:3].astype(np.float64)
     nrm = f[:, 3:6].astype(np.float64)
     uv = f[:, 6:8].astype(np.float64)
@@ -139,43 +162,65 @@ def _seams(f, bkey, wid, T, uvtol_v, p: Profile):
     P[wid] = pos
     tw = wid[T]
     comp = components(nW, np.concatenate([tw[:, [0, 1]], tw[:, [1, 2]]]))
+    # per component bounding box (max/min do not depend on the order, so grouping by sort is exact)
+    srt = np.argsort(comp, kind="stable")
+    cs = comp[srt]
+    seg = np.flatnonzero(np.r_[True, cs[1:] != cs[:-1]])
+    Ps = P[srt]
+    ext = np.maximum.reduceat(Ps, seg, axis=0) - np.minimum.reduceat(Ps, seg, axis=0)
+    labels = cs[seg]
     comp_eps = {}
     for c in np.unique(comp[tw[:, 0]]):
-        pts = P[comp == c]
-        comp_eps[int(c)] = _eps_for(np.sort(pts.max(0) - pts.min(0)), p)
-    alive = np.ones(len(T), bool)
+        comp_eps[int(c)] = _eps_for(np.sort(ext[np.searchsorted(labels, c)]), p)
+    cos_n = math.cos(math.radians(p.normal_deg))
+    floor = p.px_close * p.d_closest / FOCAL_1080 * 0.5
+    from texlab import native   # Rust port (gmo_native.dll): same result, Python below is the fallback
+    eps_arr = np.full(nW, np.nan)
+    eps_arr[list(comp_eps)] = list(comp_eps.values())
+    res = native.seams(pos, nrm, uv, wid, bkey, uvtol_v * p.uv_texels, P, comp, eps_arr, T, cos_n, floor,
+                       p.rel_size) if use_native else None
+    if res is not None:
+        tris, alive, removed = res
+        T[:] = tris
+        T2 = T[alive]
+        nd = (T2[:, 0] != T2[:, 1]) & (T2[:, 1] != T2[:, 2]) & (T2[:, 0] != T2[:, 2])
+        return T2[nd], removed
+    TL = T.tolist()
+    widL = wid.tolist()
+    alive = [True] * len(TL)
     v2t = defaultdict(set)
-    for i, t in enumerate(T):
+    for i, t in enumerate(TL):
         for v in t:
-            v2t[int(v)].add(i)
+            v2t[v].add(i)
     w2v = defaultdict(list)
-    for v in np.unique(T):
-        w2v[int(wid[v])].append(int(v))
+    for v in np.unique(T).tolist():
+        w2v[widL[v]].append(v)
 
     def border_neighbors(v):
-        cnt = defaultdict(int)
+        cnt = {}
         for ti in v2t[v]:
             if alive[ti]:
-                for x in T[ti]:
+                for x in TL[ti]:
                     if x != v:
-                        cnt[int(x)] += 1
+                        cnt[x] = cnt.get(x, 0) + 1
         return [x for x, c in cnt.items() if c == 1]
 
     adj = defaultdict(set)
     for vs in w2v.values():
         for v in vs:
             for x in border_neighbors(v):
-                a, b = int(wid[v]), int(wid[x])
+                a, b = widL[v], widL[x]
                 if a != b:
                     adj[a].add(b)
                     adj[b].add(a)
     corner = {q for q in adj if len(adj[q]) != 2}
+    bkeyL = bkey.tolist()
     for q, vs in w2v.items():
-        if q in adj and len({int(bkey[v]) for v in vs}) > 1:
+        if q in adj and len({bkeyL[v] for v in vs}) > 1:
             corner.add(q)
-    cos_n = math.cos(math.radians(p.normal_deg))
-    uv_lim = uvtol_v * p.uv_texels
-    floor = p.px_close * p.d_closest / FOCAL_1080 * 0.5
+    uv_lim = (uvtol_v * p.uv_texels).tolist()
+    geo =(P.tolist(), widL, w2v, v2t, TL, alive, pos.tolist(), nrm.tolist(), uv.tolist(), cos_n, uv_lim,
+           border_neighbors)
     seen = set()
     removed = 0
     for c in list(corner) + [q for q in adj if q not in corner]:
@@ -203,13 +248,13 @@ def _seams(f, bkey, wid, T, uvtol_v, p: Profile):
                 k_next = i + 1
                 while k_next < len(chain) - 1 and not keep[k_next]:
                     k_next += 1
-                if _remove_point(chain, i, k_prev, k_next, P, wid, w2v, v2t, T, alive, pos, nrm, uv, cos_n,
-                                 uv_lim, border_neighbors):
+                if _remove_point(chain, i, k_prev, k_next, *geo):
                     removed += 1
                 else:
                     keep[i] = True
                     k_prev = i
-    T2 = T[alive]
+    T[:] = np.array(TL, dtype=T.dtype).reshape(T.shape)
+    T2 = T[np.array(alive, bool)]
     nd = (T2[:, 0] != T2[:, 1]) & (T2[:, 1] != T2[:, 2]) & (T2[:, 0] != T2[:, 2])
     return T2[nd], removed
 
@@ -217,48 +262,66 @@ def _seams(f, bkey, wid, T, uvtol_v, p: Profile):
 def _walk_to(u, chain, i, k_next, wid, border_neighbors):
     cur = u
     for j in range(i + 1, k_next + 1):
-        cand = [x for x in border_neighbors(cur) if int(wid[x]) == chain[j]]
+        cand = [x for x in border_neighbors(cur) if wid[x] == chain[j]]
         if len(cand) != 1:
             return None
         cur = cand[0]
     return cur
 
 
-def _remove_point(chain, i, k_prev, k_next, P, wid, w2v, v2t, T, alive, pos, nrm, uv, cos_n, uv_lim, border_neighbors):
+def _cross_sub(o0, o1, o2):
+    # np.cross(o1 - o0, o2 - o0) for 3-vectors, same float operations
+    a0, a1, a2 = o1[0] - o0[0], o1[1] - o0[1], o1[2] - o0[2]
+    b0, b1, b2 = o2[0] - o0[0], o2[1] - o0[1], o2[2] - o0[2]
+    return (a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0)
+
+
+def _remove_point(chain, i, k_prev, k_next, P, wid, w2v, v2t, T, alive, pos, nrm, uv, cos_n, uv_lim,
+                  border_neighbors):
+    """P, wid, T, pos, nrm, uv, uv_lim are Python lists (see _seams)."""
     q, a, b = chain[i], chain[k_prev], chain[k_next]
-    d = P[b] - P[a]
-    L2 = float(d @ d)
-    t = float(np.clip((P[q] - P[a]) @ d / L2, 0, 1)) if L2 > 1e-12 else 0.0
+    pa, pb, pq = P[a], P[b], P[q]
+    d = (pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2])
+    L2 = _dot3(d, d)
+    t = _clip01(_dot3((pq[0] - pa[0], pq[1] - pa[1], pq[2] - pa[2]), d) / L2) if L2 > 1e-12 else 0.0
+    s = 1 - t
     plans = []
     for u in w2v[q]:
         bn = border_neighbors(u)
-        tgt = [x for x in bn if int(wid[x]) == chain[i - 1]]
+        tgt = [x for x in bn if wid[x] == chain[i - 1]]
         if len(bn) != 2 or len(tgt) != 1:
             return False
         v = tgt[0]
         nxt = _walk_to(u, chain, i, k_next, wid, border_neighbors)
         if nxt is None:
             return False
-        ref = v if int(wid[v]) == chain[k_prev] else v
-        n_i = (1 - t) * nrm[ref] + t * nrm[nxt]
-        n_i /= max(np.linalg.norm(n_i), 1e-12)
-        if n_i @ nrm[u] < cos_n:
+        ref = v
+        nr, nn = nrm[ref], nrm[nxt]
+        n_i = (s * nr[0] + t * nn[0], s * nr[1] + t * nn[1], s * nr[2] + t * nn[2])
+        m = max(math.sqrt(_dot3(n_i, n_i)), 1e-12)
+        n_i = (n_i[0] / m, n_i[1] / m, n_i[2] / m)
+        if _dot3(n_i, nrm[u]) < cos_n:
             return False
-        if np.abs((1 - t) * uv[ref] + t * uv[nxt] - uv[u]).max() > uv_lim[u]:
+        ur, un, uu = uv[ref], uv[nxt], uv[u]
+        e0 = abs(s * ur[0] + t * un[0] - uu[0])
+        e1 = abs(s * ur[1] + t * un[1] - uu[1])
+        # numpy .max() propagates NaN (and NaN > limit is False)
+        if e0 == e0 and e1 == e1 and (e0 if e0 >= e1 else e1) > uv_lim[u]:
             return False
+        pv = pos[v]
         for ti in v2t[u]:
             if not alive[ti]:
                 continue
             tri = T[ti]
             if v in tri:
                 continue
-            old = pos[tri]
-            new = old.copy()
-            new[list(tri).index(u)] = pos[v]
-            n0 = np.cross(old[1] - old[0], old[2] - old[0])
-            n1 = np.cross(new[1] - new[0], new[2] - new[0])
-            l0, l1 = np.linalg.norm(n0), np.linalg.norm(n1)
-            if l1 < 1e-10 or (l0 > 1e-10 and (n0 @ n1) / (l0 * l1) < 0.5):
+            old = [pos[tri[0]], pos[tri[1]], pos[tri[2]]]
+            new = list(old)
+            new[tri.index(u)] = pv
+            n0 = _cross_sub(*old)
+            n1 = _cross_sub(*new)
+            l0, l1 = math.sqrt(_dot3(n0, n0)), math.sqrt(_dot3(n1, n1))
+            if l1 < 1e-10 or (l0 > 1e-10 and _dot3(n0, n1) / (l0 * l1) < 0.5):
                 return False
         plans.append((u, v))
     for u, v in plans:
@@ -269,7 +332,7 @@ def _remove_point(chain, i, k_prev, k_next, P, wid, w2v, v2t, T, alive, pos, nrm
             if v in tri:
                 alive[ti] = False
                 continue
-            T[ti][list(tri).index(u)] = v
+            tri[tri.index(u)] = v
             v2t[v].add(ti)
         v2t[u] = set()
     w2v[q] = []
@@ -294,9 +357,7 @@ def _interiors(f, bkey, wid, T, uvtol_v, p: Profile):
         verts = np.unique(tris)
         P = pos[verts].astype(np.float64)
         eps = _eps_for(np.sort(P.max(0) - P.min(0)), p)
-        local = np.full(nV, -1, np.int64)
-        local[verts] = np.arange(len(verts))
-        lt = local[tris]
+        lt = np.searchsorted(verts, tris)   # verts is sorted and unique: the local ids
         tol = float(uvtol_v[verts].min())
         wts = np.array([eps / math.radians(p.normal_deg)] * 3 + [eps / (p.uv_texels * tol)] * 2, np.float32)
         A = np.c_[f[verts, 3:6], f[verts, 6:8]]
@@ -326,8 +387,15 @@ def simplify_model(mdl: Path, p: Profile, uvtol_per_mesh: list[float] | None = N
     T2, removed = _seams(f, bkey, wid, T, uvtol_v, p)
     T3 = _interiors(f, bkey, wid, T2, uvtol_v, p)
     result = {}
+    # rows of a mesh: every id in [st, st+n). Same rows, same order as testing all of T3 per mesh,
+    # but each mesh only looks at the rows whose smallest id falls in its range.
+    lo_id, hi_id = T3.min(axis=1), T3.max(axis=1)
+    by_lo = np.argsort(lo_id, kind="stable")
+    lo_sorted = lo_id[by_lo]
     for key, st, n, _t in meshes:
-        sel = (T3 >= st).all(axis=1) & (T3 < st + n).all(axis=1)
-        result[key] = T3[sel] - st
+        a, b = np.searchsorted(lo_sorted, st, "left"), np.searchsorted(lo_sorted, st + n, "left")
+        idx = np.sort(by_lo[a:b])
+        idx = idx[hi_id[idx] < st + n]
+        result[key] = T3[idx] - st
     return result, {"vertices_before": int(len(np.unique(T))), "vertices_after": int(len(np.unique(T3))),
                     "seam_points_removed": int(removed)}

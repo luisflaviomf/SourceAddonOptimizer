@@ -17,7 +17,9 @@ DEFAULT = 1.0 / 1024.0
 
 def _vtf_size(path: Path) -> int:
     try:
-        w, h = struct.unpack_from("<HH", path.read_bytes()[:20], 16)
+        with open(path, "rb") as fh:   # header only: width/height sit at bytes 16..19
+            head = fh.read(20)
+        w, h = struct.unpack_from("<HH", head, 16)
         return max(w, h, 1)
     except Exception:
         return 1024

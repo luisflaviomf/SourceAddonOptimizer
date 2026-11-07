@@ -148,27 +148,51 @@ class TreeSummary:
     failures: list = field(default_factory=list)
 
 
-def optimize_tree(models_root: Path, report_path: Path | None = None) -> TreeSummary:
-    """Snap every .vvd under models_root in place (atomic replace; failures keep the original)."""
+def _snap_file(path) -> dict:
+    """Snap one .vvd in place. Returns {"row", "changed"} or {"failure"} (the file is then left as it was)."""
+    path = Path(path)
+    try:
+        raw = path.read_bytes()
+        new, st = snap_vvd(raw)
+        changed = new != raw
+        if changed:
+            tmp = path.with_name(path.name + ".exact.tmp")
+            tmp.write_bytes(new)
+            tmp.replace(path)
+        return {"changed": changed,
+                "row": {"file": str(path), **{k: st[k] for k in ("vertices",)},
+                        "normals_changed": st["normals"]["changed"],
+                        "tangents_changed": (st["tangents"] or {}).get("changed", 0)}}
+    except Exception as exc:  # leave the file as it was
+        return {"failure": {"file": str(path), "error": f"{type(exc).__name__}: {exc}"}}
+
+
+def optimize_tree(models_root: Path, report_path: Path | None = None, jobs: int = 1,
+                  executor=None) -> TreeSummary:
+    """Snap every .vvd under models_root in place (atomic replace; failures keep the original).
+
+    Files are independent: with jobs > 1 (or a given process-pool executor) they run in parallel;
+    results keep the sorted path order, so files and report match a sequential run."""
     summary = TreeSummary()
     rows = []
-    for path in sorted(Path(models_root).rglob("*.vvd")):
+    paths = sorted(Path(models_root).rglob("*.vvd"))
+    if executor is not None and len(paths) > 1:
+        results = list(executor.map(_snap_file, [str(p) for p in paths], chunksize=1))
+    elif jobs > 1 and len(paths) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=min(jobs, len(paths))) as pool:
+            results = list(pool.map(_snap_file, [str(p) for p in paths], chunksize=1))
+    else:
+        results = [_snap_file(p) for p in paths]
+    for res in results:
         summary.scanned_files += 1
-        try:
-            raw = path.read_bytes()
-            new, st = snap_vvd(raw)
-            if new != raw:
-                tmp = path.with_name(path.name + ".exact.tmp")
-                tmp.write_bytes(new)
-                tmp.replace(path)
-                summary.changed_files += 1
-            summary.vertices += st["vertices"]
-            rows.append({"file": str(path), **{k: st[k] for k in ("vertices",)},
-                         "normals_changed": st["normals"]["changed"],
-                         "tangents_changed": (st["tangents"] or {}).get("changed", 0)})
-        except Exception as exc:  # leave the file as it was
+        if "failure" in res:
             summary.failed_files += 1
-            summary.failures.append({"file": str(path), "error": f"{type(exc).__name__}: {exc}"})
+            summary.failures.append(res["failure"])
+            continue
+        summary.changed_files += int(res["changed"])
+        summary.vertices += res["row"]["vertices"]
+        rows.append(res["row"])
     if report_path is not None:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps({"summary": {k: v for k, v in summary.__dict__.items() if k != "failures"},

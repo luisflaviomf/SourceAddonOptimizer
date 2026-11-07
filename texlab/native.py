@@ -1,5 +1,7 @@
 """Loader for the Rust hot paths (`gmo_native.dll`, source in native/gmo_native).
 
+Used by texlab (textures) and model_screen (models).
+
 Every native routine returns exactly the same bytes as the numpy code it replaces, which
 stays as the reference and as the fallback when the DLL is missing or disabled
 (environment variable GMO_NATIVE=0). ctypes releases the GIL during the calls, so worker
@@ -15,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-ABI_VERSION = 3
+ABI_VERSION = 4
 DLL_NAME = "gmo_native.dll"
 
 _lock = threading.Lock()
@@ -56,6 +58,14 @@ def lib():
                     dll.gmo_sample_map.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
                                                    ctypes.c_size_t, ctypes.c_void_p]
                     dll.gmo_sample_map.restype = ctypes.c_int32
+                    vp, sz = ctypes.c_void_p, ctypes.c_size_t
+                    dll.gmo_seams.argtypes = [sz, vp, vp, vp, vp, vp, vp, sz, vp, vp, vp, sz, vp, vp,
+                                              ctypes.c_double, ctypes.c_double, ctypes.c_double, vp]
+                    dll.gmo_seams.restype = ctypes.c_int32
+                    dll.gmo_pyset_order.argtypes = [vp, sz, vp]
+                    dll.gmo_pyset_order.restype = ctypes.c_int64
+                    dll.gmo_components.argtypes = [sz, vp, sz, vp]
+                    dll.gmo_components.restype = ctypes.c_int32
                     _lib = dll
                     break
                 except (OSError, AttributeError):
@@ -107,4 +117,57 @@ def sample_map(m: np.ndarray, uv: np.ndarray) -> np.ndarray | None:
     out = np.empty(len(uv), np.float32)
     rc = dll.gmo_sample_map(m.ctypes.data, m.shape[0], m.shape[1], uv.ctypes.data if len(uv) else None, len(uv),
                             out.ctypes.data if len(uv) else None)
+    return out if rc == 0 else None
+
+
+def seams(pos, nrm, uv, wid, bkey, uv_lim, pw, comp, comp_eps, T, cos_n: float, floor: float, rel_size: float):
+    """model_screen.simplify._seams core (pass 1). Returns (new T, alive bool mask, removed) or
+    None when the native path is unavailable or refuses the input (caller runs the Python code).
+    T is not modified (the DLL works on a copy)."""
+    dll = lib()
+    if dll is None or len(T) == 0 or len(wid) == 0 or len(comp) == 0:
+        return None
+    f64 = lambda a: np.ascontiguousarray(a, dtype=np.float64)
+    i64 = lambda a: np.ascontiguousarray(a, dtype=np.int64)
+    pos, nrm, uv, uv_lim, pw, comp_eps = f64(pos), f64(nrm), f64(uv), f64(uv_lim), f64(pw), f64(comp_eps)
+    wid, bkey, comp = i64(wid), i64(bkey), i64(comp)
+    tris = np.array(T, dtype=np.int64, order="C", copy=True)
+    n_v, n_w = len(wid), len(comp)
+    if (pos.shape != (n_v, 3) or nrm.shape != (n_v, 3) or uv.shape != (n_v, 2) or bkey.shape != (n_v,)
+            or uv_lim.shape != (n_v,) or pw.shape != (n_w, 3) or comp_eps.shape != (n_w,) or tris.ndim != 2
+            or tris.shape[1] != 3):
+        return None
+    alive = np.zeros(len(tris), np.uint8)
+    removed = ctypes.c_int64(0)
+    rc = dll.gmo_seams(n_v, pos.ctypes.data, nrm.ctypes.data, uv.ctypes.data, wid.ctypes.data, bkey.ctypes.data,
+                       uv_lim.ctypes.data, n_w, pw.ctypes.data, comp.ctypes.data, comp_eps.ctypes.data, len(tris),
+                       tris.ctypes.data, alive.ctypes.data, float(cos_n), float(floor), float(rel_size),
+                       ctypes.byref(removed))
+    if rc != 0:
+        return None
+    return tris, alive.astype(bool), int(removed.value)
+
+
+def pyset_order(keys) -> list[int] | None:
+    """Iteration order of the DLL's CPython-set emulation after inserting `keys` (test hook)."""
+    dll = lib()
+    if dll is None:
+        return None
+    k = np.ascontiguousarray(keys, dtype=np.int64)
+    out = np.zeros(max(1, len(k)), np.int64)
+    n = dll.gmo_pyset_order(k.ctypes.data if len(k) else None, len(k), out.ctypes.data)
+    return None if n < 0 else out[:n].tolist()
+
+
+def components(n: int, edges: np.ndarray) -> np.ndarray | None:
+    """model_screen.simplify.components: int64 label per node = smallest node index of its
+    connected component. None when unavailable or an edge is out of range."""
+    dll = lib()
+    if dll is None or n <= 0:
+        return None
+    e = np.ascontiguousarray(edges, dtype=np.int64)
+    if e.ndim != 2 or e.shape[1] != 2:
+        return None
+    out = np.empty(n, np.int64)
+    rc = dll.gmo_components(n, e.ctypes.data if len(e) else None, len(e), out.ctypes.data)
     return out if rc == 0 else None

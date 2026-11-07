@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import array
+import bisect
 import collections
 import ctypes
 import dataclasses
@@ -10,6 +12,8 @@ import struct
 import tempfile
 from pathlib import Path
 from typing import Iterable, Sequence
+
+import numpy as np
 
 
 TRI_LIST = 0x01
@@ -353,11 +357,11 @@ class VtxReader:
             if index_count
             else ()
         )
-        for value in indices:
-            if value >= vertex_count:
-                raise VtxOptimizeError(
-                    f"strip group {location}: index {value} >= vertex count {vertex_count}"
-                )
+        if indices and max(indices) >= vertex_count:
+            value = next(value for value in indices if value >= vertex_count)
+            raise VtxOptimizeError(
+                f"strip group {location}: index {value} >= vertex count {vertex_count}"
+            )
 
         strips: list[Strip] = []
         for strip_index in range(strip_count):
@@ -462,8 +466,8 @@ class _Stripifier:
 
     @staticmethod
     def _array(values: Sequence[int]) -> ctypes.Array[ctypes.c_uint]:
-        array_type = ctypes.c_uint * len(values)
-        return array_type(*(int(value) for value in values))
+        buffer = array.array("I", values)
+        return (ctypes.c_uint * len(buffer)).from_buffer(buffer)
 
     def stripify(self, indices: Sequence[int], vertex_count: int) -> tuple[int, ...]:
         if not indices:
@@ -473,8 +477,8 @@ class _Stripifier:
         destination_type = ctypes.c_uint * bound
         destination = destination_type()
         count = int(self.dll.probe_stripify(destination, source, len(indices), vertex_count))
-        result = tuple(int(destination[index]) for index in range(count))
-        if any(value > 0xFFFF for value in result):
+        result = tuple(destination[:count])
+        if result and max(result) > 0xFFFF:
             raise VtxOptimizeError("stripified index does not fit Source VTX uint16 storage")
         return result
 
@@ -486,7 +490,7 @@ class _Stripifier:
         destination_type = ctypes.c_uint * bound
         destination = destination_type()
         count = int(self.dll.probe_unstripify(destination, source, len(indices)))
-        return tuple(int(destination[index]) for index in range(count))
+        return tuple(destination[:count])
 
 
 def validate_stripifier(dll_path: Path) -> None:
@@ -518,6 +522,26 @@ def oriented_triangle_counter(
     return result
 
 
+def _oriented_topology(indices: Sequence[int]) -> bytes:
+    """Same multiset as oriented_triangle_counter, as sorted canonical triangles.
+
+    Two index lists have equal counters exactly when these bytes are equal (fast to compare)."""
+    if len(indices) % 3:
+        raise VtxOptimizeError(
+            f"triangle-list index count is not divisible by three: {len(indices)}"
+        )
+    tris = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    tris = tris[(tris[:, 0] != tris[:, 1]) & (tris[:, 1] != tris[:, 2]) & (tris[:, 0] != tris[:, 2])]
+    # three distinct corners: the rotation that starts at the minimum is the smallest one
+    first = np.argmin(tris, axis=1)
+    rows = np.arange(len(tris))
+    canon = np.stack(
+        [tris[rows, first], tris[rows, (first + 1) % 3], tris[rows, (first + 2) % 3]], axis=1
+    )
+    order = np.lexsort((canon[:, 2], canon[:, 1], canon[:, 0]))
+    return canon[order].tobytes()
+
+
 def _unique_blocks(reader: VtxReader) -> list[Span]:
     by_range: dict[tuple[int, int, str], Span] = {}
     for span in reader.spans:
@@ -533,7 +557,18 @@ def _unique_blocks(reader: VtxReader) -> list[Span]:
     return blocks
 
 
-def _containing_block(blocks: Sequence[Span], address: int, size: int = 1) -> Span:
+def _containing_block(
+    blocks: Sequence[Span], address: int, size: int = 1, starts: Sequence[int] | None = None
+) -> Span:
+    if starts is not None:
+        # blocks are sorted and never overlap (_unique_blocks), so only the last block that
+        # starts at or before `address` can contain it
+        position = bisect.bisect_right(starts, address) - 1
+        if position >= 0:
+            block = blocks[position]
+            if block.start <= address and address + size <= block.end:
+                return block
+        raise VtxOptimizeError(f"address {address}:{address + size} belongs to 0 reachable blocks")
     matches = [
         block
         for block in blocks
@@ -552,12 +587,15 @@ def _replace_block_bytes(
     replacements: dict[Span, bytes],
     address: int,
     data: bytes,
+    starts: Sequence[int] | None = None,
 ) -> None:
-    block = _containing_block(blocks, address, len(data))
-    blob = bytearray(replacements.get(block, source[block.start : block.end]))
+    block = _containing_block(blocks, address, len(data), starts)
+    blob = replacements.get(block)
+    if not isinstance(blob, bytearray):  # edited in place; turned into bytes when serialized
+        blob = bytearray(source[block.start : block.end] if blob is None else blob)
+        replacements[block] = blob
     relative = address - block.start
     blob[relative : relative + len(data)] = data
-    replacements[block] = bytes(blob)
 
 
 def _serialize_relocated(
@@ -566,6 +604,7 @@ def _serialize_relocated(
     blocks: Sequence[Span],
     replacements: dict[Span, bytes],
 ) -> bytes:
+    starts = [block.start for block in blocks]
     payload_kinds = frozenset({"vertices", "indices", "bone_state_changes", "material_name"})
     poolable_kinds = frozenset({"vertices", "indices", "bone_state_changes"})
     layout_order = sorted(
@@ -576,7 +615,7 @@ def _serialize_relocated(
     new_starts: dict[Span, int] = {}
     pooled: dict[tuple[str, bytes], int] = {}
     for block in layout_order:
-        blob = replacements.get(block, source[block.start : block.end])
+        blob = bytes(replacements.get(block, source[block.start : block.end]))
         key = (block.kind, blob)
         if block.kind in poolable_kinds and key in pooled:
             new_starts[block] = pooled[key]
@@ -587,7 +626,7 @@ def _serialize_relocated(
             pooled[key] = new_starts[block]
 
     def relocate(address: int, size: int = 1) -> int:
-        block = _containing_block(blocks, address, size)
+        block = _containing_block(blocks, address, size, starts)
         return new_starts[block] + (address - block.start)
 
     for fixup in reader.fixups:
@@ -622,11 +661,12 @@ def optimize_vtx_bytes(
         raise VtxOptimizeError(f"VTX is not an all-TRI_LIST input; flags={flags}")
 
     blocks = _unique_blocks(reader)
+    starts = [block.start for block in blocks]
     replacements: dict[Span, bytes] = {}
     source_index_bytes = 0
     candidate_index_bytes = 0
     recovered_flat: list[int] = []
-    source_topology: list[collections.Counter[tuple[int, int, int]]] = []
+    source_topology: list[bytes] = []
     converted_strips = 0
     converted_groups = 0
 
@@ -641,8 +681,8 @@ def optimize_vtx_bytes(
             )
             converted = stripifier.stripify(original, len(group.vertices))
             recovered = stripifier.unstripify(converted)
-            topology = oriented_triangle_counter(original)
-            if topology != oriented_triangle_counter(recovered):
+            topology = _oriented_topology(original)
+            if topology != _oriented_topology(recovered):
                 raise VtxOptimizeError(f"oriented topology changed for strip at {strip.base}")
             source_topology.append(topology)
             recovered_flat.extend(recovered)
@@ -650,25 +690,25 @@ def optimize_vtx_bytes(
             new_offset = len(new_indices)
             new_indices.extend(converted)
             _replace_block_bytes(
-                source, blocks, replacements, strip.base, struct.pack("<i", len(converted))
+                source, blocks, replacements, strip.base, struct.pack("<i", len(converted)), starts
             )
             _replace_block_bytes(
-                source, blocks, replacements, strip.base + 4, struct.pack("<i", new_offset)
+                source, blocks, replacements, strip.base + 4, struct.pack("<i", new_offset), starts
             )
             _replace_block_bytes(
-                source, blocks, replacements, strip.base + 18, bytes([TRI_STRIP])
+                source, blocks, replacements, strip.base + 18, bytes([TRI_STRIP]), starts
             )
             source_index_bytes += len(original) * 2
             candidate_index_bytes += len(converted) * 2
             converted_strips += 1
 
         _replace_block_bytes(
-            source, blocks, replacements, group.base + 8, struct.pack("<i", len(new_indices))
+            source, blocks, replacements, group.base + 8, struct.pack("<i", len(new_indices)), starts
         )
         old_index_offset = struct.unpack_from("<i", source, group.base + 12)[0]
         old_index_base = group.base + old_index_offset
         old_index_size = len(group.indices) * 2
-        index_block = _containing_block(blocks, old_index_base, old_index_size)
+        index_block = _containing_block(blocks, old_index_base, old_index_size, starts)
         packed = struct.pack(f"<{len(new_indices)}H", *new_indices) if new_indices else b""
         previous = replacements.get(index_block)
         if previous is not None and previous != packed:
@@ -684,7 +724,7 @@ def optimize_vtx_bytes(
         raise VtxOptimizeError("candidate contains a non-TRI_STRIP strip")
     for index, (group, strip) in enumerate(candidate_strips):
         encoded = group.indices[strip.index_offset : strip.index_offset + strip.num_indices]
-        if oriented_triangle_counter(stripifier.unstripify(encoded)) != source_topology[index]:
+        if _oriented_topology(stripifier.unstripify(encoded)) != source_topology[index]:
             raise VtxOptimizeError(f"candidate topology changed after serialization at strip {index}")
     if len(candidate) >= len(source):
         raise VtxOptimizeError(
@@ -734,12 +774,65 @@ def _summary_document(summary: VtxTreeSummary) -> dict[str, object]:
     }
 
 
+def _optimize_file(
+    path: Path, root: Path, dll_path: Path, stripifier: _Stripifier
+) -> dict[str, object]:
+    """Convert one file in place; returns its report record (status optimized/already/skipped/failed)."""
+    relative = path.relative_to(root).as_posix()
+    before = path.read_bytes()
+    try:
+        parsed = VtxReader(path, before).parse()
+        strips = _all_strips(parsed)
+        if strips and all(strip.flags == TRI_STRIP for _group, strip in strips):
+            return {"path": relative, "status": "already_tristrip", "bytes": len(before)}
+        if not strips:
+            return {"path": relative, "status": "skipped", "reason": "no_strips"}
+        candidate, report = optimize_vtx_bytes(
+            before, dll_path, _stripifier=stripifier
+        )
+        _write_atomic(path, candidate)
+        if path.read_bytes() != candidate:
+            raise VtxOptimizeError("transactional write verification failed")
+        # same keys/order as dataclasses.asdict(report) minus the triangle list (no deep copy)
+        record = {
+            item.name: getattr(report, item.name)
+            for item in dataclasses.fields(report)
+            if item.name != "recovered_triangle_list"
+        }
+        return {"path": relative, "status": "optimized", **record}
+    except Exception as error:
+        if path.read_bytes() != before:
+            _write_atomic(path, before)
+        return {
+            "path": relative,
+            "status": "failed",
+            "error": f"{type(error).__name__}: {error}",
+        }
+
+
+_POOL_STRIPIFIERS: dict[str, _Stripifier] = {}
+
+
+def _optimize_file_task(task: tuple[str, str, str]) -> dict[str, object]:
+    """Process-pool entry: one stripifier per worker process and DLL."""
+    path, root, dll = task
+    stripifier = _POOL_STRIPIFIERS.get(dll)
+    if stripifier is None:
+        stripifier = _POOL_STRIPIFIERS[dll] = _Stripifier(Path(dll))
+    return _optimize_file(Path(path), Path(root), Path(dll), stripifier)
+
+
 def optimize_tree(
     root: Path,
     dll_path: Path,
     *,
     report_path: Path | None = None,
+    jobs: int = 1,
+    executor=None,
 ) -> VtxTreeSummary:
+    """Convert every .dx90.vtx under root. Files are independent: with jobs > 1 (or a given
+    process-pool executor) they run in parallel; records keep the sorted path order, so the
+    files and the report are the same as a sequential run."""
     root = root.resolve()
     if not root.is_dir():
         raise VtxOptimizeError(f"VTX optimization root is not a directory: {root}")
@@ -752,55 +845,26 @@ def optimize_tree(
         ),
         key=lambda path: path.relative_to(root).as_posix().casefold(),
     )
-    records: list[dict[str, object]] = []
-    optimized = 0
-    already = 0
-    skipped = 0
-    failed = 0
-    source_bytes = 0
-    candidate_bytes = 0
-    source_index_bytes = 0
-    candidate_index_bytes = 0
+    tasks = [(str(path), str(root), str(Path(dll_path).resolve())) for path in paths]
+    if executor is not None and len(tasks) > 1:
+        records = list(executor.map(_optimize_file_task, tasks, chunksize=1))
+    elif jobs > 1 and len(tasks) > 1:
+        from concurrent.futures import ProcessPoolExecutor
 
-    for path in paths:
-        relative = path.relative_to(root).as_posix()
-        before = path.read_bytes()
-        try:
-            parsed = VtxReader(path, before).parse()
-            strips = _all_strips(parsed)
-            if strips and all(strip.flags == TRI_STRIP for _group, strip in strips):
-                already += 1
-                records.append({"path": relative, "status": "already_tristrip", "bytes": len(before)})
-                continue
-            if not strips:
-                skipped += 1
-                records.append({"path": relative, "status": "skipped", "reason": "no_strips"})
-                continue
-            candidate, report = optimize_vtx_bytes(
-                before, dll_path, _stripifier=stripifier
-            )
-            _write_atomic(path, candidate)
-            if path.read_bytes() != candidate:
-                raise VtxOptimizeError("transactional write verification failed")
-            optimized += 1
-            source_bytes += report.source_bytes
-            candidate_bytes += report.candidate_bytes
-            source_index_bytes += report.source_index_bytes
-            candidate_index_bytes += report.candidate_index_bytes
-            record = dataclasses.asdict(report)
-            record.pop("recovered_triangle_list", None)
-            records.append({"path": relative, "status": "optimized", **record})
-        except Exception as error:
-            failed += 1
-            if path.read_bytes() != before:
-                _write_atomic(path, before)
-            records.append(
-                {
-                    "path": relative,
-                    "status": "failed",
-                    "error": f"{type(error).__name__}: {error}",
-                }
-            )
+        with ProcessPoolExecutor(max_workers=min(jobs, len(tasks))) as pool:
+            records = list(pool.map(_optimize_file_task, tasks, chunksize=1))
+    else:
+        records = [_optimize_file(path, root, dll_path, stripifier) for path in paths]
+
+    done = [record for record in records if record["status"] == "optimized"]
+    optimized = len(done)
+    already = sum(1 for record in records if record["status"] == "already_tristrip")
+    skipped = sum(1 for record in records if record["status"] == "skipped")
+    failed = sum(1 for record in records if record["status"] == "failed")
+    source_bytes = sum(int(record["source_bytes"]) for record in done)
+    candidate_bytes = sum(int(record["candidate_bytes"]) for record in done)
+    source_index_bytes = sum(int(record["source_index_bytes"]) for record in done)
+    candidate_index_bytes = sum(int(record["candidate_index_bytes"]) for record in done)
 
     summary = VtxTreeSummary(
         scanned_files=len(paths),

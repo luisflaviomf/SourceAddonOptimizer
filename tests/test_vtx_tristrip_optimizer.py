@@ -279,6 +279,44 @@ class VtxTriStripOptimizerTests(unittest.TestCase):
             self.assertEqual(second.already_tristrip_files, 1)
             self.assertEqual(target.read_bytes(), first_bytes)
 
+    def test_parallel_tree_pass_writes_the_same_files_and_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            for name in ("seq", "par"):
+                for index in range(4):
+                    target = base / name / "models" / f"car{index}.dx90.vtx"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(build_vtx_fixture())
+                (base / name / "models" / "broken.dx90.vtx").write_bytes(b"not a VTX")
+
+            optimize_tree(base / "seq", STRIPIFIER_DLL, report_path=base / "seq.json")
+            optimize_tree(base / "par", STRIPIFIER_DLL, report_path=base / "par.json", jobs=3)
+
+            for path in sorted((base / "seq").rglob("*.vtx")):
+                self.assertEqual(path.read_bytes(), (base / "par" / path.relative_to(base / "seq")).read_bytes())
+            def norm(name: str) -> str:  # same report apart from the root folder in error texts
+                text = (base / f"{name}.json").read_text(encoding="utf-8")
+                return text.replace(json.dumps(str(base / name))[1:-1], "ROOT")
+
+            self.assertEqual(norm("seq"), norm("par"))
+
+    def test_fast_topology_compare_matches_the_counter(self) -> None:
+        import random
+
+        from vtx_tristrip_optimizer import _oriented_topology
+
+        rnd = random.Random(4)
+        for _ in range(400):
+            a = [rnd.randrange(6) for _ in range(3 * rnd.randrange(0, 12))]
+            b = list(a)
+            if b and rnd.random() < 0.5:
+                b[rnd.randrange(len(b))] = rnd.randrange(6)
+            if rnd.random() < 0.5 and len(b) >= 3:  # rotate one triangle: same oriented topology
+                k = 3 * rnd.randrange(len(b) // 3)
+                b[k : k + 3] = [b[k + 1], b[k + 2], b[k]]
+            same = oriented_triangle_counter(a) == oriented_triangle_counter(b)
+            self.assertEqual(same, _oriented_topology(a) == _oriented_topology(b))
+
 
 if __name__ == "__main__":
     unittest.main()

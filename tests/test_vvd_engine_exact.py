@@ -118,6 +118,24 @@ def test_tree_rewrites_in_place_and_reports(tmp_path):
     assert (tmp_path / "r.json").exists()
 
 
+def test_parallel_tree_pass_writes_the_same_files_and_report(tmp_path):
+    for name in ("seq", "par"):
+        for i in range(4):
+            d = tmp_path / name / "models" / f"m{i}"
+            d.mkdir(parents=True)
+            (d / "a.vvd").write_bytes(synthetic_vvd(seed=10 * i))
+        (tmp_path / name / "models" / "bad.vvd").write_bytes(b"NOPE" + bytes(100))
+    ve.optimize_tree(tmp_path / "seq" / "models", report_path=tmp_path / "seq.json")
+    ve.optimize_tree(tmp_path / "par" / "models", report_path=tmp_path / "par.json", jobs=3)
+    for f in sorted((tmp_path / "seq").rglob("*.vvd")):
+        assert f.read_bytes() == (tmp_path / "par" / f.relative_to(tmp_path / "seq")).read_bytes()
+    import json
+    def norm(name):   # same report apart from the root folder in the paths
+        text = (tmp_path / f"{name}.json").read_text(encoding="utf-8")
+        return text.replace(json.dumps(str(tmp_path / name))[1:-1], "ROOT")
+    assert norm("seq") == norm("par")
+
+
 def test_packaging_flag_is_on_by_default():
     import build_optimized_addon as boa
     args = boa._build_argument_parser().parse_args(["x"])
