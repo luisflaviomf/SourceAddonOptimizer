@@ -80,6 +80,14 @@ namespace GmodAddonCompressor.Systems.Companion
     )
     {
         public string Status => CompanionResultService.StatusText(ValidationStatus);
+        /// <summary>Portuguese status shown in the "Testar no jogo" results list.</summary>
+        public string StatusLabel => ValidationStatus switch
+        {
+            CompanionValidationStatus.Pass => "Passou",
+            CompanionValidationStatus.Warning => "Atenção",
+            CompanionValidationStatus.Failed => "Falhou",
+            _ => "Incompleto",
+        };
         public string WarningText => string.Join(Environment.NewLine, Warnings);
         public string PrimaryScreenshotPath => Screenshots.FirstOrDefault()?.FullPath ?? string.Empty;
         public bool HasScreenshot => !string.IsNullOrWhiteSpace(PrimaryScreenshotPath);

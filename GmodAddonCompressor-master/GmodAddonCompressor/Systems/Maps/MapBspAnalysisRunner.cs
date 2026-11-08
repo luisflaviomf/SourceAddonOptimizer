@@ -84,7 +84,7 @@ namespace GmodAddonCompressor.Systems.Maps
             };
 
             if (!process.Start())
-                throw new InvalidOperationException("Failed to start map analysis worker.");
+                throw new InvalidOperationException("Não foi possível iniciar o worker de mapas.");
 
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();

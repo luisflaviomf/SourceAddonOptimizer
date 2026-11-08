@@ -85,7 +85,7 @@ namespace GmodAddonCompressor
                 await RunExactExportAsync(options, _exactCts.Token);
             }
             catch (OperationCanceledException) { TextBlock_ExactStatus.Text = "Cancelado. Saída parcial não aprovada; use uma nova pasta ao repetir."; }
-            catch (Exception ex) { TextBlock_ExactStatus.Text = "FAIL: " + ex.Message; }
+            catch (Exception ex) { TextBlock_ExactStatus.Text = "Falhou: " + ex.Message; }
             finally { _context.UnlockedUI = true; }
         }
 
@@ -115,12 +115,12 @@ namespace GmodAddonCompressor
                 Button_ExactOpenReport.IsEnabled = false;
                 TextBox_ExactLog.Clear();
                 TextBox_ExactSummary.Clear();
-                TextBlock_ExactStatus.Text = "Exportando candidato experimental...";
+                TextBlock_ExactStatus.Text = "Exportando…";
                 var result = await _exactRunner.RunAsync(options, token);
                 token.ThrowIfCancellationRequested();
                 _exactResult = result;
                 TextBox_ExactSummary.Text = result.Summary;
-                TextBlock_ExactStatus.Text = result.Success ? "Exportado — OFFLINE_PENDING_GMOD" : "FAIL: " + result.Summary;
+                TextBlock_ExactStatus.Text = result.Success ? "Exportado. Falta testar no jogo." : "Falhou: " + result.Summary;
                 Button_ExactOpenOutput.IsEnabled = result.Success;
                 Button_ExactOpenReport.IsEnabled = result.Success;
                 return result;
@@ -132,7 +132,7 @@ namespace GmodAddonCompressor
             }
             catch (Exception ex)
             {
-                TextBlock_ExactStatus.Text = "FAIL: " + ex.Message;
+                TextBlock_ExactStatus.Text = "Falhou: " + ex.Message;
                 throw;
             }
             finally

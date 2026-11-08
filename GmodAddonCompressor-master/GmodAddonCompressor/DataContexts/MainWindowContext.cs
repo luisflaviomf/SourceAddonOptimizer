@@ -125,7 +125,7 @@ namespace GmodAddonCompressor.DataContexts
         };
         private string[] _wavChannelList = new string[]
         {
-            "Stereo",
+            "Estéreo",
             "Mono"
         };
         private string[] _wavCodecList = new string[]
@@ -147,24 +147,24 @@ namespace GmodAddonCompressor.DataContexts
         };
         private string[] _oggQualityList = new string[]
         {
-            "q-1 (ultra aggressive, experimental)",
-            "q0 (very aggressive)",
-            "q1 (aggressive)",
-            "q2 (aggressive+)",
-            "q3 (balanced, DEFAULT)",
-            "q4 (quality+)",
-            "q5 (high quality)",
-            "q6 (very high quality)",
-            "q7 (near lossless)",
-            "q8 (near lossless+)",
-            "q9 (transparent)",
-            "q10 (max quality, overkill)"
+            "q-1 (mínima, experimental)",
+            "q0 (muito baixa)",
+            "q1 (baixa)",
+            "q2 (baixa+)",
+            "q3 (equilibrada, padrão)",
+            "q4 (boa)",
+            "q5 (alta)",
+            "q6 (muito alta)",
+            "q7 (quase sem perda)",
+            "q8 (quase sem perda+)",
+            "q9 (transparente)",
+            "q10 (máxima)"
         };
         private string[] _optimizerPresetList = new string[]
         {
-            "Safe",
-            "Aggressive",
-            "Custom"
+            "Seguro",
+            "Agressivo",
+            "Personalizado"
         };
         private string[] _optimizerFormatList = new string[]
         {
@@ -173,10 +173,10 @@ namespace GmodAddonCompressor.DataContexts
         };
         private string[] _optimizerModeList = new string[]
         {
-            "Normal",
-            "Fidelity",
-            "Maximum",
-            "Tela"
+            "Normal (Blender)",
+            "Fidelidade (Blender)",
+            "Maximum (Blender)",
+            "Padrão"
         };
         private string[] _modelsScreenProfileList = new string[]
         {
@@ -184,27 +184,27 @@ namespace GmodAddonCompressor.DataContexts
             "Forte",
             "Forte + espelho",
             "Stream (experimental)",
-            "Sem perda (só empacotamento)"
+            "Sem perda"
         };
-        // Default Tela profile: Forte + espelho (index 2): Forte's limits with the remesh engine and
+        // Default "Padrão" (screen-aware, worker modscreen) profile: Forte + espelho (index 2): Forte's limits with the remesh engine and
         // mirror instancing, chosen after in-game tests on the LVS cars pack (models -61% vs -53%).
         internal const int DefaultModelsScreenProfileIndex = 2;
         private int _modelsScreenProfileIndex = DefaultModelsScreenProfileIndex;
         private readonly string[] _compressScreenProfileList = new string[]
         {
-            "Equilibrado (q50)",
-            "Forte (menor)",
-            "Máximo (perde de perto)",
-            "Sem perda (só BC3→BC1 exato)"
+            "Equilibrado",
+            "Forte",
+            "Máximo",
+            "Sem perda"
         };
         private int _compressScreenProfileIndex;
         private string[] _compressModeList = new string[]
         {
-            "Padrao",
+            "Clássico",
             "Magick",
             "Maximum",
             "Magick+",
-            "Tela"
+            "Padrão"
         };
 
         public uint ImageSkipHeight
@@ -353,19 +353,26 @@ namespace GmodAddonCompressor.DataContexts
         public string OptimizerModeDescriptionText =>
             OptimizerModeIsScreen
                 ? (_modelsScreenProfileIndex == 4
-                    ? "Tela (Sem perda): não mexe na geometria. Copia os modelos e só faz o empacotamento exato: remove os VTX dx80/sw que o GMod não usa, grava as normais do VVD no degrau exato do motor e compacta o VTX em TRI_STRIP. Aparência idêntica no jogo."
+                    ? "Modelos intactos; só o empacotamento que não muda a aparência (VTX antigos removidos, normais exatas, VTX compactado)."
                     : _modelsScreenProfileIndex == 3
-                    ? "Tela (Stream, experimental): os modelos grandes guardam a geometria ORIGINAL comprimida (data_static/gmo) e um runtime Lua do addon a desenha no lugar do modelo, com a mesma iluminação, skins, bodygroups, cores, luzes e lanternas do motor. O .mdl fica com uma malha grossa (~2%) usada para sombra, longe da câmera e como reserva. Rodas e modelos pequenos usam o Forte + espelho. Na pasta: cerca de 1/4 do Forte + espelho com qualidade igual ou melhor; exige Lua do cliente ligada (gmo_stream 0 volta a desenhar só o .mdl)."
+                    ? "Maior redução: os modelos grandes guardam a geometria original comprimida e são desenhados por Lua. Experimental; exige Lua do cliente ligada."
                     : _modelsScreenProfileIndex == 2
-                    ? "Tela (Forte + espelho): mesmos limites do Forte, mas cada peça é simplificada inteira (costuras e quinas acompanham os dois lados, sem frestas) e o lado direito de carros simétricos é desenhado como espelho do esquerdo por ossos-espelho, sem guardar os vértices dele. Só espelha onde a geometria e a textura são iguais nos dois lados (texto, sirenes e setas continuam certos). Modelos cerca de 60% menores; marcas de tiro podem não aparecer nas partes espelhadas."
+                    ? "Como o Forte, usando a simetria do modelo: o lado direito vira espelho do esquerdo. Cerca de 60% menor."
                     : _modelsScreenProfileIndex == 1
-                    ? "Tela (Forte): simplifica direto nos arquivos compilados, sem Blender/Crowbar/studiomdl. Costuras simplificadas igualmente dos dois lados (sem frestas), peças redondas e finas protegidas; normal até 35°, UV até 3 texels e VVD sem tangentes. Modelos cerca de 50% menores; pequenas diferenças de perto."
-                    : "Tela (Equilibrado): simplifica direto nos arquivos compilados, sem Blender/Crowbar/studiomdl. Costuras simplificadas igualmente dos dois lados (sem frestas), peças redondas e finas protegidas; normal até 20° e UV até 1 texel da textura real. Aparência quase idêntica.")
+                    ? "Cerca de 50% menor; pequenas diferenças de perto."
+                    : "Quase idêntico ao original.")
                 : OptimizerModeIsMaximum
-                ? "Maximum starts from the aggressive Normal result, validates curvature, silhouette, normals, UVs, materials and skinning by region, then restores only regions that fail. Blender renders are reserved for uncertain regions."
+                ? "Parte do Normal agressivo e devolve as regiões que falham nas checagens de forma, normais, UV e materiais."
                 : OptimizerModeIsFidelity
-                ? "Fidelity mode keeps the current outer run settings such as ratio/jobs, but routes optimization through the validated sandbox stack: selective ground policy, round-parts wheel handling, and the steer turn-basis fix."
-                : "Normal mode keeps the current Models pipeline exactly as it works today. The existing presets, tuning fields, and opt-in experimental toggles behave the same as before.";
+                ? "Como o Normal, com proteções extras para carroceria, peças redondas e volante."
+                : "Descompila, reduz pela proporção do preset e recompila com studiomdl.";
+
+        /// <summary>True when one of the old Blender recompile modes (Normal, Fidelity, Maximum) is selected.</summary>
+        public bool OptimizerModeIsLegacy => !OptimizerModeIsScreen;
+
+        public string OptimizerLegacyModeNotice => OptimizerModeIsLegacy
+            ? $"Modo antigo em uso: {_optimizerModeList[Math.Clamp(_optimizerModeIndex, 0, _optimizerModeList.Length - 1)]}. Para voltar, escolha Padrão."
+            : string.Empty;
 
         public bool CompressModeIsStandard => _compressModeIndex == 0;
         public bool CompressModeIsMagick => _compressModeIndex == 1;
@@ -383,6 +390,7 @@ namespace GmodAddonCompressor.DataContexts
                 _compressScreenProfileIndex = value < 0 || value >= _compressScreenProfileList.Length ? 0 : value;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(CompressScreenProfileName));
+                OnPropertyChanged(nameof(CompressScreenProfileHint));
                 OnPropertyChanged(nameof(CompressModeRoutingText));
             }
         }
@@ -412,41 +420,52 @@ namespace GmodAddonCompressor.DataContexts
 
         public string CompressModeDescriptionText =>
             CompressModeIsScreen
-                ? "Tela (screen-aware) picks each VTF's resolution from how large it really appears on screen, using the addon's own models: at least 2x like Standard, deeper (4x/8x) only where the lost detail stays below a typical 2x loss. The new top level is rebuilt for the GPU's bilinear magnification, lower mipmaps are the original blocks, and DXT5 becomes DXT1 only when no material reads the alpha (keeps paint/phong masks)."
+                ? "Reduz cada textura conforme o quanto ela aparece na tela do jogo."
                 : CompressModeIsMaximum
-                ? "Maximum (Universal VTF, Balanced profile) reduces every eligible DXT1/DXT5 VTF at least 2x by promoting its authored mipmaps, then keeps going level by level only while semantic quality gates pass (normals, alpha/cutout, glass, emissive, text)."
+                ? "Reduz cada VTF ao menos 2x e continua enquanto as checagens de qualidade passam."
                 : CompressModeIsMagickPlus
-                ? "Magick+ keeps every current Magick setting and adds an exact BC3-to-BC1 repack when shader analysis proves the alpha channel is unused. Decoded RGB, resolution and mipmaps remain identical."
+                ? "Magick com conversão exata BC3→BC1 quando o alpha não é usado."
                 : CompressModeIsMagick
-                ? "Magick mode keeps the same unified VTF pipeline as Standard and only extends PNG when aggressive q256 is enabled."
-                : "Standard mode now uses the unified VTF pipeline by default: raw-split first, export-split fallback when needed, selective FX-safe guardrails for sensitive particles, then preserve unchanged when no gain or unsafe.";
+                ? "Como o Clássico; PNG pode usar o modo agressivo do ImageMagick."
+                : "Reduz cada textura pelo fator escolhido em Redução de imagens, respeitando os limites.";
+
+        /// <summary>One line about the selected "Padrão" texture profile.</summary>
+        public string CompressScreenProfileHint => _compressScreenProfileIndex switch
+        {
+            1 => "Até 8x onde a textura nunca aparece de perto; textos e texturas pequenas ficam em 2x.",
+            2 => "No mínimo 4x, até 8x. Perda visível de perto.",
+            3 => "Não reduz; só converte BC3→BC1 quando o alpha não é usado, sem mudar nenhuma cor.",
+            _ => "Reduz só onde a perda é menor que a de um 2x."
+        };
+
+        /// <summary>True when an old texture mode (Clássico, Magick, Maximum, Magick+) is selected.</summary>
+        public bool CompressModeIsLegacy => !CompressModeIsScreen;
+
+        public string CompressLegacyModeNotice => CompressModeIsLegacy
+            ? $"Modo antigo em uso: {_compressModeList[Math.Clamp(_compressModeIndex, 0, _compressModeList.Length - 1)]}. Para voltar, escolha Padrão."
+            : string.Empty;
 
         public string CompressModeRoutingText
         {
             get
             {
-                if (CompressModeIsStandard)
-                    return "Selected types use the Standard compressor. VTF now uses one unified pipeline: raw-split first, export-split fallback when needed, selective FX-safe DXT/alpha-aware resize/resolution guardrails for sensitive particle-style materials, then preserve unchanged on no gain or out-of-scope cases. PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on the Standard path.";
+                string pngText = (CompressModeIsMagick || CompressModeIsMagickPlus) && CompressMagickUseAggressivePng
+                    ? "PNG: ImageMagick agressivo (q256), com o Clássico se falhar."
+                    : "PNG: Clássico.";
 
                 if (CompressModeIsScreen)
-                    return $"VTF uses the screen-aware engine in the worker (texscreen, profile {CompressScreenProfileName}). Non-DXT formats and NOMIP textures fall back to the Standard VTF path. PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on Standard.";
+                    return $"VTF: motor Padrão, perfil {CompressScreenProfileName}. VTF fora de DXT ou sem mipmaps usam o Clássico. PNG, JPG, sons e Lua usam o Clássico.";
 
                 if (CompressModeIsMaximum)
-                    return "VTF uses the Universal VTF batch: semantic VMT/Lua/PCF analysis, a mandatory 2x floor, consecutive-level quality gates, structural audit and transactional replacement. Other selected types keep Standard routing.";
+                    return "VTF: lote Maximum (VTF universal) com checagens de qualidade por nível. Os outros tipos usam o Clássico.";
 
                 if (CompressModeIsMagickPlus)
-                {
-                    string plusPngText = CompressMagickUseAggressivePng
-                        ? "PNG: Magick q256 aggressive path first, with Standard fallback on failure or no gain."
-                        : "PNG: Standard path only.";
-                    return $"VTF first uses the same unified Magick pipeline and user resolution limits. A lossless post-pass removes only proven-unused BC3 alpha blocks when that beats Magick; all decoded RGB pixels and mipmaps are verified before replacement. {plusPngText}";
-                }
+                    return $"VTF: Magick e depois conversão exata BC3→BC1 quando o alpha não é usado. {pngText} JPG, sons e Lua usam o Clássico.";
 
-                string pngText = CompressMagickUseAggressivePng
-                    ? "PNG: Magick q256 aggressive path first, with Standard fallback on failure or no gain."
-                    : "PNG: Standard path only.";
+                if (CompressModeIsMagick)
+                    return $"VTF: mesmo caminho do Clássico. {pngText} JPG, sons e Lua usam o Clássico.";
 
-                return $"VTF uses the same unified pipeline in both modes: raw-split first, export-split fallback when needed, selective FX-safe DXT/alpha-aware resize/resolution guardrails for sensitive particle-style materials, then preserve unchanged on no gain or out-of-scope cases. {pngText} JPG/JPEG, WAV, MP3, OGG and LUA always stay on the Standard path.";
+                return "Todos os tipos marcados usam o Clássico.";
             }
         }
 
@@ -868,7 +887,7 @@ namespace GmodAddonCompressor.DataContexts
             }
         }
 
-        public string AddonWorkshopWarningHeaderText => $"Workshop warning ({AddonWorkshopWarningCount})";
+        public string AddonWorkshopWarningHeaderText => $"Referências à Workshop ({AddonWorkshopWarningCount})";
 
         public Visibility CompressWavProfileVisibility => _compressWAV ? Visibility.Visible : Visibility.Collapsed;
         public Visibility CompressMp3ProfileVisibility => _compressMP3 ? Visibility.Visible : Visibility.Collapsed;
@@ -1352,6 +1371,8 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(CompressMaximumOptionsVisibility));
             OnPropertyChanged(nameof(CompressModeDescriptionText));
             OnPropertyChanged(nameof(CompressModeRoutingText));
+            OnPropertyChanged(nameof(CompressModeIsLegacy));
+            OnPropertyChanged(nameof(CompressLegacyModeNotice));
         }
 
         private void NotifyOptimizerModePropertiesChanged()
@@ -1365,6 +1386,8 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(OptimizerModeIsScreen));
             OnPropertyChanged(nameof(OptimizerModeScreenChecked));
             OnPropertyChanged(nameof(OptimizerModeDescriptionText));
+            OnPropertyChanged(nameof(OptimizerModeIsLegacy));
+            OnPropertyChanged(nameof(OptimizerLegacyModeNotice));
         }
 
         private void NotifyCompressAudioProfilePropertiesChanged()

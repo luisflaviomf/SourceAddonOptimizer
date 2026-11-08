@@ -282,8 +282,8 @@ namespace GmodAddonCompressor
         {
             var dialog = new OpenFileDialog
             {
-                Title = "Select gmad.exe",
-                Filter = "gmad.exe|gmad.exe|Executable|*.exe|All files|*.*",
+                Title = "Escolha o gmad.exe",
+                Filter = "gmad.exe|gmad.exe|Executável|*.exe|Todos os arquivos|*.*",
                 CheckFileExists = true
             };
 
@@ -300,7 +300,7 @@ namespace GmodAddonCompressor
                 return;
             }
 
-            MessageBox.Show("gmad.exe not found. Please browse to gmad.exe.", "Descompactar addons", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("gmad.exe não encontrado. Escolha o gmad.exe da pasta bin do Garry's Mod.", "Descompactar", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
         private void TextBox_UnpackRootPath_TextChanged(object sender, TextChangedEventArgs e)
@@ -331,7 +331,7 @@ namespace GmodAddonCompressor
             _unpackSummaryFailedCount = 0;
             if (!_unpackRunning)
                 _unpackWorkDir = null;
-            TextBox_UnpackSummary.Text = "No scan executed yet.";
+            TextBox_UnpackSummary.Text = "Nenhuma busca ainda.";
             TextBlock_UnpackFoundCount.Text = "0";
             TextBlock_UnpackGmaCount.Text = "0/0";
             TextBlock_UnpackBinSupportedCount.Text = "0";
@@ -343,9 +343,9 @@ namespace GmodAddonCompressor
             ProgressBar_Unpack.Minimum = 0;
             ProgressBar_Unpack.Maximum = 100;
             ProgressBar_Unpack.Value = 0;
-            TextBlock_UnpackPhase.Text = "Idle";
-            TextBlock_UnpackCurrent.Text = "Idle";
-            TextBlock_UnpackStatus.Text = "Idle";
+            TextBlock_UnpackPhase.Text = "—";
+            TextBlock_UnpackCurrent.Text = "—";
+            TextBlock_UnpackStatus.Text = "Aguardando";
         }
 
         private void UpdateUnpackActionStates()
@@ -367,7 +367,7 @@ namespace GmodAddonCompressor
             string rootPath = TextBox_UnpackRootPath.Text.Trim();
 
             if (!Directory.Exists(rootPath))
-                errors.Add("Root folder not found.");
+                errors.Add("Pasta não encontrada.");
 
             if (!ValidateUnpackOutputRoot(GetUnpackOutputRootPath(), createIfMissing: !scanOnly, out string outputError))
             {
@@ -375,7 +375,7 @@ namespace GmodAddonCompressor
             }
             else if (!scanOnly && !string.IsNullOrWhiteSpace(GetUnpackOutputRootPath()) && !CanWriteToDirectory(GetUnpackOutputRootPath()!))
             {
-                errors.Add("No write permission in output root.");
+                errors.Add("Sem permissão de escrita na pasta de saída.");
             }
 
             if (!CanWriteToDirectory(ToolPaths.WorkRoot))
@@ -385,7 +385,7 @@ namespace GmodAddonCompressor
             {
                 string gmadPath = TextBox_UnpackGmadPath.Text.Trim();
                 if (string.IsNullOrWhiteSpace(gmadPath) || !File.Exists(gmadPath))
-                    errors.Add("gmad.exe path is invalid.");
+                    errors.Add("Caminho do gmad.exe inválido.");
             }
 
             errorMessage = string.Join("\n", errors);
@@ -421,7 +421,7 @@ namespace GmodAddonCompressor
                 string fullPath = Path.GetFullPath(outputRoot);
                 if (File.Exists(fullPath))
                 {
-                    errorMessage = "Output root points to a file.";
+                    errorMessage = "A pasta de saída aponta para um arquivo.";
                     return false;
                 }
 
@@ -432,7 +432,7 @@ namespace GmodAddonCompressor
             }
             catch (Exception ex)
             {
-                errorMessage = $"Invalid output root: {ex.Message}";
+                errorMessage = $"Pasta de saída inválida: {ex.Message}";
                 return false;
             }
         }
@@ -513,12 +513,12 @@ namespace GmodAddonCompressor
             ProgressBar_Unpack.Minimum = 0;
             ProgressBar_Unpack.Maximum = 100;
             ProgressBar_Unpack.Value = 0;
-            TextBlock_UnpackPhase.Text = "Starting";
-            TextBlock_UnpackCurrent.Text = scanOnly ? "Scanning archives..." : "Preparing extraction...";
-            TextBlock_UnpackStatus.Text = "Running";
+            TextBlock_UnpackPhase.Text = "Iniciando";
+            TextBlock_UnpackCurrent.Text = scanOnly ? "Procurando arquivos…" : "Preparando…";
+            TextBlock_UnpackStatus.Text = "Rodando";
             TextBox_UnpackSummary.Text = scanOnly
-                ? "Scanning addon archives..."
-                : "Extracting addon archives...";
+                ? "Procurando .gma e .bin…"
+                : "Descompactando…";
 
             AppendUnpackLog(string.Empty);
             AppendUnpackLog($"=== {TextBox_UnpackSummary.Text} ===");
@@ -533,7 +533,7 @@ namespace GmodAddonCompressor
             if (!ValidateUnpackInputs(scanOnly: true, out var errorMessage))
             {
                 MessageBox.Show(errorMessage, "Descompactar addons", MessageBoxButton.OK, MessageBoxImage.Warning);
-                TextBlock_UnpackStatus.Text = "Error";
+                TextBlock_UnpackStatus.Text = "Erro";
                 TextBox_UnpackSummary.Text = errorMessage;
                 return;
             }
@@ -553,7 +553,7 @@ namespace GmodAddonCompressor
             if (!ValidateUnpackInputs(scanOnly: false, out var errorMessage))
             {
                 MessageBox.Show(errorMessage, "Descompactar addons", MessageBoxButton.OK, MessageBoxImage.Warning);
-                TextBlock_UnpackStatus.Text = "Error";
+                TextBlock_UnpackStatus.Text = "Erro";
                 TextBox_UnpackSummary.Text = errorMessage;
                 return;
             }
@@ -570,8 +570,8 @@ namespace GmodAddonCompressor
             if (!File.Exists(ToolPaths.WorkerExePath))
             {
                 _unpackRunning = false;
-                TextBlock_UnpackStatus.Text = "FAIL";
-                TextBox_UnpackSummary.Text = "SourceAddonOptimizer worker not found.";
+                TextBlock_UnpackStatus.Text = "Falhou";
+                TextBox_UnpackSummary.Text = "Worker do otimizador não encontrado.";
                 UpdateUnpackActionStates();
                 return;
             }
@@ -604,9 +604,9 @@ namespace GmodAddonCompressor
                 _unpackRunning = false;
                 ProgressBar_Unpack.IsIndeterminate = false;
                 ClearUnpackCancelFile();
-                TextBlock_UnpackPhase.Text = "Error";
-                TextBlock_UnpackStatus.Text = "FAIL";
-                TextBox_UnpackSummary.Text = $"Execution failed before summary.{Environment.NewLine}{ex.Message}";
+                TextBlock_UnpackPhase.Text = "Erro";
+                TextBlock_UnpackStatus.Text = "Falhou";
+                TextBox_UnpackSummary.Text = $"Falhou antes do resumo.{Environment.NewLine}{ex.Message}";
                 AppendUnpackLog($"[GUI] {ex}");
                 UpdateUnpackActionStates();
                 return;
@@ -635,8 +635,8 @@ namespace GmodAddonCompressor
             {
             }
 
-            TextBlock_UnpackStatus.Text = "Canceling";
-            TextBox_UnpackSummary.Text = "Cancellation requested. Waiting for worker cleanup...";
+            TextBlock_UnpackStatus.Text = "Cancelando";
+            TextBox_UnpackSummary.Text = "Cancelamento pedido. Aguardando o worker parar…";
             AppendUnpackLog("[GUI] Cancellation requested. Waiting for safe shutdown...");
             UpdateUnpackActionStates();
             _ = ForceStopUnpackIfNeededAsync();
@@ -674,8 +674,8 @@ namespace GmodAddonCompressor
                     ProgressBar_Unpack.Maximum = update.ItemTotal.Value;
                     ProgressBar_Unpack.Value = update.ItemIndex.Value;
                     TextBlock_UnpackCurrent.Text = string.IsNullOrWhiteSpace(update.CurrentPath)
-                        ? $"Current: {update.ItemIndex}/{update.ItemTotal}"
-                        : $"Current: {update.ItemIndex}/{update.ItemTotal} | {update.CurrentPath}";
+                        ? $"{update.ItemIndex}/{update.ItemTotal}"
+                        : $"{update.ItemIndex}/{update.ItemTotal} · {update.CurrentPath}";
                 }
             });
         }
@@ -721,18 +721,18 @@ namespace GmodAddonCompressor
             {
                 if (_unpackSummaryCancelled || exitCode == 130)
                 {
-                    TextBlock_UnpackPhase.Text = "Canceled";
-                    TextBlock_UnpackStatus.Text = "Canceled";
+                    TextBlock_UnpackPhase.Text = "Cancelado";
+                    TextBlock_UnpackStatus.Text = "Cancelado";
                 }
                 else if (_unpackSummaryFailedCount > 0 || exitCode != 0)
                 {
-                    TextBlock_UnpackPhase.Text = "Completed";
-                    TextBlock_UnpackStatus.Text = "Completed with failures";
+                    TextBlock_UnpackPhase.Text = "Concluído";
+                    TextBlock_UnpackStatus.Text = "Concluído com falhas";
                 }
                 else
                 {
-                    TextBlock_UnpackPhase.Text = "Completed";
-                    TextBlock_UnpackStatus.Text = "OK";
+                    TextBlock_UnpackPhase.Text = "Concluído";
+                    TextBlock_UnpackStatus.Text = "Pronto";
                     ProgressBar_Unpack.Minimum = 0;
                     ProgressBar_Unpack.Maximum = 100;
                     ProgressBar_Unpack.Value = 100;
@@ -740,11 +740,11 @@ namespace GmodAddonCompressor
             }
             else
             {
-                TextBlock_UnpackPhase.Text = exitCode == 130 ? "Canceled" : "Completed";
-                TextBlock_UnpackStatus.Text = exitCode == 0 ? "OK" : exitCode == 130 ? "Canceled" : $"FAIL ({exitCode})";
+                TextBlock_UnpackPhase.Text = exitCode == 130 ? "Cancelado" : "Concluído";
+                TextBlock_UnpackStatus.Text = exitCode == 0 ? "Pronto" : exitCode == 130 ? "Cancelado" : $"Falhou ({exitCode})";
                 TextBox_UnpackSummary.Text = exitCode == 130
-                    ? "Execution canceled before summary was generated. Check the log."
-                    : "Execution ended without unpack_summary.json. Check the log.";
+                    ? "Cancelado antes do resumo. Veja o log em Detalhes."
+                    : "Terminou sem o resumo (unpack_summary.json). Veja o log em Detalhes.";
             }
 
             _unpackCancelRequested = false;
@@ -808,61 +808,61 @@ namespace GmodAddonCompressor
                     if (cancelled)
                     {
                         _unpackSupportedTotal = 0;
-                        statusText = "Scan canceled by user.";
+                        statusText = "Busca cancelada.";
                     }
                     else if (foundTotal == 0)
                     {
-                        statusText = "Scan completed: no .gma or .bin files found.";
+                        statusText = "Busca concluída: nenhum .gma ou .bin encontrado.";
                     }
                     else if (_unpackSupportedTotal == 0)
                     {
-                        statusText = $"Scan completed: {foundTotal} archive(s) found, none supported.";
+                        statusText = $"Busca concluída: {foundTotal} arquivo(s) encontrado(s), nenhum suportado.";
                     }
                     else
                     {
-                        statusText = $"Scan completed: {foundTotal} found, {_unpackSupportedTotal} supported for extraction.";
+                        statusText = $"Busca concluída: {foundTotal} encontrado(s), {_unpackSupportedTotal} podem ser descompactados.";
                     }
                 }
                 else
                 {
                     if (cancelled)
                     {
-                        statusText = $"Extraction canceled: ok={okCount}, skipped={skippedCount}, failed={failedCount}, cancelled={cancelledItems}.";
+                        statusText = $"Descompactação cancelada: {okCount} extraído(s), {skippedCount} pulado(s), {failedCount} com falha, {cancelledItems} cancelado(s).";
                     }
                     else if (failedCount > 0)
                     {
-                        statusText = $"Extraction completed with failures: ok={okCount}, failed={failedCount}, skipped={skippedCount}.";
+                        statusText = $"Descompactação concluída com falhas: {okCount} extraído(s), {failedCount} com falha, {skippedCount} pulado(s).";
                     }
                     else if (okCount == 0 && skippedCount == 0 && unsupportedCount > 0)
                     {
-                        statusText = $"Extraction completed without supported outputs: unsupported={unsupportedCount}.";
+                        statusText = $"Nada foi extraído: {unsupportedCount} arquivo(s) não suportado(s).";
                     }
                     else
                     {
-                        statusText = $"Extraction completed: ok={okCount}, skipped={skippedCount}.";
+                        statusText = $"Descompactação concluída: {okCount} extraído(s), {skippedCount} pulado(s).";
                     }
                 }
 
                 if (scanWarningCount > 0)
-                    statusText += $"{Environment.NewLine}Scan warnings: {scanWarningCount}.";
+                    statusText += $"{Environment.NewLine}Avisos da busca: {scanWarningCount}.";
                 if (!scanOnly && extractMapPak && mapBspFound > 0)
                 {
-                    string mapStatus = $"Map content: {mapBspWithPak}/{mapBspFound} BSP pakfile(s), {mapPakFilesExtracted} file(s) extracted";
+                    string mapStatus = $"Conteúdo dos mapas: {mapBspWithPak}/{mapBspFound} BSP com conteúdo, {mapPakFilesExtracted} arquivo(s) extraído(s)";
                     if (deleteMapBsp && mapBspDeleted > 0)
-                        mapStatus += $", {mapBspDeleted} BSP file(s) deleted";
+                        mapStatus += $", {mapBspDeleted} .bsp apagado(s)";
                     statusText += $"{Environment.NewLine}{mapStatus}.";
                 }
                 if (!scanOnly && !string.IsNullOrWhiteSpace(gmadError))
                     statusText += $"{Environment.NewLine}{gmadError}";
-                statusText += $"{Environment.NewLine}{(string.IsNullOrWhiteSpace(outputRoot) ? "Output mode: sibling _extraido folders in the source tree" : $"Output root: {outputRoot}")}";
-                statusText += $"{Environment.NewLine}Source root: {rootPath}";
+                statusText += $"{Environment.NewLine}{(string.IsNullOrWhiteSpace(outputRoot) ? "Saída: pastas _extraido ao lado de cada arquivo" : $"Saída: {outputRoot}")}";
+                statusText += $"{Environment.NewLine}Origem: {rootPath}";
 
                 TextBox_UnpackSummary.Text = statusText;
                 return true;
             }
             catch (Exception ex)
             {
-                TextBox_UnpackSummary.Text = $"Failed to read unpack_summary.json.{Environment.NewLine}{ex.Message}";
+                TextBox_UnpackSummary.Text = $"Não foi possível ler unpack_summary.json.{Environment.NewLine}{ex.Message}";
                 return false;
             }
         }
@@ -933,7 +933,7 @@ namespace GmodAddonCompressor
             if (!_mapScanRunning && !_mapStageOptimizeRunning && !_mapBuildRunning)
                 _mapScanWorkDir = null;
 
-            TextBox_MapScanSummary.Text = "No BSP scan executed yet.";
+            TextBox_MapScanSummary.Text = "Nenhum mapa preparado ainda.";
             TextBlock_MapScanBspCount.Text = "0";
             TextBlock_MapScanPakZipCount.Text = "0";
             TextBlock_MapScanStagedBspCount.Text = "0";
@@ -946,9 +946,9 @@ namespace GmodAddonCompressor
             ProgressBar_MapScan.Minimum = 0;
             ProgressBar_MapScan.Maximum = 100;
             ProgressBar_MapScan.Value = 0;
-            TextBlock_MapScanPhase.Text = "Idle";
-            TextBlock_MapScanCurrent.Text = "Idle";
-            TextBlock_MapScanStatus.Text = "Idle";
+            TextBlock_MapScanPhase.Text = "—";
+            TextBlock_MapScanCurrent.Text = "—";
+            TextBlock_MapScanStatus.Text = "Aguardando";
         }
 
         private void UpdateMapScanActionStates()
@@ -1014,12 +1014,12 @@ namespace GmodAddonCompressor
             if (DirectoryContainsMapBsp(selectedRootPath))
             {
                 _mapPreparedInputRootPath = null;
-                _mapInputModeDescription = "Existing extracted addon (maps/*.bsp already present)";
+                _mapInputModeDescription = "Addon já extraído (maps/*.bsp)";
                 return selectedRootPath;
             }
 
             if (!DirectoryContainsAddonArchives(selectedRootPath))
-                throw new InvalidOperationException("No maps/*.bsp or .gma/.bin archives were found under this root.");
+                throw new InvalidOperationException("Nenhum maps/*.bsp nem .gma/.bin nesta pasta.");
 
             string gmadPath = TextBox_UnpackGmadPath.Text.Trim();
             if (!File.Exists(gmadPath))
@@ -1033,14 +1033,14 @@ namespace GmodAddonCompressor
             }
 
             if (!File.Exists(gmadPath))
-                throw new InvalidOperationException("This root only contains .gma/.bin archives, so gmad.exe is required. Set the GMAD path first.");
+                throw new InvalidOperationException("Esta pasta só tem .gma/.bin: escolha o gmad.exe primeiro.");
 
             string workDir = _mapScanWorkDir ?? BuildMapScanWorkDir(selectedRootPath);
             string preparedRoot = BuildMapPreparedInputRoot(workDir);
             string unpackWorkDir = Path.Combine(workDir, "prepare_unpack");
 
             _mapPreparedInputRootPath = preparedRoot;
-            _mapInputModeDescription = "Raw archive root (.gma/.bin) extracted into work before map scan";
+            _mapInputModeDescription = "Pasta com .gma/.bin, extraída antes da busca";
 
             AppendMapScanLog("[MAP-PREP] No maps/*.bsp found in the selected root. Preparing raw .gma/.bin archives into work...");
             AppendMapScanLog($"[MAP-PREP] Prepared input root: {preparedRoot}");
@@ -1052,7 +1052,7 @@ namespace GmodAddonCompressor
                 {
                     if (!string.IsNullOrWhiteSpace(update.Phase))
                     {
-                        TextBlock_MapScanPhase.Text = $"Prepare input: {update.Phase}";
+                        TextBlock_MapScanPhase.Text = $"Extraindo addons: {update.Phase}";
                         ProgressBar_MapScan.IsIndeterminate = true;
                     }
 
@@ -1063,8 +1063,8 @@ namespace GmodAddonCompressor
                         ProgressBar_MapScan.Maximum = update.ItemTotal.Value;
                         ProgressBar_MapScan.Value = update.ItemIndex.Value;
                         TextBlock_MapScanCurrent.Text = string.IsNullOrWhiteSpace(update.CurrentPath)
-                            ? $"Current: Addon {update.ItemIndex}/{update.ItemTotal}"
-                            : $"Current: Addon {update.ItemIndex}/{update.ItemTotal} | {update.CurrentPath}";
+                            ? $"Addon {update.ItemIndex}/{update.ItemTotal}"
+                            : $"Addon {update.ItemIndex}/{update.ItemTotal} · {update.CurrentPath}";
                     }
                 });
             };
@@ -1087,13 +1087,13 @@ namespace GmodAddonCompressor
 
             int exitCode = await prepareRunner.RunAsync(options, cancellationToken);
             if (exitCode != 0 && exitCode != 130)
-                throw new InvalidOperationException($"Preparing raw .gma/.bin archives failed with exit code {exitCode}.");
+                throw new InvalidOperationException($"A extração dos .gma/.bin falhou (código {exitCode}).");
             if (exitCode == 130)
-                throw new OperationCanceledException("Raw addon preparation was cancelled.");
+                throw new OperationCanceledException("Extração dos addons cancelada.");
             if (!Directory.Exists(preparedRoot))
-                throw new InvalidOperationException("Prepared input root was not created.");
+                throw new InvalidOperationException("A pasta extraída não foi criada.");
             if (!DirectoryContainsMapBsp(preparedRoot))
-                throw new InvalidOperationException("Raw addon extraction finished, but no maps/*.bsp were found in the prepared input.");
+                throw new InvalidOperationException("Os addons foram extraídos, mas não há maps/*.bsp neles.");
 
             AppendMapScanLog("[MAP-PREP] Raw archive extraction completed. Continuing with BSP scan...");
             return preparedRoot;
@@ -1105,13 +1105,13 @@ namespace GmodAddonCompressor
             string rootPath = TextBox_MapScanRootPath.Text.Trim();
 
             if (!Directory.Exists(rootPath))
-                errors.Add("Addon root folder not found.");
+                errors.Add("Pasta do addon não encontrada.");
 
             if (Directory.Exists(rootPath) &&
                 !DirectoryContainsMapBsp(rootPath) &&
                 !DirectoryContainsAddonArchives(rootPath))
             {
-                errors.Add("The selected root does not contain maps/*.bsp or .gma/.bin archives.");
+                errors.Add("A pasta não tem maps/*.bsp nem .gma/.bin.");
             }
 
             if (!CanWriteToDirectory(ToolPaths.WorkRoot))
@@ -1138,7 +1138,7 @@ namespace GmodAddonCompressor
 
             string? parent = Directory.GetParent(trimmed)?.FullName;
             if (string.IsNullOrWhiteSpace(parent))
-                throw new InvalidOperationException("Unable to resolve addon parent folder for map output.");
+                throw new InvalidOperationException("Não foi possível achar a pasta acima do addon para salvar o resultado.");
 
             string basePath = Path.Combine(parent, $"{name}_mapassets_optimized");
             if (!Directory.Exists(basePath) && !File.Exists(basePath))
@@ -1203,10 +1203,10 @@ namespace GmodAddonCompressor
             ProgressBar_MapScan.Minimum = 0;
             ProgressBar_MapScan.Maximum = 100;
             ProgressBar_MapScan.Value = 0;
-            TextBlock_MapScanPhase.Text = "Starting";
-            TextBlock_MapScanCurrent.Text = "Preparing map input...";
-            TextBlock_MapScanStatus.Text = "Running";
-            TextBox_MapScanSummary.Text = "Preparing map input and staged analysis...";
+            TextBlock_MapScanPhase.Text = "Iniciando";
+            TextBlock_MapScanCurrent.Text = "Preparando o addon…";
+            TextBlock_MapScanStatus.Text = "Rodando";
+            TextBox_MapScanSummary.Text = "Preparando o addon e lendo os mapas…";
 
             AppendMapScanLog(string.Empty);
             AppendMapScanLog("=== Preparing input, scanning BSP files and extracting staging for Optimize Maps ===");
@@ -1220,13 +1220,13 @@ namespace GmodAddonCompressor
 
             if (!ValidateMapScanInputs(out var errorMessage))
             {
-                MessageBox.Show(errorMessage, "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
-                TextBlock_MapScanStatus.Text = "Error";
+                MessageBox.Show(errorMessage, "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
+                TextBlock_MapScanStatus.Text = "Erro";
                 TextBox_MapScanSummary.Text = errorMessage;
                 return;
             }
 
-            if (!EnsureToolsAvailable("Optimize Maps"))
+            if (!EnsureToolsAvailable("Mapas"))
                 return;
 
             PrepareMapScanRunState();
@@ -1238,8 +1238,8 @@ namespace GmodAddonCompressor
             if (!File.Exists(ToolPaths.WorkerExePath))
             {
                 _mapScanRunning = false;
-                TextBlock_MapScanStatus.Text = "FAIL";
-                TextBox_MapScanSummary.Text = "SourceAddonOptimizer worker not found.";
+                TextBlock_MapScanStatus.Text = "Falhou";
+                TextBox_MapScanSummary.Text = "Worker do otimizador não encontrado.";
                 UpdateMapScanActionStates();
                 return;
             }
@@ -1251,9 +1251,9 @@ namespace GmodAddonCompressor
                 _mapEffectiveRootPath = await PrepareMapInputRootAsync(selectedRoot, _mapScanCts?.Token ?? CancellationToken.None);
 
                 ProgressBar_MapScan.IsIndeterminate = true;
-                TextBlock_MapScanPhase.Text = "Scan + Stage";
-                TextBlock_MapScanCurrent.Text = "Scanning maps/*.bsp and extracting staging...";
-                TextBlock_MapScanStatus.Text = "Running";
+                TextBlock_MapScanPhase.Text = "1. Preparar";
+                TextBlock_MapScanCurrent.Text = "Lendo maps/*.bsp e separando o conteúdo…";
+                TextBlock_MapScanStatus.Text = "Rodando";
 
                 var options = new MapBspAnalysisRunOptions
                 {
@@ -1274,9 +1274,9 @@ namespace GmodAddonCompressor
                 _mapScanRunning = false;
                 ProgressBar_MapScan.IsIndeterminate = false;
                 ClearMapScanCancelFile();
-                TextBlock_MapScanPhase.Text = "Error";
-                TextBlock_MapScanStatus.Text = "FAIL";
-                TextBox_MapScanSummary.Text = $"Execution failed before summary.{Environment.NewLine}{ex.Message}";
+                TextBlock_MapScanPhase.Text = "Erro";
+                TextBlock_MapScanStatus.Text = "Falhou";
+                TextBox_MapScanSummary.Text = $"Falhou antes do resumo.{Environment.NewLine}{ex.Message}";
                 AppendMapScanLog($"[GUI] {ex}");
                 UpdateMapScanActionStates();
                 return;
@@ -1305,8 +1305,8 @@ namespace GmodAddonCompressor
             {
             }
 
-            TextBlock_MapScanStatus.Text = "Canceling";
-            TextBox_MapScanSummary.Text = "Cancellation requested. Waiting for worker cleanup...";
+            TextBlock_MapScanStatus.Text = "Cancelando";
+            TextBox_MapScanSummary.Text = "Cancelamento pedido. Aguardando o worker parar…";
             AppendMapScanLog("[GUI] Cancellation requested. Waiting for safe shutdown...");
             UpdateMapScanActionStates();
             _ = ForceStopMapScanIfNeededAsync();
@@ -1347,8 +1347,8 @@ namespace GmodAddonCompressor
                     ProgressBar_MapScan.Maximum = update.ItemTotal.Value;
                     ProgressBar_MapScan.Value = update.ItemIndex.Value;
                     TextBlock_MapScanCurrent.Text = string.IsNullOrWhiteSpace(update.CurrentPath)
-                        ? $"Current: {update.ItemIndex}/{update.ItemTotal}"
-                        : $"Current: {update.ItemIndex}/{update.ItemTotal} | {update.CurrentPath}";
+                        ? $"{update.ItemIndex}/{update.ItemTotal}"
+                        : $"{update.ItemIndex}/{update.ItemTotal} · {update.CurrentPath}";
                 }
             });
         }
@@ -1394,18 +1394,18 @@ namespace GmodAddonCompressor
             {
                 if (exitCode == 130)
                 {
-                    TextBlock_MapScanPhase.Text = "Canceled";
-                    TextBlock_MapScanStatus.Text = "Canceled";
+                    TextBlock_MapScanPhase.Text = "Cancelado";
+                    TextBlock_MapScanStatus.Text = "Cancelado";
                 }
                 else if (exitCode != 0)
                 {
-                    TextBlock_MapScanPhase.Text = "Completed";
-                    TextBlock_MapScanStatus.Text = "Completed with warnings";
+                    TextBlock_MapScanPhase.Text = "Concluído";
+                    TextBlock_MapScanStatus.Text = "Concluído com avisos";
                 }
                 else
                 {
-                    TextBlock_MapScanPhase.Text = "Completed";
-                    TextBlock_MapScanStatus.Text = "OK";
+                    TextBlock_MapScanPhase.Text = "Concluído";
+                    TextBlock_MapScanStatus.Text = "Pronto";
                     ProgressBar_MapScan.Minimum = 0;
                     ProgressBar_MapScan.Maximum = 100;
                     ProgressBar_MapScan.Value = 100;
@@ -1413,11 +1413,11 @@ namespace GmodAddonCompressor
             }
             else
             {
-                TextBlock_MapScanPhase.Text = exitCode == 130 ? "Canceled" : "Completed";
-                TextBlock_MapScanStatus.Text = exitCode == 0 ? "OK" : exitCode == 130 ? "Canceled" : $"FAIL ({exitCode})";
+                TextBlock_MapScanPhase.Text = exitCode == 130 ? "Cancelado" : "Concluído";
+                TextBlock_MapScanStatus.Text = exitCode == 0 ? "Pronto" : exitCode == 130 ? "Cancelado" : $"Falhou ({exitCode})";
                 TextBox_MapScanSummary.Text = exitCode == 130
-                    ? "Execution canceled before summary was generated. Check the log."
-                    : "Execution ended without map_bsp_scan_summary.json. Check the log.";
+                    ? "Cancelado antes do resumo. Veja o log em Detalhes."
+                    : "Terminou sem o resumo (map_bsp_scan_summary.json). Veja o log em Detalhes.";
             }
 
             _mapScanCancelRequested = false;
@@ -1431,7 +1431,7 @@ namespace GmodAddonCompressor
 
             if (!LoadMapScanSummary())
             {
-                MessageBox.Show("Run Scan + Stage first so the staging inventory exists.", "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Rode o passo 1, Preparar, antes.", "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -1442,7 +1442,7 @@ namespace GmodAddonCompressor
 
             if (stageRoots.Length == 0)
             {
-                MessageBox.Show("No staged pak content was found. Run Scan + Stage first.", "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Nenhum conteúdo de mapa preparado. Rode o passo 1, Preparar.", "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -1454,9 +1454,9 @@ namespace GmodAddonCompressor
             ProgressBar_MapScan.Minimum = 0;
             ProgressBar_MapScan.Maximum = 100;
             ProgressBar_MapScan.Value = 0;
-            TextBlock_MapScanPhase.Text = "Optimize Staging";
-            TextBlock_MapScanCurrent.Text = "Preparing staged asset optimization...";
-            TextBlock_MapScanStatus.Text = "Running";
+            TextBlock_MapScanPhase.Text = "2. Otimizar conteúdo";
+            TextBlock_MapScanCurrent.Text = "Preparando a otimização do conteúdo…";
+            TextBlock_MapScanStatus.Text = "Rodando";
             AppendMapScanLog(string.Empty);
             AppendMapScanLog("=== Optimizing staged pak assets for Optimize Maps (Phase 3) ===");
             AppendMapScanLog($"[MAP-OPT] Staging roots: {stageRoots.Length}");
@@ -1514,8 +1514,8 @@ namespace GmodAddonCompressor
                             ProgressBar_MapScan.Minimum = 0;
                             ProgressBar_MapScan.Maximum = Math.Max(filesCount, 1);
                             ProgressBar_MapScan.Value = Math.Min(fileIndex, Math.Max(filesCount, 1));
-                            TextBlock_MapScanCurrent.Text = $"Current: File {fileIndex}/{filesCount} | {filePath}";
-                            TextBlock_MapScanStatus.Text = "Optimizing staged assets";
+                            TextBlock_MapScanCurrent.Text = $"{fileIndex}/{filesCount} · {filePath}";
+                            TextBlock_MapScanStatus.Text = "Otimizando o conteúdo";
                         });
                     }
                 };
@@ -1534,9 +1534,9 @@ namespace GmodAddonCompressor
                 ProgressBar_MapScan.Minimum = 0;
                 ProgressBar_MapScan.Maximum = 100;
                 ProgressBar_MapScan.Value = 100;
-                TextBlock_MapScanPhase.Text = "Optimize Staging";
-                TextBlock_MapScanCurrent.Text = "Current: Completed.";
-                TextBlock_MapScanStatus.Text = "OK";
+                TextBlock_MapScanPhase.Text = "2. Otimizar conteúdo";
+                TextBlock_MapScanCurrent.Text = "Concluído.";
+                TextBlock_MapScanStatus.Text = "Pronto";
                 AppendMapScanLog($"[MAP-OPT] Summary: {result.SummaryPath}");
 
                 LoadMapScanSummary();
@@ -1544,17 +1544,17 @@ namespace GmodAddonCompressor
             catch (Exception ex)
             {
                 ProgressBar_MapScan.IsIndeterminate = false;
-                TextBlock_MapScanPhase.Text = "Optimize Staging";
-                TextBlock_MapScanStatus.Text = "FAIL";
-                TextBlock_MapScanCurrent.Text = "Current: Failed.";
+                TextBlock_MapScanPhase.Text = "2. Otimizar conteúdo";
+                TextBlock_MapScanStatus.Text = "Falhou";
+                TextBlock_MapScanCurrent.Text = "Falhou.";
                 AppendMapScanLog($"[MAP-OPT] {ex}");
                 TextBox_MapScanSummary.Text = string.Join(Environment.NewLine, new[]
                 {
-                    "Step: Optimize Staging",
-                    $"Selected root: {TextBox_MapScanRootPath.Text.Trim()}",
-                    !string.IsNullOrWhiteSpace(_mapInputModeDescription) ? $"Input mode: {_mapInputModeDescription}" : null,
-                    "Result: FAIL",
-                    $"Reason: {ex.Message}"
+                    "Passo: 2. Otimizar conteúdo",
+                    $"Pasta escolhida: {TextBox_MapScanRootPath.Text.Trim()}",
+                    !string.IsNullOrWhiteSpace(_mapInputModeDescription) ? $"Entrada: {_mapInputModeDescription}" : null,
+                    "Resultado: falhou",
+                    $"Motivo: {ex.Message}"
                 }.Where(line => !string.IsNullOrWhiteSpace(line)));
             }
             finally
@@ -1572,13 +1572,13 @@ namespace GmodAddonCompressor
 
             if (!LoadMapScanSummary())
             {
-                MessageBox.Show("Run Scan + Stage first so the BSP summary exists.", "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Rode o passo 1, Preparar, antes.", "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(_mapStageOptimizeSummaryPath) || !File.Exists(_mapStageOptimizeSummaryPath))
             {
-                MessageBox.Show("Run Optimize Staging first so the staged asset summary exists.", "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Rode o passo 2, Otimizar conteúdo, antes.", "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -1589,18 +1589,18 @@ namespace GmodAddonCompressor
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message, "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(ex.Message, "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             string? outputParent = Directory.GetParent(plannedOutputDir)?.FullName;
             if (string.IsNullOrWhiteSpace(outputParent) || !CanWriteToDirectory(outputParent))
             {
-                MessageBox.Show("No write permission in addon parent folder (map output needs to be created there).", "Optimize Maps", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Sem permissão de escrita na pasta acima do addon (o resultado é criado lá).", "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            if (!EnsureToolsAvailable("Optimize Maps"))
+            if (!EnsureToolsAvailable("Mapas"))
                 return;
 
             SaveSettings();
@@ -1617,9 +1617,9 @@ namespace GmodAddonCompressor
             ProgressBar_MapScan.Minimum = 0;
             ProgressBar_MapScan.Maximum = 100;
             ProgressBar_MapScan.Value = 0;
-            TextBlock_MapScanPhase.Text = "Rebuild + Inject";
-            TextBlock_MapScanCurrent.Text = "Preparing EOF-only BSP rebuild...";
-            TextBlock_MapScanStatus.Text = "Running";
+            TextBlock_MapScanPhase.Text = "3. Reconstruir mapa";
+            TextBlock_MapScanCurrent.Text = "Preparando a reconstrução dos .bsp…";
+            TextBlock_MapScanStatus.Text = "Rodando";
             AppendMapScanLog(string.Empty);
             AppendMapScanLog("=== Rebuilding staged pak ZIPs and reinjecting them into BSPs (Phase 4, EOF-only) ===");
             AppendMapScanLog($"[MAP-BUILD] Output dir: {_mapBuildOutputPath}");
@@ -1649,17 +1649,17 @@ namespace GmodAddonCompressor
                 _mapBuildRunning = false;
                 ProgressBar_MapScan.IsIndeterminate = false;
                 ClearMapScanCancelFile();
-                TextBlock_MapScanPhase.Text = "Rebuild + Inject";
-                TextBlock_MapScanStatus.Text = "FAIL";
-                TextBlock_MapScanCurrent.Text = "Current: Failed.";
+                TextBlock_MapScanPhase.Text = "3. Reconstruir mapa";
+                TextBlock_MapScanStatus.Text = "Falhou";
+                TextBlock_MapScanCurrent.Text = "Falhou.";
                 AppendMapScanLog($"[MAP-BUILD] {ex}");
                 TextBox_MapScanSummary.Text = string.Join(Environment.NewLine, new[]
                 {
-                    "Step: Build + Inject",
-                    $"Selected root: {TextBox_MapScanRootPath.Text.Trim()}",
-                    !string.IsNullOrWhiteSpace(_mapInputModeDescription) ? $"Input mode: {_mapInputModeDescription}" : null,
-                    "Result: FAIL",
-                    $"Reason: {ex.Message}"
+                    "Passo: 3. Reconstruir mapa",
+                    $"Pasta escolhida: {TextBox_MapScanRootPath.Text.Trim()}",
+                    !string.IsNullOrWhiteSpace(_mapInputModeDescription) ? $"Entrada: {_mapInputModeDescription}" : null,
+                    "Resultado: falhou",
+                    $"Motivo: {ex.Message}"
                 }.Where(line => !string.IsNullOrWhiteSpace(line)));
                 _context.UnlockedUI = true;
                 UpdateMapScanActionStates();
@@ -1687,8 +1687,8 @@ namespace GmodAddonCompressor
                     ProgressBar_MapScan.Maximum = update.ItemTotal.Value;
                     ProgressBar_MapScan.Value = update.ItemIndex.Value;
                     TextBlock_MapScanCurrent.Text = string.IsNullOrWhiteSpace(update.CurrentPath)
-                        ? $"Current: {update.ItemIndex}/{update.ItemTotal}"
-                        : $"Current: {update.ItemIndex}/{update.ItemTotal} | {update.CurrentPath}";
+                        ? $"{update.ItemIndex}/{update.ItemTotal}"
+                        : $"{update.ItemIndex}/{update.ItemTotal} · {update.CurrentPath}";
                 }
             });
         }
@@ -1719,19 +1719,19 @@ namespace GmodAddonCompressor
             {
                 if (exitCode == 130)
                 {
-                    TextBlock_MapScanPhase.Text = "Canceled";
-                    TextBlock_MapScanStatus.Text = "Canceled";
+                    TextBlock_MapScanPhase.Text = "Cancelado";
+                    TextBlock_MapScanStatus.Text = "Cancelado";
                 }
                 else if (exitCode != 0)
                 {
-                    TextBlock_MapScanPhase.Text = "Completed";
-                    TextBlock_MapScanStatus.Text = "Completed with warnings";
+                    TextBlock_MapScanPhase.Text = "Concluído";
+                    TextBlock_MapScanStatus.Text = "Concluído com avisos";
                 }
                 else
                 {
-                    TextBlock_MapScanPhase.Text = "Rebuild + Inject";
-                    TextBlock_MapScanStatus.Text = "OK";
-                    TextBlock_MapScanCurrent.Text = "Current: Completed.";
+                    TextBlock_MapScanPhase.Text = "3. Reconstruir mapa";
+                    TextBlock_MapScanStatus.Text = "Pronto";
+                    TextBlock_MapScanCurrent.Text = "Concluído.";
                     ProgressBar_MapScan.Minimum = 0;
                     ProgressBar_MapScan.Maximum = 100;
                     ProgressBar_MapScan.Value = 100;
@@ -1739,11 +1739,11 @@ namespace GmodAddonCompressor
             }
             else
             {
-                TextBlock_MapScanPhase.Text = exitCode == 130 ? "Canceled" : "Completed";
-                TextBlock_MapScanStatus.Text = exitCode == 0 ? "OK" : exitCode == 130 ? "Canceled" : $"FAIL ({exitCode})";
+                TextBlock_MapScanPhase.Text = exitCode == 130 ? "Cancelado" : "Concluído";
+                TextBlock_MapScanStatus.Text = exitCode == 0 ? "Pronto" : exitCode == 130 ? "Cancelado" : $"Falhou ({exitCode})";
                 TextBox_MapScanSummary.Text = exitCode == 130
-                    ? "Execution canceled before build summary was generated. Check the log."
-                    : "Execution ended without map_bsp_build_summary.json. Check the log.";
+                    ? "Cancelado antes do resumo. Veja o log em Detalhes."
+                    : "Terminou sem o resumo (map_bsp_build_summary.json). Veja o log em Detalhes.";
             }
 
             _mapScanCancelRequested = false;
@@ -1838,7 +1838,7 @@ namespace GmodAddonCompressor
             }
             catch (Exception ex)
             {
-                TextBox_MapScanSummary.Text = $"Failed to read map_bsp_scan_summary.json.{Environment.NewLine}{ex.Message}";
+                TextBox_MapScanSummary.Text = $"Não foi possível ler map_bsp_scan_summary.json.{Environment.NewLine}{ex.Message}";
                 return false;
             }
         }
@@ -1852,15 +1852,15 @@ namespace GmodAddonCompressor
 
             var lines = new List<string>
             {
-                $"Step: {stepTitle}",
-                $"Selected root: {selectedRoot}"
+                $"Passo: {stepTitle}",
+                $"Pasta escolhida: {selectedRoot}"
             };
 
             if (!string.IsNullOrWhiteSpace(_mapInputModeDescription))
-                lines.Add($"Input mode: {_mapInputModeDescription}");
+                lines.Add($"Entrada: {_mapInputModeDescription}");
 
             if (!string.Equals(selectedRoot, effectiveRoot, StringComparison.OrdinalIgnoreCase))
-                lines.Add($"Effective scan root: {effectiveRoot}");
+                lines.Add($"Pasta lida: {effectiveRoot}");
 
             return lines;
         }
@@ -1889,22 +1889,22 @@ namespace GmodAddonCompressor
             if (root.TryGetProperty("staging", out var stagingElement) && stagingElement.ValueKind == JsonValueKind.Object)
                 stagingRoot = GetJsonString(stagingElement, "root") ?? string.Empty;
 
-            var summaryLines = BuildMapSummaryHeader("Scan + Stage", run);
-            summaryLines.Add($"BSP files found: {bspTotal}");
-            summaryLines.Add($"Valid embedded pak ZIPs: {validPakZip}");
-            summaryLines.Add($"Staging extracted: {stagedBspCount} BSP(s), {stagedFilesTotal} file(s), {FormatBytes(stagedTotalBytes)}");
-            summaryLines.Add($"Future EOF-only candidates: {candidateCount}");
-            summaryLines.Add($"Blocked from future reinjection: {blockedCount}");
-            summaryLines.Add($"Addon total size: {FormatBytes(addonTotalBytes)}");
-            summaryLines.Add($"Combined pak size: {FormatBytes(pakTotalBytes)} ({pakShareOfBsp:0.##}% of all BSP bytes)");
+            var summaryLines = BuildMapSummaryHeader("1. Preparar", run);
+            summaryLines.Add($"BSP encontrados: {bspTotal}");
+            summaryLines.Add($"Conteúdo embutido válido (ZIP): {validPakZip}");
+            summaryLines.Add($"Conteúdo separado: {stagedBspCount} BSP, {stagedFilesTotal} arquivo(s), {FormatBytes(stagedTotalBytes)}");
+            summaryLines.Add($"Podem ser reconstruídos: {candidateCount}");
+            summaryLines.Add($"Bloqueados para reconstrução: {blockedCount}");
+            summaryLines.Add($"Tamanho do addon: {FormatBytes(addonTotalBytes)}");
+            summaryLines.Add($"Conteúdo embutido: {FormatBytes(pakTotalBytes)} ({pakShareOfBsp:0.##}% dos .bsp)");
             if (!string.IsNullOrWhiteSpace(stagingRoot))
-                summaryLines.Add($"Staging root: {stagingRoot}");
+                summaryLines.Add($"Pasta do conteúdo separado: {stagingRoot}");
 
             if (analysisErrors > 0 || scanErrors > 0)
-                summaryLines.Add($"Warnings: analysis={analysisErrors}, scan={scanErrors}");
+                summaryLines.Add($"Avisos: análise={analysisErrors}, busca={scanErrors}");
 
             summaryLines.Add(string.Empty);
-            summaryLines.Add("BSP analysis:");
+            summaryLines.Add("Mapas:");
 
             if (root.TryGetProperty("items", out var itemsElement) && itemsElement.ValueKind == JsonValueKind.Array && itemsElement.GetArrayLength() > 0)
             {
@@ -1919,7 +1919,7 @@ namespace GmodAddonCompressor
                     bool phase2Candidate = GetJsonBool(item, "phase2_candidate");
                     string message = GetJsonString(item, "message") ?? string.Empty;
 
-                    summaryLines.Add($"- {relativePath} | BSP {FormatBytes(bspSize)} | PAK {FormatBytes(pakSize)} | {pakPercent:0.##}% | ZIP {YesNo(pakZipValid)} | EOF {YesNo(pakAtEof)} | Candidate {YesNo(phase2Candidate)}");
+                    summaryLines.Add($"- {relativePath} | BSP {FormatBytes(bspSize)} | PAK {FormatBytes(pakSize)} | {pakPercent:0.##}% | ZIP {YesNo(pakZipValid)} | no fim {YesNo(pakAtEof)} | reconstruível {YesNo(phase2Candidate)}");
 
                     if (item.TryGetProperty("phase2_blockers", out var blockersElement) &&
                         blockersElement.ValueKind == JsonValueKind.Array &&
@@ -1932,17 +1932,17 @@ namespace GmodAddonCompressor
                             .Where(v => !string.IsNullOrWhiteSpace(v))
                             .ToArray();
                         if (blockers.Length > 0)
-                            summaryLines.Add($"  Reason: {string.Join(", ", blockers)}");
+                            summaryLines.Add($"  Motivo: {string.Join(", ", blockers)}");
                     }
                     else if (!string.IsNullOrWhiteSpace(message))
                     {
-                        summaryLines.Add($"  Note: {message}");
+                        summaryLines.Add($"  Nota: {message}");
                     }
                 }
             }
             else
             {
-                summaryLines.Add("- No maps/*.bsp found under the effective scan root.");
+                summaryLines.Add("- Nenhum maps/*.bsp na pasta lida.");
             }
 
             if (futureValidation.ValueKind == JsonValueKind.Object &&
@@ -1953,7 +1953,7 @@ namespace GmodAddonCompressor
                 if (!string.IsNullOrWhiteSpace(candidateRule))
                 {
                     summaryLines.Add(string.Empty);
-                    summaryLines.Add($"Future reinjection gate: {candidateRule}");
+                    summaryLines.Add($"Regra para reconstruir: {candidateRule}");
                 }
             }
 
@@ -1962,7 +1962,7 @@ namespace GmodAddonCompressor
 
         private List<string> BuildMapStageOptimizeSummaryLines(JsonElement scanRoot, JsonElement scanCounts, JsonElement scanSizes, JsonElement scanRun)
         {
-            var summaryLines = BuildMapSummaryHeader("Optimize Staging", scanRun);
+            var summaryLines = BuildMapSummaryHeader("2. Otimizar conteúdo", scanRun);
             summaryLines.Add($"Staged BSPs available: {GetJsonInt(scanCounts, "staged_bsp_count")}");
             summaryLines.Add($"Current staged file count: {GetJsonInt(scanCounts, "staged_files_total")}");
 
@@ -1983,9 +1983,9 @@ namespace GmodAddonCompressor
             double deltaPercent = GetJsonDouble(totals, "delta_percent");
             int visitedRoots = GetJsonInt(run, "visited_stage_roots");
 
-            summaryLines.Add($"Stage roots processed: {visitedRoots}");
-            summaryLines.Add($"Staged size: {FormatBytes(beforeBytes)} -> {FormatBytes(afterBytes)} ({FormatSignedBytes(deltaBytes)}, {deltaPercent:0.##}%)");
-            summaryLines.Add($"File count: {beforeFiles} -> {afterFiles}");
+            summaryLines.Add($"Pastas de conteúdo processadas: {visitedRoots}");
+            summaryLines.Add($"Conteúdo: {FormatBytes(beforeBytes)} → {FormatBytes(afterBytes)} ({FormatSignedBytes(deltaBytes)}, {deltaPercent:0.##}%)");
+            summaryLines.Add($"Arquivos: {beforeFiles} → {afterFiles}");
 
             int safeVtfCount = GetJsonInt(vtfSafety, "safe_vtf_count");
             int optimizedSpecialVtfCount = GetJsonInt(vtfSafety, "optimized_special_vtf_count");
@@ -1995,10 +1995,10 @@ namespace GmodAddonCompressor
             long skippedSpecialVtfBytes = GetJsonLong(vtfSafety, "skipped_special_vtf_bytes");
             if (safeVtfCount > 0 || optimizedSpecialVtfCount > 0 || skippedSpecialVtfCount > 0)
             {
-                summaryLines.Add($"Safe VTFs processed as plain textures: {safeVtfCount}");
+                summaryLines.Add($"VTF processados como texturas comuns: {safeVtfCount}");
                 if (optimizedSpecialVtfCount > 0)
-                    summaryLines.Add($"Special skybox VTFs optimized with preserved metadata: {optimizedSpecialVtfCount} ({FormatBytes(optimizedSpecialVtfBeforeBytes)} -> {FormatBytes(optimizedSpecialVtfAfterBytes)})");
-                summaryLines.Add($"Special VTFs preserved unchanged: {skippedSpecialVtfCount} ({FormatBytes(skippedSpecialVtfBytes)})");
+                    summaryLines.Add($"VTF de skybox otimizados com metadados preservados: {optimizedSpecialVtfCount} ({FormatBytes(optimizedSpecialVtfBeforeBytes)} → {FormatBytes(optimizedSpecialVtfAfterBytes)})");
+                summaryLines.Add($"VTF especiais mantidos como estão: {skippedSpecialVtfCount} ({FormatBytes(skippedSpecialVtfBytes)})");
             }
 
             if (run.TryGetProperty("processed_extensions", out var processedElement) && processedElement.ValueKind == JsonValueKind.Array)
@@ -2009,7 +2009,7 @@ namespace GmodAddonCompressor
                     .Select(value => value.GetString())
                     .Where(value => !string.IsNullOrWhiteSpace(value))
                     .ToArray();
-                summaryLines.Add($"Processed: {(processed.Length > 0 ? string.Join(", ", processed) : "(none)")}");
+                summaryLines.Add($"Processados: {(processed.Length > 0 ? string.Join(", ", processed) : "(nenhum)")}");
             }
 
             if (run.TryGetProperty("inventoried_only_extensions", out var inventoriedElement) && inventoriedElement.ValueKind == JsonValueKind.Array)
@@ -2020,13 +2020,13 @@ namespace GmodAddonCompressor
                     .Select(value => value.GetString())
                     .Where(value => !string.IsNullOrWhiteSpace(value))
                     .ToArray();
-                summaryLines.Add($"Inventoried only: {(inventoried.Length > 0 ? string.Join(", ", inventoried) : "(none)")}");
+                summaryLines.Add($"Só listados: {(inventoried.Length > 0 ? string.Join(", ", inventoried) : "(nenhum)")}");
             }
 
             if (root.TryGetProperty("entries", out var entriesElement) && entriesElement.ValueKind == JsonValueKind.Array)
             {
                 summaryLines.Add(string.Empty);
-                summaryLines.Add("Top staged types:");
+                summaryLines.Add("Tipos com mais bytes:");
                 foreach (var entry in entriesElement.EnumerateArray().Take(8))
                 {
                     string extension = GetJsonString(entry, "extension") ?? "(unknown)";
@@ -2034,7 +2034,7 @@ namespace GmodAddonCompressor
                     long extBefore = GetJsonLong(entry, "before_bytes");
                     long extAfter = GetJsonLong(entry, "after_bytes");
                     long extDelta = GetJsonLong(entry, "delta_bytes");
-                    summaryLines.Add($"- {extension} {(processed ? "[processed]" : "[inventory]")} | {FormatBytes(extBefore)} -> {FormatBytes(extAfter)} ({FormatSignedBytes(extDelta)})");
+                    summaryLines.Add($"- {extension} {(processed ? "[processado]" : "[só listado]")} | {FormatBytes(extBefore)} → {FormatBytes(extAfter)} ({FormatSignedBytes(extDelta)})");
                 }
             }
 
@@ -2044,13 +2044,13 @@ namespace GmodAddonCompressor
                 reasonElement.GetArrayLength() > 0)
             {
                 summaryLines.Add(string.Empty);
-                summaryLines.Add("Preserved VTF classes:");
+                summaryLines.Add("VTF mantidos, por motivo:");
                 foreach (var reason in reasonElement.EnumerateArray().Take(6))
                 {
                     string reasonName = GetJsonString(reason, "reason") ?? "(unknown)";
                     int reasonFileCount = GetJsonInt(reason, "file_count");
                     long reasonBytes = GetJsonLong(reason, "total_bytes");
-                    summaryLines.Add($"- {reasonName}: {reasonFileCount} file(s), {FormatBytes(reasonBytes)}");
+                    summaryLines.Add($"- {reasonName}: {reasonFileCount} arquivo(s), {FormatBytes(reasonBytes)}");
                 }
             }
 
@@ -2059,7 +2059,7 @@ namespace GmodAddonCompressor
 
         private List<string> BuildMapBuildSummaryLines(JsonElement scanRoot, JsonElement scanCounts, JsonElement scanSizes, JsonElement scanRun)
         {
-            var summaryLines = BuildMapSummaryHeader("Build + Inject", scanRun);
+            var summaryLines = BuildMapSummaryHeader("3. Reconstruir mapa", scanRun);
             summaryLines.Add($"Scanned BSPs: {GetJsonInt(scanCounts, "bsp_total")}");
 
             if (string.IsNullOrWhiteSpace(_mapBuildSummaryPath) || !File.Exists(_mapBuildSummaryPath))
@@ -2092,26 +2092,26 @@ namespace GmodAddonCompressor
             if (!string.IsNullOrWhiteSpace(outputDir))
                 _mapBuildOutputPath = outputDir;
 
-            summaryLines.Add($"Mode: {mode}");
-            summaryLines.Add($"Eligible BSPs: {eligibleTotal}");
-            summaryLines.Add($"Reinjected: {reinjectedTotal}");
-            summaryLines.Add($"Unsupported: {unsupportedTotal}");
-            summaryLines.Add($"Failed: {failedTotal}");
-            summaryLines.Add($"Output created: {YesNo(outputCreated)}");
+            summaryLines.Add($"Modo: {mode}");
+            summaryLines.Add($"BSP elegíveis: {eligibleTotal}");
+            summaryLines.Add($"Reconstruídos: {reinjectedTotal}");
+            summaryLines.Add($"Não suportados: {unsupportedTotal}");
+            summaryLines.Add($"Com falha: {failedTotal}");
+            summaryLines.Add($"Resultado criado: {YesNo(outputCreated)}");
             if (!string.IsNullOrWhiteSpace(outputDir))
-                summaryLines.Add($"Output dir: {outputDir}");
+                summaryLines.Add($"Pasta do resultado: {outputDir}");
             if (outputCreated)
-                summaryLines.Add($"Addon size: {FormatBytes(inputAddonBytes)} -> {FormatBytes(outputAddonBytes)} ({FormatSignedBytes(addonDeltaBytes)}, {addonDeltaPercent:0.##}%)");
-            summaryLines.Add($"Reinjected BSP bytes: {FormatBytes(sourceBspBytes)} -> {FormatBytes(outputBspBytes)}");
-            summaryLines.Add($"Reinjected pak bytes: {FormatBytes(sourcePakBytes)} -> {FormatBytes(outputPakBytes)}");
+                summaryLines.Add($"Tamanho do addon: {FormatBytes(inputAddonBytes)} → {FormatBytes(outputAddonBytes)} ({FormatSignedBytes(addonDeltaBytes)}, {addonDeltaPercent:0.##}%)");
+            summaryLines.Add($"BSP reconstruídos: {FormatBytes(sourceBspBytes)} → {FormatBytes(outputBspBytes)}");
+            summaryLines.Add($"Conteúdo embutido reconstruído: {FormatBytes(sourcePakBytes)} → {FormatBytes(outputPakBytes)}");
 
             if (!string.IsNullOrWhiteSpace(fatalError))
-                summaryLines.Add($"Fatal error: {fatalError}");
+                summaryLines.Add($"Erro fatal: {fatalError}");
 
             if (root.TryGetProperty("items", out var itemsElement) && itemsElement.ValueKind == JsonValueKind.Array)
             {
                 summaryLines.Add(string.Empty);
-                summaryLines.Add("Per BSP result:");
+                summaryLines.Add("Resultado por mapa:");
                 foreach (var item in itemsElement.EnumerateArray())
                 {
                     string relativePath = GetJsonString(item, "relative_path") ?? "(unknown)";
@@ -2125,11 +2125,11 @@ namespace GmodAddonCompressor
                     bool hashMatch = GetJsonBool(item, "pak_hash_match");
                     string rebuiltHash = GetJsonString(item, "rebuilt_pak_sha256") ?? string.Empty;
                     string outputHash = GetJsonString(item, "output_pak_sha256") ?? string.Empty;
-                    summaryLines.Add($"- {relativePath} | {status} | Reinjected {YesNo(reinjected)} | Reason: {reason}");
+                    summaryLines.Add($"- {relativePath} | {status} | reconstruído {YesNo(reinjected)} | motivo: {reason}");
                     if (sourceBspSize > 0 || outputBspSize > 0 || originalPakSize > 0 || rebuiltPakSize > 0)
                         summaryLines.Add($"  BSP {FormatBytes(sourceBspSize)} -> {FormatBytes(outputBspSize)} | PAK {FormatBytes(originalPakSize)} -> {FormatBytes(rebuiltPakSize)}");
                     if (!string.IsNullOrWhiteSpace(rebuiltHash) || !string.IsNullOrWhiteSpace(outputHash))
-                        summaryLines.Add($"  Hash match: {YesNo(hashMatch)}");
+                        summaryLines.Add($"  Hash confere: {YesNo(hashMatch)}");
                 }
             }
 
@@ -2185,21 +2185,21 @@ namespace GmodAddonCompressor
             return $"{sign}{FormatBytes(Math.Abs(bytes))}";
         }
 
-        private static string YesNo(bool value) => value ? "Yes" : "No";
+        private static string YesNo(bool value) => value ? "sim" : "não";
 
         private void Button_MapScanOpenRoot_Click(object sender, RoutedEventArgs e)
         {
-            OpenFolder(TextBox_MapScanRootPath.Text.Trim(), "Optimize Maps");
+            OpenFolder(TextBox_MapScanRootPath.Text.Trim(), "Mapas");
         }
 
         private void Button_MapScanOpenWork_Click(object sender, RoutedEventArgs e)
         {
-            OpenFolder(_mapScanWorkDir, "Optimize Maps");
+            OpenFolder(_mapScanWorkDir, "Mapas");
         }
 
         private void Button_MapBuildOpenOutput_Click(object sender, RoutedEventArgs e)
         {
-            OpenFolder(_mapBuildOutputPath, "Optimize Maps");
+            OpenFolder(_mapBuildOutputPath, "Mapas");
         }
 
         private async void Button_Compress_Click(object sender, RoutedEventArgs e)
@@ -2277,22 +2277,22 @@ namespace GmodAddonCompressor
             string addonDirectoryPath = _context.AddonDirectoryPath;
             if (!ValidateModelsInputs(addonDirectoryPath, out var errorMessage))
             {
-                MessageBox.Show(errorMessage, "Models", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(errorMessage, "Modelos", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             await RefreshAddonWorkshopWarningAsync(addonDirectoryPath, force: true);
 
-            if (!EnsureToolsAvailable("Models"))
+            if (!EnsureToolsAvailable("Modelos"))
                 return;
 
             if (!File.Exists(ToolPaths.WorkerExePath))
             {
-                MessageBox.Show("SourceAddonOptimizer worker not found.", "Models", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show("As ferramentas do otimizador não foram encontradas.", "Modelos", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
-            _context.ModelsSizeReportText = "Size report: computing (before)...";
+            _context.ModelsSizeReportText = "Medindo o tamanho (antes)…";
             _modelsSizeBefore = await TryScanSizeAsync(addonDirectoryPath, CancellationToken.None);
 
             _modelsOutputPath = null;
@@ -2313,7 +2313,7 @@ namespace GmodAddonCompressor
             Button_OpenModelsWork.IsEnabled = false;
             Button_OpenModelsLogs.IsEnabled = false;
 
-            _context.ModelsStatusText = "Phase: Starting";
+            _context.ModelsStatusText = "Começando…";
             _context.ModelsProgressText = string.Empty;
             _context.ModelsProgressMinValue = 0;
             _context.ModelsProgressMaxValue = 100;
@@ -2342,13 +2342,13 @@ namespace GmodAddonCompressor
             }
             catch (OperationCanceledException)
             {
-                _context.ModelsStatusText = "Canceled.";
+                _context.ModelsStatusText = "Cancelado.";
                 _context.UnlockedUI = true;
                 return;
             }
             catch (Exception ex)
             {
-                _context.ModelsStatusText = $"FAIL: {ex.Message}";
+                _context.ModelsStatusText = $"Falhou: {ex.Message}";
                 _context.UnlockedUI = true;
                 return;
             }
@@ -2366,7 +2366,7 @@ namespace GmodAddonCompressor
 
             if (exitCode == 0)
             {
-                _context.ModelsStatusText = "OK";
+                _context.ModelsStatusText = "Pronto.";
                 if (!string.IsNullOrWhiteSpace(_lastMaximumRuntimeSummaryText))
                     _context.ModelsProgressText = _lastMaximumRuntimeSummaryText;
                 if (!string.IsNullOrWhiteSpace(_modelsOutputPath))
@@ -2375,7 +2375,7 @@ namespace GmodAddonCompressor
                     Button_OpenModelsWork.IsEnabled = true;
                     if (GetModelsBatchSummaryPath() == null)
                     {
-                        _context.ModelsSizeReportText = "Size report: computing (after)...";
+                        _context.ModelsSizeReportText = "Medindo o tamanho (depois)…";
                         _modelsSizeAfter = await TryScanSizeAsync(_modelsOutputPath, CancellationToken.None);
                     }
                     _context.ModelsSizeReportText = BuildModelsSizeReportText();
@@ -2388,7 +2388,7 @@ namespace GmodAddonCompressor
             else
             {
                 var errorSuffix = string.IsNullOrWhiteSpace(_modelsLastErrorLine) ? string.Empty : $" | {_modelsLastErrorLine}";
-                _context.ModelsStatusText = $"FAIL ({exitCode}){errorSuffix}";
+                _context.ModelsStatusText = $"Falhou (código {exitCode}){errorSuffix}";
                 Button_OpenModelsOutput.IsEnabled = !string.IsNullOrWhiteSpace(_modelsOutputPath) && Directory.Exists(_modelsOutputPath);
                 Button_OpenModelsWork.IsEnabled = !string.IsNullOrWhiteSpace(_modelsWorkDir) && Directory.Exists(_modelsWorkDir);
                 _context.ModelsSizeReportText = BuildModelsSizeReportText();
@@ -2680,7 +2680,7 @@ namespace GmodAddonCompressor
         private static string BuildOptimizerItemProgressText(SourceAddonOptimizerProgressUpdate update)
         {
             string itemType = string.IsNullOrWhiteSpace(update.ItemType) ? "Item" : update.ItemType!;
-            string prefix = update.IsItemCompletion ? "Completed" : "Running";
+            string prefix = update.IsItemCompletion ? "Concluído" : "Processando";
             string text = $"{prefix}: {itemType} {update.ItemIndex}/{update.ItemTotal}";
 
             if (!string.IsNullOrWhiteSpace(update.ItemPath))
@@ -2760,7 +2760,7 @@ namespace GmodAddonCompressor
                     _modelsStepIndex = update.StepIndex.Value;
                     _modelsStepTotal = update.StepTotal ?? 0;
                     _modelsPhase = update.Phase ?? string.Empty;
-                    _context.ModelsStatusText = AppendModelsBatchLabel($"Phase: {_modelsPhase} (Step {_modelsStepIndex}/{_modelsStepTotal})");
+                    _context.ModelsStatusText = AppendModelsBatchLabel($"Etapa {_modelsStepIndex} de {_modelsStepTotal}: {_modelsPhase}");
                     _context.ModelsProgressValue = 0;
                     _context.ModelsProgressMaxValue = 1;
 
@@ -2770,9 +2770,9 @@ namespace GmodAddonCompressor
 
                 if (update.IsPackaging)
                 {
-                    string phaseText = update.Phase ?? "Packaging";
-                    _context.ModelsStatusText = AppendModelsBatchLabel($"Packaging: {phaseText}");
-                    _context.ModelsProgressText = AppendModelsBatchLabel($"Current: {phaseText}");
+                    string phaseText = update.Phase ?? "Empacotamento";
+                    _context.ModelsStatusText = AppendModelsBatchLabel($"Empacotando: {phaseText}");
+                    _context.ModelsProgressText = AppendModelsBatchLabel($"Agora: {phaseText}");
 
                     if (_pipelineRunning && _pipelineStage == PipelineStage.Models)
                     {
@@ -2784,9 +2784,9 @@ namespace GmodAddonCompressor
 
                 if (update.IsFinalize)
                 {
-                    string phaseText = update.Phase ?? "Finalizing";
-                    _context.ModelsStatusText = AppendModelsBatchLabel($"Finalizing: {phaseText}");
-                    _context.ModelsProgressText = AppendModelsBatchLabel($"Current: {phaseText}");
+                    string phaseText = update.Phase ?? "Finalização";
+                    _context.ModelsStatusText = AppendModelsBatchLabel($"Finalizando: {phaseText}");
+                    _context.ModelsProgressText = AppendModelsBatchLabel($"Agora: {phaseText}");
 
                     if (_pipelineRunning && _pipelineStage == PipelineStage.Models)
                     {
@@ -3602,36 +3602,36 @@ namespace GmodAddonCompressor
             var errors = new List<string>();
 
             if (!Directory.Exists(addonDirectoryPath))
-                errors.Add("Addon folder not found.");
+                errors.Add("A pasta do addon não foi encontrada.");
 
             // The "Tela" mode edits the compiled files directly: no Blender/StudioMDL needed.
             if (!_context.OptimizerModeIsScreen)
             {
                 if (string.IsNullOrWhiteSpace(_context.BlenderPath) || !File.Exists(_context.BlenderPath))
-                    errors.Add("Blender path is invalid.");
+                    errors.Add("O caminho do Blender é inválido.");
 
                 if (string.IsNullOrWhiteSpace(_context.StudioMdlPath) || !File.Exists(_context.StudioMdlPath))
-                    errors.Add("StudioMDL path is invalid.");
+                    errors.Add("O caminho do studiomdl é inválido.");
             }
 
             if (string.IsNullOrWhiteSpace(_context.OptimizerSuffix))
-                errors.Add("Suffix is required.");
+                errors.Add("Informe o sufixo da pasta de saída.");
 
             if (_context.OptimizerCompileJobs < 0)
-                errors.Add("Compile jobs must be 0 (auto) or greater.");
+                errors.Add("Processos de compilação: use 0 (automático) ou mais.");
 
             if (_context.OptimizerRatio < 0.01 || _context.OptimizerRatio > 1.0)
-                errors.Add("Ratio must be between 0.01 and 1.00.");
+                errors.Add("A proporção deve ficar entre 0,01 e 1,00.");
 
             if (_context.OptimizerAutoSmooth < 0 || _context.OptimizerAutoSmooth > 180)
-                errors.Add("AutoSmooth must be between 0 and 180.");
+                errors.Add("A suavização deve ficar entre 0 e 180 graus.");
 
             if (_context.OptimizerUsePlanar && (_context.OptimizerPlanarAngle < 0 || _context.OptimizerPlanarAngle > 180))
-                errors.Add("Planar Angle must be between 0 and 180 when Use Planar is enabled.");
+                errors.Add("O ângulo do passo planar deve ficar entre 0 e 180.");
 
             string outputWriteProbePath = GetModelsOutputWriteProbePath(addonDirectoryPath);
             if (string.IsNullOrWhiteSpace(outputWriteProbePath) || !CanWriteToDirectory(outputWriteProbePath))
-                errors.Add("No write permission in the folder where Models output will be created.");
+                errors.Add("Sem permissão de escrita na pasta onde o resultado será criado.");
 
             if (!CanWriteToDirectory(ToolPaths.WorkRoot))
                 errors.Add("No write permission in work directory root.");
@@ -3927,9 +3927,9 @@ namespace GmodAddonCompressor
             {
                 _compressSizeAfter = null;
                 _context.CompressSizeReportText =
-                    $"Compress mode: {compressOptions.ModeLabel}{Environment.NewLine}" +
+                    $"Modo: {compressOptions.ModeLabel}{Environment.NewLine}" +
                     $"{compressOptions.BuildRoutingSummary()}{Environment.NewLine}{Environment.NewLine}" +
-                    "Size report: computing (before)...";
+                    "Medindo o tamanho (antes)…";
                 _compressSizeBefore = await TryScanSizeAsync(addonDirectoryPath, CancellationToken.None);
             }
 
@@ -3978,7 +3978,7 @@ namespace GmodAddonCompressor
                 }
                 else
                 {
-                    _context.CompressSizeReportText = "Size report: computing (after)...";
+                    _context.CompressSizeReportText = "Medindo o tamanho (depois)…";
                     _compressSizeAfter = await TryScanSizeAsync(addonDirectoryPath, CancellationToken.None);
                     _context.CompressSizeReportText = BuildCompressSizeReportText(compressOptions, _compressSizeBefore, _compressSizeAfter);
                 }
@@ -4004,7 +4004,7 @@ namespace GmodAddonCompressor
             _context.ProgressBarMinValue = 0;
             _context.ProgressBarMaxValue = filesCount;
             _context.ProgressBarValue = fileIndex;
-            _context.ProgressBarText = $"{(int)percent} % | Files: {fileIndex} / {filesCount}";
+            _context.ProgressBarText = $"{(int)percent}% · arquivo {fileIndex} de {filesCount}";
 
             if (_pipelineRunning && _pipelineStage == PipelineStage.Compress)
             {
@@ -4060,7 +4060,7 @@ namespace GmodAddonCompressor
         private static string BuildCompressSizeReportText(CompressPipelineOptions options, DirectorySizeSnapshot? before, DirectorySizeSnapshot? after)
         {
             return
-                $"Compress mode: {options.ModeLabel}{Environment.NewLine}" +
+                $"Modo: {options.ModeLabel}{Environment.NewLine}" +
                 $"{options.BuildRoutingSummary()}{Environment.NewLine}{Environment.NewLine}" +
                 DirectorySizeReportFormatter.BuildReport(before, after);
         }

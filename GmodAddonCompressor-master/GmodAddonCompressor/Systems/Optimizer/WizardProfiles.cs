@@ -107,7 +107,7 @@ namespace GmodAddonCompressor.Systems.Optimizer
             // a 44100 Hz stereo reference makes the fallback files bigger than the originals.
             _ => new WizardSettings(
                 true, 3, "Stream (experimental)",
-                true, 1, "Tela Forte (textos e texturas pequenas em 2x)",
+                true, 1, "Forte (textos e texturas pequenas em 2x)",
                 IncludeWav: true, WavOptimizationIndex: 1, WavRateIndex: 1, WavChannelsIndex: 1, WavCodecIndex: 0,
                 "Adaptativo conservador")
         };

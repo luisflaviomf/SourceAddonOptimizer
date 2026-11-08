@@ -64,8 +64,8 @@ namespace GmodAddonCompressor
         {
             var dialog = new OpenFileDialog
             {
-                Title = "Select gmad.exe",
-                Filter = "gmad.exe|gmad.exe|Executable|*.exe|All files|*.*",
+                Title = "Escolha o gmad.exe",
+                Filter = "gmad.exe|gmad.exe|Executável|*.exe|Todos os arquivos|*.*",
                 CheckFileExists = true,
             };
 
@@ -82,7 +82,7 @@ namespace GmodAddonCompressor
                 return;
             }
 
-            MessageBox.Show("gmad.exe not found. Please browse to gmad.exe.", "Juntar addons", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("gmad.exe não encontrado. Escolha o gmad.exe da pasta bin do Garry's Mod.", "Juntar addons", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
         private void TextBox_AddonMergeRootPath_TextChanged(object sender, TextChangedEventArgs e)
@@ -140,25 +140,25 @@ namespace GmodAddonCompressor
                 _addonMergeGmaPath = null;
             }
 
-            TextBox_AddonMergeSummary.Text = "No scan executed yet.";
-            TextBox_AddonMergeDiagnostics.Text = "No diagnostics available yet.";
+            TextBox_AddonMergeSummary.Text = "Nenhuma busca ainda.";
+            TextBox_AddonMergeDiagnostics.Text = "Sem diagnóstico ainda.";
             TextBlock_AddonMergeAddonCount.Text = "0";
             TextBlock_AddonMergeFileCount.Text = "0";
             TextBlock_AddonMergeUniquePathCount.Text = "0";
             TextBlock_AddonMergeConflictCount.Text = "0";
             TextBlock_AddonMergeDiscardedCount.Text = "0";
             TextBlock_AddonMergeMergedFileCount.Text = "0";
-            TextBlock_AddonMergeMergeStatus.Text = "Idle";
-            TextBlock_AddonMergeValidationStatus.Text = "Idle";
+            TextBlock_AddonMergeMergeStatus.Text = "—";
+            TextBlock_AddonMergeValidationStatus.Text = "—";
             ProgressBar_AddonMerge.IsIndeterminate = false;
             ProgressBar_AddonMerge.Minimum = 0;
             ProgressBar_AddonMerge.Maximum = 1000;
             ProgressBar_AddonMerge.Value = 0;
-            TextBlock_AddonMergePhase.Text = "Idle";
-            TextBlock_AddonMergeCurrent.Text = "Idle";
+            TextBlock_AddonMergePhase.Text = "—";
+            TextBlock_AddonMergeCurrent.Text = "—";
             TextBlock_AddonMergeProgressPercent.Text = "0%";
-            TextBlock_AddonMergeProgressDetail.Text = "Idle";
-            TextBlock_AddonMergeStatus.Text = "Idle";
+            TextBlock_AddonMergeProgressDetail.Text = "Procure os addons para começar.";
+            TextBlock_AddonMergeStatus.Text = "Aguardando";
         }
 
         private void UpdateAddonMergeActionStates()
@@ -283,19 +283,19 @@ namespace GmodAddonCompressor
             error = string.Empty;
             if (string.IsNullOrWhiteSpace(bundleName))
             {
-                error = "New addon name is required.";
+                error = "Informe o nome do novo addon.";
                 return false;
             }
 
             if (bundleName.EndsWith(' ') || bundleName.EndsWith('.'))
             {
-                error = "New addon name cannot end with a space or dot.";
+                error = "O nome do novo addon não pode terminar com espaço ou ponto.";
                 return false;
             }
 
             if (bundleName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
             {
-                error = "New addon name contains invalid file name characters.";
+                error = "O nome do novo addon tem caracteres inválidos para pasta.";
                 return false;
             }
 
@@ -308,7 +308,7 @@ namespace GmodAddonCompressor
 
             if (string.IsNullOrWhiteSpace(outputRoot))
             {
-                error = "Output destination is required.";
+                error = "Escolha onde salvar.";
                 return false;
             }
 
@@ -317,7 +317,7 @@ namespace GmodAddonCompressor
                 string fullPath = Path.GetFullPath(outputRoot);
                 if (File.Exists(fullPath))
                 {
-                    error = "Output destination points to a file.";
+                    error = "O destino aponta para um arquivo.";
                     return false;
                 }
 
@@ -328,7 +328,7 @@ namespace GmodAddonCompressor
             }
             catch (Exception ex)
             {
-                error = $"Output destination is invalid. {ex.Message}";
+                error = $"Destino inválido. {ex.Message}";
                 return false;
             }
         }
@@ -338,27 +338,27 @@ namespace GmodAddonCompressor
             var errors = new List<string>();
             string rootPath = TextBox_AddonMergeRootPath.Text.Trim();
             if (!Directory.Exists(rootPath))
-                errors.Add("Root folder not found.");
+                errors.Add("Pasta não encontrada.");
             if (!ValidateAddonMergeBundleName(GetAddonMergeBundleName(), out string bundleError))
                 errors.Add(bundleError);
             if (!ValidateAddonMergeOutputRoot(GetAddonMergeOutputRootPath(), createIfMissing: !scanOnly, out string outputError))
                 errors.Add(outputError);
             if (!CanWriteToDirectory(ToolPaths.WorkRoot))
-                errors.Add("No write permission in work directory root.");
+                errors.Add("Sem permissão de escrita na pasta de trabalho.");
 
             bool needsGmad = !scanOnly && GetSelectedAddonMergePackageMode() != "local-only";
             if (needsGmad)
             {
                 string gmadPath = TextBox_AddonMergeGmadPath.Text.Trim();
                 if (string.IsNullOrWhiteSpace(gmadPath) || !File.Exists(gmadPath))
-                    errors.Add("gmad.exe path is invalid.");
+                    errors.Add("Caminho do gmad.exe inválido.");
             }
 
             if (errors.Count == 0)
             {
                 string targetFolder = GetAddonMergeTargetFolderPath();
                 if (string.Equals(Path.GetFullPath(rootPath), Path.GetFullPath(targetFolder), StringComparison.OrdinalIgnoreCase))
-                    errors.Add("Output folder cannot be the same as the selected root folder.");
+                    errors.Add("A pasta de saída não pode ser a própria pasta de origem.");
             }
 
             errorMessage = string.Join(Environment.NewLine, errors);
@@ -391,20 +391,20 @@ namespace GmodAddonCompressor
             ProgressBar_AddonMerge.Minimum = 0;
             ProgressBar_AddonMerge.Maximum = 1000;
             ProgressBar_AddonMerge.Value = 0;
-            TextBlock_AddonMergePhase.Text = "Starting";
-            TextBlock_AddonMergeCurrent.Text = scanOnly ? "Scanning addons..." : reusingScan ? "Reusing last scan..." : "Preparing merge...";
+            TextBlock_AddonMergePhase.Text = "Iniciando";
+            TextBlock_AddonMergeCurrent.Text = scanOnly ? "Procurando addons…" : reusingScan ? "Usando a última busca…" : "Preparando…";
             TextBlock_AddonMergeProgressPercent.Text = "0%";
             TextBlock_AddonMergeProgressDetail.Text = scanOnly
-                ? "Preparing file inventory..."
-                : reusingScan ? "Reusing scan report and starting merge..." : "Preparing scan, merge, and validation...";
-            TextBlock_AddonMergeStatus.Text = "Running";
-            TextBox_AddonMergeSummary.Text = scanOnly ? "Scanning addons..." : "Scanning, merging, and validating addon bundle...";
-            TextBox_AddonMergeDiagnostics.Text = "Diagnostics will appear after the worker summary is loaded.";
+                ? "Listando os arquivos…"
+                : reusingScan ? "Usando a última busca e juntando…" : "Procurando, juntando e validando…";
+            TextBlock_AddonMergeStatus.Text = "Rodando";
+            TextBox_AddonMergeSummary.Text = scanOnly ? "Procurando addons…" : "Procurando, juntando e validando…";
+            TextBox_AddonMergeDiagnostics.Text = "O diagnóstico aparece ao final.";
 
             AppendAddonMergeLog(string.Empty);
             AppendAddonMergeLog(scanOnly
-                ? "=== Scanning addon folders for merge ==="
-                : "=== Scanning, merging, and validating addon bundle ===");
+                ? "=== Procurando addons para juntar ==="
+                : "=== Procurando, juntando e validando ===");
             UpdateAddonMergeActionStates();
         }
 
@@ -416,7 +416,7 @@ namespace GmodAddonCompressor
             if (!ValidateAddonMergeInputs(scanOnly: true, out var errorMessage))
             {
                 MessageBox.Show(errorMessage, "Juntar addons", MessageBoxButton.OK, MessageBoxImage.Warning);
-                TextBlock_AddonMergeStatus.Text = "Error";
+                TextBlock_AddonMergeStatus.Text = "Erro";
                 TextBox_AddonMergeSummary.Text = errorMessage;
                 return;
             }
@@ -436,7 +436,7 @@ namespace GmodAddonCompressor
             if (!ValidateAddonMergeInputs(scanOnly: false, out var errorMessage))
             {
                 MessageBox.Show(errorMessage, "Juntar addons", MessageBoxButton.OK, MessageBoxImage.Warning);
-                TextBlock_AddonMergeStatus.Text = "Error";
+                TextBlock_AddonMergeStatus.Text = "Erro";
                 TextBox_AddonMergeSummary.Text = errorMessage;
                 return;
             }
@@ -454,8 +454,8 @@ namespace GmodAddonCompressor
             if (!File.Exists(ToolPaths.WorkerExePath))
             {
                 _addonMergeRunning = false;
-                TextBlock_AddonMergeStatus.Text = "FAIL";
-                TextBox_AddonMergeSummary.Text = "SourceAddonOptimizer worker not found.";
+                TextBlock_AddonMergeStatus.Text = "Falhou";
+                TextBox_AddonMergeSummary.Text = "Worker do otimizador não encontrado.";
                 UpdateAddonMergeActionStates();
                 return;
             }
@@ -493,9 +493,9 @@ namespace GmodAddonCompressor
             {
                 _addonMergeRunning = false;
                 ProgressBar_AddonMerge.IsIndeterminate = false;
-                TextBlock_AddonMergePhase.Text = "Error";
-                TextBlock_AddonMergeStatus.Text = "FAIL";
-                TextBox_AddonMergeSummary.Text = $"Execution failed before summary.{Environment.NewLine}{ex.Message}";
+                TextBlock_AddonMergePhase.Text = "Erro";
+                TextBlock_AddonMergeStatus.Text = "Falhou";
+                TextBox_AddonMergeSummary.Text = $"Falhou antes do resumo.{Environment.NewLine}{ex.Message}";
                 AppendAddonMergeLog($"[GUI] {ex}");
                 UpdateAddonMergeActionStates();
             }
@@ -507,8 +507,8 @@ namespace GmodAddonCompressor
                 return;
 
             _addonMergeCts?.Cancel();
-            TextBlock_AddonMergeStatus.Text = "Canceling";
-            TextBox_AddonMergeSummary.Text = "Cancellation requested. Waiting for worker shutdown...";
+            TextBlock_AddonMergeStatus.Text = "Cancelando";
+            TextBox_AddonMergeSummary.Text = "Cancelamento pedido. Aguardando o worker parar…";
             AppendAddonMergeLog("[GUI] Cancellation requested.");
             UpdateAddonMergeActionStates();
         }
@@ -520,7 +520,7 @@ namespace GmodAddonCompressor
                 if (!string.IsNullOrWhiteSpace(update.Phase))
                 {
                     TextBlock_AddonMergePhase.Text = update.StepIndex.HasValue && update.StepTotal.HasValue
-                        ? $"Step {update.StepIndex}/{update.StepTotal} - {update.Phase}"
+                        ? $"Etapa {update.StepIndex}/{update.StepTotal} · {update.Phase}"
                         : update.Phase;
                     if (!update.ItemTotal.HasValue)
                     {
@@ -566,11 +566,11 @@ namespace GmodAddonCompressor
             {
                 "scan-addons" => $"Addons descobertos: {current}/{Math.Max(total, 1L)} | etapa {stageRatio:P0} | total {overallRatio:P0}",
                 "scan-files" => $"Arquivos analisados: {current:N0}/{Math.Max(total, 1L):N0} | etapa {stageRatio:P0} | total {overallRatio:P0}",
-                "merge-plan" => $"Resolvendo conflitos e planejando copia: {current:N0}/{Math.Max(total, 1L):N0} | etapa {stageRatio:P0} | total {overallRatio:P0}",
+                "merge-plan" => $"Resolvendo conflitos e planejando a cópia: {current:N0}/{Math.Max(total, 1L):N0} | etapa {stageRatio:P0} | total {overallRatio:P0}",
                 "merge-files" => $"Arquivos copiados: {current:N0}/{Math.Max(total, 1L):N0} | etapa {stageRatio:P0} | total {overallRatio:P0}",
                 "merge-bytes" => $"Dados copiados: {FormatBytes(current)} / {FormatBytes(Math.Max(total, 1L))} | etapa {stageRatio:P0} | total {overallRatio:P0}",
-                "validate-preflight" => $"Preflight de empacotamento: {stageRatio:P0} | total {overallRatio:P0}",
-                "validate-step" => $"Validacao/empacotamento: etapa {current}/{Math.Max(total, 1L)} | total {overallRatio:P0}",
+                "validate-preflight" => $"Conferindo antes de empacotar: {stageRatio:P0} | total {overallRatio:P0}",
+                "validate-step" => $"Validação/empacotamento: etapa {current}/{Math.Max(total, 1L)} | total {overallRatio:P0}",
                 "validate-files" => $"Arquivos conferidos no roundtrip: {current:N0}/{Math.Max(total, 1L):N0} | etapa {stageRatio:P0} | total {overallRatio:P0}",
                 _ => $"Progresso: {current:N0}/{Math.Max(total, 1L):N0} | etapa {stageRatio:P0} | total {overallRatio:P0}",
             };
@@ -633,29 +633,29 @@ namespace GmodAddonCompressor
             {
                 if (exitCode == 130)
                 {
-                    TextBlock_AddonMergePhase.Text = "Canceled";
-                    TextBlock_AddonMergeStatus.Text = "Canceled";
+                    TextBlock_AddonMergePhase.Text = "Cancelado";
+                    TextBlock_AddonMergeStatus.Text = "Cancelado";
                 }
                 else
                 {
-                    TextBlock_AddonMergePhase.Text = "Completed";
-                    TextBlock_AddonMergeStatus.Text = exitCode == 0 ? "OK" : exitCode == 2 ? "Blocked" : "Completed with issues";
+                    TextBlock_AddonMergePhase.Text = "Concluído";
+                    TextBlock_AddonMergeStatus.Text = exitCode == 0 ? "Pronto" : exitCode == 2 ? "Bloqueado" : "Concluído com avisos";
                     ProgressBar_AddonMerge.Minimum = 0;
                     ProgressBar_AddonMerge.Maximum = 1000;
                     ProgressBar_AddonMerge.Value = 1000;
                     TextBlock_AddonMergeProgressPercent.Text = "100%";
-                    TextBlock_AddonMergeProgressDetail.Text = exitCode == 0 ? "100% complete" : "Execution finished with diagnostics";
+                    TextBlock_AddonMergeProgressDetail.Text = exitCode == 0 ? "Concluído" : "Terminou com avisos; veja o diagnóstico em Detalhes";
                 }
             }
             else
             {
-                TextBlock_AddonMergePhase.Text = exitCode == 130 ? "Canceled" : "Completed";
-                TextBlock_AddonMergeStatus.Text = exitCode == 0 ? "OK" : exitCode == 130 ? "Canceled" : $"FAIL ({exitCode})";
+                TextBlock_AddonMergePhase.Text = exitCode == 130 ? "Cancelado" : "Concluído";
+                TextBlock_AddonMergeStatus.Text = exitCode == 0 ? "Pronto" : exitCode == 130 ? "Cancelado" : $"Falhou ({exitCode})";
                 TextBlock_AddonMergeProgressPercent.Text = exitCode == 130 ? "0%" : "100%";
-                TextBlock_AddonMergeProgressDetail.Text = exitCode == 130 ? "Canceled before final summary" : "No summary generated";
+                TextBlock_AddonMergeProgressDetail.Text = exitCode == 130 ? "Cancelado antes do resumo" : "Sem resumo";
                 TextBox_AddonMergeSummary.Text = exitCode == 130
-                    ? "Execution canceled before summary was written."
-                    : "Execution ended without addon_merge_summary.json. Check the log.";
+                    ? "Cancelado antes do resumo."
+                    : "Terminou sem o resumo (addon_merge_summary.json). Veja o log em Detalhes.";
             }
 
             UpdateAddonMergeActionStates();
@@ -716,54 +716,54 @@ namespace GmodAddonCompressor
 
                 var summaryLines = new List<string>
                 {
-                    $"Selected root: {rootPath}",
-                    $"New addon name: {bundleName}",
-                    $"Output destination: {outputRoot}",
-                    $"Planned folder: {Path.Combine(outputRoot, bundleName)}",
-                    $"Package mode: {packageMode}",
-                    $"Addons found: {addonCount}",
-                    $"Files inventoried: {fileCount}",
-                    $"Unique relative paths: {uniquePathCount}",
-                    $"Real same-path conflicts: {conflictCount}",
+                    $"Origem: {rootPath}",
+                    $"Nome do novo addon: {bundleName}",
+                    $"Salvar em: {outputRoot}",
+                    $"Pasta final: {Path.Combine(outputRoot, bundleName)}",
+                    $"Pacote: {packageMode}",
+                    $"Addons encontrados: {addonCount}",
+                    $"Arquivos listados: {fileCount}",
+                    $"Caminhos únicos: {uniquePathCount}",
+                    $"Conflitos reais (mesmo caminho, conteúdo diferente): {conflictCount}",
                 };
 
                 if (discardedCount > 0)
-                    summaryLines.Add($"Compatibility discards: {discardedCount} file(s)");
+                    summaryLines.Add($"Descartados pelo modo compatível: {discardedCount} arquivo(s)");
 
                 if (scanOnly)
                 {
-                    summaryLines.Add("Scan only: merge and validation were not executed.");
+                    summaryLines.Add("Só busca: nada foi juntado ainda.");
                 }
                 else
                 {
-                    summaryLines.Add($"Merge status: {mergeStatus}");
+                    summaryLines.Add($"Junção: {mergeStatus}");
                     if (mergedFileCount > 0)
-                        summaryLines.Add($"Merged files: {mergedFileCount}");
-                    summaryLines.Add($"Validation status: {validationStatus}");
+                        summaryLines.Add($"Arquivos juntados: {mergedFileCount}");
+                    summaryLines.Add($"Validação: {validationStatus}");
 
                     if (string.Equals(overallStatus, "merge-blocked", StringComparison.OrdinalIgnoreCase))
-                        summaryLines.Add("The selected conflict policy blocked the merge because the same path appeared with different content.");
+                        summaryLines.Add("A regra de conflito parou a junção: o mesmo caminho aparece com conteúdo diferente.");
                     else if (string.Equals(validationStatus, "packaging-blocked-invalid-files", StringComparison.OrdinalIgnoreCase))
-                        summaryLines.Add("Strict packaging was blocked before calling gmad.exe because invalid files were detected in the merged output. Inspect diagnostics below.");
+                        summaryLines.Add("O pacote estrito foi bloqueado antes do gmad.exe: há arquivos que o gmad recusa. Veja o diagnóstico em Detalhes.");
                     else if (string.Equals(overallStatus, "validation-failed", StringComparison.OrdinalIgnoreCase))
-                        summaryLines.Add("Merge completed, but validation/packaging reported issues. Inspect diagnostics below.");
+                        summaryLines.Add("Juntou, mas a validação ou o pacote teve avisos. Veja o diagnóstico em Detalhes.");
                     else if (string.Equals(overallStatus, "ok", StringComparison.OrdinalIgnoreCase))
-                        summaryLines.Add("Scan, merge, and validation completed successfully.");
+                        summaryLines.Add("Busca, junção e validação concluídas.");
                 }
 
                 if (!string.IsNullOrWhiteSpace(_addonMergeMergedRoot))
-                    summaryLines.Add($"Merged root: {_addonMergeMergedRoot}");
+                    summaryLines.Add($"Addon unido: {_addonMergeMergedRoot}");
                 if (!string.IsNullOrWhiteSpace(_addonMergeGmaPath))
-                    summaryLines.Add($"Package: {_addonMergeGmaPath}");
+                    summaryLines.Add($"Pacote: {_addonMergeGmaPath}");
 
                 TextBox_AddonMergeSummary.Text = string.Join(Environment.NewLine, summaryLines);
-                TextBlock_AddonMergeProgressDetail.Text = scanOnly ? "Scan complete" : "Execution complete";
+                TextBlock_AddonMergeProgressDetail.Text = scanOnly ? "Busca concluída" : "Concluído";
                 TextBox_AddonMergeDiagnostics.Text = BuildAddonMergeDiagnostics(details, validation);
                 return true;
             }
             catch (Exception ex)
             {
-                TextBox_AddonMergeSummary.Text = $"Failed to read addon_merge_summary.json.{Environment.NewLine}{ex.Message}";
+                TextBox_AddonMergeSummary.Text = $"Não foi possível ler addon_merge_summary.json.{Environment.NewLine}{ex.Message}";
                 return false;
             }
         }
@@ -772,25 +772,25 @@ namespace GmodAddonCompressor
         {
             var lines = new List<string>();
 
-            AppendPreviewSection(lines, "Real conflicts", details, "same_path_different_conflict_preview",
+            AppendPreviewSection(lines, "Conflitos reais", details, "same_path_different_conflict_preview",
                 item => $"- {GetJsonString(item, "rel_path")} | addons: {string.Join(", ", GetJsonStringArray(item, "addon_names"))} | hashes: {GetJsonInt(item, "hash_count")}");
 
-            AppendPreviewSection(lines, "Blocked by defensive policy", details, "blocked_conflict_preview",
+            AppendPreviewSection(lines, "Bloqueados pela regra de conflito", details, "blocked_conflict_preview",
                 item => $"- {GetJsonString(item, "rel_key")} | addons: {string.Join(", ", GetJsonStringArray(item, "addon_names"))}");
 
-            AppendPreviewSection(lines, "Discarded by compatibility mode", details, "discarded_files_preview",
+            AppendPreviewSection(lines, "Descartados pelo modo compatível", details, "discarded_files_preview",
                 item => $"- {GetJsonString(item, "addon_name")} | {GetJsonString(item, "rel_path")} | pattern: {GetJsonString(item, "matched_pattern")}");
 
-            AppendPreviewSection(lines, "Overridden conflicts", details, "overridden_conflict_preview",
+            AppendPreviewSection(lines, "Conflitos resolvidos", details, "overridden_conflict_preview",
                 item => $"- {GetJsonString(item, "rel_key")} | {GetJsonString(item, "resolution")} | winner: {GetJsonString(item, "winner")}");
 
-            AppendPreviewSection(lines, "Strict packaging blocked files", details, "packaging_preflight_invalid_files_preview",
+            AppendPreviewSection(lines, "Arquivos que bloqueiam o pacote estrito", details, "packaging_preflight_invalid_files_preview",
                 item => $"- {GetJsonString(item, "rel_path")} | pattern: {GetJsonString(item, "matched_pattern")} | size: {FormatBytes(GetJsonLong(item, "size"))}");
 
             string? packagingExcerpt = GetJsonString(details, "packaging_output_excerpt");
             if (!string.IsNullOrWhiteSpace(packagingExcerpt))
             {
-                lines.Add("Packaging output:");
+                lines.Add("Saída do empacotamento:");
                 lines.Add(packagingExcerpt);
             }
 
@@ -802,7 +802,7 @@ namespace GmodAddonCompressor
             {
                 if (lines.Count > 0)
                     lines.Add(string.Empty);
-                lines.Add($"Warninvalid diagnostic skipped: {GetJsonString(warninvalid, "reason") ?? "unspecified"}");
+                lines.Add($"Diagnóstico warninvalid pulado: {GetJsonString(warninvalid, "reason") ?? "sem motivo"}");
             }
 
             string? warninvalidExcerpt = GetJsonString(details, "warninvalid_output_excerpt");
@@ -810,12 +810,12 @@ namespace GmodAddonCompressor
             {
                 if (lines.Count > 0)
                     lines.Add(string.Empty);
-                lines.Add("Warninvalid diagnostic:");
+                lines.Add("Diagnóstico warninvalid:");
                 lines.Add(warninvalidExcerpt);
             }
 
             if (lines.Count == 0)
-                return "No conflicts, discarded files, or packaging diagnostics were reported.";
+                return "Nenhum conflito, descarte ou aviso de empacotamento.";
 
             return string.Join(Environment.NewLine, lines);
         }

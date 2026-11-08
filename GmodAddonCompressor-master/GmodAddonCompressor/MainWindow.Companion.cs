@@ -46,7 +46,6 @@ namespace GmodAddonCompressor
             Button_CompanionCopyPlan.Click += Button_CompanionCopyPlan_Click;
             Button_CompanionOpenPlan.Click += Button_CompanionOpenPlan_Click;
             Button_CompanionImportResults.Click += Button_CompanionImportResults_Click;
-            Combo_CompanionResultFilter.SelectionChanged += Combo_CompanionResultFilter_SelectionChanged;
             Button_CompanionCopyResults.Click += Button_CompanionCopyResults_Click;
             Button_CompanionExportResults.Click += Button_CompanionExportResults_Click;
             Button_CompanionOpenScreenshot.Click += Button_CompanionOpenScreenshot_Click;
@@ -82,7 +81,7 @@ namespace GmodAddonCompressor
         {
             var dialog = new VistaFolderBrowserDialog
             {
-                Description = "Select the Garry's Mod installation folder (the folder containing gmod.exe).",
+                Description = "Escolha a pasta do Garry's Mod (a que tem o gmod.exe).",
                 UseDescriptionForTitle = true,
                 SelectedPath = Directory.Exists(_companionContext.GarrysModRoot)
                     ? _companionContext.GarrysModRoot
@@ -106,15 +105,15 @@ namespace GmodAddonCompressor
             if (!_companionContext.CanRemove)
                 return;
             MessageBoxResult confirmation = MessageBox.Show(
-                "Remove only the files declared by the Companion ownership manifest? Runtime profiles and validation results under garrysmod/data are preserved.",
-                "Remove Companion",
+                "Remover o addon de teste? Só os arquivos instalados por ele são apagados; perfis e resultados em garrysmod/data ficam.",
+                "Remover addon de teste",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning
             );
             if (confirmation != MessageBoxResult.Yes)
                 return;
 
-            CancellationTokenSource cts = BeginCompanionOperation("Removing declared Companion files...", 15);
+            CancellationTokenSource cts = BeginCompanionOperation("Removendo o addon de teste…", 15);
             try
             {
                 string root = RequireCompanionGameRoot();
@@ -131,17 +130,17 @@ namespace GmodAddonCompressor
                 );
                 _companionContext.ApplyInstallStatus(status);
                 _companionContext.OperationStatusText = string.IsNullOrWhiteSpace(result.Warning)
-                    ? "Companion removed. Runtime data was preserved."
-                    : "Companion files were removed; unknown paths were preserved. " + result.Warning;
+                    ? "Addon de teste removido. Os dados do jogo foram mantidos."
+                    : "Addon de teste removido; arquivos desconhecidos foram mantidos. " + result.Warning;
                 _companionContext.ProgressValue = 100;
             }
             catch (OperationCanceledException)
             {
-                _companionContext.OperationStatusText = "Companion operation cancelled.";
+                _companionContext.OperationStatusText = "Operação cancelada.";
             }
             catch (Exception ex)
             {
-                _companionContext.OperationStatusText = "Remove failed: " + ex.Message;
+                _companionContext.OperationStatusText = "Falha ao remover: " + ex.Message;
             }
             finally
             {
@@ -156,11 +155,11 @@ namespace GmodAddonCompressor
                 string root = RequireCompanionGameRoot();
                 string dataRoot = Path.GetFullPath(Path.Combine(root, "garrysmod", "data", "sourceaddonoptimizer"));
                 Directory.CreateDirectory(dataRoot);
-                OpenFolder(dataRoot, "Companion");
+                OpenFolder(dataRoot, "Testar no jogo");
             }
             catch (Exception ex)
             {
-                _companionContext.OperationStatusText = "Could not open the data folder: " + ex.Message;
+                _companionContext.OperationStatusText = "Não deu para abrir a pasta de dados: " + ex.Message;
             }
         }
 
@@ -168,8 +167,8 @@ namespace GmodAddonCompressor
         {
             var dialog = new OpenFileDialog
             {
-                Title = "Select a Companion runtime profile index",
-                Filter = "Companion profile index|run-index.json|JSON files|*.json",
+                Title = "Escolha o run-index.json do perfil",
+                Filter = "Índice do perfil|run-index.json|Arquivos JSON|*.json",
                 CheckFileExists = true,
                 Multiselect = true,
             };
@@ -221,12 +220,12 @@ namespace GmodAddonCompressor
             if (!Directory.Exists(addonRoot))
             {
                 _companionContext.ProfileSummaryText =
-                    "Select a valid addon folder before importing. The profile remains disabled.";
-                _companionContext.OperationStatusText = "Profile not imported: addon folder is missing.";
+                    "Escolha a pasta do addon antes de importar. O perfil fica desligado.";
+                _companionContext.OperationStatusText = "Perfil não importado: falta a pasta do addon.";
                 return;
             }
 
-            CancellationTokenSource cts = BeginCompanionOperation("Validating and matching runtime profile...", 10);
+            CancellationTokenSource cts = BeginCompanionOperation("Validando o perfil e conferindo com o addon…", 10);
             try
             {
                 string[] capturedProfiles = profileIndexes.ToArray();
@@ -246,20 +245,20 @@ namespace GmodAddonCompressor
                 _companionContext.ApplyImportedProfile(result, capturedProfiles[0]);
                 _companionContext.ProgressValue = 100;
                 _companionContext.OperationStatusText = result.IsEligible
-                    ? "Profile verified and matched. Maximum v2 use remains off until you check it explicitly."
-                    : "Profile verified, but it is not eligible for Maximum v2: " + result.CompatibilityText;
+                    ? "Perfil validado. Para usar, marque a opção no modo Maximum (Avançado › Modelos)."
+                    : "Perfil validado, mas não serve para o modo Maximum: " + result.CompatibilityText;
                 if (persistSelectedPath)
                     SaveSettings();
             }
             catch (OperationCanceledException)
             {
-                _companionContext.OperationStatusText = "Profile import cancelled; Maximum v2 profile use is off.";
+                _companionContext.OperationStatusText = "Importação cancelada; o perfil fica desligado.";
             }
             catch (Exception ex)
             {
                 _companionContext.ResetImportedProfile(profileIndexes[0]);
-                _companionContext.ProfileSummaryText = "Profile rejected: " + ex.Message;
-                _companionContext.OperationStatusText = "Profile import failed; Models and Pipeline are unchanged.";
+                _companionContext.ProfileSummaryText = "Perfil recusado: " + ex.Message;
+                _companionContext.OperationStatusText = "Falha ao importar o perfil; nada foi alterado.";
             }
             finally
             {
@@ -311,7 +310,7 @@ namespace GmodAddonCompressor
                 if (!stillSelected)
                     return null;
                 _companionContext.OperationStatusText =
-                    $"Runtime profile snapshot verified for Maximum v2 ({snapshot.ImportResult.MatchedModelCount} models, {snapshot.ImportResult.MatchedMaterialCount} materials).";
+                    $"Perfil conferido para o modo Maximum ({snapshot.ImportResult.MatchedModelCount} modelos, {snapshot.ImportResult.MatchedMaterialCount} materiais).";
                 return snapshot.BundleRoot;
             }
             catch (OperationCanceledException)
@@ -322,10 +321,10 @@ namespace GmodAddonCompressor
             {
                 _companionContext.UseWithMaximumV2 = false;
                 _companionContext.ProfileSummaryText =
-                    "Runtime evidence was rejected at run start and was not used. Ordinary Maximum v2 continues unchanged. "
+                    "O perfil foi recusado no início e não foi usado; o modo Maximum segue normal. "
                     + ex.Message;
                 _companionContext.OperationStatusText =
-                    "Runtime profile snapshot failed; continuing without runtime evidence.";
+                    "Falha ao preparar o perfil; seguindo sem ele.";
                 return null;
             }
         }
@@ -355,10 +354,10 @@ namespace GmodAddonCompressor
                 );
                 _companionContext.ProfileSummaryText = summary.DisplayText;
                 _companionContext.OperationStatusText = summary.EvidenceApplied
-                    ? "Maximum v2 completed with verified runtime evidence."
+                    ? "Maximum concluído usando o perfil do jogo."
                     : runtimeProfileRequested
-                        ? "Maximum v2 completed, but the worker did not apply any runtime evidence."
-                        : "Maximum v2 completed without runtime evidence.";
+                        ? "Maximum concluído, mas o perfil do jogo não foi aplicado."
+                        : "Maximum concluído sem perfil do jogo.";
             }
             catch (OperationCanceledException)
             {
@@ -367,13 +366,13 @@ namespace GmodAddonCompressor
             catch (Exception ex)
             {
                 _lastMaximumRuntimeSummaryText = runtimeProfileRequested
-                    ? "Runtime evidence was requested, but its final Maximum report could not be verified."
+                    ? "O perfil foi pedido, mas o relatório final do Maximum não pôde ser conferido."
                     : string.Empty;
                 if (runtimeProfileRequested)
                 {
                     _companionContext.ProfileSummaryText = _lastMaximumRuntimeSummaryText + " " + ex.Message;
                     _companionContext.OperationStatusText =
-                        "Maximum completed; runtime evidence is not reported as used because verification failed.";
+                        "Maximum concluído; o perfil não conta como usado porque a conferência falhou.";
                 }
             }
         }
@@ -388,7 +387,7 @@ namespace GmodAddonCompressor
                 || !Directory.Exists(optimizedRoot)
                 || string.IsNullOrWhiteSpace(workDir))
             {
-                _companionContext.OperationStatusText = "Generate plan failed: no completed Maximum v2 output is available.";
+                _companionContext.OperationStatusText = "Para gerar o plano, otimize antes os modelos no modo Maximum (Avançado › Modelos).";
                 return;
             }
             string reportPath = Path.Combine(workDir, "logs", "maximum_adaptive_report.json");
@@ -396,7 +395,7 @@ namespace GmodAddonCompressor
             if (destinationParent == null)
                 return;
 
-            CancellationTokenSource cts = BeginCompanionOperation("Generating bounded validation plan...", 10);
+            CancellationTokenSource cts = BeginCompanionOperation("Gerando o plano de teste…", 10);
             try
             {
                 string capturedOutput = Path.GetFullPath(optimizedRoot);
@@ -419,20 +418,20 @@ namespace GmodAddonCompressor
                 Button_CompanionOpenPlan.IsEnabled = true;
                 _companionContext.ProgressValue = 100;
                 _companionContext.ValidationSummaryText =
-                    $"Plan ready: {result.ModelCount} models, {result.Tests.Count} tests, {result.ScreenshotCount} screenshots. "
-                    + $"Run {result.RunId:D}; SHA-256 {result.IndexSha256}. "
-                    + $"Caps {250} models / {1000} screenshots / {result.MaximumOrdinaryViews} views / {result.ScreenshotRetries} retry. "
-                    + $"Truncated: tests {result.TruncatedTests}, models {result.TruncatedModels}, screenshots {result.TruncatedScreenshots}. "
-                    + "DX80 is explicitly excluded.";
-                _companionContext.OperationStatusText = "Validation plan generated. Transfer remains a manual, local action.";
+                    $"Plano pronto: {result.ModelCount} modelos, {result.Tests.Count} testes, {result.ScreenshotCount} capturas. "
+                    + $"Execução {result.RunId:D}; SHA-256 {result.IndexSha256}. "
+                    + $"Limites: {250} modelos / {1000} capturas / {result.MaximumOrdinaryViews} vistas / {result.ScreenshotRetries} nova tentativa. "
+                    + $"Cortados: testes {result.TruncatedTests}, modelos {result.TruncatedModels}, capturas {result.TruncatedScreenshots}. "
+                    + "DX80 fica de fora.";
+                _companionContext.OperationStatusText = "Plano de teste gerado.";
             }
             catch (OperationCanceledException)
             {
-                _companionContext.OperationStatusText = "Validation plan generation cancelled.";
+                _companionContext.OperationStatusText = "Geração do plano cancelada.";
             }
             catch (Exception ex)
             {
-                _companionContext.OperationStatusText = "Generate plan failed: " + ex.Message;
+                _companionContext.OperationStatusText = "Falha ao gerar o plano: " + ex.Message;
             }
             finally
             {
@@ -447,12 +446,12 @@ namespace GmodAddonCompressor
                 return;
             var dialog = new VistaFolderBrowserDialog
             {
-                Description = "Select the validation_inbox or export folder that will receive a verified copy.",
+                Description = "Escolha a pasta validation_inbox (ou outra) para receber uma cópia do plano.",
                 UseDescriptionForTitle = true,
             };
             if (!dialog.ShowDialog(this).GetValueOrDefault())
                 return;
-            CancellationTokenSource cts = BeginCompanionOperation("Copying and revalidating the plan...", 20);
+            CancellationTokenSource cts = BeginCompanionOperation("Copiando e conferindo o plano…", 20);
             try
             {
                 string source = _lastCompanionValidationPlanRoot;
@@ -463,15 +462,15 @@ namespace GmodAddonCompressor
                 );
                 cts.Token.ThrowIfCancellationRequested();
                 _companionContext.ProgressValue = 100;
-                _companionContext.OperationStatusText = "Verified plan copy created: " + copied;
+                _companionContext.OperationStatusText = "Cópia do plano criada: " + copied;
             }
             catch (OperationCanceledException)
             {
-                _companionContext.OperationStatusText = "Validation plan copy cancelled.";
+                _companionContext.OperationStatusText = "Cópia do plano cancelada.";
             }
             catch (Exception ex)
             {
-                _companionContext.OperationStatusText = "Copy plan failed: " + ex.Message;
+                _companionContext.OperationStatusText = "Falha ao copiar o plano: " + ex.Message;
             }
             finally
             {
@@ -480,7 +479,7 @@ namespace GmodAddonCompressor
         }
 
         private void Button_CompanionOpenPlan_Click(object sender, RoutedEventArgs e) =>
-            OpenFolder(_lastCompanionValidationPlanRoot, "Companion plan");
+            OpenFolder(_lastCompanionValidationPlanRoot, "Plano de teste");
 
         private void ClearCompanionValidationPlanResult()
         {
@@ -495,10 +494,10 @@ namespace GmodAddonCompressor
             if (!string.IsNullOrWhiteSpace(gameRoot))
             {
                 MessageBoxResult choice = MessageBox.Show(
-                    "Generate directly in this local Garry's Mod validation inbox?\n\n"
+                    "Gerar o plano direto na pasta do Garry's Mod?\n\n"
                     + Path.Combine(gameRoot, "garrysmod", "data", "sourceaddonoptimizer", "validation_inbox")
-                    + "\n\nChoose No to select a manual export folder.",
-                    "Validation Plan",
+                    + "\n\nEscolha Não para salvar em outra pasta.",
+                    "Plano de teste",
                     MessageBoxButton.YesNoCancel,
                     MessageBoxImage.Question
                 );
@@ -519,7 +518,7 @@ namespace GmodAddonCompressor
             }
             var dialog = new VistaFolderBrowserDialog
             {
-                Description = "Select a local export folder for the validation plan.",
+                Description = "Escolha a pasta onde salvar o plano de teste.",
                 UseDescriptionForTitle = true,
             };
             return dialog.ShowDialog(this).GetValueOrDefault() ? dialog.SelectedPath : null;
@@ -529,14 +528,14 @@ namespace GmodAddonCompressor
         {
             var dialog = new OpenFileDialog
             {
-                Title = "Select Companion structural and/or visual result indexes",
-                Filter = "Companion result index|run-index.json|JSON files|*.json",
+                Title = "Escolha os run-index.json dos resultados",
+                Filter = "Índice de resultados|run-index.json|Arquivos JSON|*.json",
                 CheckFileExists = true,
                 Multiselect = true,
             };
             if (!dialog.ShowDialog(this).GetValueOrDefault())
                 return;
-            CancellationTokenSource cts = BeginCompanionOperation("Verifying validation results and screenshot evidence...", 10);
+            CancellationTokenSource cts = BeginCompanionOperation("Conferindo os resultados e as capturas…", 10);
             var rejected = new List<(string Path, string Error)>();
             int imported = 0;
             try
@@ -566,23 +565,17 @@ namespace GmodAddonCompressor
                     _companionContext.ApplyValidationImportError(path, error);
                 _companionContext.ProgressValue = 100;
                 _companionContext.OperationStatusText = rejected.Count == 0
-                    ? $"Imported {imported} trusted validation result(s)."
-                    : $"Imported {imported}; rejected {rejected.Count}. Rejected inputs remain listed for diagnosis and were not displayed as trusted evidence.";
+                    ? $"{imported} resultado(s) importado(s)."
+                    : $"{imported} importado(s), {rejected.Count} recusado(s). Os recusados aparecem em Detalhes.";
             }
             catch (OperationCanceledException)
             {
-                _companionContext.OperationStatusText = "Validation result import cancelled.";
+                _companionContext.OperationStatusText = "Importação de resultados cancelada.";
             }
             finally
             {
                 EndCompanionOperation(cts);
             }
-        }
-
-        private void Combo_CompanionResultFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (Combo_CompanionResultFilter.SelectedItem is ComboBoxItem item && item.Tag is string filter)
-                _companionContext.ValidationStatusFilter = filter;
         }
 
         private void Button_CompanionCopyResults_Click(object sender, RoutedEventArgs e)
@@ -591,7 +584,7 @@ namespace GmodAddonCompressor
             if (string.IsNullOrWhiteSpace(summary))
                 return;
             Clipboard.SetText(summary);
-            _companionContext.OperationStatusText = "Validation summary copied.";
+            _companionContext.OperationStatusText = "Resumo copiado.";
         }
 
         private void Button_CompanionExportResults_Click(object sender, RoutedEventArgs e)
@@ -601,8 +594,8 @@ namespace GmodAddonCompressor
                 return;
             var dialog = new SaveFileDialog
             {
-                Title = "Export Companion validation summary",
-                Filter = "Text summary|*.txt",
+                Title = "Exportar resumo dos testes",
+                Filter = "Resumo em texto|*.txt",
                 FileName = "companion-validation-summary.txt",
                 AddExtension = true,
                 OverwritePrompt = true,
@@ -610,7 +603,7 @@ namespace GmodAddonCompressor
             if (!dialog.ShowDialog(this).GetValueOrDefault())
                 return;
             File.WriteAllText(dialog.FileName, summary + Environment.NewLine, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            _companionContext.OperationStatusText = "Validation summary exported: " + dialog.FileName;
+            _companionContext.OperationStatusText = "Resumo exportado: " + dialog.FileName;
         }
 
         private void Button_CompanionOpenScreenshot_Click(object sender, RoutedEventArgs e)
@@ -623,7 +616,7 @@ namespace GmodAddonCompressor
 
         private void Button_CompanionCancel_Click(object sender, RoutedEventArgs e)
         {
-            _companionContext.OperationStatusText = "Cancelling Companion operation...";
+            _companionContext.OperationStatusText = "Cancelando…";
             CancelCompanionOperation();
         }
 
@@ -632,7 +625,7 @@ namespace GmodAddonCompressor
             if (isUpdate ? !_companionContext.CanUpdate : !_companionContext.CanInstall)
                 return;
             CancellationTokenSource cts = BeginCompanionOperation(
-                isUpdate ? "Updating the Companion..." : "Installing the Companion...",
+                isUpdate ? "Atualizando o addon de teste…" : "Instalando o addon de teste…",
                 10
             );
             try
@@ -653,20 +646,20 @@ namespace GmodAddonCompressor
                 _companionContext.ApplyInstallStatus(status);
                 _companionContext.OperationStatusText = result.Disposition switch
                 {
-                    CompanionInstallDisposition.Installed => "Companion installed. Restart Garry's Mod if it is already open.",
-                    CompanionInstallDisposition.Updated => "Companion updated. Restart Garry's Mod if it is already open.",
-                    _ => "The packaged Companion is already installed.",
+                    CompanionInstallDisposition.Installed => "Addon de teste instalado. Se o Garry's Mod estiver aberto, reinicie.",
+                    CompanionInstallDisposition.Updated => "Addon de teste atualizado. Se o Garry's Mod estiver aberto, reinicie.",
+                    _ => "O addon de teste já está instalado.",
                 };
                 _companionContext.ProgressValue = 100;
                 SaveSettings();
             }
             catch (OperationCanceledException)
             {
-                _companionContext.OperationStatusText = "Companion operation cancelled.";
+                _companionContext.OperationStatusText = "Operação cancelada.";
             }
             catch (Exception ex)
             {
-                _companionContext.OperationStatusText = (isUpdate ? "Update failed: " : "Install failed: ") + ex.Message;
+                _companionContext.OperationStatusText = (isUpdate ? "Falha ao atualizar: " : "Falha ao instalar: ") + ex.Message;
             }
             finally
             {
@@ -676,7 +669,7 @@ namespace GmodAddonCompressor
 
         private async Task RefreshCompanionStatusAsync(string? explicitRoot, bool persistDetectedRoot)
         {
-            CancellationTokenSource cts = BeginCompanionOperation("Detecting Garry's Mod...", 5);
+            CancellationTokenSource cts = BeginCompanionOperation("Procurando o Garry's Mod…", 5);
             try
             {
                 string? detected = await Task.Run(
@@ -688,10 +681,10 @@ namespace GmodAddonCompressor
                 {
                     _companionContext.GarrysModRoot = string.Empty;
                     _companionContext.SetInstallationUnavailable(
-                        "Not installed",
-                        "Garry's Mod was not detected. Select the folder containing gmod.exe to enable installation."
+                        "Não instalado",
+                        "Garry's Mod não encontrado. Escolha a pasta que tem o gmod.exe."
                     );
-                    _companionContext.OperationStatusText = "Garry's Mod not detected.";
+                    _companionContext.OperationStatusText = "Garry's Mod não encontrado.";
                     return;
                 }
 
@@ -705,18 +698,18 @@ namespace GmodAddonCompressor
                 cts.Token.ThrowIfCancellationRequested();
                 _companionContext.ApplyInstallStatus(status);
                 _companionContext.ProgressValue = 100;
-                _companionContext.OperationStatusText = "Companion installation state checked.";
+                _companionContext.OperationStatusText = "Estado do addon de teste verificado.";
                 if (persistDetectedRoot)
                     SaveSettings();
             }
             catch (OperationCanceledException)
             {
-                _companionContext.OperationStatusText = "Companion operation cancelled.";
+                _companionContext.OperationStatusText = "Operação cancelada.";
             }
             catch (Exception ex)
             {
-                _companionContext.SetInstallationUnavailable("Incompatible", ex.Message);
-                _companionContext.OperationStatusText = "Detection failed: " + ex.Message;
+                _companionContext.SetInstallationUnavailable("Incompatível", ex.Message);
+                _companionContext.OperationStatusText = "Falha ao procurar: " + ex.Message;
             }
             finally
             {
@@ -749,14 +742,14 @@ namespace GmodAddonCompressor
 
         private string RequireCompanionGameRoot() =>
             CompanionPathPolicy.DetectGarrysModRoot(_companionContext.GarrysModRoot)
-            ?? throw new InvalidOperationException("Select a valid Garry's Mod folder first.");
+            ?? throw new InvalidOperationException("Escolha antes a pasta do Garry's Mod.");
 
         private static byte[] ReadEmbeddedCompanionPackage()
         {
             using Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(CompanionResourceName)
-                ?? throw new FileNotFoundException("The embedded Companion package is missing from this build.");
+                ?? throw new FileNotFoundException("O pacote do addon de teste não está neste build.");
             if (stream.Length <= 0 || stream.Length > 20_000_000)
-                throw new InvalidOperationException("The embedded Companion package has an invalid size.");
+                throw new InvalidOperationException("O pacote do addon de teste tem tamanho inválido.");
             using var output = new MemoryStream((int)stream.Length);
             stream.CopyTo(output);
             return output.ToArray();

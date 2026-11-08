@@ -15,9 +15,9 @@ namespace GmodAddonCompressor.DataContexts
         private string? _installationDetailOverride;
         private string _garrysModRoot = string.Empty;
         private string _lastProfilePath = string.Empty;
-        private string _profileSummaryText = "No runtime profile imported. Models and Pipeline are unchanged.";
-        private string _validationSummaryText = "No validation plan or result is active.";
-        private string _operationStatusText = "Ready";
+        private string _profileSummaryText = "Nenhum perfil importado. O modo Maximum continua igual.";
+        private string _validationSummaryText = "Nenhum plano ou resultado ativo.";
+        private string _operationStatusText = "Pronto";
         private bool _useWithMaximumV2;
         private bool _isBusy;
         private int _progressValue;
@@ -71,9 +71,9 @@ namespace GmodAddonCompressor.DataContexts
         public string ProfileOriginText => _importedProfile?.OriginText ?? "—";
         public string ProfileAgeText => _importedProfile?.AgeText ?? "—";
         public string ProfileMatchText => _importedProfile == null
-            ? "No addon intersection available"
-            : $"Observed {_importedProfile.ObservedModelCount} models / {_importedProfile.ObservedMaterialCount} materials · matched {_importedProfile.MatchedModelCount} / {_importedProfile.MatchedMaterialCount} · ignored external {_importedProfile.IgnoredExternalAssetCount}";
-        public string ProfileCompatibilityText => _importedProfile?.CompatibilityText ?? "No validated runtime profile";
+            ? "Nada em comum com o addon selecionado"
+            : $"Vistos {_importedProfile.ObservedModelCount} modelos / {_importedProfile.ObservedMaterialCount} materiais · deste addon {_importedProfile.MatchedModelCount} / {_importedProfile.MatchedMaterialCount} · de fora ignorados {_importedProfile.IgnoredExternalAssetCount}";
+        public string ProfileCompatibilityText => _importedProfile?.CompatibilityText ?? "Nenhum perfil validado";
         public string ProfileTruncationText => _importedProfile?.TruncationText ?? "—";
         public CompanionProfileImportResult? ImportedProfile => _importedProfile;
 
@@ -94,8 +94,18 @@ namespace GmodAddonCompressor.DataContexts
             set => Set(ref _progressValue, System.Math.Clamp(value, 0, 100));
         }
 
-        public string InstallationStatusText => _installationStatusOverride ?? _installStatus?.StatusText ?? "Checking...";
-        public string InstallationDetailText => _installationDetailOverride ?? _installStatus?.Detail ?? "Detecting Garry's Mod and the optional Companion addon.";
+        public string InstallationStatusText => _installationStatusOverride ?? _installStatus?.StatusText ?? "Verificando…";
+        /// <summary>Short Portuguese state shown on the "Testar no jogo" screen.</summary>
+        public string InstallationStatusLabel => _installationStatusOverride ?? (_installStatus?.State switch
+        {
+            CompanionInstallState.NotInstalled => "Não instalado",
+            CompanionInstallState.Compatible => "Instalado",
+            CompanionInstallState.UpdateAvailable => "Atualização disponível",
+            CompanionInstallState.UnknownFolder => "Pasta desconhecida",
+            CompanionInstallState.Incompatible => "Incompatível",
+            _ => "Verificando…",
+        });
+        public string InstallationDetailText => _installationDetailOverride ?? _installStatus?.Detail ?? "Procurando o Garry's Mod e o addon de teste.";
         public string InstalledVersionText => string.IsNullOrWhiteSpace(_installStatus?.InstalledVersion)
             ? "—"
             : _installStatus!.InstalledVersion;
@@ -114,6 +124,7 @@ namespace GmodAddonCompressor.DataContexts
         public ObservableCollection<CompanionValidationReportItem> ValidationResources => _validationResources;
         public IReadOnlyList<CompanionValidationReport> ValidationReports => _validationReports;
         public bool HasValidationResults => _validationReports.Count > 0;
+        public bool HasNoValidationResults => _validationReports.Count == 0;
         public bool CanCopyValidationSummary => !IsBusy && HasValidationResults;
         public bool CanExportValidationSummary => !IsBusy && HasValidationResults;
         public bool CanOpenValidationScreenshot => !IsBusy && _selectedValidationResource?.HasScreenshot == true;
@@ -149,6 +160,7 @@ namespace GmodAddonCompressor.DataContexts
             _installationStatusOverride = null;
             _installationDetailOverride = null;
             OnPropertyChanged(nameof(InstallationStatusText));
+            OnPropertyChanged(nameof(InstallationStatusLabel));
             OnPropertyChanged(nameof(InstallationDetailText));
             OnPropertyChanged(nameof(InstalledVersionText));
             OnPropertyChanged(nameof(PackagedVersionText));
@@ -162,6 +174,7 @@ namespace GmodAddonCompressor.DataContexts
             _installationStatusOverride = status;
             _installationDetailOverride = detail;
             OnPropertyChanged(nameof(InstallationStatusText));
+            OnPropertyChanged(nameof(InstallationStatusLabel));
             OnPropertyChanged(nameof(InstallationDetailText));
             OnPropertyChanged(nameof(InstalledVersionText));
             OnPropertyChanged(nameof(PackagedVersionText));
@@ -175,8 +188,8 @@ namespace GmodAddonCompressor.DataContexts
             LastProfilePath = profilePath ?? string.Empty;
             UseWithMaximumV2 = false;
             ProfileSummaryText = string.IsNullOrWhiteSpace(LastProfilePath)
-                ? "No runtime profile imported. Models and Pipeline are unchanged."
-                : "Profile selected. Contract validation and addon matching are completed by the import step.";
+                ? "Nenhum perfil importado. O modo Maximum continua igual."
+                : "Perfil escolhido. A importação valida o arquivo e confere com o addon.";
             NotifyProfileProperties();
             OnPropertyChanged(nameof(CanGeneratePlan));
         }
@@ -187,7 +200,7 @@ namespace GmodAddonCompressor.DataContexts
             LastProfilePath = profilePath ?? string.Empty;
             Set(ref _useWithMaximumV2, false, nameof(UseWithMaximumV2));
             ProfileSummaryText = result.IsEligible
-                ? $"Ready for explicit Maximum v2 opt-in. {result.MatchedModelCount} models and {result.MatchedMaterialCount} materials matched this addon."
+                ? $"Pronto para usar no modo Maximum: {result.MatchedModelCount} modelos e {result.MatchedMaterialCount} materiais deste addon."
                 : result.CompatibilityText;
             NotifyProfileProperties();
             OnPropertyChanged(nameof(CanGeneratePlan));
@@ -208,8 +221,8 @@ namespace GmodAddonCompressor.DataContexts
             _importedProfile = null;
             Set(ref _useWithMaximumV2, false, nameof(UseWithMaximumV2));
             ProfileSummaryText = string.IsNullOrWhiteSpace(LastProfilePath)
-                ? "No runtime profile imported. Models and Pipeline are unchanged."
-                : "The selected addon changed. Revalidating the imported profile before Maximum v2 can use it.";
+                ? "Nenhum perfil importado. O modo Maximum continua igual."
+                : "O addon mudou. O perfil precisa ser validado de novo antes de ser usado.";
             NotifyProfileProperties();
             SetOptimizationResultAvailable(false);
         }
@@ -231,6 +244,7 @@ namespace GmodAddonCompressor.DataContexts
             RefreshValidationSummary();
             OnPropertyChanged(nameof(ValidationReports));
             OnPropertyChanged(nameof(HasValidationResults));
+            OnPropertyChanged(nameof(HasNoValidationResults));
             OnPropertyChanged(nameof(CanCopyValidationSummary));
             OnPropertyChanged(nameof(CanExportValidationSummary));
             OnPropertyChanged(nameof(CanOpenValidationScreenshot));
@@ -260,7 +274,7 @@ namespace GmodAddonCompressor.DataContexts
             var sections = new List<string>(_validationReports.Select(report => report.SummaryText));
             sections.AddRange(_validationDiagnostics);
             ValidationSummaryText = sections.Count == 0
-                ? "No trusted validation result is active."
+                ? "Nenhum resultado importado."
                 : string.Join(System.Environment.NewLine + System.Environment.NewLine, sections);
         }
 

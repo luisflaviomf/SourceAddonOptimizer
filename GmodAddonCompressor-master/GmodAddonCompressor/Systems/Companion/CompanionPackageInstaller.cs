@@ -35,7 +35,7 @@ namespace GmodAddonCompressor.Systems.Companion
                     destination,
                     package.Manifest.PackageVersion,
                     string.Empty,
-                    "A file already occupies the Companion addon path. No changes are allowed."
+                    "Já existe um arquivo no lugar do addon de teste. Nada será alterado."
                 );
             }
             if (!Directory.Exists(destination))
@@ -45,7 +45,7 @@ namespace GmodAddonCompressor.Systems.Companion
                     destination,
                     package.Manifest.PackageVersion,
                     string.Empty,
-                    "The optional in-game Companion is not installed."
+                    "O addon de teste não está instalado."
                 );
             }
 
@@ -58,7 +58,7 @@ namespace GmodAddonCompressor.Systems.Companion
                     destination,
                     package.Manifest.PackageVersion,
                     string.Empty,
-                    "The destination exists without a Source Addon Optimizer ownership marker. It will not be modified."
+                    "Essa pasta existe, mas não foi criada pelo otimizador. Ela não será alterada."
                 );
             }
 
@@ -76,7 +76,7 @@ namespace GmodAddonCompressor.Systems.Companion
                         destination,
                         package.Manifest.PackageVersion,
                         string.Empty,
-                        "The ownership marker is malformed. No changes are allowed."
+                        "A marca de instalação está corrompida. Nada será alterado."
                     );
                 }
                 if (schemaVersion != 1)
@@ -90,7 +90,7 @@ namespace GmodAddonCompressor.Systems.Companion
                         destination,
                         package.Manifest.PackageVersion,
                         installedVersion,
-                        $"Ownership schema {schemaVersion} is not supported by this application."
+                        $"A marca de instalação (versão {schemaVersion}) é de outra versão do app."
                     );
                 }
 
@@ -103,8 +103,8 @@ namespace GmodAddonCompressor.Systems.Companion
                     package.Manifest.PackageVersion,
                     ownership.PackageVersion,
                     current
-                        ? "The installed Companion matches the packaged version."
-                        : "An owned Companion install differs from the packaged version and can be updated safely."
+                        ? "O addon de teste instalado está atualizado."
+                        : "Há uma versão nova do addon de teste. Pode atualizar com segurança."
                 );
             }
             catch (Exception ex) when (ex is InvalidOperationException || ex is IOException || ex is UnauthorizedAccessException)
@@ -114,7 +114,7 @@ namespace GmodAddonCompressor.Systems.Companion
                     destination,
                     package.Manifest.PackageVersion,
                     string.Empty,
-                    "The ownership marker could not be verified. No changes are allowed."
+                    "Não deu para conferir a marca de instalação. Nada será alterado."
                 );
             }
         }

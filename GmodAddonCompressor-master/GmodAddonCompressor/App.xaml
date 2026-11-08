@@ -1058,5 +1058,97 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Material 3 page pattern shared by every screen (see side-session notes: ui-screens-spec.md) -->
+        <Style x:Key="PageTitle" TargetType="{x:Type TextBlock}">
+            <Setter Property="FontSize" Value="22" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        </Style>
+        <Style x:Key="PageSubtitle" TargetType="{x:Type TextBlock}">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,4,0,0" />
+        </Style>
+        <Style x:Key="SectionHeader" TargetType="{x:Type TextBlock}">
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
+        <Style x:Key="FieldLabel" TargetType="{x:Type TextBlock}">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+            <Setter Property="Margin" Value="2,0,0,6" />
+        </Style>
+        <Style x:Key="FieldHint" TargetType="{x:Type TextBlock}">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="2,6,0,0" />
+        </Style>
+        <Style x:Key="StatValue" TargetType="{x:Type TextBlock}">
+            <Setter Property="FontSize" Value="20" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        </Style>
+
+        <!-- Collapsible section: same surface as M3Card, chevron + title header -->
+        <Style x:Key="M3Expander" TargetType="{x:Type Expander}">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="Background" Value="{DynamicResource Surface1}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource Border}" />
+            <Setter Property="Margin" Value="0,12,0,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Expander">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="1" CornerRadius="12">
+                            <DockPanel>
+                                <!-- local values win over the implicit ToggleButton style (fixed 40 px height, accent colors when checked) -->
+                                <ToggleButton x:Name="HeaderToggle" DockPanel.Dock="Top" Focusable="True" Cursor="Hand"
+                                              Height="Auto" MinHeight="0" Padding="0" BorderThickness="0" Background="Transparent"
+                                              Foreground="{DynamicResource TextPrimary}" HorizontalContentAlignment="Stretch"
+                                              IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border x:Name="Hd" Background="Transparent" CornerRadius="12" Padding="16,14">
+                                                <DockPanel>
+                                                    <TextBlock x:Name="Chevron" DockPanel.Dock="Right" Text="&#xE70D;" FontFamily="{StaticResource IconFont}"
+                                                               FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"
+                                                               RenderTransformOrigin="0.5,0.5">
+                                                        <TextBlock.RenderTransform><RotateTransform x:Name="ChevronRotate" Angle="0" /></TextBlock.RenderTransform>
+                                                    </TextBlock>
+                                                    <ContentPresenter VerticalAlignment="Center" />
+                                                </DockPanel>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Hd" Property="Background" Value="{DynamicResource Surface2}" />
+                                                </Trigger>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Chevron" Property="RenderTransform">
+                                                        <Setter.Value><RotateTransform Angle="180" /></Setter.Value>
+                                                    </Setter>
+                                                </Trigger>
+                                                <Trigger Property="IsKeyboardFocused" Value="True">
+                                                    <Setter TargetName="Hd" Property="Background" Value="{DynamicResource Surface2}" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                    <ContentPresenter ContentSource="Header" RecognizesAccessKey="True"
+                                                      TextElement.FontSize="14" TextElement.FontWeight="SemiBold" />
+                                </ToggleButton>
+                                <ContentPresenter x:Name="Body" Margin="16,0,16,16" Visibility="Collapsed" />
+                            </DockPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="Body" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Application.Resources>
 </Application>

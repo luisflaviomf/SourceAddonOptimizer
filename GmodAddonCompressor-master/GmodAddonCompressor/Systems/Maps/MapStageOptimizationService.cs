@@ -70,7 +70,7 @@ namespace GmodAddonCompressor.Systems.Maps
                 .ToArray();
 
             if (stageRoots.Length == 0)
-                throw new InvalidOperationException("No valid staging directories were provided.");
+                throw new InvalidOperationException("Nenhuma pasta de conteúdo preparado válida.");
 
             ConfigureContexts(options);
 

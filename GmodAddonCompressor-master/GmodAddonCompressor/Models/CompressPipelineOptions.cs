@@ -20,7 +20,8 @@ namespace GmodAddonCompressor.Models
         public int MaximumVtfParallelism { get; init; } = 10;
         public UniversalVtfProfileKind MaximumVtfProfile { get; init; } =
             UniversalVtfProfileKind.Balanced;
-        // Tela VTF: texscreen profile ("q50" = Equilibrado, "strong" = Forte)
+        // "Padrão" VTF (screen-aware, worker texscreen): profile q50 = Equilibrado, strong = Forte,
+        // max = Máximo, exact = Sem perda. The old "Padrao" (Standard) mode is shown as "Clássico".
         public string ScreenProfile { get; init; } = "q50";
 
         public bool IsMagickMode => Mode == CompressPipelineMode.Magick;
@@ -30,37 +31,27 @@ namespace GmodAddonCompressor.Models
         public bool IsMagickFamilyMode => IsMagickMode || IsMagickPlusMode;
         public bool ShouldUseMagickForCommonVtf => IsMagickFamilyMode && UseMagickForCommonVtf;
         public bool ShouldUseMagickForAggressivePng => IsMagickFamilyMode && UseMagickForAggressivePng;
-        public string ModeLabel => IsScreenMode ? "Tela" : IsMaximumMode ? "Maximum" : IsMagickPlusMode ? "Magick+" : IsMagickMode ? "Magick" : "Standard";
+        public string ModeLabel => IsScreenMode ? "Padrão" : IsMaximumMode ? "Maximum" : IsMagickPlusMode ? "Magick+" : IsMagickMode ? "Magick" : "Clássico";
 
         public string BuildRoutingSummary()
         {
-            const string vtfText = "VTF => unified pipeline: raw split first, export split fallback when needed, selective DXT routing plus premultiplied alpha-aware resize for FX-sensitive and opacity-alpha surfaces such as vehicle glass/cutouts, then preserve unchanged on no gain or out-of-scope cases.";
+            string pngText = ShouldUseMagickForAggressivePng
+                ? "PNG: ImageMagick agressivo (q256), com o Clássico se falhar."
+                : "PNG: Clássico.";
 
             if (IsScreenMode)
-                return $"Routing: VTF => screen-aware texscreen engine (worker, profile {ScreenProfile}): per-texture 2x/4x/8x from on-screen texel density, reconstruction-aware top level, exact lower mipmaps, alpha-safe DXT1; non-DXT and NOMIP VTFs fall back to the Standard VTF path. Other selected types remain on Standard.";
+                return $"VTF: motor Padrão (por visibilidade na tela), perfil {ScreenProfile}. VTF fora de DXT ou sem mipmaps usam o Clássico. Os outros tipos usam o Clássico.";
 
             if (IsMaximumMode)
-                return $"Routing: VTF => universal VTF batch, profile {MaximumVtfProfile}, " +
-                    "with an external immutable snapshot, semantic VMT/Lua/PCF analysis, " +
-                    "consecutive-level quality gates, structural audit and transactional " +
-                    "replacement. Other selected types remain on Standard.";
+                return $"VTF: lote Maximum (VTF universal, perfil {MaximumVtfProfile}) com checagens de qualidade por nível. Os outros tipos usam o Clássico.";
 
             if (IsMagickPlusMode)
-            {
-                string plusPngText = ShouldUseMagickForAggressivePng
-                    ? "PNG => Magick q256 first, then Standard fallback on failure or no gain."
-                    : "PNG => Standard.";
-                return $"{vtfText} Magick+ then applies a lossless BC3-to-BC1 color-block repack only when alpha is proven unused and the result is smaller; otherwise the Magick result is kept unchanged. {plusPngText} JPG/JPEG, WAV, MP3, OGG and LUA => Standard.";
-            }
+                return $"VTF: Magick e depois conversão exata BC3→BC1 quando o alpha não é usado. {pngText} JPG, sons e Lua: Clássico.";
 
             if (!IsMagickMode)
-                return $"Routing: Standard for all selected types. {vtfText}";
+                return "Todos os tipos marcados usam o Clássico.";
 
-            string pngText = ShouldUseMagickForAggressivePng
-                ? "PNG => Magick q256 first, then Standard fallback on failure or no gain."
-                : "PNG => Standard.";
-
-            return $"{vtfText} {pngText} JPG/JPEG, WAV, MP3, OGG and LUA => Standard.";
+            return $"VTF: mesmo caminho do Clássico. {pngText} JPG, sons e Lua: Clássico.";
         }
     }
 }

@@ -118,7 +118,7 @@ namespace GmodAddonCompressor.Systems.Unpack
             };
 
             if (!process.Start())
-                throw new InvalidOperationException("Failed to start unpack worker.");
+                throw new InvalidOperationException("Não foi possível iniciar o worker de descompactação.");
 
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();

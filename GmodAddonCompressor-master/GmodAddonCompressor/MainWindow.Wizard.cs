@@ -458,7 +458,7 @@ public partial class MainWindow
             else
             {
                 BeginWizardStage(stage, $"Modelos · {settings.ModelsLine}");
-                AppendWizardLog($"== Modelos · Tela · {settings.ModelsLine} ==");
+                AppendWizardLog($"== Modelos · {settings.ModelsLine} ==");
                 _pipelineStage = PipelineStage.Models;
                 _modelsWorkDir = ToolPaths.GetWorkDir(addon, _context.OptimizerSuffix);
                 _wizardReportDir = _modelsWorkDir;

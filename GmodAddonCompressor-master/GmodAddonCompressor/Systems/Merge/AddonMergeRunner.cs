@@ -150,7 +150,7 @@ namespace GmodAddonCompressor.Systems.Merge
             };
 
             if (!process.Start())
-                throw new InvalidOperationException("Failed to start addon merge worker.");
+                throw new InvalidOperationException("Não foi possível iniciar o worker de junção.");
 
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
