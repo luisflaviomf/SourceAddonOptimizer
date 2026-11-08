@@ -4082,7 +4082,10 @@ namespace GmodAddonCompressor
                         ? CompressPipelineMode.MagickPlus
                         : isMagickMode ? CompressPipelineMode.Magick : CompressPipelineMode.Standard,
                 UseMagickForAggressivePng = (isMagickMode || isMagickPlusMode) && _context.CompressMagickUseAggressivePng,
-                ScreenProfile = _context.CompressScreenProfileName
+                ScreenProfile = _context.CompressScreenProfileName,
+                // the assistant's result depends only on its profile, never on the Clássico options of the
+                // advanced tabs: files the Tela engine does not handle (NOMIP, non-DXT) stay as they are
+                KeepScreenFallbacks = _wizardRunning
             };
         }
 

@@ -30,12 +30,16 @@ namespace GmodAddonCompressor.Objects
         private readonly string _addonRoot;
         private readonly string _profile;
         private readonly VTFEdit _fallback;
+        private readonly bool _keepFallbacks;
         private readonly ILogger _logger = LogSystem.CreateLogger<ScreenVTFEdit>();
 
-        internal ScreenVTFEdit(string addonRoot, string profile = DefaultProfile)
+        /// <param name="keepFallbacks">leave the files the engine reports as fallback untouched instead of
+        /// sending them through the regular (Clássico) VTF path, which depends on the advanced-tab options</param>
+        internal ScreenVTFEdit(string addonRoot, string profile = DefaultProfile, bool keepFallbacks = false)
         {
             _addonRoot = addonRoot;
             _profile = profile;
+            _keepFallbacks = keepFallbacks;
             _fallback = new VTFEdit(addonRoot);
         }
 
@@ -88,7 +92,10 @@ namespace GmodAddonCompressor.Objects
 
             _logger.LogInformation(
                 $"[Tela] {before:N0} -> {after:N0} bytes ({(before > 0 ? 100.0 * after / before : 100):0.0}%). " +
-                $"Regular path for {fallback.Length} file(s). Report: {report}");
+                (_keepFallbacks ? $"{fallback.Length} file(s) the engine does not handle kept unchanged." : $"Regular path for {fallback.Length} file(s).") +
+                $" Report: {report}");
+            if (_keepFallbacks)
+                return;
 
             await Parallel.ForEachAsync(
                 fallback,

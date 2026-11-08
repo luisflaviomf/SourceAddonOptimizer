@@ -23,6 +23,9 @@ namespace GmodAddonCompressor.Models
         // "Padrão" VTF (screen-aware, worker texscreen): profile q50 = Equilibrado, strong = Forte,
         // max = Máximo, exact = Sem perda. The old "Padrao" (Standard) mode is shown as "Clássico".
         public string ScreenProfile { get; init; } = "q50";
+        // Tela mode: leave the files the engine reports as fallback untouched instead of sending them through
+        // the Clássico VTF path (the Otimizar assistant uses this so its result does not depend on hidden options).
+        public bool KeepScreenFallbacks { get; init; }
 
         public bool IsMagickMode => Mode == CompressPipelineMode.Magick;
         public bool IsMaximumMode => Mode == CompressPipelineMode.Maximum;
