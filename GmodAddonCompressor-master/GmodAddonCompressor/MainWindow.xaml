@@ -868,55 +868,45 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- Método -->
+                        <!-- Quanto reduzir -->
                         <Border Style="{StaticResource M3Card}" Margin="0,12,0,0">
                             <StackPanel>
-                                <TextBlock Style="{StaticResource SectionHeader}" Text="Método" />
+                                <TextBlock Style="{StaticResource SectionHeader}" Text="Quanto reduzir" />
                                 <WrapPanel>
-                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsMode" Content="Padrão (recomendado)"
-                                                 IsChecked="{Binding OptimizerModeScreenChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsLevel" Content="Sem perda"
+                                                 IsChecked="{Binding ModelsLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=4, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsLevel" Content="Equilibrado"
+                                                 IsChecked="{Binding ModelsLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=0, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsLevel" Content="Forte"
+                                                 IsChecked="{Binding ModelsLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=1, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsLevel" Content="Forte + espelho"
+                                                 IsChecked="{Binding ModelsLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=2, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsLevel" Content="Stream"
+                                                 IsChecked="{Binding ModelsLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=3, Mode=TwoWay}" />
                                 </WrapPanel>
-                                <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0"
-                                           Text="Reduz cada modelo conforme o quanto ele aparece na tela do jogo. Edita os arquivos direto, sem Blender." />
-
-                                <StackPanel Margin="0,16,0,0" Visibility="{Binding OptimizerModeIsScreen, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                    <TextBlock Style="{StaticResource FieldLabel}" Text="Perfil" />
-                                    <WrapPanel>
-                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsProfile" Content="Sem perda"
-                                                     IsChecked="{Binding ModelsScreenProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=4, Mode=TwoWay}" />
-                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsProfile" Content="Equilibrado"
-                                                     IsChecked="{Binding ModelsScreenProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=0, Mode=TwoWay}" />
-                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsProfile" Content="Forte"
-                                                     IsChecked="{Binding ModelsScreenProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=1, Mode=TwoWay}" />
-                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsProfile" Content="Forte + espelho"
-                                                     IsChecked="{Binding ModelsScreenProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=2, Mode=TwoWay}" />
-                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsProfile" Content="Stream (experimental)"
-                                                     IsChecked="{Binding ModelsScreenProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=3, Mode=TwoWay}" />
-                                    </WrapPanel>
-                                    <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0" Text="{Binding OptimizerModeDescriptionText}" />
-                                </StackPanel>
-
-                                <Border Background="{DynamicResource SecondaryContainer}" CornerRadius="8" Padding="12,8" Margin="0,14,0,0"
+                                <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0" Text="{Binding OptimizerModeDescriptionText}"
+                                           Visibility="{Binding OptimizerModeIsScreen, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <Border Background="{DynamicResource SecondaryContainer}" CornerRadius="8" Padding="12,8" Margin="0,4,0,0"
                                         Visibility="{Binding OptimizerModeIsLegacy, Converter={StaticResource BooleanToVisibilityConverter}}">
                                     <TextBlock Text="{Binding OptimizerLegacyModeNotice}" Foreground="{DynamicResource OnSecondaryContainer}" TextWrapping="Wrap" />
                                 </Border>
                             </StackPanel>
                         </Border>
 
-                        <!-- Modos antigos com Blender -->
-                        <Expander Style="{StaticResource M3Expander}" Header="Recompilar com Blender (antigo)"
+                        <!-- Outros métodos, com Blender -->
+                        <Expander Style="{StaticResource M3Expander}" Header="Outros métodos, com Blender"
                                   IsExpanded="{Binding OptimizerModeIsLegacy, Mode=OneWay}">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,14"
-                                           Text="Descompilam, reduzem e recompilam cada modelo com Blender e studiomdl. Mais lentos que o Padrão." />
+                                           Text="Recompilam cada modelo com Blender e studiomdl. São bem mais lentos; use só se os níveis acima não servirem para o seu addon." />
 
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Modo" />
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Método" />
                                 <WrapPanel>
-                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsMode" Content="Normal"
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsBlender" Content="Normal"
                                                  IsChecked="{Binding OptimizerModeNormalChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsMode" Content="Fidelidade"
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsBlender" Content="Fidelidade"
                                                  IsChecked="{Binding OptimizerModeFidelityChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsMode" Content="Maximum"
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="ModelsBlender" Content="Maximum"
                                                  IsChecked="{Binding OptimizerModeMaximumChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                 </WrapPanel>
                                 <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0" Text="{Binding OptimizerModeDescriptionText}"
@@ -1228,38 +1218,29 @@
                         <!-- Texturas (VTF) -->
                         <Border Style="{StaticResource M3Card}" Margin="0,12,0,0">
                             <StackPanel>
-                                <TextBlock Style="{StaticResource SectionHeader}" Text="Texturas (VTF)" />
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Modo" />
+                                <TextBlock Style="{StaticResource SectionHeader}" Text="Texturas: quanto reduzir" />
                                 <WrapPanel>
-                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CompressMode" Content="Padrão (recomendado)"
-                                                 IsChecked="{Binding CompressModeIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=4, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="TexturesLevel" Content="Sem perda"
+                                                 IsChecked="{Binding TexturesLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=3, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="TexturesLevel" Content="Equilibrado"
+                                                 IsChecked="{Binding TexturesLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=0, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="TexturesLevel" Content="Forte"
+                                                 IsChecked="{Binding TexturesLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=1, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="TexturesLevel" Content="Máximo"
+                                                 IsChecked="{Binding TexturesLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=2, Mode=TwoWay}" />
                                 </WrapPanel>
-                                <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0"
-                                           Text="Reduz cada textura conforme o quanto ela aparece na tela do jogo." />
-
-                                <StackPanel Margin="0,16,0,0" Visibility="{Binding CompressModeIsScreen, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                    <TextBlock Style="{StaticResource FieldLabel}" Text="Perfil" />
-                                    <WrapPanel>
-                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CompressScreenProfile" Content="Sem perda"
-                                                     IsChecked="{Binding CompressScreenProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=3, Mode=TwoWay}" />
-                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CompressScreenProfile" Content="Equilibrado"
-                                                     IsChecked="{Binding CompressScreenProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=0, Mode=TwoWay}" />
-                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CompressScreenProfile" Content="Forte"
-                                                     IsChecked="{Binding CompressScreenProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=1, Mode=TwoWay}" />
-                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CompressScreenProfile" Content="Máximo"
-                                                     IsChecked="{Binding CompressScreenProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=2, Mode=TwoWay}" />
-                                    </WrapPanel>
-                                    <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0" Text="{Binding CompressScreenProfileHint}" />
-                                </StackPanel>
-
-                                <Border Background="{DynamicResource SecondaryContainer}" CornerRadius="8" Padding="12,8" Margin="0,14,0,0"
+                                <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0" Text="{Binding CompressScreenProfileHint}"
+                                           Visibility="{Binding CompressModeIsScreen, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <Border Background="{DynamicResource SecondaryContainer}" CornerRadius="8" Padding="12,8" Margin="0,4,0,0"
                                         Visibility="{Binding CompressModeIsLegacy, Converter={StaticResource BooleanToVisibilityConverter}}">
                                     <TextBlock Text="{Binding CompressLegacyModeNotice}" Foreground="{DynamicResource OnSecondaryContainer}" TextWrapping="Wrap" />
                                 </Border>
 
-                                <Expander Style="{StaticResource M3Expander}" Header="Modos antigos" Background="{DynamicResource Surface2}"
+                                <Expander Style="{StaticResource M3Expander}" Header="Outros métodos" Background="{DynamicResource Surface2}"
                                           IsExpanded="{Binding CompressModeIsLegacy, Mode=OneWay}">
                                     <StackPanel>
+                                        <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,12"
+                                                   Text="Reduzem todas as texturas pelo mesmo fator, sem olhar onde aparecem. Use só se os níveis acima não servirem." />
                                         <WrapPanel>
                                             <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CompressMode" Content="Clássico"
                                                          IsChecked="{Binding CompressModeIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=0, Mode=TwoWay}" />
@@ -1281,14 +1262,14 @@
                                             <TextBlock Text="{Binding CompressMaximumStatusText}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="2,0,0,0" />
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource FieldHint}" Margin="2,12,0,0"
-                                                   Text="O fator e os limites de tamanho dos modos antigos ficam em Redução de imagens, abaixo." />
+                                                   Text="O fator e os limites de tamanho desses métodos ficam em Imagens PNG e JPG, abaixo." />
                                     </StackPanel>
                                 </Expander>
                             </StackPanel>
                         </Border>
 
                         <!-- Redução de imagens (PNG, JPG e modos antigos) -->
-                        <Expander Style="{StaticResource M3Expander}" Header="Redução de imagens (PNG, JPG e modos antigos)">
+                        <Expander Style="{StaticResource M3Expander}" Header="Imagens PNG e JPG">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,12"
                                            Text="Fator de redução e tamanho mínimo. Uma imagem nunca fica menor que o limite." />

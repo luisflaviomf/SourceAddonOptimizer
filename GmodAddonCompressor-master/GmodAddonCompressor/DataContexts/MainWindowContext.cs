@@ -299,6 +299,7 @@ namespace GmodAddonCompressor.DataContexts
             {
                 _modelsScreenProfileIndex = value < 0 || value >= _modelsScreenProfileList.Length ? DefaultModelsScreenProfileIndex : value;
                 OnPropertyChanged();
+                OnPropertyChanged(nameof(ModelsLevel));
                 OnPropertyChanged(nameof(OptimizerModeDescriptionText));
             }
         }
@@ -370,8 +371,41 @@ namespace GmodAddonCompressor.DataContexts
         /// <summary>True when one of the old Blender recompile modes (Normal, Fidelity, Maximum) is selected.</summary>
         public bool OptimizerModeIsLegacy => !OptimizerModeIsScreen;
 
+        /// <summary>
+        /// Modelos › "Quanto reduzir": the profile of the Padrão (screen) mode, or -1 while a Blender method
+        /// is selected instead. Picking a level also switches the method back to Padrão.
+        /// </summary>
+        public int ModelsLevel
+        {
+            get => OptimizerModeIsScreen ? _modelsScreenProfileIndex : -1;
+            set
+            {
+                if (value < 0)
+                    return;
+                ModelsScreenProfileIndex = value;
+                if (!OptimizerModeIsScreen)
+                    OptimizerModeIndex = 3;
+                OnPropertyChanged();
+            }
+        }
+
+        /// <summary>Texturas › "Quanto reduzir": same idea for the Padrão (screen) texture mode.</summary>
+        public int TexturesLevel
+        {
+            get => CompressModeIsScreen ? _compressScreenProfileIndex : -1;
+            set
+            {
+                if (value < 0)
+                    return;
+                CompressScreenProfileIndex = value;
+                if (!CompressModeIsScreen)
+                    CompressModeIndex = 4;
+                OnPropertyChanged();
+            }
+        }
+
         public string OptimizerLegacyModeNotice => OptimizerModeIsLegacy
-            ? $"Modo antigo em uso: {_optimizerModeList[Math.Clamp(_optimizerModeIndex, 0, _optimizerModeList.Length - 1)]}. Para voltar, escolha Padrão."
+            ? $"Usando {_optimizerModeList[Math.Clamp(_optimizerModeIndex, 0, _optimizerModeList.Length - 1)]}. Para voltar ao normal, escolha um nível acima."
             : string.Empty;
 
         public bool CompressModeIsStandard => _compressModeIndex == 0;
@@ -391,6 +425,7 @@ namespace GmodAddonCompressor.DataContexts
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(CompressScreenProfileName));
                 OnPropertyChanged(nameof(CompressScreenProfileHint));
+                OnPropertyChanged(nameof(TexturesLevel));
                 OnPropertyChanged(nameof(CompressModeRoutingText));
             }
         }
@@ -442,7 +477,7 @@ namespace GmodAddonCompressor.DataContexts
         public bool CompressModeIsLegacy => !CompressModeIsScreen;
 
         public string CompressLegacyModeNotice => CompressModeIsLegacy
-            ? $"Modo antigo em uso: {_compressModeList[Math.Clamp(_compressModeIndex, 0, _compressModeList.Length - 1)]}. Para voltar, escolha Padrão."
+            ? $"Usando o método {_compressModeList[Math.Clamp(_compressModeIndex, 0, _compressModeList.Length - 1)]}. Para voltar ao normal, escolha um nível acima."
             : string.Empty;
 
         public string CompressModeRoutingText
@@ -1373,6 +1408,7 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(CompressModeRoutingText));
             OnPropertyChanged(nameof(CompressModeIsLegacy));
             OnPropertyChanged(nameof(CompressLegacyModeNotice));
+            OnPropertyChanged(nameof(TexturesLevel));
         }
 
         private void NotifyOptimizerModePropertiesChanged()
@@ -1388,6 +1424,7 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(OptimizerModeDescriptionText));
             OnPropertyChanged(nameof(OptimizerModeIsLegacy));
             OnPropertyChanged(nameof(OptimizerLegacyModeNotice));
+            OnPropertyChanged(nameof(ModelsLevel));
         }
 
         private void NotifyCompressAudioProfilePropertiesChanged()
