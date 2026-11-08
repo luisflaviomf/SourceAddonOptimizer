@@ -122,16 +122,26 @@ def _tex_info(ref: str):
 def _model_usage(args) -> list[tuple]:
     """Density rows of one model, in the exact order the sequential scan appends them."""
     mdl, addon_root, roots = Path(args[0]), Path(args[1]), list(args[2])
+    stream = args[3] if len(args) > 3 else None
     if _USAGE_STATE.get("roots") != roots:
         _init_usage_worker(roots)
     resolver = _USAGE_STATE["resolver"]
     model = load_model(mdl)
     rel_model = mdl.relative_to(addon_root).as_posix()
+    meshes = [(m.material_slot, m.positions, m.uvs, m.triangles) for m in model.meshes]
+    if stream:
+        # streamed model (Models Tela "stream"): the .mdl only has the coarse stand-in mesh; what is
+        # seen up close is the original geometry of the GMOS stream
+        from model_stream.geometry import decode_geometry
+        try:
+            meshes = [(g["slot"], g["pos"], g["uv"], g["tris"]) for g in decode_geometry(Path(stream).read_bytes())]
+        except Exception:   # unreadable stream: measure the stand-in mesh like any model
+            pass
     rows = []
-    for mesh in model.meshes:
-        if not len(mesh.triangles):
+    for slot, positions, uvs, triangles in meshes:
+        if not len(triangles):
             continue
-        for tex_name in model.texture_names_for_slot(mesh.material_slot):
+        for tex_name in model.texture_names_for_slot(slot):
             material = resolver.model_material(model.cdmaterials, tex_name)
             if material is None:
                 continue
@@ -143,7 +153,7 @@ def _model_usage(args) -> list[tuple]:
                 if info is None:
                     continue
                 w, h, mips, _ = info
-                smax, smin, area, uvc = triangle_density(mesh.positions, mesh.uvs, mesh.triangles, w, h,
+                smax, smin, area, uvc = triangle_density(positions, uvs, triangles, w, h,
                                                          material.texture_scale(param))
                 rows.append((ref, w, h, mips, role, material.path, rel_model, smax, smin, area, uvc))
     return rows
@@ -153,7 +163,17 @@ def usage_tasks(addon_root: Path, extra_roots: list[Path] | None = None) -> list
     """One task per model (sorted), for _model_usage on any executor."""
     addon_root = Path(addon_root)
     roots = tuple([str(addon_root)] + [str(r) for r in (extra_roots or [])])
-    return [(str(m), str(addon_root), roots) for m in sorted((addon_root / "models").rglob("*.mdl"))]
+    models = sorted((addon_root / "models").rglob("*.mdl"))
+    streams = {}
+    if (addon_root / "lua" / "autorun" / "client").is_dir():
+        from model_stream.geometry import read_manifests
+        streams = read_manifests(addon_root)
+    tasks = []
+    for m in models:
+        task = (str(m), str(addon_root), roots)
+        stream = streams.get(m.relative_to(addon_root).as_posix().lower())
+        tasks.append(task + (str(stream),) if stream else task)
+    return tasks
 
 
 def collect_usage(addon_root: Path, extra_roots: list[Path] | None = None, jobs: int = 1,

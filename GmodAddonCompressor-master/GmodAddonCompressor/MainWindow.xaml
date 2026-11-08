@@ -1264,7 +1264,7 @@
                                           SelectedIndex="{Binding CompressScreenProfileIndex, Mode=TwoWay}" />
                                 <TextBlock Style="{StaticResource MutedText}"
                                            Margin="0,6,0,0"
-                                           Text="Equilibrado: reduz onde a perda fica abaixo da de um 2x tipico. Forte: aceita mais perda de detalhe (ate 8x por textura; texturas de sombreamento da carroceria no maximo 4x) para chegar perto de 1/3 do tamanho do Equilibrado, um pouco mais suave de perto."
+                                           Text="Equilibrado: reduz onde a perda fica abaixo da de um 2x tipico. Forte: aceita mais perda de detalhe (ate 8x) onde a textura nunca aparece grande; escritas (emblemas, mostradores, adesivos, pinturas com texto, pelo nome do arquivo) e texturas pequenas ficam em 2x, sombreamento da carroceria e texturas que aparecem grandes de perto no maximo 4x. Cerca de metade do tamanho do Equilibrado."
                                            TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>

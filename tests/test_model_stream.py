@@ -107,6 +107,21 @@ def test_stream_roundtrip_e46():
 
 
 @need_lvs
+def test_fast_geometry_decoder_matches_reference():
+    from model_stream import geometry
+    assert geometry.VERSION == encoder.VERSION
+    data = encoder.encode(E46, _resolver())
+    ref = encoder.decode(data)["groups"]
+    fast = geometry.decode_geometry(data)
+    assert len(fast) == len(ref)
+    for r, g in zip(ref, fast):
+        assert (r["b"], r["m"], r["slot"], r["bone"]) == (g["b"], g["m"], g["slot"], g["bone"])
+        assert np.array_equal(r["pos"].astype(np.float32), g["pos"])
+        assert np.array_equal(r["uv"].astype(np.float32), g["uv"])
+        assert np.array_equal(r["tris"], g["tris"])
+
+
+@need_lvs
 def test_coarse_keeps_every_mesh():
     from model_stream import coarse
     t = coarse.coarse_tris(E46, 0.02)
@@ -147,6 +162,18 @@ def test_cli_stream_profile_end_to_end(tmp_path):
     coarse_model = load_model(out / "models/diggercars/bmw_e46/e46.mdl")
     assert len(coarse_model.meshes) == len(load_model(E46).meshes)
     assert (out / "models/diggercars/bmw_e46/e46.vvd").stat().st_size < 0.1 * E46.with_suffix(".vvd").stat().st_size
+    # texture density of a streamed model is measured on the stream (what is drawn), not the coarse mesh
+    from texlab.density import _model_usage, usage_tasks
+    tasks = {Path(t[0]).name: t for t in usage_tasks(out)}
+    assert Path(tasks["e46.mdl"][3]) == stream and len(tasks["wheel.mdl"]) == 3
+    src_task = next(t for t in usage_tasks(addon) if Path(t[0]).name == "e46.mdl")
+    def stats(rows):
+        return sum(len(r[7]) for r in rows), sum(float(np.sum(r[9])) for r in rows)
+    (nw, aw), (ng, ag) = stats(_model_usage(src_task)), stats(_model_usage(tasks["e46.mdl"]))
+    nc, _ac = stats(_model_usage(tasks["e46.mdl"][:3]))
+    # (triangles mapped to one texture point - solid colour parts - collapse at the stream's 1/4096 UV
+    # quantization and drop out of the measure: ~0.6% fewer rows, ~0.4% less area on the E46)
+    assert abs(ng - nw) <= 0.01 * nw and abs(ag - aw) <= 0.01 * aw and nc < 0.1 * nw
 
 
 def test_texscreen_strong_profile_caps_detail(tmp_path):
@@ -154,6 +181,12 @@ def test_texscreen_strong_profile_caps_detail(tmp_path):
     assert "strong" in sc.PROFILES and sc.PROFILE_OPTIONS["strong"]["caps"] == {"$detail": 2}
     # 8x only for textures that never show stretched at a close look (liveries with text stop at 4x)
     assert sc.PROFILE_OPTIONS["strong"]["magnify"][3] == 3
+    # lettering by file name and small textures stay at 2x
+    assert sc.PROFILE_OPTIONS["strong"]["text_cap"] == 1 and sc.PROFILE_OPTIONS["strong"]["small_cap"] == (100 * 1024, 1)
+    for name in ("police_sign_1", "gauges", "badges", "int_decals", "tx_clustertxt", "cmbplate", "dials_e"):
+        assert sc.TEXT_NAMES.search(name) and not sc.NORMAL_SUFFIX.search(name), name
+    assert sc.NORMAL_SUFFIX.search("badges_nm") and not sc.TEXT_NAMES.search("chassis")
+    assert "small_cap" not in sc.PROFILE_OPTIONS.get("q50", {})
     mat = tmp_path / "materials" / "m"
     mat.mkdir(parents=True)
     (mat / "paint.vmt").write_text('"VertexLitGeneric"\n{\n "$basetexture" "m/base"\n "$detail" "m/ao"\n}\n')

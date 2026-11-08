@@ -72,7 +72,7 @@ a = Analysis(
         "model_screen", "model_screen.cli", "model_screen.simplify", "model_screen.binary",
         "model_screen.uvtol", "model_screen.meshopt", "model_screen.remesh", "model_screen.mirror",
         "model_screen.gridsearch", "vvd_engine_exact",
-        "model_stream", "model_stream.encoder", "model_stream.coarse",
+        "model_stream", "model_stream.encoder", "model_stream.coarse", "model_stream.geometry",
         "texlab", "texlab.screen_compress", "texlab.npsolve", "texlab.bcnp", "texlab.vtf",
         "texlab.density", "texlab.materials", "texlab.source_model", "texlab.allocate", "texlab.plan",
         "texlab.native",

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -30,7 +31,7 @@ from . import npsolve
 from .allocate import DEFAULT_DISTANCES, DEFAULT_WEIGHTS, band_energy_maps, texture_local_error
 from .density import ViewModel, _model_usage, collect_usage, merge_usage, usage_tasks
 from .plan import alpha_coverage_refs, alpha_unused_refs, opaque_alpha
-from .vtf import (TEXTUREFLAGS_ENVMAP, bc3_blocks_to_bc1, decode_level, read_vtf, truncate_mips, write_vtf)
+from .vtf import (image_bytes, TEXTUREFLAGS_ENVMAP, bc3_blocks_to_bc1, decode_level, read_vtf, truncate_mips, write_vtf)
 
 ENGINE = "texscreen/v7"
 PROFILES = {
@@ -43,12 +44,25 @@ PROFILES = {
     # surfaces where 8x shows DXT blocks) stop at 4x. Validated in game 2026-11-08 (docs/...stream).
     "strong": 0.12,
 }
-# magnify = (distance, quantile, max_log2, from_drop): from that drop on, at a close look (distance in
-# units) the reduced texture may be stretched at most 2**max_log2 on the pixel-weighted quantile of
-# its triangles. "strong" keeps 8x for textures that never show big on screen; liveries with text
-# (LVS Monaco "HIGHWAY PATROL", 2026-11-08) stop at 4x, where the text stays legible.
+# Extra rules of a profile (q50/q75 have none):
+# - max_energy_drop: levels a texture may lose on detail energy alone;
+# - caps {param: levels}: textures used through that material parameter lose at most that many levels;
+# - magnify = (distance, quantile, max_log2, from_drop): from that drop on, at a close look (distance
+#   in units) the reduced texture may be stretched at most 2**max_log2 on the pixel-weighted quantile
+#   of its triangles (textures that never show big on screen may still go 8x);
+# - text_cap: textures whose file name says they carry lettering or graphics (TEXT_NAMES: badges,
+#   gauges, liveries, decals, plates...) lose at most this many levels; normal maps are not included;
+# - small_cap = (bytes, levels): a texture whose reduced chain at that many levels already fits in
+#   `bytes` stops there: going further saves a few KB but erases buttons, icons and labels.
+# "strong" (Forte): LVS Monaco "HIGHWAY PATROL" livery and Audi S3 console labels unreadable at 8x/4x
+# (Luis, 2026-11-08); with these rules they stay at 2x. LVS textures 798 -> 75 MiB (q50: 136).
+TEXT_NAMES = re.compile(r"badge|gauge|tacho|speedo|sign|decal|sticker|logo|emblem|plate|cluster|dial|"
+                        r"license|livery|polic|polizei|text|txt|label|font|number|digital|clock|odo|warn",
+                        re.IGNORECASE)
+NORMAL_SUFFIX = re.compile(r"(_nm|_normal|_n|_bump|_ddn)$", re.IGNORECASE)
 PROFILE_OPTIONS = {
-    "strong": {"max_energy_drop": 3, "caps": {"$detail": 2}, "magnify": (96.0, 0.5, 1.5, 3)},
+    "strong": {"max_energy_drop": 3, "caps": {"$detail": 2}, "magnify": (96.0, 0.5, 1.5, 3), "text_cap": 1,
+               "small_cap": (100 * 1024, 1)},
 }
 MAX_DROP = 3
 # Beyond this many levels a texture is only reduced when the dropped levels are provably never
@@ -151,7 +165,7 @@ def _use_payload(use, view: ViewModel) -> _Use | None:
 def _plan_one(task) -> Item:
     """Decision for one texture (pure function of its file and the addon-wide usage)."""
     p, root, ref, threshold, view, use, unused_alpha, coverage, need_map = task[:9]
-    energy_drop, cap, magnify = task[9] if len(task) > 9 else (MAX_DROP_BY_ENERGY, None, None)
+    energy_drop, cap, magnify, small_cap = task[9] if len(task) > 9 else (MAX_DROP_BY_ENERGY, None, None, None)
     item = Item(p.relative_to(root).as_posix(), ref, p, before=p.stat().st_size)
     try:
         v = read_vtf(p)
@@ -172,6 +186,12 @@ def _plan_one(task) -> Item:
         limit += 1
     if cap is not None:
         limit = min(limit, cap)
+    if small_cap and limit > small_cap[1]:
+        # small textures: going past 2x saves only a few KB but erases labels and numbers
+        at = sum(image_bytes(v.fmt, max(1, v.width >> lv), max(1, v.height >> lv))
+                 for lv in range(small_cap[1], v.mip_count))
+        if at * v.frames <= small_cap[0]:
+            limit = small_cap[1]
     drop = 1 if limit >= 1 else 0
     s_eff = area = None
     if use is not None and v.frames == 1:
@@ -254,7 +274,11 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
             task = (p, root, ref, threshold, view, _use_payload(uses.get(ref), view), ref in unused_alpha,
                     ref in coverage, need_map)
             if opts:
-                task += ((opts.get("max_energy_drop", MAX_DROP_BY_ENERGY), caps.get(ref), opts.get("magnify")),)
+                cap = caps.get(ref)
+                stem = ref.rsplit("/", 1)[-1]
+                if opts.get("text_cap") is not None and TEXT_NAMES.search(stem) and not NORMAL_SUFFIX.search(stem):
+                    cap = min(cap if cap is not None else 99, int(opts["text_cap"]))
+                task += ((opts.get("max_energy_drop", MAX_DROP_BY_ENERGY), cap, opts.get("magnify"), opts.get("small_cap")),)
             tasks.append(task)
         if pool is not None and len(tasks) > 1:
             return list(pool.map(_plan_one, tasks, chunksize=1))

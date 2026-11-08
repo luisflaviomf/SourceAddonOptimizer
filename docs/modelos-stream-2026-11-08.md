@@ -96,18 +96,35 @@ do câmbio, seguem o osso principal). Os outros usam o Forte + espelho.
 ## Texturas: perfil Tela "Forte" (`strong`)
 
 `texlab/screen_compress.py`: limiar de perda de detalhe 0,12 (o q50 usa 0,00257) e até 8x pela energia
-de detalhe, com dois freios:
+de detalhe, com freios (`PROFILE_OPTIONS["strong"]`):
 
 - texturas usadas como `$detail` (os atlas de AO "skin" da carroceria do LVS) param em 4x: com 8x os
   blocos DXT apareciam como manchas na lataria branca (Supra);
-- **8x só para texturas que nunca aparecem esticadas de perto**: a 96 unidades (~1,8 m), na metade dos
-  pixels, a textura reduzida não pode ficar esticada mais que 2^1,5 (~2,8x). Sem isso, a pintura da
-  viatura do Monaco (texto "HIGHWAY PATROL", `police_sign_*`, 2048²) ia a 256² e ficava ilegível; agora
-  para em 4x (512²), legível. Comparação na porta (2x / 4x / 8x) feita no jogo em 08/11.
+- **ampliação**: 8x só para texturas que nunca aparecem esticadas de perto (a 96 unidades, ~1,8 m, na
+  metade dos pixels, a textura reduzida não pode ficar esticada mais que 2^1,5 ≈ 2,8x); as outras param
+  em 4x;
+- **nomes de escrita em 2x**: arquivos cujo nome indica letras ou grafismos (`badge`, `gauge`, `tacho`,
+  `speedo`, `sign`, `decal`, `sticker`, `logo`, `emblem`, `plate`, `cluster`, `dial`, `livery`,
+  `polic`, `text`, `label`, `number`, `clock`… — `TEXT_NAMES`), sem as normal maps; no LVS, 83 texturas
+  (pinturas policiais, emblemas, mostradores, decalques);
+- **texturas pequenas em 2x**: se a textura reduzida 2x já cabe em 100 KB, ela para aí (botões,
+  ícones, legendas de painel em atlas de nome genérico, como o `int.vtf` do Audi S3); no LVS, 613
+  texturas por +13 MiB.
 
-LVS: 798 → 51,4 MiB (q50: 136; o Forte da primeira versão: 40,2 com o texto ilegível). FLIP só das
-texturas, 8 carros, sonda fixa: q50 0,017 (pior região 0,143), Forte 0,026 (0,165), Forte antigo 0,035
-(0,238). O addon completo (stream + Forte + WAV adaptativo) fica com 108,3 MiB.
+Por quê: na primeira versão (só o limiar) a pintura do Monaco com "HIGHWAY PATROL" ia a 8x e ficava
+ilegível; com a trava de ampliação, a 4x ficava legível mas mole; Luis pediu 2x para tudo que tem
+escrita. Detectar texto pelo conteúdo da imagem não funcionou (os mapas de AO têm traços finos e bordas
+duras como as letras). Comparações no jogo (porta do Monaco, console do Audi S3, painel do Charger)
+em 08/11. Testada também a trava de ampliação parando em 2x: 117,7 MiB, quase o Equilibrado.
+
+| Perfil Tela | Texturas LVS | FLIP só texturas (8 carros) |
+|---|---:|---:|
+| Equilibrado (q50) | 136 MiB | 0,017 |
+| Forte, 1ª versão (texto ilegível) | 40,2 MiB | 0,035 |
+| Forte com ampliação (4x) | 51,4 MiB | 0,026 |
+| **Forte final (ampliação + nomes + pequenas)** | **75,3 MiB** | – |
+
+O addon completo (models stream + Forte final + WAV adaptativo) fica com ~132 MiB (original 1375).
 
 ## No produto
 
@@ -116,6 +133,11 @@ texturas, 8 carros, sonda fixa: q50 0,017 (pior região 0,143), Forte 0,026 (0,1
 - Mídia e recursos → modo **Tela** → **Perfil Tela**: "Equilibrado (q50)" (padrão) ou "Forte (menor)"
   (`texscreen --profile strong`).
 - Para o ~100 MB do LVS: Models Tela Stream + Mídia Tela Forte + WAV adaptativo.
+- O Tela de texturas, rodando depois dos models em stream (Pipeline ou Mídia sobre a saída dos
+  Models), mede a densidade na geometria do stream (`model_stream/geometry.py`, leitor vetorizado
+  igual ao `encoder.decode`), não na malha grossa do `.mdl`: medido na malha grossa, 31 texturas do
+  LVS mudavam de decisão (o símbolo do painel do Charger ia a 8x); medido no stream, 1 de 1152 difere
+  do resultado sobre os models originais (um normal map do painel do VAZ 2108, 4x → 8x).
 - Arquivos: `model_stream/` (encoder, coarse, runtime.lua, probe/), `model_screen/cli.py`,
   `texlab/screen_compress.py`, `pyinstaller/worker.spec`; testes `tests/test_model_stream.py`.
 
