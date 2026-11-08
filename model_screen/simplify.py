@@ -15,7 +15,7 @@ vertices sit on island borders. Two passes, both keeping ORIGINAL vertices (exac
 Limits: screen error (px at d units, 1080p 75 deg), normal deviation, UV deviation in texels of the
 texture the material really samples, roundness (fraction of size) and thinness (fraction of
 thickness). Two profiles: "balanced" (near-identical) and "strong" (>= 50% smaller models, small
-close-up differences; also drops the VVD tangent block).
+close-up differences; also drops the VVD tangent block). "exact" never simplifies (packaging only).
 """
 from __future__ import annotations
 
@@ -50,7 +50,8 @@ class Profile:
     min_tris: int = 4
     engine: str = "seams"     # "seams": this module; "remesh": remesh.py + mirror.py (whole parts + mirror);
                               # "stream": model_stream (big rigid models -> compressed stream drawn by Lua,
-                              # the rest with this profile's limits through the remesh engine)
+                              # the rest with this profile's limits through the remesh engine);
+                              # "copy": no per-model step at all (cli.py runs only the packaging)
 
 
 PROFILES = {
@@ -62,6 +63,9 @@ PROFILES = {
     # experimental: original geometry stored compressed and drawn by a Lua runtime (model_stream)
     "stream": Profile("stream", px=6.0, normal_deg=35.0, uv_texels=3.0, rel_size=0.012,
                       drop_tangents=True, engine="stream"),
+    # "Sem perda": geometry copied byte for byte; only the packaging (dx80/sw.vtx removed, VVD
+    # engine-exact normals, VTX TRI_STRIP) changes the files, all identical in game
+    "exact": Profile("exact", px=0.0, engine="copy"),
 }
 
 if os.environ.get("GMO_MODSCREEN_LAB_PROFILE"):      # development only: an extra profile "lab"

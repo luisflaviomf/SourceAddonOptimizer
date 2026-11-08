@@ -141,6 +141,22 @@ O addon completo (models stream + Forte final + WAV adaptativo) fica com ~132 Mi
 - Arquivos: `model_stream/` (encoder, coarse, runtime.lua, probe/), `model_screen/cli.py`,
   `texlab/screen_compress.py`, `pyinstaller/worker.spec`; testes `tests/test_model_stream.py`.
 
+## Perfis do assistente: "Sem perda" e "Máximo" (08/11, worker)
+
+- `modscreen --profile exact` (Sem perda): nenhum model é simplificado nem reescrito; a cópia fica byte
+  a byte e só roda o "Step 3/3: Packaging" (apaga dx80/sw.vtx, normais exatas no VVD, TRI_STRIP no
+  dx90.vtx), tudo idêntico no jogo. Relatório `modscreen_summary.json` igual aos outros perfis.
+  LVS: models 549 → 437 MiB em disco (−20%; as normais exatas ainda encolhem o download), 0 falhas, 22 s.
+- `texscreen --profile exact` (Sem perda): nenhuma textura reduzida; só a troca DXT5→DXT1 exata
+  (alpha não lido ou 255) muda arquivos, pixel a pixel igual. Nada sai como `fallback` (não-DXT e
+  NOMIP ficam como estão, em vez de ir para o caminho padrão com perda). LVS: 797 → ~606 MiB (estimado).
+- `texscreen --profile max` (Máximo): toda textura perde pelo menos 2 níveis (4x) se o tamanho deixar;
+  8x pela densidade na tela/energia de detalhe com limiar 0,25 (Forte: 0,12); `$detail` e nomes de
+  escrita (`TEXT_NAMES`, sem normal maps) param em 4x; sem as travas de textura pequena e de ampliação.
+  LVS: ~28 MiB (estimado; Forte 75 MiB). Perda visível de perto é aceita.
+- Testes: `tests/test_model_screen.py` (exact = cópia + packaging), `tests/test_texlab.py` (exact
+  nunca reduz nem dá fallback; max ≥ 2 níveis e trava de escrita/`$detail`).
+
 ## Limites conhecidos
 
 - Precisa da Lua do cliente (no multiplayer o arquivo vai junto, é `autorun/client`). Sem ela, o

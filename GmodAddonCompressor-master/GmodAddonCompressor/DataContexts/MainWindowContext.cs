@@ -183,7 +183,8 @@ namespace GmodAddonCompressor.DataContexts
             "Equilibrado",
             "Forte",
             "Forte + espelho",
-            "Stream (experimental)"
+            "Stream (experimental)",
+            "Sem perda (só empacotamento)"
         };
         // Default Tela profile: Forte + espelho (index 2): Forte's limits with the remesh engine and
         // mirror instancing, chosen after in-game tests on the LVS cars pack (models -61% vs -53%).
@@ -192,7 +193,9 @@ namespace GmodAddonCompressor.DataContexts
         private readonly string[] _compressScreenProfileList = new string[]
         {
             "Equilibrado (q50)",
-            "Forte (menor)"
+            "Forte (menor)",
+            "Máximo (perde de perto)",
+            "Sem perda (só BC3→BC1 exato)"
         };
         private int _compressScreenProfileIndex;
         private string[] _compressModeList = new string[]
@@ -349,7 +352,9 @@ namespace GmodAddonCompressor.DataContexts
 
         public string OptimizerModeDescriptionText =>
             OptimizerModeIsScreen
-                ? (_modelsScreenProfileIndex == 3
+                ? (_modelsScreenProfileIndex == 4
+                    ? "Tela (Sem perda): não mexe na geometria. Copia os modelos e só faz o empacotamento exato: remove os VTX dx80/sw que o GMod não usa, grava as normais do VVD no degrau exato do motor e compacta o VTX em TRI_STRIP. Aparência idêntica no jogo."
+                    : _modelsScreenProfileIndex == 3
                     ? "Tela (Stream, experimental): os modelos grandes guardam a geometria ORIGINAL comprimida (data_static/gmo) e um runtime Lua do addon a desenha no lugar do modelo, com a mesma iluminação, skins, bodygroups, cores, luzes e lanternas do motor. O .mdl fica com uma malha grossa (~2%) usada para sombra, longe da câmera e como reserva. Rodas e modelos pequenos usam o Forte + espelho. Na pasta: cerca de 1/4 do Forte + espelho com qualidade igual ou melhor; exige Lua do cliente ligada (gmo_stream 0 volta a desenhar só o .mdl)."
                     : _modelsScreenProfileIndex == 2
                     ? "Tela (Forte + espelho): mesmos limites do Forte, mas cada peça é simplificada inteira (costuras e quinas acompanham os dois lados, sem frestas) e o lado direito de carros simétricos é desenhado como espelho do esquerdo por ossos-espelho, sem guardar os vértices dele. Só espelha onde a geometria e a textura são iguais nos dois lados (texto, sirenes e setas continuam certos). Modelos cerca de 60% menores; marcas de tiro podem não aparecer nas partes espelhadas."
@@ -383,7 +388,13 @@ namespace GmodAddonCompressor.DataContexts
         }
 
         // texscreen profile names (texlab/screen_compress.py PROFILES)
-        public string CompressScreenProfileName => _compressScreenProfileIndex == 1 ? "strong" : "q50";
+        public string CompressScreenProfileName => _compressScreenProfileIndex switch
+        {
+            1 => "strong",
+            2 => "max",
+            3 => "exact",
+            _ => "q50"
+        };
         public Visibility CompressStandardOptionsVisibility => CompressModeIsStandard ? Visibility.Visible : Visibility.Collapsed;
         public Visibility CompressMagickOptionsVisibility => CompressModeIsMagick || CompressModeIsMagickPlus ? Visibility.Visible : Visibility.Collapsed;
         public Visibility CompressMaximumOptionsVisibility => CompressModeIsMaximum ? Visibility.Visible : Visibility.Collapsed;

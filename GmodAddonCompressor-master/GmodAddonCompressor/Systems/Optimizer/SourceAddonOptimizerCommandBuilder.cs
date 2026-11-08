@@ -61,9 +61,10 @@ namespace GmodAddonCompressor.Systems.Optimizer
             var arguments = new List<string> { "modscreen", options.AddonPath, "--work", options.WorkDir };
             AddValue(arguments, "--suffix", options.Suffix);
             // Forte + espelho ("strong_mirror") is the default; "balanced" (Equilibrado), "strong"
-            // (Forte) and "stream" (experimental, Lua-drawn geometry) are only used when asked for explicitly.
+            // (Forte), "stream" (experimental, Lua-drawn geometry) and "exact" (Sem perda: packaging only)
+            // are only used when asked for explicitly.
             string requested = options.ScreenProfile?.Trim().ToLowerInvariant() ?? "";
-            string profile = requested is "balanced" or "strong" or "stream" ? requested : "strong_mirror";
+            string profile = requested is "balanced" or "strong" or "stream" or "exact" ? requested : "strong_mirror";
             arguments.Add("--profile");
             arguments.Add(profile);
             AddInteger(arguments, "--jobs", options.Jobs);

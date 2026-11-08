@@ -10,6 +10,10 @@ when no material reads the alpha (or it is constant 255).
 
 Files the engine does not handle (non-DXT formats, NOMIP, cubemaps...) are
 reported as `fallback`, so the caller can route them through the regular path.
+
+Profiles: q50 (Equilibrado), q75, strong (Forte), exact (Sem perda: no reduction,
+only the pixel-identical DXT5 -> DXT1 transcode, nothing reported as fallback) and
+max (Maximo: at least 4x per texture, 8x by detail energy).
 """
 from __future__ import annotations
 
@@ -43,6 +47,12 @@ PROFILES = {
     # detail energy alone, but textures used as $detail (LVS body AO "skin" atlases: large smooth
     # surfaces where 8x shows DXT blocks) stop at 4x. Validated in game 2026-11-08 (docs/...stream).
     "strong": 0.12,
+    # "Sem perda": no texture is reduced (only the exact DXT5 -> DXT1 transcode may change a file).
+    "exact": 0.0,
+    # "Maximo": smallest size, visible loss up close accepted. Every texture loses at least 4x;
+    # 8x by detail energy with this threshold (or when the levels are never sampled). LVS estimate
+    # 27.5-30.2 MiB for thresholds inf..0.12; 0.25 (28.1 MiB) keeps the ~40 most detailed at 4x.
+    "max": 0.25,
 }
 # Extra rules of a profile (q50/q75 have none):
 # - max_energy_drop: levels a texture may lose on detail energy alone;
@@ -53,9 +63,15 @@ PROFILES = {
 # - text_cap: textures whose file name says they carry lettering or graphics (TEXT_NAMES: badges,
 #   gauges, liveries, decals, plates...) lose at most this many levels; normal maps are not included;
 # - small_cap = (bytes, levels): a texture whose reduced chain at that many levels already fits in
-#   `bytes` stops there: going further saves a few KB but erases buttons, icons and labels.
+#   `bytes` stops there: going further saves a few KB but erases buttons, icons and labels;
+# - max_drop: every texture loses at most this many levels (0: no reduction at all);
+# - min_drop: every texture loses at least this many levels where its size and mips allow (default 1);
+# - fallback: False reports the files the engine does not handle (non-DXT, NOMIP, unreadable) as
+#   kept, not as `fallback` (the caller sends fallback files through its regular, lossy path).
 # "strong" (Forte): LVS Monaco "HIGHWAY PATROL" livery and Audi S3 console labels unreadable at 8x/4x
 # (Luis, 2026-11-08); with these rules they stay at 2x. LVS textures 798 -> 75 MiB (q50: 136).
+# "exact" (Sem perda): nothing reduced, nothing sent to the regular path.
+# "max" (Maximo): at least 4x everywhere, $detail and lettering stop at 4x, no small/magnify guard.
 TEXT_NAMES = re.compile(r"badge|gauge|tacho|speedo|sign|decal|sticker|logo|emblem|plate|cluster|dial|"
                         r"license|livery|polic|polizei|text|txt|label|font|number|digital|clock|odo|warn",
                         re.IGNORECASE)
@@ -63,6 +79,8 @@ NORMAL_SUFFIX = re.compile(r"(_nm|_normal|_n|_bump|_ddn)$", re.IGNORECASE)
 PROFILE_OPTIONS = {
     "strong": {"max_energy_drop": 3, "caps": {"$detail": 2}, "magnify": (96.0, 0.5, 1.5, 3), "text_cap": 1,
                "small_cap": (100 * 1024, 1)},
+    "exact": {"max_drop": 0, "fallback": False},
+    "max": {"max_energy_drop": 3, "caps": {"$detail": 2}, "text_cap": 2, "min_drop": 2},
 }
 MAX_DROP = 3
 # Beyond this many levels a texture is only reduced when the dropped levels are provably never
@@ -165,16 +183,19 @@ def _use_payload(use, view: ViewModel) -> _Use | None:
 def _plan_one(task) -> Item:
     """Decision for one texture (pure function of its file and the addon-wide usage)."""
     p, root, ref, threshold, view, use, unused_alpha, coverage, need_map = task[:9]
-    energy_drop, cap, magnify, small_cap = task[9] if len(task) > 9 else (MAX_DROP_BY_ENERGY, None, None, None)
+    opts = task[9] if len(task) > 9 else (MAX_DROP_BY_ENERGY, None, None, None)
+    energy_drop, cap, magnify, small_cap = opts[:4]
+    min_drop = opts[4] if len(opts) > 4 else 1
+    fallback = "fallback" if len(opts) <= 5 or opts[5] else "keep"
     item = Item(p.relative_to(root).as_posix(), ref, p, before=p.stat().st_size)
     try:
         v = read_vtf(p)
     except Exception as exc:  # unreadable: leave it to the regular path
-        item.action, item.reason = "fallback", f"unreadable:{type(exc).__name__}"
+        item.action, item.reason = fallback, f"unreadable:{type(exc).__name__}"
         return item
     ok, why = _eligible(v)
     if not ok:
-        item.action = "fallback" if why in ("non_dxt_format", "nomip") else "keep"
+        item.action = fallback if why in ("non_dxt_format", "nomip") else "keep"
         item.reason = why
         return item
     item.out_fmt = v.fmt
@@ -192,13 +213,13 @@ def _plan_one(task) -> Item:
                  for lv in range(small_cap[1], v.mip_count))
         if at * v.frames <= small_cap[0]:
             limit = small_cap[1]
-    drop = 1 if limit >= 1 else 0
+    drop = min(min_drop, limit)
     s_eff = area = None
     if use is not None and v.frames == 1:
         s_eff, area = use.s_eff, use.area
         if not len(s_eff):
             s_eff = area = None
-    if s_eff is not None and limit > 1:
+    if s_eff is not None and limit > drop:
         uvc = use.uv if use.uv is not None else np.zeros((0, 2))
         maps = band_energy_maps(p, max_levels=limit, vtf=v)
         local = texture_local_error(s_eff, area, uvc, maps, view.focal_px, min(limit, len(maps)))
@@ -227,6 +248,8 @@ def _plan_one(task) -> Item:
             else:
                 break
         item.reason = "screen_density"
+    elif cap == 0:
+        item.reason = "lossless"
     else:
         item.reason = "not_seen_by_models" if use is None else ("single_step" if s_eff is not None
                                                                  else "no_visible_triangles")
@@ -259,13 +282,18 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
         from concurrent.futures import ProcessPoolExecutor
         pool = ProcessPoolExecutor(max_workers=jobs)
     try:
-        # the models scan runs in the pool while this process reads every material
-        futures = [pool.submit(_model_usage, t) for t in usage_tasks(root)] if pool else None
-        unused_alpha = alpha_unused_refs(root, [])
         opts = PROFILE_OPTIONS.get(profile)
+        # no reduction allowed: the models scan (screen density) has nothing to decide
+        scan = not (opts and opts.get("max_drop") == 0)
+        # the models scan runs in the pool while this process reads every material
+        futures = [pool.submit(_model_usage, t) for t in usage_tasks(root)] if pool and scan else None
+        unused_alpha = alpha_unused_refs(root, [])
         caps = _param_caps(root, opts.get("caps") or {}) if opts else {}
         coverage = alpha_coverage_refs(root, [])
-        uses = merge_usage([f.result() for f in futures]) if pool else collect_usage(root)
+        if not scan:
+            uses = {}
+        else:
+            uses = merge_usage([f.result() for f in futures]) if pool else collect_usage(root)
         tasks = []
         for p in sorted(mat.rglob("*")):
             if not p.is_file() or p.suffix.lower() != ".vtf":
@@ -278,7 +306,10 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
                 stem = ref.rsplit("/", 1)[-1]
                 if opts.get("text_cap") is not None and TEXT_NAMES.search(stem) and not NORMAL_SUFFIX.search(stem):
                     cap = min(cap if cap is not None else 99, int(opts["text_cap"]))
-                task += ((opts.get("max_energy_drop", MAX_DROP_BY_ENERGY), cap, opts.get("magnify"), opts.get("small_cap")),)
+                if opts.get("max_drop") is not None:
+                    cap = min(cap if cap is not None else 99, int(opts["max_drop"]))
+                task += ((opts.get("max_energy_drop", MAX_DROP_BY_ENERGY), cap, opts.get("magnify"), opts.get("small_cap"),
+                          opts.get("min_drop", 1), opts.get("fallback", True)),)
             tasks.append(task)
         if pool is not None and len(tasks) > 1:
             return list(pool.map(_plan_one, tasks, chunksize=1))

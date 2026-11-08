@@ -1,12 +1,15 @@
 """Worker command `modscreen`: Models "Tela" mode.
 
-    modscreen <addon> [--work DIR] [--suffix _optimized] [--profile balanced|strong|strong_mirror] [--jobs N]
+    modscreen <addon> [--work DIR] [--suffix _optimized]
+              [--profile balanced|strong|strong_mirror|stream|exact] [--jobs N]
 
 Copies the addon to <addon><suffix> (next to it), simplifies every compiled model in the copy
 straight in the binaries (strong_mirror: whole-part remesh + mirror instancing, see remesh.py and
 mirror.py), snaps VVD normals/tangents to the engine's own steps, removes
 .dx80/.sw VTX files and strips every .dx90.vtx. A model that fails (unsupported structure,
 validation error) is left exactly as it was. Progress lines follow the Models runner format.
+Profile "exact" ("Sem perda") skips the per-model step: the models stay byte for byte as copied
+and only the packaging steps (dx80/sw removal, engine-exact normals, strips) change them.
 """
 from __future__ import annotations
 
@@ -135,7 +138,8 @@ def _process_one(args):
 
 
 def _vvd_count(mdl: Path) -> int:
-    raw = mdl.with_suffix(".vvd").read_bytes()
+    with open(mdl.with_suffix(".vvd"), "rb") as fh:     # the header is enough (numLODVertexes[0])
+        raw = fh.read(20)
     return struct.unpack_from("<i", raw, 16)[0]
 
 
@@ -146,6 +150,25 @@ def _vvd_count_bytes(raw: bytes) -> int:
 def _size(mdl: Path, ext: str) -> int:
     p = Path(str(mdl.with_suffix("")) + ext)
     return p.stat().st_size if p.exists() else 0
+
+
+def _kept_rows(models: list[Path], out: Path) -> list[dict]:
+    """Profile "exact": no per-model step (nothing is parsed or rewritten). Same progress lines and
+    report rows as the other profiles; only the file sizes and the VVD header are read."""
+    rows = []
+    n = len(models)
+    for i, mdl in enumerate(models, 1):
+        size = sum(_size(mdl, e) for e in (".mdl", ".vvd", ".dx90.vtx"))
+        try:
+            nv = _vvd_count(mdl)
+        except (OSError, struct.error):
+            nv = 0
+        rel = mdl.relative_to(out).as_posix()
+        print(PROGRESS_MODEL.format(i=i, n=n, path=rel), flush=True)
+        print(DONE.format(i=i, n=n, path=rel), flush=True)
+        rows.append({"model": str(mdl), "ok": True, "vertices_before": nv, "vertices_after": nv,
+                     "bytes_before": size, "bytes_after": size})
+    return rows
 
 
 def _copy_tree(src: Path, dst: Path, threads: int = 8, skip_top: tuple[str, ...] = ()) -> None:
@@ -220,7 +243,12 @@ def main(argv: list[str]) -> int:
     models = sorted(p for p in (out / "models").rglob("*.mdl")
                     if Path(str(p.with_suffix("")) + ".dx90.vtx").exists() and p.with_suffix(".vvd").exists())
     bytes_before = sum(p.stat().st_size for p in (out / "models").rglob("*") if p.is_file())
-    print(f"== Step 2/3: Simplify models ({args.profile}) ==", flush=True)
+    from .simplify import PROFILES as _P
+    copy_only = _P[args.profile].engine == "copy"
+    if copy_only:
+        print(f"== Step 2/3: Keep models byte for byte ({args.profile}) ==", flush=True)
+    else:
+        print(f"== Step 2/3: Simplify models ({args.profile}) ==", flush=True)
     n = len(models)
     # Models are independent; the biggest go first so no large one is left running alone at the end.
     # Results are put back in path order, so the files and the report do not depend on scheduling.
@@ -228,7 +256,6 @@ def main(argv: list[str]) -> int:
     by_index = {}
     done = 0
     jobs = args.jobs if args.jobs > 0 else _auto_jobs()
-    from .simplify import PROFILES as _P
     modes = [None] * n
     if _P[args.profile].engine == "stream":
         import model_stream
@@ -238,18 +265,21 @@ def main(argv: list[str]) -> int:
             if model_stream.wants_stream(rel, size, args.stream_min_kb * 1024):
                 modes[i] = "stream"
     with ProcessPoolExecutor(max_workers=jobs) as ex:
-        futures = {ex.submit(_process_one, (str(models[i]), str(src), args.profile, modes[i], str(out))): i
-                   for i in order}
-        for fut in as_completed(futures):
-            res = fut.result()
-            by_index[futures[fut]] = res
-            done += 1
-            rel = Path(res["model"]).relative_to(out).as_posix()
-            print(PROGRESS_MODEL.format(i=done, n=n, path=rel), flush=True)
-            if not res["ok"]:
-                print(f"[WARN] kept original: {rel}: {res['error']}", flush=True)
-            print(DONE.format(i=done, n=n, path=rel), flush=True)
-        rows = [by_index[i] for i in range(n)]
+        if copy_only:
+            rows = _kept_rows(models, out)
+        else:
+            futures = {ex.submit(_process_one, (str(models[i]), str(src), args.profile, modes[i], str(out))): i
+                       for i in order}
+            for fut in as_completed(futures):
+                res = fut.result()
+                by_index[futures[fut]] = res
+                done += 1
+                rel = Path(res["model"]).relative_to(out).as_posix()
+                print(PROGRESS_MODEL.format(i=done, n=n, path=rel), flush=True)
+                if not res["ok"]:
+                    print(f"[WARN] kept original: {rel}: {res['error']}", flush=True)
+                print(DONE.format(i=done, n=n, path=rel), flush=True)
+            rows = [by_index[i] for i in range(n)]
         manifest = {Path(r["model"]).relative_to(out).as_posix().lower(): r["stream"]
                     for r in rows if r.get("ok") and r.get("stream")}
         if manifest:

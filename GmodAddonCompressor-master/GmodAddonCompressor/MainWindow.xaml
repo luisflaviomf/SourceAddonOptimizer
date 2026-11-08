@@ -14,26 +14,509 @@
         Width="1280">
 
     <Grid Background="{DynamicResource AppBackground}">
-        <Grid.RowDefinitions><RowDefinition Height="52" /><RowDefinition /><RowDefinition Height="24" /></Grid.RowDefinitions>
-        <Border Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1">
-            <Grid Margin="24,0">
-                <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Width="27" Height="27" Background="{DynamicResource Accent}" CornerRadius="4">
-                        <TextBlock Text="g" FontSize="21" FontWeight="Bold" Foreground="{DynamicResource AccentForeground}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    </Border>
-                    <TextBlock Text="GMod Addon Optimizer" FontSize="16" FontWeight="SemiBold" Margin="11,0,0,0" VerticalAlignment="Center" />
-                    <TextBlock Text="/  Bancada guiada" FontSize="13" Foreground="{DynamicResource TextSecondary}" Margin="18,0,0,0" VerticalAlignment="Center" />
+        <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition /></Grid.ColumnDefinitions>
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition /></Grid.RowDefinitions>
+
+        <!-- Navigation rail (Material 3): Otimizar, Avançado, Ferramentas, Testar no jogo -->
+        <DockPanel Grid.RowSpan="2" Background="{DynamicResource AppBackground}">
+            <StackPanel DockPanel.Dock="Bottom" Margin="0,0,0,14">
+                <TextBlock x:Name="VersionId" Style="{StaticResource MutedText}" Text="VERSION" FontSize="11" HorizontalAlignment="Center" />
+                <TextBlock Style="{StaticResource MutedText}" Text="Hanic" FontSize="11" HorizontalAlignment="Center" Margin="0,2,0,0" />
+            </StackPanel>
+            <StackPanel>
+                <Border Width="48" Height="48" CornerRadius="16" Background="{DynamicResource PrimaryContainer}" Margin="0,16,0,28"
+                        HorizontalAlignment="Center" ToolTip="GMod Addon Optimizer">
+                    <TextBlock Text="g" FontSize="24" FontWeight="Bold" Foreground="{DynamicResource OnPrimaryContainer}"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-4,0,0" />
+                </Border>
+                <RadioButton x:Name="Rail_Optimize" Style="{StaticResource RailButton}" Content="Otimizar" Tag="&#xE945;" />
+                <RadioButton x:Name="Rail_Advanced" Style="{StaticResource RailButton}" Content="Avançado" Tag="&#xE9E9;" />
+                <RadioButton x:Name="Rail_Tools" Style="{StaticResource RailButton}" Content="Ferramentas" Tag="&#xE90F;" />
+                <RadioButton x:Name="Rail_Test" Style="{StaticResource RailButton}" Content="Testar no jogo" Tag="&#xE7FC;" />
+            </StackPanel>
+        </DockPanel>
+
+        <!-- Secondary tabs of Avançado and Ferramentas -->
+        <Border x:Name="SecondaryNavBar" Grid.Column="1" Background="{DynamicResource AppBackground}"
+                BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1" Visibility="Collapsed">
+            <Grid Margin="16,0">
+                <StackPanel x:Name="AdvancedTabsPanel" Orientation="Horizontal">
+                    <RadioButton Style="{StaticResource SecondaryTab}" GroupName="AdvancedTabs" Content="Modelos" Tag="Tab_Models" IsChecked="True" />
+                    <RadioButton Style="{StaticResource SecondaryTab}" GroupName="AdvancedTabs" Content="Texturas e sons" Tag="Tab_Media" />
+                    <RadioButton Style="{StaticResource SecondaryTab}" GroupName="AdvancedTabs" Content="Pipeline" Tag="Tab_Pipeline" />
+                    <RadioButton Style="{StaticResource SecondaryTab}" GroupName="AdvancedTabs" Content="Compressão completa" Tag="Tab_FullCompression" />
                 </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock x:Name="VersionId" Style="{StaticResource MutedText}" Text="VERSION" />
-                    <TextBlock Style="{StaticResource MutedText}" Text="Hanic" Margin="16,0,0,0" />
+                <StackPanel x:Name="ToolsTabsPanel" Orientation="Horizontal" Visibility="Collapsed">
+                    <RadioButton Style="{StaticResource SecondaryTab}" GroupName="ToolsTabs" Content="Descompactar" Tag="Tab_Unpack" IsChecked="True" />
+                    <RadioButton Style="{StaticResource SecondaryTab}" GroupName="ToolsTabs" Content="Juntar addons" Tag="Tab_Merge" />
+                    <RadioButton Style="{StaticResource SecondaryTab}" GroupName="ToolsTabs" Content="Mapas" Tag="Tab_Maps" />
+                    <RadioButton Style="{StaticResource SecondaryTab}" GroupName="ToolsTabs" Content="Distribuição exata" Tag="Tab_Exact" />
                 </StackPanel>
             </Grid>
         </Border>
-        <TabControl x:Name="MainTabs" Grid.Row="1" Margin="0" Background="{DynamicResource AppBackground}" BorderBrush="{DynamicResource Border}">
 
-        <TabItem Header="Compressão completa" x:Name="Tab_FullCompression" IsSelected="True">
+        <TabControl x:Name="MainTabs" Grid.Row="1" Grid.Column="1" Style="{StaticResource ShellTabControl}">
+
+        <TabItem Header="Otimizar" x:Name="Tab_Wizard" IsSelected="True">
+            <Grid x:Name="WizardRoot" Background="{DynamicResource AppBackground}" TextElement.Foreground="{DynamicResource TextPrimary}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Title and step indicator -->
+                <StackPanel Margin="32,22,32,6" MaxWidth="880">
+                    <TextBlock Text="Otimizar addon" FontSize="22" />
+                    <Grid Margin="0,18,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal">
+                            <Grid Width="24" Height="24">
+                                <Ellipse Stroke="{DynamicResource BorderStrong}" StrokeThickness="1.5" />
+                                <Ellipse Fill="{DynamicResource Accent}" Visibility="{Binding Step1Current, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <Ellipse Fill="{DynamicResource SecondaryContainer}" Visibility="{Binding Step1Done, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <TextBlock Text="&#xE73E;" FontFamily="{StaticResource IconFont}" FontSize="12" Foreground="{DynamicResource OnSecondaryContainer}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           Visibility="{Binding Step1Done, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <TextBlock Text="1" FontSize="12" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource TextSecondary}" /><Style.Triggers>
+                                        <DataTrigger Binding="{Binding Step1Current}" Value="True"><Setter Property="Foreground" Value="{DynamicResource AccentForeground}" /></DataTrigger>
+                                        <DataTrigger Binding="{Binding Step1Done}" Value="True"><Setter Property="Visibility" Value="Collapsed" /></DataTrigger>
+                                    </Style.Triggers></Style></TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                            <TextBlock Text="Addon" Margin="8,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <Rectangle Grid.Column="1" Height="1" Fill="{DynamicResource Border}" Margin="14,0" />
+                        <StackPanel Grid.Column="2" Orientation="Horizontal">
+                            <Grid Width="24" Height="24">
+                                <Ellipse Stroke="{DynamicResource BorderStrong}" StrokeThickness="1.5" />
+                                <Ellipse Fill="{DynamicResource Accent}" Visibility="{Binding Step2Current, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <Ellipse Fill="{DynamicResource SecondaryContainer}" Visibility="{Binding Step2Done, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <TextBlock Text="&#xE73E;" FontFamily="{StaticResource IconFont}" FontSize="12" Foreground="{DynamicResource OnSecondaryContainer}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           Visibility="{Binding Step2Done, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <TextBlock Text="2" FontSize="12" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource TextSecondary}" /><Style.Triggers>
+                                        <DataTrigger Binding="{Binding Step2Current}" Value="True"><Setter Property="Foreground" Value="{DynamicResource AccentForeground}" /></DataTrigger>
+                                        <DataTrigger Binding="{Binding Step2Done}" Value="True"><Setter Property="Visibility" Value="Collapsed" /></DataTrigger>
+                                    </Style.Triggers></Style></TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                            <TextBlock Text="Objetivo" Margin="8,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <Rectangle Grid.Column="3" Height="1" Fill="{DynamicResource Border}" Margin="14,0" />
+                        <StackPanel Grid.Column="4" Orientation="Horizontal">
+                            <Grid Width="24" Height="24">
+                                <Ellipse Stroke="{DynamicResource BorderStrong}" StrokeThickness="1.5" />
+                                <Ellipse Fill="{DynamicResource Accent}" Visibility="{Binding Step3Current, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <Ellipse Fill="{DynamicResource SecondaryContainer}" Visibility="{Binding Step3Done, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <TextBlock Text="&#xE73E;" FontFamily="{StaticResource IconFont}" FontSize="12" Foreground="{DynamicResource OnSecondaryContainer}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           Visibility="{Binding Step3Done, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                <TextBlock Text="3" FontSize="12" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource TextSecondary}" /><Style.Triggers>
+                                        <DataTrigger Binding="{Binding Step3Current}" Value="True"><Setter Property="Foreground" Value="{DynamicResource AccentForeground}" /></DataTrigger>
+                                        <DataTrigger Binding="{Binding Step3Done}" Value="True"><Setter Property="Visibility" Value="Collapsed" /></DataTrigger>
+                                    </Style.Triggers></Style></TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                            <TextBlock Text="Otimizar" Margin="8,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+
+                <ScrollViewer x:Name="WizardScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid MaxWidth="880" Margin="32,10,32,24">
+
+                        <!-- Step 1: addon -->
+                        <StackPanel Visibility="{Binding IsStep1, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock Text="Qual addon você quer otimizar?" FontSize="24" Margin="0,8,0,16" />
+
+                            <Grid x:Name="WizardDropZone" AllowDrop="True" Background="Transparent" Margin="0,0,0,20"
+                                  Drop="WizardDropZone_Drop" DragOver="WizardDropZone_DragOver"
+                                  Visibility="{Binding ShowDropZone, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <Rectangle x:Name="WizardDropFrame" RadiusX="16" RadiusY="16" Fill="{DynamicResource Surface1}"
+                                           Stroke="{DynamicResource BorderStrong}" StrokeThickness="1.5" StrokeDashArray="4 3" />
+                                <StackPanel Margin="24,34" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE898;" FontFamily="{StaticResource IconFont}" FontSize="32" Foreground="{DynamicResource Accent}" HorizontalAlignment="Center" />
+                                    <TextBlock Text="Arraste a pasta do addon aqui" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,12,0,0" />
+                                    <TextBlock Text="ou" FontSize="12" Foreground="{DynamicResource TextSecondary}" HorizontalAlignment="Center" Margin="0,6,0,10" />
+                                    <Button Style="{StaticResource FilledButton}" Click="WizardBrowse_Click" HorizontalAlignment="Center">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE8B7;" FontFamily="{StaticResource IconFont}" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                            <TextBlock Text="Escolher pasta…" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                </StackPanel>
+                            </Grid>
+
+                            <StackPanel Visibility="{Binding ShowRecent, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <TextBlock Text="Recentes" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8" />
+                                <ItemsControl ItemsSource="{Binding Recent}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Button Click="WizardRecent_Click" Tag="{Binding Path}" Cursor="Hand" Margin="0,0,0,6" HorizontalContentAlignment="Stretch">
+                                                <Button.Template>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border x:Name="Bd" Background="Transparent" CornerRadius="12" Padding="12,10" BorderThickness="1" BorderBrush="{DynamicResource Border}">
+                                                            <ContentPresenter />
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="{DynamicResource Surface1}" /></Trigger>
+                                                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Accent}" /></Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Button.Template>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                                    <TextBlock Text="&#xE8B7;" FontFamily="{StaticResource IconFont}" FontSize="18" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" Margin="4,0,14,0" />
+                                                    <StackPanel Grid.Column="1">
+                                                        <TextBlock Text="{Binding Name}" Foreground="{DynamicResource TextPrimary}" />
+                                                        <TextBlock Text="{Binding Detail}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextTrimming="CharacterEllipsis" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Button>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+
+                            <StackPanel Visibility="{Binding HasAddon, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <Border Style="{StaticResource M3Card}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                            <Border Width="40" Height="40" CornerRadius="12" Background="{DynamicResource PrimaryContainer}" Margin="0,0,14,0">
+                                                <TextBlock Text="&#xE8B7;" FontFamily="{StaticResource IconFont}" FontSize="18" Foreground="{DynamicResource OnPrimaryContainer}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding AddonName}" FontSize="16" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding AddonPath}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextTrimming="CharacterEllipsis" ToolTip="{Binding AddonPath}" />
+                                            </StackPanel>
+                                            <Button Grid.Column="2" Style="{StaticResource TextButton}" Content="Trocar" Click="WizardBrowse_Click" />
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0" Visibility="{Binding IsScanning, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                            <ProgressBar IsIndeterminate="True" Width="120" Height="4" VerticalAlignment="Center" />
+                                            <TextBlock Text="Lendo os arquivos…" Foreground="{DynamicResource TextSecondary}" Margin="12,0,0,0" />
+                                        </StackPanel>
+                                        <StackPanel Visibility="{Binding HasInventory, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                            <TextBlock Margin="0,16,0,12">
+                                                <Run Text="{Binding TotalSizeText, Mode=OneWay}" FontSize="28" />
+                                                <Run Text="   " />
+                                                <Run Text="{Binding TotalFilesText, Mode=OneWay}" FontSize="14" Foreground="{DynamicResource TextSecondary}" />
+                                            </TextBlock>
+                                            <UniformGrid Columns="2">
+                                                <Border Background="{DynamicResource Surface2}" CornerRadius="12" Padding="14,10" Margin="0,0,6,6">
+                                                    <DockPanel>
+                                                        <TextBlock Text="&#xE7B8;" FontFamily="{StaticResource IconFont}" FontSize="18" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                                                        <TextBlock DockPanel.Dock="Right" Text="{Binding ModelsSizeText}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                                        <StackPanel><TextBlock Text="Modelos" /><TextBlock Text="{Binding ModelsFilesText}" FontSize="12" Foreground="{DynamicResource TextSecondary}" /></StackPanel>
+                                                    </DockPanel>
+                                                </Border>
+                                                <Border Background="{DynamicResource Surface2}" CornerRadius="12" Padding="14,10" Margin="6,0,0,6">
+                                                    <DockPanel>
+                                                        <TextBlock Text="&#xE91B;" FontFamily="{StaticResource IconFont}" FontSize="18" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                                                        <TextBlock DockPanel.Dock="Right" Text="{Binding TexturesSizeText}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                                        <StackPanel><TextBlock Text="Texturas" /><TextBlock Text="{Binding TexturesFilesText}" FontSize="12" Foreground="{DynamicResource TextSecondary}" /></StackPanel>
+                                                    </DockPanel>
+                                                </Border>
+                                                <Border Background="{DynamicResource Surface2}" CornerRadius="12" Padding="14,10" Margin="0,6,6,0">
+                                                    <DockPanel>
+                                                        <TextBlock Text="&#xE767;" FontFamily="{StaticResource IconFont}" FontSize="18" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                                                        <TextBlock DockPanel.Dock="Right" Text="{Binding SoundsSizeText}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                                        <StackPanel><TextBlock Text="Sons" /><TextBlock Text="{Binding SoundsFilesText}" FontSize="12" Foreground="{DynamicResource TextSecondary}" /></StackPanel>
+                                                    </DockPanel>
+                                                </Border>
+                                                <Border Background="{DynamicResource Surface2}" CornerRadius="12" Padding="14,10" Margin="6,6,0,0">
+                                                    <DockPanel>
+                                                        <TextBlock Text="&#xE8A5;" FontFamily="{StaticResource IconFont}" FontSize="18" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                                                        <TextBlock DockPanel.Dock="Right" Text="{Binding OthersSizeText}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                                        <StackPanel><TextBlock Text="Outros" /><TextBlock Text="{Binding OthersFilesText}" FontSize="12" Foreground="{DynamicResource TextSecondary}" /></StackPanel>
+                                                    </DockPanel>
+                                                </Border>
+                                            </UniformGrid>
+                                        </StackPanel>
+                                        <TextBlock Text="Esta pasta não parece um addon (faltam pastas como models, materials ou sound)."
+                                                   Foreground="{DynamicResource Warning}" TextWrapping="Wrap" Margin="0,12,0,0"
+                                                   Visibility="{Binding ShowNotAddonWarning, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Text="Salvar em" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="2,20,0,6" />
+                                <TextBox Text="{Binding OutputPath, Mode=OneWay}" IsReadOnly="True" Height="44" VerticalContentAlignment="Center" Padding="12,0"
+                                         AutomationProperties.Name="Pasta onde o addon otimizado será salvo" />
+                                <TextBlock Text="Os originais não são alterados." FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="2,6,0,0" />
+                                <TextBlock Text="Essa pasta já existe e será substituída." FontSize="12" Foreground="{DynamicResource Warning}" Margin="2,4,0,0"
+                                           Visibility="{Binding OutputExists, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- Step 2: goal and profile -->
+                        <StackPanel Visibility="{Binding IsStep2, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock Text="O que você quer otimizar?" FontSize="24" Margin="0,8,0,16" />
+                            <RadioButton Style="{StaticResource ChoiceCard}" GroupName="WizardGoal" IsChecked="{Binding GoalFull, Mode=TwoWay}" IsEnabled="{Binding CanGoalFull}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Addon completo" FontSize="16" FontWeight="SemiBold" />
+                                        <Border Style="{StaticResource M3Chip}" Margin="10,0,0,0"><TextBlock Text="Recomendado" FontSize="12" Foreground="{DynamicResource OnSecondaryContainer}" /></Border>
+                                    </StackPanel>
+                                    <TextBlock Text="Modelos, texturas e sons de uma vez." Foreground="{DynamicResource TextSecondary}" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton Style="{StaticResource ChoiceCard}" GroupName="WizardGoal" IsChecked="{Binding GoalModels, Mode=TwoWay}" IsEnabled="{Binding CanGoalModels}">
+                                <StackPanel>
+                                    <TextBlock Text="Só modelos" FontSize="16" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding GoalModelsHint}" Foreground="{DynamicResource TextSecondary}" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton Style="{StaticResource ChoiceCard}" GroupName="WizardGoal" IsChecked="{Binding GoalMedia, Mode=TwoWay}" IsEnabled="{Binding CanGoalMedia}">
+                                <StackPanel>
+                                    <TextBlock Text="Só texturas e sons" FontSize="16" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding GoalMediaHint}" Foreground="{DynamicResource TextSecondary}" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </RadioButton>
+
+                            <TextBlock Text="Perfil" FontSize="16" FontWeight="SemiBold" Margin="0,18,0,10" />
+                            <UniformGrid Columns="3">
+                                <RadioButton Style="{StaticResource ChoiceCard}" GroupName="WizardProfile" IsChecked="{Binding ProfileLossless, Mode=TwoWay}" Margin="0,0,6,8" VerticalAlignment="Stretch" VerticalContentAlignment="Stretch">
+                                    <StackPanel>
+                                        <TextBlock Text="Sem perda" FontSize="16" FontWeight="SemiBold" />
+                                        <TextBlock Text="Aparência e som idênticos. Só mexe no que não muda nada no jogo." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                    </StackPanel>
+                                </RadioButton>
+                                <RadioButton Style="{StaticResource ChoiceCard}" GroupName="WizardProfile" IsChecked="{Binding ProfileBalanced, Mode=TwoWay}" Margin="3,0,3,8">
+                                    <StackPanel>
+                                        <WrapPanel>
+                                            <TextBlock Text="Custo-benefício" FontSize="16" FontWeight="SemiBold" Margin="0,0,8,4" />
+                                            <Border Style="{StaticResource M3Chip}" Margin="0,0,0,4"><TextBlock Text="Recomendado" FontSize="12" Foreground="{DynamicResource OnSecondaryContainer}" /></Border>
+                                        </WrapPanel>
+                                        <TextBlock Text="Bem menor, com perda quase invisível. Levou o pacote LVS de 1375 para 132 MiB." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </RadioButton>
+                                <RadioButton Style="{StaticResource ChoiceCard}" GroupName="WizardProfile" IsChecked="{Binding ProfileMax, Mode=TwoWay}" Margin="6,0,0,8">
+                                    <StackPanel>
+                                        <TextBlock Text="Máximo" FontSize="16" FontWeight="SemiBold" />
+                                        <TextBlock Text="O menor possível. Aceita perda visível de perto, como texturas 4x menores." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                    </StackPanel>
+                                </RadioButton>
+                            </UniformGrid>
+
+                            <Border Style="{StaticResource M3Card}" Background="{DynamicResource Surface1}" Margin="0,6,0,0">
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="110" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                    <TextBlock Grid.ColumnSpan="2" Text="O que este perfil faz" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,8" />
+                                    <TextBlock Grid.Row="1" Text="Modelos" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4" Visibility="{Binding ShowModelsLine, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding ProfileModelsLine}" TextWrapping="Wrap" Margin="0,0,0,4" Visibility="{Binding ShowModelsLine, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                    <TextBlock Grid.Row="2" Text="Texturas" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4" Visibility="{Binding ShowMediaLines, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding ProfileTexturesLine}" TextWrapping="Wrap" Margin="0,0,0,4" Visibility="{Binding ShowMediaLines, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                    <TextBlock Grid.Row="3" Text="Sons" Foreground="{DynamicResource TextSecondary}" Visibility="{Binding ShowMediaLines, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding ProfileSoundsLine}" TextWrapping="Wrap" Visibility="{Binding ShowMediaLines, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                </Grid>
+                            </Border>
+                            <Button Style="{StaticResource TextButton}" HorizontalAlignment="Left" Margin="-4,12,0,0" Click="WizardAdvanced_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE9E9;" FontFamily="{StaticResource IconFont}" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                    <TextBlock Text="Prefere ajustar cada opção? Abrir o modo Avançado" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+
+                        <!-- Step 3: review, running, done, failed -->
+                        <StackPanel Visibility="{Binding IsStep3, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <StackPanel Visibility="{Binding IsReview, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <TextBlock Text="Tudo pronto" FontSize="24" Margin="0,8,0,4" />
+                                <TextBlock Text="Confira e clique em Otimizar." Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,16" />
+                                <Border Style="{StaticResource M3Card}" Padding="16,4">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="150" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                        <TextBlock Text="Addon" Foreground="{DynamicResource TextSecondary}" Margin="0,12" />
+                                        <TextBlock Grid.Column="1" Text="{Binding AddonPath}" TextTrimming="CharacterEllipsis" ToolTip="{Binding AddonPath}" Margin="0,12" />
+                                        <Border Grid.Row="1" Grid.ColumnSpan="2" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" />
+                                        <TextBlock Grid.Row="1" Text="Salvar em" Foreground="{DynamicResource TextSecondary}" Margin="0,12" />
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding OutputPath}" TextTrimming="CharacterEllipsis" ToolTip="{Binding OutputPath}" Margin="0,12" />
+                                        <Border Grid.Row="2" Grid.ColumnSpan="2" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" />
+                                        <TextBlock Grid.Row="2" Text="O que otimizar" Foreground="{DynamicResource TextSecondary}" Margin="0,12" />
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding GoalTitle}" Margin="0,12" />
+                                        <Border Grid.Row="3" Grid.ColumnSpan="2" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" />
+                                        <TextBlock Grid.Row="3" Text="Perfil" Foreground="{DynamicResource TextSecondary}" Margin="0,12" />
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding ProfileTitle}" Margin="0,12" />
+                                    </Grid>
+                                </Border>
+                                <TextBlock Text="A pasta de saída já existe e será substituída." Foreground="{DynamicResource Warning}" Margin="2,10,0,0"
+                                           Visibility="{Binding OutputExists, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                            </StackPanel>
+
+                            <StackPanel Visibility="{Binding IsRunning, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <DockPanel Margin="0,8,0,4">
+                                    <TextBlock DockPanel.Dock="Right" Text="{Binding PercentText}" FontSize="22" VerticalAlignment="Bottom" />
+                                    <TextBlock Text="Otimizando…" FontSize="24" />
+                                </DockPanel>
+                                <TextBlock Text="{Binding StageText}" Foreground="{DynamicResource TextSecondary}" TextTrimming="CharacterEllipsis" />
+                                <ProgressBar Value="{Binding Percent, Mode=OneWay}" Maximum="100" Height="6" Margin="0,14,0,8" />
+                                <TextBlock Text="{Binding ElapsedText}" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,16" />
+                                <Border Style="{StaticResource M3Card}" Padding="16,4">
+                                    <ItemsControl ItemsSource="{Binding Stages}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <DockPanel Margin="0,12">
+                                                    <TextBlock Text="{Binding Glyph}" FontFamily="{StaticResource IconFont}" FontSize="18" VerticalAlignment="Center" Margin="0,0,14,0">
+                                                        <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource Accent}" /><Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsPending}" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextSecondary}" /></DataTrigger>
+                                                        </Style.Triggers></Style></TextBlock.Style>
+                                                    </TextBlock>
+                                                    <TextBlock DockPanel.Dock="Right" Text="{Binding Detail}" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding Name}" FontSize="16" VerticalAlignment="Center" />
+                                                </DockPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Border>
+                                <TextBlock Margin="2,12,0,0" Visibility="{Binding HasCurrentItem, Converter={StaticResource BooleanToVisibilityConverter}}" TextTrimming="CharacterEllipsis">
+                                    <Run Text="Agora " Foreground="{DynamicResource TextSecondary}" />
+                                    <Run Text="{Binding CurrentItem, Mode=OneWay}" FontFamily="Consolas" />
+                                </TextBlock>
+                            </StackPanel>
+
+                            <StackPanel Visibility="{Binding IsDone, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,16">
+                                    <Grid Width="40" Height="40">
+                                        <Ellipse Fill="{DynamicResource Accent}" />
+                                        <TextBlock Text="&#xE73E;" FontFamily="{StaticResource IconFont}" FontSize="18" Foreground="{DynamicResource AccentForeground}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Grid>
+                                    <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
+                                        <TextBlock Text="Pronto" FontSize="24" />
+                                        <TextBlock Text="{Binding ResultSubtitle}" Foreground="{DynamicResource TextSecondary}" />
+                                    </StackPanel>
+                                </StackPanel>
+                                <TextBlock FontSize="36">
+                                    <Run Text="{Binding ResultBefore, Mode=OneWay}" />
+                                    <Run Text=" → " Foreground="{DynamicResource TextSecondary}" />
+                                    <Run Text="{Binding ResultAfter, Mode=OneWay}" />
+                                </TextBlock>
+                                <Border Background="{DynamicResource SecondaryContainer}" CornerRadius="16" Padding="16,6" HorizontalAlignment="Left" Margin="0,12,0,18">
+                                    <TextBlock Text="{Binding ResultReduction}" FontWeight="SemiBold" Foreground="{DynamicResource OnSecondaryContainer}" />
+                                </Border>
+                                <Border Style="{StaticResource M3Card}" Padding="16,6">
+                                    <ItemsControl ItemsSource="{Binding ResultRows}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border x:Name="RowBorder" BorderBrush="{DynamicResource Border}" BorderThickness="0" Padding="0,10">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="110" />
+                                                            <ColumnDefinition Width="340" />
+                                                            <ColumnDefinition />
+                                                            <ColumnDefinition Width="64" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock x:Name="RowName" Text="{Binding Name}" VerticalAlignment="Center" />
+                                                        <Grid Grid.Column="1" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                                            <Border Width="{Binding BeforeWidth}" Height="8" CornerRadius="4" Background="{DynamicResource SecondaryContainer}" HorizontalAlignment="Left" />
+                                                            <Border Width="{Binding AfterWidth}" Height="8" CornerRadius="4" Background="{DynamicResource Accent}" HorizontalAlignment="Left" />
+                                                        </Grid>
+                                                        <TextBlock x:Name="RowSizes" Grid.Column="2" Text="{Binding SizesText}" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}" />
+                                                        <TextBlock x:Name="RowReduction" Grid.Column="3" Text="{Binding ReductionText}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                    </Grid>
+                                                </Border>
+                                                <DataTemplate.Triggers>
+                                                    <DataTrigger Binding="{Binding IsTotal}" Value="True">
+                                                        <Setter TargetName="RowBorder" Property="BorderThickness" Value="0,1,0,0" />
+                                                        <Setter TargetName="RowName" Property="FontWeight" Value="SemiBold" />
+                                                        <Setter TargetName="RowSizes" Property="FontWeight" Value="SemiBold" />
+                                                        <Setter TargetName="RowSizes" Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                                                        <Setter TargetName="RowReduction" Property="FontWeight" Value="SemiBold" />
+                                                    </DataTrigger>
+                                                </DataTemplate.Triggers>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Border>
+                            </StackPanel>
+
+                            <Border Style="{StaticResource M3Card}" BorderBrush="{DynamicResource Danger}" Margin="0,8,0,0"
+                                    Visibility="{Binding IsFailed, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <DockPanel>
+                                    <TextBlock Text="&#xE783;" FontFamily="{StaticResource IconFont}" FontSize="22" Foreground="{DynamicResource Danger}" VerticalAlignment="Top" Margin="0,2,14,0" />
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding ErrorTitle}" FontSize="18" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding ErrorText}" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                    </StackPanel>
+                                </DockPanel>
+                            </Border>
+
+                            <StackPanel Visibility="{Binding ShowRunPanels, Converter={StaticResource BooleanToVisibilityConverter}}" Margin="0,10,0,0">
+                                <Button Style="{StaticResource TextButton}" HorizontalAlignment="Left" Margin="-4,0,0,0" Click="WizardToggleLog_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE70D;" FontFamily="{StaticResource IconFont}" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBlock Text="{Binding LogToggleText}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                                <TextBox x:Name="TextBox_WizardLog" Style="{StaticResource LogTextBox}" Height="220" Margin="0,6,0,0"
+                                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" VerticalContentAlignment="Top"
+                                         Visibility="{Binding LogExpanded, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                         AutomationProperties.Name="Detalhes da otimização" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                </ScrollViewer>
+
+                <!-- Footer actions -->
+                <Border Grid.Row="2" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Padding="32,14">
+                    <Grid MaxWidth="880">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                            <Button Style="{StaticResource TextButton}" Content="Voltar" Click="WizardBack_Click"
+                                    Visibility="{Binding FooterBack, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                            <Button Style="{StaticResource TextButton}" Content="Otimizar outro addon" Click="WizardRestart_Click"
+                                    Visibility="{Binding FooterDone, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Style="{StaticResource FilledButton}" Click="WizardContinue_Click" IsEnabled="{Binding CanContinue}"
+                                    Visibility="{Binding FooterContinue, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Continuar" VerticalAlignment="Center" />
+                                    <TextBlock Text="&#xE72A;" FontFamily="{StaticResource IconFont}" FontSize="14" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="Button_WizardStart" Style="{StaticResource FilledButton}" Click="WizardStart_Click" IsEnabled="{Binding Available}" Padding="32,0"
+                                    Visibility="{Binding FooterStart, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE945;" FontFamily="{StaticResource IconFont}" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                    <TextBlock Text="Otimizar" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource OutlinedButton}" Content="Cancelar" Click="WizardCancel_Click"
+                                    Visibility="{Binding FooterCancel, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                            <StackPanel Orientation="Horizontal" Visibility="{Binding FooterDone, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <Button Style="{StaticResource OutlinedButton}" Content="Ver relatório" Click="WizardReport_Click" Margin="0,0,8,0" />
+                                <Button Style="{StaticResource TonalButton}" Click="WizardTestInGame_Click" Margin="0,0,8,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE7FC;" FontFamily="{StaticResource IconFont}" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBlock Text="Testar no jogo" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Style="{StaticResource FilledButton}" Click="WizardOpenOutput_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE838;" FontFamily="{StaticResource IconFont}" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBlock Text="Abrir pasta" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Visibility="{Binding FooterRetry, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <Button Style="{StaticResource OutlinedButton}" Content="Ver relatório" Click="WizardReport_Click" Margin="0,0,8,0" />
+                                <Button Style="{StaticResource FilledButton}" Content="Tentar de novo" Click="WizardRetry_Click" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+        </TabItem>
+
+        <TabItem Header="Compressão completa" x:Name="Tab_FullCompression">
             <Grid x:Name="FullWorkspace" Background="{DynamicResource AppBackground}" TextElement.Foreground="{DynamicResource TextPrimary}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="64" />
@@ -228,7 +711,7 @@
                 </Border>
             </Grid>
         </TabItem>
-        <TabItem Header="Modelos"><Grid Margin="12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="360"/></Grid.ColumnDefinitions>
+        <TabItem Header="Modelos" x:Name="Tab_Models"><Grid Margin="12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="360"/></Grid.ColumnDefinitions>
 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,12,0"><StackPanel><Border Style="{StaticResource Card}" Margin="0,0,0,14">
                         <StackPanel>
                             <TextBlock Style="{StaticResource CardEyebrowText}" Text="MODEL SETUP" />
@@ -785,7 +1268,7 @@
                             </Border>
                         </StackPanel>
                     </Border></ScrollViewer></Grid></TabItem>
-        <TabItem Header="Mídia e recursos">
+        <TabItem Header="Texturas e sons" x:Name="Tab_Media">
  <Grid Margin="12">
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <Border Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,0,0,12">
@@ -1406,7 +1889,7 @@
                 </Border>
  </Grid>
 </TabItem>
-        <TabItem Header="Descompactar"><Grid Margin="12"><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="1.1*"/></Grid.ColumnDefinitions><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,12,0"><StackPanel><Border Style="{StaticResource Card}" Margin="0,0,0,12">
+        <TabItem Header="Descompactar" x:Name="Tab_Unpack"><Grid Margin="12"><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="1.1*"/></Grid.ColumnDefinitions><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,12,0"><StackPanel><Border Style="{StaticResource Card}" Margin="0,0,0,12">
                     <StackPanel>
                         <TextBlock Style="{StaticResource CardEyebrowText}" Text="SCAN INPUT" />
                         <TextBlock Style="{StaticResource CardHeaderTitle}" Text="Root Folder" />
@@ -1697,7 +2180,7 @@
                                             IsEnabled="False" />
                                 </WrapPanel>
                             </Border></Border></Grid></TabItem>
-        <TabItem Header="Juntar addons"><Grid Margin="12"><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <TabItem Header="Juntar addons" x:Name="Tab_Merge"><Grid Margin="12"><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
  <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="1.1*"/></Grid.ColumnDefinitions>
  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,12,0"><StackPanel><Border  Style="{StaticResource Card}" Margin="0,0,0,12">
                     <StackPanel>
@@ -2062,7 +2545,7 @@
                                                 Margin="0"
                                                 IsEnabled="False" />
                                     </WrapPanel></DockPanel></Border></Grid></TabItem>
-        <TabItem Header="Mapas"><Grid Margin="12"><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <TabItem Header="Mapas" x:Name="Tab_Maps"><Grid Margin="12"><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
  <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="1.1*"/></Grid.ColumnDefinitions>
  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,12,0"><StackPanel><Border  Style="{StaticResource Card}" Margin="0,0,0,12">
                     <StackPanel>
@@ -2449,7 +2932,7 @@
                                                 Margin="0"
                                                 IsEnabled="False" />
                                     </WrapPanel></DockPanel></Border></Grid></TabItem>
-        <TabItem Header="Distribuição exata"><Grid><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer VerticalScrollBarVisibility="Auto">
+        <TabItem Header="Distribuição exata" x:Name="Tab_Exact"><Grid><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="20">
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
@@ -2492,7 +2975,7 @@
                                 <Button x:Name="Button_ExactOpenReport" Content="Abrir relatório" Click="Button_ExactOpenReport_Click" IsEnabled="False" Margin="0,0,8,0" />
                                 <Button Content="Abrir work" Click="Button_ExactOpenWork_Click" />
                             </WrapPanel></DockPanel></Border></Grid></TabItem>
-        <TabItem Header="Pipeline"><Grid><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer VerticalScrollBarVisibility="Auto"
+        <TabItem Header="Pipeline" x:Name="Tab_Pipeline"><Grid><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled"
                           CanContentScroll="False">
                 <Grid Background="{DynamicResource AppBackground}" Margin="8">
@@ -3100,11 +3583,5 @@
             </ScrollViewer>
         </TabItem>
         </TabControl>
-        <Border Grid.Row="2" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
-            <DockPanel Margin="24,0">
-                <TextBlock Text="GMod Addon Optimizer" FontSize="10" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
-                <TextBlock Text="Ferramentas para addons Source" FontSize="10" Foreground="{DynamicResource TextSecondary}" HorizontalAlignment="Right" VerticalAlignment="Center" />
-            </DockPanel>
-        </Border>
     </Grid>
 </Window>

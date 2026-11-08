@@ -166,3 +166,96 @@ def test_lanczos_top_level_has_the_reduced_size_and_valid_range():
         L = lanczos_down(H, factor)
         assert L.shape == (64 // factor, 32 // factor, 4)
         assert L.min() >= 0.0 and L.max() <= 1.0
+
+
+# ----------------------------------------------------------------------------- profiles "exact" and "max"
+
+class _SeenAt:
+    """texlab.density.TextureUse stand-in: every triangle shows the texture at `s` texels per unit."""
+
+    def __init__(self, s: float, n: int = 64):
+        self.s, self.n = s, n
+        self.uv = [np.random.default_rng(0).random((n, 2))]
+
+    def arrays(self, anisotropy: float = 16.0):
+        return np.full(self.n, float(self.s)), np.ones(self.n)
+
+
+def _profiles_addon(tmp_path: Path, rng) -> Path:
+    root = tmp_path / "addon"
+    mat = root / "materials" / "models" / "t"
+    mat.mkdir(parents=True)
+    for name in ("body", "police_sign", "sign_nm", "skin_ao", "hud", "coarse"):
+        (mat / f"{name}.vtf").write_bytes(make_vtf(64, 64, 13, rng))
+    (mat / "small.vtf").write_bytes(make_vtf(32, 32, 13, rng))
+    (mat / "tiny.vtf").write_bytes(make_vtf(16, 16, 13, rng))
+    (mat / "paint.vtf").write_bytes(make_vtf(64, 64, 15, rng))          # DXT5, alpha read by no material
+    (mat / "nomip.vtf").write_bytes(make_vtf(64, 64, 13, rng, flags=0x100, mips=1))
+    (mat / "rgba.vtf").write_bytes(make_vtf(64, 64, 0, rng, mips=1))     # not DXT
+    (mat / "broken.vtf").write_bytes(b"VTF\0 not really")
+    (mat / "body.vmt").write_text('"VertexLitGeneric" { "$basetexture" "models/t/body" "$detail" "models/t/skin_ao" }')
+    (mat / "paint.vmt").write_text('"VertexLitGeneric" { "$basetexture" "models/t/paint" }')
+    return root
+
+
+# s = 1000 texels/unit: the finest levels are never sampled, not even up close (the density logic alone
+# would take these to 8x); s = 1: magnified up close, random blocks carry a lot of detail energy
+_USES = {"models/t/body": 1000.0, "models/t/police_sign": 1000.0, "models/t/sign_nm": 1000.0,
+         "models/t/skin_ao": 1000.0, "models/t/paint": 1000.0, "models/t/coarse": 1.0}
+
+
+def _plan(root, profile, monkeypatch):
+    from texlab import screen_compress as sc
+    monkeypatch.setattr(sc, "collect_usage", lambda _root: {k: _SeenAt(s) for k, s in _USES.items()})
+    return {Path(i.rel).stem: i for i in plan_addon(root, profile)}
+
+
+def test_exact_profile_never_reduces_and_never_falls_back(tmp_path, monkeypatch):
+    from texlab import screen_compress as sc
+    assert {"exact", "max"} <= set(sc.PROFILES)
+    root = _profiles_addon(tmp_path, np.random.default_rng(8))
+    plan = _plan(root, "exact", monkeypatch)
+    assert all(i.drop == 0 for i in plan.values())
+    assert not [i for i in plan.values() if i.action not in ("keep", "transcode")]
+    assert plan["paint"].action == "transcode" and plan["paint"].out_fmt == 13
+    assert {n for n, i in plan.items() if i.action == "transcode"} == {"paint"}
+    assert plan["nomip"].reason == "nomip" and plan["rgba"].reason == "non_dxt_format"
+    assert plan["broken"].reason.startswith("unreadable")
+    # the default profile still routes those files to the regular path
+    q50 = _plan(root, "q50", monkeypatch)
+    assert {n for n, i in q50.items() if i.action == "fallback"} == {"nomip", "rgba", "broken"}
+
+
+def test_exact_profile_run_is_pixel_identical(tmp_path):
+    root = _profiles_addon(tmp_path, np.random.default_rng(9))
+    before = {p.name: p.read_bytes() for p in root.rglob("*.vtf")}
+    # nothing is reduced, so VTFCmd is never started
+    report = run(root, tmp_path / "VTFCmd-not-needed.exe", "exact", jobs=2, report_path=tmp_path / "report.json")
+    assert report["fallback"] == [] and all(r["drop"] == 0 for r in report["rows"])
+    for p in root.rglob("*.vtf"):
+        if p.name != "paint.vtf":
+            assert p.read_bytes() == before[p.name], p.name
+    old, new = read_vtf(before["paint.vtf"]), read_vtf(root / "materials/models/t/paint.vtf")
+    assert new.fmt == 13 and (new.width, new.height, new.mip_count) == (old.width, old.height, old.mip_count)
+    for level in range(old.mip_count):     # alpha is read by no material: the colours are what matters
+        assert np.array_equal(decode_level(new, level)[..., :3], decode_level(old, level)[..., :3])
+    assert report["after"] < report["before"]
+
+
+def test_max_profile_drops_at_least_two_levels_and_caps_text_and_detail(tmp_path, monkeypatch):
+    root = _profiles_addon(tmp_path, np.random.default_rng(10))
+    plan = _plan(root, "max", monkeypatch)
+    drops = {n: i.drop for n, i in plan.items() if i.action in ("reduce", "transcode")}
+    assert drops == {
+        "body": 3, "sign_nm": 3, "paint": 3,      # never sampled up close: 8x
+        "police_sign": 2,                          # lettering (file name) stops at 4x
+        "skin_ao": 2,                              # used as $detail: stops at 4x
+        "coarse": 2, "hud": 2,                     # detail lost up close / not seen by models: 4x
+        "small": 2,                                # 32x32: 4x is as far as MIN_SIDE allows
+        "tiny": 1,                                 # 16x16: only 2x is possible
+    }
+    assert plan["paint"].out_fmt == 13
+    assert {n for n, i in plan.items() if i.action == "fallback"} == {"nomip", "rgba", "broken"}
+    # same textures with the default profile: 2x unless the density logic proves more
+    q50 = _plan(root, "q50", monkeypatch)
+    assert q50["hud"].drop == 1 and q50["police_sign"].drop == 3 and q50["coarse"].drop == 1

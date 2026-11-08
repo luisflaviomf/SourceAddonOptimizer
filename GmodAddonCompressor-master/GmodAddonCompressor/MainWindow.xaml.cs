@@ -179,6 +179,7 @@ namespace GmodAddonCompressor
             InitializeExactDistribution();
             InitializeFullCompression();
             InitializeCompanion();
+            InitializeWizard();
 
             LoadSettings();
         }
@@ -3322,6 +3323,11 @@ namespace GmodAddonCompressor
 
         private void SaveSettings()
         {
+            // While the Otimizar assistant runs, its profile temporarily replaces the Avançado settings;
+            // they are restored at the end of the run and must not be persisted in between.
+            if (_wizardSettingsApplied)
+                return;
+
             var settings = new AppSettingsModel
             {
                 LastAddonPath = _context.AddonDirectoryPath,
@@ -3528,7 +3534,7 @@ namespace GmodAddonCompressor
                 Suffix = _context.OptimizerSuffix,
                 OptimizerMode = GetOptimizerModeArgument(),
                 MaximumRuntimeProfilePath = selectedRuntimeProfile,
-                ScreenProfile = _context.ModelsScreenProfileIndex switch { 0 => "balanced", 1 => "strong", 3 => "stream", _ => "strong_mirror" },
+                ScreenProfile = _context.ModelsScreenProfileIndex switch { 0 => "balanced", 1 => "strong", 3 => "stream", 4 => "exact", _ => "strong_mirror" },
                 BlenderPath = string.IsNullOrWhiteSpace(_context.BlenderPath) ? null : _context.BlenderPath.Trim(),
                 StudioMdlPath = string.IsNullOrWhiteSpace(_context.StudioMdlPath) ? null : _context.StudioMdlPath.Trim(),
                 Ratio = _context.OptimizerRatio,
