@@ -43,8 +43,6 @@
                 <StackPanel x:Name="AdvancedTabsPanel" Orientation="Horizontal">
                     <RadioButton Style="{StaticResource SecondaryTab}" GroupName="AdvancedTabs" Content="Modelos" Tag="Tab_Models" IsChecked="True" />
                     <RadioButton Style="{StaticResource SecondaryTab}" GroupName="AdvancedTabs" Content="Texturas e sons" Tag="Tab_Media" />
-                    <RadioButton Style="{StaticResource SecondaryTab}" GroupName="AdvancedTabs" Content="Pipeline" Tag="Tab_Pipeline" />
-                    <RadioButton Style="{StaticResource SecondaryTab}" GroupName="AdvancedTabs" Content="Compressão completa" Tag="Tab_FullCompression" />
                 </StackPanel>
                 <StackPanel x:Name="ToolsTabsPanel" Orientation="Horizontal" Visibility="Collapsed">
                     <RadioButton Style="{StaticResource SecondaryTab}" GroupName="ToolsTabs" Content="Descompactar" Tag="Tab_Unpack" IsChecked="True" />
@@ -305,7 +303,89 @@
                                 </RadioButton>
                             </UniformGrid>
 
-                            <Border Style="{StaticResource M3Card}" Background="{DynamicResource Surface1}" Margin="0,6,0,0">
+                            <RadioButton Style="{StaticResource ChoiceCard}" GroupName="WizardProfile" IsChecked="{Binding ProfileCustom, Mode=TwoWay}">
+                                <StackPanel>
+                                    <TextBlock Text="Personalizado" FontSize="16" FontWeight="SemiBold" />
+                                    <TextBlock Text="Você escolhe o que fazer com modelos, texturas e sons." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </RadioButton>
+
+                            <Border Style="{StaticResource M3Card}" Margin="0,6,0,0" Padding="20,16,20,10"
+                                    Visibility="{Binding IsCustom, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel>
+                                    <StackPanel Visibility="{Binding ShowCustomModels, Converter={StaticResource BooleanToVisibilityConverter}}" Margin="0,0,0,14">
+                                        <TextBlock Text="Modelos" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
+                                        <WrapPanel>
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomModels" Content="Não mexer"
+                                                     IsChecked="{Binding CustomModels, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=none, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomModels" Content="Sem perda"
+                                                     IsChecked="{Binding CustomModels, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=exact, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomModels" Content="Equilibrado"
+                                                     IsChecked="{Binding CustomModels, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=balanced, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomModels" Content="Forte"
+                                                     IsChecked="{Binding CustomModels, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=strong, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomModels" Content="Forte + espelho"
+                                                     IsChecked="{Binding CustomModels, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=strong_mirror, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomModels" Content="Stream"
+                                                     IsChecked="{Binding CustomModels, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=stream, Mode=TwoWay}" />
+                                        </WrapPanel>
+                                        <TextBlock Text="{Binding CustomModelsHint}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Visibility="{Binding ShowCustomMedia, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                        <TextBlock Text="Texturas" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
+                                        <WrapPanel>
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomTextures" Content="Não mexer"
+                                                     IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=none, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomTextures" Content="Sem perda"
+                                                     IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=exact, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomTextures" Content="Equilibrado"
+                                                     IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=q50, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomTextures" Content="Forte"
+                                                     IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=strong, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomTextures" Content="Máximo"
+                                                     IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=max, Mode=TwoWay}" />
+                                        </WrapPanel>
+                                        <TextBlock Text="{Binding CustomTexturesHint}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,14" />
+
+                                        <TextBlock Text="Sons" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
+                                        <WrapPanel>
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomSounds" Content="Não mexer"
+                                                     IsChecked="{Binding CustomSounds, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=none, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomSounds" Content="Adaptativo"
+                                                     IsChecked="{Binding CustomSounds, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=adaptive, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomSounds" Content="Manual"
+                                                     IsChecked="{Binding CustomSounds, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=manual, Mode=TwoWay}" />
+                                        </WrapPanel>
+                                        <TextBlock Text="{Binding CustomSoundsHint}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" />
+                                        <UniformGrid Columns="3" Margin="0,12,0,0" Visibility="{Binding ShowCustomManualWav, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                            <StackPanel Margin="0,0,8,0">
+                                                <TextBlock Text="Taxa" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="2,0,0,4" />
+                                                <ComboBox ItemsSource="{Binding WavRates}" SelectedIndex="{Binding CustomWavRateIndex, Mode=TwoWay}" AutomationProperties.Name="Taxa dos sons" />
+                                            </StackPanel>
+                                            <StackPanel Margin="4,0,4,0">
+                                                <TextBlock Text="Canais" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="2,0,0,4" />
+                                                <ComboBox ItemsSource="{Binding WavChannels}" SelectedIndex="{Binding CustomWavChannelsIndex, Mode=TwoWay}" AutomationProperties.Name="Canais dos sons" />
+                                            </StackPanel>
+                                            <StackPanel Margin="8,0,0,0">
+                                                <TextBlock Text="Formato" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="2,0,0,4" />
+                                                <ComboBox ItemsSource="{Binding WavCodecs}" SelectedIndex="{Binding CustomWavCodecIndex, Mode=TwoWay}" AutomationProperties.Name="Formato dos sons" />
+                                            </StackPanel>
+                                        </UniformGrid>
+
+                                        <CheckBox IsChecked="{Binding CustomLua, Mode=TwoWay}" Margin="0,16,0,6">
+                                            <StackPanel>
+                                                <TextBlock Text="Minificar scripts Lua" />
+                                                <TextBlock Text="Remove espaços e comentários. Teste o addon depois." FontSize="12" Foreground="{DynamicResource TextSecondary}" />
+                                            </StackPanel>
+                                        </CheckBox>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                            <TextBlock Text="Escolha ao menos uma coisa para otimizar." Foreground="{DynamicResource Warning}" Margin="2,10,0,0"
+                                       Visibility="{Binding ShowNothingHint, Converter={StaticResource BooleanToVisibilityConverter}}" />
+
+                            <Border Style="{StaticResource M3Card}" Background="{DynamicResource Surface1}" Margin="0,6,0,0"
+                                    Visibility="{Binding ShowPresetSummary, Converter={StaticResource BooleanToVisibilityConverter}}">
                                 <Grid>
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="110" /><ColumnDefinition /></Grid.ColumnDefinitions>
                                     <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
@@ -345,7 +425,21 @@
                                         <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding GoalTitle}" Margin="0,12" />
                                         <Border Grid.Row="3" Grid.ColumnSpan="2" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" />
                                         <TextBlock Grid.Row="3" Text="Perfil" Foreground="{DynamicResource TextSecondary}" Margin="0,12" />
-                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding ProfileTitle}" Margin="0,12" />
+                                        <StackPanel Grid.Row="3" Grid.Column="1" Margin="0,12">
+                                            <TextBlock Text="{Binding ProfileTitle}" />
+                                            <TextBlock FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                       Visibility="{Binding ShowModelsLine, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                <Run Text="Modelos: " /><Run Text="{Binding ProfileModelsLine, Mode=OneWay}" />
+                                            </TextBlock>
+                                            <TextBlock FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,2,0,0"
+                                                       Visibility="{Binding ShowMediaLines, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                <Run Text="Texturas: " /><Run Text="{Binding ProfileTexturesLine, Mode=OneWay}" />
+                                            </TextBlock>
+                                            <TextBlock FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,2,0,0"
+                                                       Visibility="{Binding ShowMediaLines, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                <Run Text="Sons: " /><Run Text="{Binding ProfileSoundsLine, Mode=OneWay}" />
+                                            </TextBlock>
+                                        </StackPanel>
                                     </Grid>
                                 </Border>
                                 <TextBlock Text="A pasta de saída já existe e será substituída." Foreground="{DynamicResource Warning}" Margin="2,10,0,0"

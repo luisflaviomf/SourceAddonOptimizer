@@ -386,7 +386,7 @@ public partial class MainWindow
 
         WizardGoal goal = _wizard.EffectiveGoal;
         SaveSettings();
-        ApplyWizardSettings(_wizard.Profile);
+        ApplyWizardSettings(_wizard.CurrentSettings());
 
         _wizardRunning = true;
         _wizard.Available = false;
@@ -412,7 +412,7 @@ public partial class MainWindow
 
     private async Task RunWizardAsync(string addon, string output, WizardGoal goal, CancellationToken token)
     {
-        var settings = WizardProfiles.For(_wizard.Profile);
+        var settings = _wizard.CurrentSettings();
         string[] stages = goal switch
         {
             WizardGoal.Models => new[] { "Modelos" },
@@ -725,23 +725,22 @@ public partial class MainWindow
 
     // ---------------------------------------------------------------- profile settings
 
-    private void ApplyWizardSettings(WizardProfile profile)
+    private void ApplyWizardSettings(WizardSettings s)
     {
         _wizardSnapshot = WizardSettingsSnapshot.Capture(_context);
         _wizardSettingsApplied = true;
-        var s = WizardProfiles.For(profile);
         _context.OptimizerModeIndex = WizardProfiles.ModelsScreenModeIndex;
         _context.ModelsScreenProfileIndex = s.ModelsScreenProfileIndex;
         _context.OptimizerOverwrite = true; // the review step says the output folder is replaced
         _context.CompressModeIndex = WizardProfiles.CompressScreenModeIndex;
         _context.CompressScreenProfileIndex = s.CompressScreenProfileIndex;
-        _context.CompressVTF = true;
+        _context.CompressVTF = s.Textures;
         _context.CompressWAV = s.IncludeWav;
         _context.CompressMP3 = false;
         _context.CompressOGG = false;
         _context.CompressPNG = false;
         _context.CompressJPG = false;
-        _context.CompressLUA = false;
+        _context.CompressLUA = s.Lua;
         _context.WavOptimizationIndex = s.WavOptimizationIndex;
         _context.WavRateListIndex = s.WavRateIndex;
         _context.WavChannelsIndex = s.WavChannelsIndex;

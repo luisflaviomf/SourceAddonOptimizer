@@ -267,6 +267,9 @@ namespace GmodAddonCompressor.DataContexts
                 OnPropertyChanged(nameof(ProfileLossless));
                 OnPropertyChanged(nameof(ProfileBalanced));
                 OnPropertyChanged(nameof(ProfileMax));
+                OnPropertyChanged(nameof(ProfileCustom));
+                OnPropertyChanged(nameof(IsCustom));
+                OnPropertyChanged(nameof(ShowPresetSummary));
                 OnPropertyChanged(nameof(ProfileTitle));
                 RaiseProfileLines();
             }
@@ -275,32 +278,98 @@ namespace GmodAddonCompressor.DataContexts
         public bool ProfileLossless { get => _profile == WizardProfile.Lossless; set { if (value) Profile = WizardProfile.Lossless; } }
         public bool ProfileBalanced { get => _profile == WizardProfile.Balanced; set { if (value) Profile = WizardProfile.Balanced; } }
         public bool ProfileMax { get => _profile == WizardProfile.Max; set { if (value) Profile = WizardProfile.Max; } }
+        public bool ProfileCustom { get => _profile == WizardProfile.Custom; set { if (value) Profile = WizardProfile.Custom; } }
         public string ProfileTitle => WizardProfiles.Title(_profile);
+        public bool IsCustom => _profile == WizardProfile.Custom;
+        public bool ShowPresetSummary => !IsCustom;
+
+        // ---------- Personalizado ----------
+        private string _customModels = "stream";
+        private string _customTextures = "strong";
+        private string _customSounds = "adaptive";
+        private int _customWavRateIndex = 1;
+        private int _customWavChannelsIndex = 1;
+        private int _customWavCodecIndex;
+        private bool _customLua;
+
+        public string CustomModels { get => _customModels; set { _customModels = value ?? WizardProfiles.None; RaiseCustom(); } }
+        public string CustomTextures { get => _customTextures; set { _customTextures = value ?? WizardProfiles.None; RaiseCustom(); } }
+        public string CustomSounds { get => _customSounds; set { _customSounds = value ?? WizardProfiles.None; RaiseCustom(); } }
+        public int CustomWavRateIndex { get => _customWavRateIndex; set { _customWavRateIndex = value; RaiseCustom(); } }
+        public int CustomWavChannelsIndex { get => _customWavChannelsIndex; set { _customWavChannelsIndex = value; RaiseCustom(); } }
+        public int CustomWavCodecIndex { get => _customWavCodecIndex; set { _customWavCodecIndex = value; RaiseCustom(); } }
+        public bool CustomLua { get => _customLua; set { _customLua = value; RaiseCustom(); } }
+
+        public string CustomModelsHint => WizardProfiles.Find(WizardProfiles.ModelChoices, _customModels).Description;
+        public string CustomTexturesHint => WizardProfiles.Find(WizardProfiles.TextureChoices, _customTextures).Description;
+        public string CustomSoundsHint => WizardProfiles.Find(WizardProfiles.SoundChoices, _customSounds).Description;
+        public bool ShowCustomManualWav => _customSounds == "manual";
+        public string[] WavRates => WizardProfiles.WavRates;
+        public string[] WavChannels => WizardProfiles.WavChannels;
+        public string[] WavCodecs => WizardProfiles.WavCodecs;
+        public bool ShowCustomModels => IsCustom && _goal != WizardGoal.Media && CanGoalModels;
+        public bool ShowCustomMedia => IsCustom && _goal != WizardGoal.Models && CanGoalMedia;
+        public bool ShowNothingHint => !HasWork;
+
+        /// <summary>What the run will apply: a preset profile, or the Personalizado chips.</summary>
+        public WizardSettings CurrentSettings() => IsCustom
+            ? WizardProfiles.ForCustom(_customModels, _customTextures, _customSounds,
+                _customWavRateIndex, _customWavChannelsIndex, _customWavCodecIndex, _customLua)
+            : WizardProfiles.For(_profile);
+
+        private void RaiseCustom()
+        {
+            foreach (string name in new[]
+            {
+                nameof(CustomModels), nameof(CustomTextures), nameof(CustomSounds), nameof(CustomWavRateIndex),
+                nameof(CustomWavChannelsIndex), nameof(CustomWavCodecIndex), nameof(CustomLua),
+                nameof(CustomModelsHint), nameof(CustomTexturesHint), nameof(CustomSoundsHint), nameof(ShowCustomManualWav)
+            })
+                OnPropertyChanged(name);
+            RaiseProfileLines();
+        }
 
         /// <summary>The goal that will really run: an addon without models runs only the media part.</summary>
         public WizardGoal EffectiveGoal
         {
             get
             {
-                if (_goal == WizardGoal.Full && _inventory != null)
-                {
-                    if (!_inventory.HasModels) return WizardGoal.Media;
-                    if (!_inventory.HasMedia) return WizardGoal.Models;
-                }
+                var (models, media) = WorkParts();
+                if (models && media) return WizardGoal.Full;
+                if (models) return WizardGoal.Models;
+                if (media) return WizardGoal.Media;
                 return _goal;
             }
         }
 
+        /// <summary>True when the chosen goal and profile still leave something to do in this addon.</summary>
+        public bool HasWork
+        {
+            get
+            {
+                var (models, media) = WorkParts();
+                return models || media;
+            }
+        }
+
+        private (bool Models, bool Media) WorkParts()
+        {
+            var s = CurrentSettings();
+            bool models = _goal != WizardGoal.Media && (_inventory?.HasModels ?? true) && s.Models;
+            bool media = _goal != WizardGoal.Models && (_inventory?.HasMedia ?? true) && (s.Textures || s.IncludeWav || s.Lua);
+            return (models, media);
+        }
+
         public bool ShowModelsLine => EffectiveGoal != WizardGoal.Media;
         public bool ShowMediaLines => EffectiveGoal != WizardGoal.Models;
-        public string ProfileModelsLine => WizardProfiles.For(_profile).ModelsLine;
-        public string ProfileTexturesLine => WizardProfiles.For(_profile).TexturesLine;
-        public string ProfileSoundsLine => WizardProfiles.For(_profile).SoundsLine;
+        public string ProfileModelsLine => CurrentSettings().ModelsLine;
+        public string ProfileTexturesLine => CurrentSettings().TexturesLine;
+        public string ProfileSoundsLine => CurrentSettings().SoundsLine;
 
         public bool CanContinue => _step switch
         {
             1 => HasAddon && !_isScanning && _inventory != null && CanGoalFull,
-            2 => _goal switch
+            2 => HasWork && _goal switch
             {
                 WizardGoal.Models => CanGoalModels,
                 WizardGoal.Media => CanGoalMedia,
@@ -420,6 +489,11 @@ namespace GmodAddonCompressor.DataContexts
             OnPropertyChanged(nameof(ProfileModelsLine));
             OnPropertyChanged(nameof(ProfileTexturesLine));
             OnPropertyChanged(nameof(ProfileSoundsLine));
+            OnPropertyChanged(nameof(HasWork));
+            OnPropertyChanged(nameof(ShowNothingHint));
+            OnPropertyChanged(nameof(ShowCustomModels));
+            OnPropertyChanged(nameof(ShowCustomMedia));
+            OnPropertyChanged(nameof(CanContinue));
         }
 
         private void RaiseStepState()

@@ -1019,5 +1019,44 @@
                 <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource TextDisabled}" /></Trigger>
             </Style.Triggers>
         </Style>
+        <conv:ValueEqualsConverter x:Key="ValueEqualsConverter" />
+
+        <!-- Material 3 choice chip (single select inside a group) -->
+        <Style x:Key="ChoiceChip" TargetType="{x:Type RadioButton}">
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Margin" Value="0,0,8,8" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bd" Height="32" CornerRadius="8" Padding="12,0" BorderThickness="1"
+                                BorderBrush="{DynamicResource BorderStrong}" Background="Transparent">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock x:Name="Check" Text="&#xE73E;" FontFamily="{StaticResource IconFont}" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,8,0" Visibility="Collapsed"
+                                           Foreground="{DynamicResource OnSecondaryContainer}" />
+                                <TextBlock x:Name="Label" Text="{TemplateBinding Content}" FontSize="14" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}" />
+                            </StackPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Surface2}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SecondaryContainer}" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource SecondaryContainer}" />
+                                <Setter TargetName="Check" Property="Visibility" Value="Visible" />
+                                <Setter TargetName="Label" Property="Foreground" Value="{DynamicResource OnSecondaryContainer}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Accent}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Application.Resources>
 </Application>
