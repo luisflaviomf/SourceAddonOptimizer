@@ -156,6 +156,12 @@ O addon completo (models stream + Forte final + WAV adaptativo) fica com ~132 Mi
   LVS: ~28 MiB (estimado; Forte 75 MiB). Perda visível de perto é aceita.
 - Testes: `tests/test_model_screen.py` (exact = cópia + packaging), `tests/test_texlab.py` (exact
   nunca reduz nem dá fallback; max ≥ 2 níveis e trava de escrita/`$detail`).
+- Sons: todos os perfis que mexem nos sons (Custo-benefício, Máximo, "Adaptativo" do Personalizado)
+  usam o WAV Adaptativo conservador com referência 22050 Hz mono PCM16 (escolha do Luis em 08/11; o
+  Máximo forçava 22050 Hz mono ADPCM). LVS: 27,0 → 9,1 MiB, 41 PCM + 36 MS-ADPCM, loops preservados.
+  Medido no exe publicado pelo assistente: Custo-benefício 130,8 MiB (3786 de 3790 arquivos iguais ao
+  addon de 132,5 MiB testado no jogo; os outros 4 são texturas NOMIP do caminho padrão de VTF, sem
+  diferença visível) e Máximo 83,7 MiB (models 45,5 · texturas 28,3 · sons 9,1 · Lua 0,7).
 
 ## Limites conhecidos
 
@@ -166,5 +172,4 @@ O addon completo (models stream + Forte final + WAV adaptativo) fica com ~132 Mi
 - Marcas de tiro (decals) ficam na malha grossa, não aparecem na geometria em stream.
 - Vértices com peso dividido entre ossos seguem só o osso principal (diferença só quando o osso
   mexe: coifa do câmbio, molas da suspensão).
-- Sons: os loops de motor ainda estão em PCM16 22 kHz (6,6 MiB). ADPCM forçado levaria o pacote a
-  ~95 MiB com alguma perda audível — decisão do usuário.
+- Sons: o adaptativo usa MS-ADPCM onde não piora o som; quem precisar de PCM puro usa o modo Avançado.

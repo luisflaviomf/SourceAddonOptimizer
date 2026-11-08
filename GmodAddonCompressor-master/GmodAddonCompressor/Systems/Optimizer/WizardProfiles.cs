@@ -96,12 +96,13 @@ namespace GmodAddonCompressor.Systems.Optimizer
                 true, 3, "Sem reduzir, só conversão exata BC3→BC1",
                 IncludeWav: false, WavOptimizationIndex: 0, WavRateIndex: 0, WavChannelsIndex: 0, WavCodecIndex: 0,
                 "Não mexe nos sons"),
-            // Smallest size, visible loss up close accepted.
+            // Smallest size, visible loss up close accepted. Sounds exactly as in Custo-benefício (adaptive
+            // conservative, same reference): Luis (2026-11-08) wants that one for every profile, not forced ADPCM.
             WizardProfile.Max => new WizardSettings(
                 true, 3, "Stream (experimental)",
                 true, 2, "Máximo: no mínimo 4x, até 8x",
-                IncludeWav: true, WavOptimizationIndex: 0, WavRateIndex: 1, WavChannelsIndex: 1, WavCodecIndex: 1,
-                "22050 Hz mono ADPCM, loops preservados"),
+                IncludeWav: true, WavOptimizationIndex: 1, WavRateIndex: 1, WavChannelsIndex: 1, WavCodecIndex: 0,
+                "Adaptativo conservador"),
             // The LVS ~132 MiB configuration Luis tested in game (2026-11-08). The adaptive WAV profile
             // compares against the manual reference: 22050 Hz mono PCM16 as in his runs (sounds 28.3 -> 9.5 MB);
             // a 44100 Hz stereo reference makes the fallback files bigger than the originals.
