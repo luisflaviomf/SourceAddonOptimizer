@@ -152,6 +152,8 @@ def test_cli_stream_profile_end_to_end(tmp_path):
 def test_texscreen_strong_profile_caps_detail(tmp_path):
     from texlab import screen_compress as sc
     assert "strong" in sc.PROFILES and sc.PROFILE_OPTIONS["strong"]["caps"] == {"$detail": 2}
+    # 8x only for textures that never show stretched at a close look (liveries with text stop at 4x)
+    assert sc.PROFILE_OPTIONS["strong"]["magnify"][3] == 3
     mat = tmp_path / "materials" / "m"
     mat.mkdir(parents=True)
     (mat / "paint.vmt").write_text('"VertexLitGeneric"\n{\n "$basetexture" "m/base"\n "$detail" "m/ao"\n}\n')

@@ -10,7 +10,7 @@ Laboratório: `C:\GModLab\night` (scripts, pacotes e capturas). Cliente de teste
 |---|---:|---:|---:|
 | Original | 1375 MiB | 0 | 7,5 / 5,9 ms |
 | Atual (Forte + espelho + Tela q50 + WAV adaptativo) | 360 MiB | 0,054 / 0,053 | ~8 ms |
-| **Stream (geometria original) + Tela Forte** | **99,7 MiB** | **0,050 / 0,056** | **7,4–7,8 / ~11 ms** |
+| **Stream (geometria original) + Tela Forte (1ª versão)** | **99,7 MiB** | **0,050 / 0,056** | **7,4–7,8 / ~11 ms** |
 | Ruído entre duas sessões do original | – | 0,010 | – |
 
 \* `C:\GModLab\night\stream\flipexp.py`: 6 carros LVS reais (E46, Charger, Supra, MGB, Monaco
@@ -95,10 +95,19 @@ do câmbio, seguem o osso principal). Os outros usam o Forte + espelho.
 
 ## Texturas: perfil Tela "Forte" (`strong`)
 
-`texlab/screen_compress.py`: limiar de perda de detalhe 0,12 (o q50 usa 0,00257), até 8x só pela
-energia de detalhe, mas texturas usadas como `$detail` (os atlas de AO "skin" da carroceria do LVS)
-param em 4x: com 8x os blocos DXT apareciam como manchas na lataria branca (Supra). 798 → 42 MiB
-(q50: 136). FLIP só das texturas, 8 carros, sonda fixa: q50 0,017, Forte 0,035.
+`texlab/screen_compress.py`: limiar de perda de detalhe 0,12 (o q50 usa 0,00257) e até 8x pela energia
+de detalhe, com dois freios:
+
+- texturas usadas como `$detail` (os atlas de AO "skin" da carroceria do LVS) param em 4x: com 8x os
+  blocos DXT apareciam como manchas na lataria branca (Supra);
+- **8x só para texturas que nunca aparecem esticadas de perto**: a 96 unidades (~1,8 m), na metade dos
+  pixels, a textura reduzida não pode ficar esticada mais que 2^1,5 (~2,8x). Sem isso, a pintura da
+  viatura do Monaco (texto "HIGHWAY PATROL", `police_sign_*`, 2048²) ia a 256² e ficava ilegível; agora
+  para em 4x (512²), legível. Comparação na porta (2x / 4x / 8x) feita no jogo em 08/11.
+
+LVS: 798 → 51,4 MiB (q50: 136; o Forte da primeira versão: 40,2 com o texto ilegível). FLIP só das
+texturas, 8 carros, sonda fixa: q50 0,017 (pior região 0,143), Forte 0,026 (0,165), Forte antigo 0,035
+(0,238). O addon completo (stream + Forte + WAV adaptativo) fica com 108,3 MiB.
 
 ## No produto
 

@@ -43,8 +43,12 @@ PROFILES = {
     # surfaces where 8x shows DXT blocks) stop at 4x. Validated in game 2026-11-08 (docs/...stream).
     "strong": 0.12,
 }
+# magnify = (distance, quantile, max_log2, from_drop): from that drop on, at a close look (distance in
+# units) the reduced texture may be stretched at most 2**max_log2 on the pixel-weighted quantile of
+# its triangles. "strong" keeps 8x for textures that never show big on screen; liveries with text
+# (LVS Monaco "HIGHWAY PATROL", 2026-11-08) stop at 4x, where the text stays legible.
 PROFILE_OPTIONS = {
-    "strong": {"max_energy_drop": 3, "caps": {"$detail": 2}},
+    "strong": {"max_energy_drop": 3, "caps": {"$detail": 2}, "magnify": (96.0, 0.5, 1.5, 3)},
 }
 MAX_DROP = 3
 # Beyond this many levels a texture is only reduced when the dropped levels are provably never
@@ -147,7 +151,7 @@ def _use_payload(use, view: ViewModel) -> _Use | None:
 def _plan_one(task) -> Item:
     """Decision for one texture (pure function of its file and the addon-wide usage)."""
     p, root, ref, threshold, view, use, unused_alpha, coverage, need_map = task[:9]
-    energy_drop, cap = task[9] if len(task) > 9 else (MAX_DROP_BY_ENERGY, None)
+    energy_drop, cap, magnify = task[9] if len(task) > 9 else (MAX_DROP_BY_ENERGY, None, None)
     item = Item(p.relative_to(root).as_posix(), ref, p, before=p.stat().st_size)
     try:
         v = read_vtf(p)
@@ -182,9 +186,22 @@ def _plan_one(task) -> Item:
         order = np.argsort(lam)
         cum = np.cumsum(area[order]) / max(float(area.sum()), 1e-12)
         lam_q01 = float(lam[order][min(int(np.searchsorted(cum, 0.01)), len(order) - 1)])
+        mag_lam = mag_cum = None
+        if magnify:
+            # magnification guard: at a close look (distance d) the reduced texture may be stretched
+            # at most 2**max_log2 over the pixel-weighted quantile q (livery text, logos, gauges)
+            mag_lam = np.log2(np.maximum(s_eff, 1e-12) * magnify[0] / view.focal_px)
+            mo = np.argsort(-mag_lam)
+            mag_lam = mag_lam[mo]
+            mag_cum = np.cumsum(area[mo]) / max(float(area.sum()), 1e-12)
         while drop + 1 <= min(limit, len(local) - 1):
             k = drop + 1
             invisible = lam_q01 >= k
+            if magnify and not invisible and k >= (magnify[3] if len(magnify) > 3 else 1):
+                # stretch k - lam at the q-quantile of pixels (sorted by decreasing lam)
+                lam_q = float(mag_lam[min(int(np.searchsorted(mag_cum, magnify[1])), len(mag_lam) - 1)])
+                if k - lam_q > magnify[2]:
+                    break
             if invisible or (k <= energy_drop and local[k] <= threshold):
                 drop = k
             else:
@@ -237,7 +254,7 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
             task = (p, root, ref, threshold, view, _use_payload(uses.get(ref), view), ref in unused_alpha,
                     ref in coverage, need_map)
             if opts:
-                task += ((opts.get("max_energy_drop", MAX_DROP_BY_ENERGY), caps.get(ref)),)
+                task += ((opts.get("max_energy_drop", MAX_DROP_BY_ENERGY), caps.get(ref), opts.get("magnify")),)
             tasks.append(task)
         if pool is not None and len(tasks) > 1:
             return list(pool.map(_plan_one, tasks, chunksize=1))
