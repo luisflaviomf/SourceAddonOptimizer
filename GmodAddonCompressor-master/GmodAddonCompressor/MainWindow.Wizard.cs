@@ -477,6 +477,14 @@ public partial class MainWindow
                 stage++;
             }
 
+            // An optimized copy must not make the players of a server download the original addon too
+            // (before the Lua minifier can join lines).
+            var workshop = await Task.Run(() => WorkshopReferenceCleaner.Disable(output), token);
+            foreach (var line in workshop.Lines)
+                AppendWizardLog($"resource.AddWorkshop(\"{line.Id}\") desativado em {line.File}: os jogadores não baixam mais o addon original.");
+            foreach (string file in workshop.LeftInFiles)
+                AppendWizardLog($"[AVISO] {file} ainda chama resource.AddWorkshop no meio de outro código; confira antes de publicar.");
+
             if (goal != WizardGoal.Models)
             {
                 BeginWizardStage(stage, $"Texturas · {settings.TexturesLine}");

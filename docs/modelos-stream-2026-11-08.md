@@ -166,7 +166,18 @@ O addon completo (models stream + Forte final + WAV adaptativo) fica com ~132 Mi
 ## Limites conhecidos
 
 - Precisa da Lua do cliente (no multiplayer o arquivo vai junto, é `autorun/client`). Sem ela, o
-  carro aparece com a malha grossa.
+  carro aparece com a malha grossa. Validado em 08/11: `gmad` empacota tudo (0 ignorados; os 121
+  arquivos de `data_static/gmo/` e a Lua entram no `.gma`); servidor dedicado local com o addon e
+  cliente com o `.gma` montado por `game.MountGMA` (como conteúdo da Workshop), `sv_allowcslua 0`: o
+  cliente recebe as 409 Lua do servidor, lê os 120 streams do `.gma` e os 6 carros aparecem com a
+  geometria completa (0,2–0,9 s), sem erro de Lua; quadro 7,2 ms com stream contra 5,8 ms com a malha
+  grossa. Laboratório: `C:\GModLab\night\mp\mp_test.py`.
+- Ao publicar uma versão otimizada na Workshop: o pacote LVS traz
+  `lua/autorun/server/lvs_cars_pack_addworkshop.lua` com `resource.AddWorkshop("3027256228")` (o ID do
+  original). Sem trocar pelo ID novo (ou remover), cada jogador do servidor baixa também o original
+  de 1,3 GB, e os dois addons montam os mesmos arquivos.
+  O assistente faz isso sozinho: comenta na cópia otimizada as linhas que só chamam
+  `resource.AddWorkshop` (`WorkshopReferenceCleaner`) e registra no log o ID desativado.
 - À noite, com muitos faróis apontados para muitos carros, custa mais que o original (ver tabela).
 - Ao aparecer pela primeira vez, o carro fica 0,1–1 s com a malha grossa enquanto decodifica.
 - Marcas de tiro (decals) ficam na malha grossa, não aparecem na geometria em stream.
