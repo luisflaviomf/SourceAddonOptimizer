@@ -3203,6 +3203,8 @@ namespace GmodAddonCompressor
             }
             if (_settings.ModelsScreenProfileIndex.HasValue)
                 _context.ModelsScreenProfileIndex = _settings.ModelsScreenProfileIndex.Value;
+            if (_settings.CompressScreenProfileIndex.HasValue)
+                _context.CompressScreenProfileIndex = _settings.CompressScreenProfileIndex.Value;
             if (_settings.OptimizerUsePlanar.HasValue)
                 _context.OptimizerUsePlanar = _settings.OptimizerUsePlanar.Value;
             if (_settings.OptimizerPlanarAngle.HasValue)
@@ -3337,6 +3339,7 @@ namespace GmodAddonCompressor
                 OptimizerPreset = PresetNameFromIndex(_context.OptimizerPresetIndex),
                 OptimizerModeIndex = _context.OptimizerModeIndex,
                 ModelsScreenProfileIndex = _context.ModelsScreenProfileIndex,
+                CompressScreenProfileIndex = _context.CompressScreenProfileIndex,
                 OptimizerUsePlanar = _context.OptimizerUsePlanar,
                 OptimizerPlanarAngle = _context.OptimizerPlanarAngle,
                 OptimizerUseExperimentalGroundPolicy = _context.OptimizerUseExperimentalGroundPolicy,
@@ -3525,7 +3528,7 @@ namespace GmodAddonCompressor
                 Suffix = _context.OptimizerSuffix,
                 OptimizerMode = GetOptimizerModeArgument(),
                 MaximumRuntimeProfilePath = selectedRuntimeProfile,
-                ScreenProfile = _context.ModelsScreenProfileIndex switch { 0 => "balanced", 1 => "strong", _ => "strong_mirror" },
+                ScreenProfile = _context.ModelsScreenProfileIndex switch { 0 => "balanced", 1 => "strong", 3 => "stream", _ => "strong_mirror" },
                 BlenderPath = string.IsNullOrWhiteSpace(_context.BlenderPath) ? null : _context.BlenderPath.Trim(),
                 StudioMdlPath = string.IsNullOrWhiteSpace(_context.StudioMdlPath) ? null : _context.StudioMdlPath.Trim(),
                 Ratio = _context.OptimizerRatio,
@@ -4072,7 +4075,8 @@ namespace GmodAddonCompressor
                     : isMagickPlusMode
                         ? CompressPipelineMode.MagickPlus
                         : isMagickMode ? CompressPipelineMode.Magick : CompressPipelineMode.Standard,
-                UseMagickForAggressivePng = (isMagickMode || isMagickPlusMode) && _context.CompressMagickUseAggressivePng
+                UseMagickForAggressivePng = (isMagickMode || isMagickPlusMode) && _context.CompressMagickUseAggressivePng,
+                ScreenProfile = _context.CompressScreenProfileName
             };
         }
 

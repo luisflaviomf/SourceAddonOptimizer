@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import shutil
+import struct
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -56,7 +57,9 @@ def _resolver(addon_root: str, siblings: bool = False):
 
 
 def _process_one(args):
-    mdl_path, addon_root, profile_name = args
+    mdl_path, addon_root, profile_name = args[:3]
+    mode = args[3] if len(args) > 3 else None          # "stream" for models the stream profile streams
+    out_root = Path(args[4]) if len(args) > 4 else None
     from texlab.source_model import load_model
     from .binary import rewrite_model_bytes
     from .simplify import PROFILES, simplify_model
@@ -67,7 +70,22 @@ def _process_one(args):
     sizes0 = {ext: _size(mdl, ext) for ext in (".mdl", ".vvd", ".dx90.vtx")}
     mirror_stats = {}
     try:
-        if p.engine == "remesh":
+        streamed = None
+        if p.engine == "stream" and mode == "stream":
+            # original geometry -> data_static/gmo stream; the model keeps a coarse stand-in mesh
+            import model_stream
+            resolver = _resolver(addon_root, siblings=True)
+            rel = mdl.relative_to(out_root).as_posix()
+            try:
+                mdl_b, vvd_b, vtx_b, sbytes = model_stream.stream_model(mdl, rel, out_root, resolver)
+                st = {"vertices_before": _vvd_count(mdl), "vertices_after": _vvd_count_bytes(vvd_b)}
+                streamed = {"stream": model_stream.stream_name(rel), "stream_bytes": sbytes}
+            except Exception as why:       # not streamable (weighted skinning...): Forte + espelho
+                (out_root / model_stream.stream_name(rel)).unlink(missing_ok=True)
+                mirror_stats = {"stream_skipped": f"{type(why).__name__}: {why}"}
+        if streamed is not None:
+            mirror_stats.update(streamed)
+        elif p.engine in ("remesh", "stream"):
             from . import mirror, remesh
             resolver = _resolver(addon_root, siblings=True)
             uvt = mesh_uv_tolerance(mdl, resolver)
@@ -111,7 +129,18 @@ def _process_one(args):
     except Exception as exc:
         for tmp in Path(str(mdl.with_suffix(""))).parent.glob(mdl.stem + ".*.modscreen.tmp"):
             tmp.unlink(missing_ok=True)
+        if mirror_stats.get("stream") and out_root is not None:      # the model stays as it was
+            (out_root / mirror_stats["stream"]).unlink(missing_ok=True)
         return {"model": str(mdl), "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _vvd_count(mdl: Path) -> int:
+    raw = mdl.with_suffix(".vvd").read_bytes()
+    return struct.unpack_from("<i", raw, 16)[0]
+
+
+def _vvd_count_bytes(raw: bytes) -> int:
+    return struct.unpack_from("<i", raw, 16)[0]
 
 
 def _size(mdl: Path, ext: str) -> int:
@@ -157,8 +186,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("addon")
     ap.add_argument("--work", default=None)
     ap.add_argument("--suffix", default="_optimized")
-    ap.add_argument("--profile", choices=("balanced", "strong", "strong_mirror"), default="balanced")
+    from .simplify import PROFILES
+    ap.add_argument("--profile", choices=tuple(PROFILES), default="balanced")
     ap.add_argument("--jobs", type=int, default=0, help="worker processes (0 = automatic)")
+    ap.add_argument("--stream-min-kb", type=int, default=20, help="stream profile: smallest model streamed")
     ap.add_argument("--in-place", action="store_true", help="process the given folder itself (no copy)")
     ap.add_argument("--overwrite", action="store_true", help="replace an existing output folder")
     args = ap.parse_args(argv)
@@ -197,8 +228,18 @@ def main(argv: list[str]) -> int:
     by_index = {}
     done = 0
     jobs = args.jobs if args.jobs > 0 else _auto_jobs()
+    from .simplify import PROFILES as _P
+    modes = [None] * n
+    if _P[args.profile].engine == "stream":
+        import model_stream
+        for i, m in enumerate(models):
+            size = sum(_size(m, e) for e in (".mdl", ".vvd", ".dx90.vtx"))
+            rel = m.relative_to(out).as_posix()
+            if model_stream.wants_stream(rel, size, args.stream_min_kb * 1024):
+                modes[i] = "stream"
     with ProcessPoolExecutor(max_workers=jobs) as ex:
-        futures = {ex.submit(_process_one, (str(models[i]), str(src), args.profile)): i for i in order}
+        futures = {ex.submit(_process_one, (str(models[i]), str(src), args.profile, modes[i], str(out))): i
+                   for i in order}
         for fut in as_completed(futures):
             res = fut.result()
             by_index[futures[fut]] = res
@@ -209,6 +250,12 @@ def main(argv: list[str]) -> int:
                 print(f"[WARN] kept original: {rel}: {res['error']}", flush=True)
             print(DONE.format(i=done, n=n, path=rel), flush=True)
         rows = [by_index[i] for i in range(n)]
+        manifest = {Path(r["model"]).relative_to(out).as_posix().lower(): r["stream"]
+                    for r in rows if r.get("ok") and r.get("stream")}
+        if manifest:
+            import model_stream
+            print(f"== Packaging: geometry streams ({len(manifest)} models) + Lua runtime ==", flush=True)
+            model_stream.write_runtime(out, manifest, src.name)
         if rest is not None:
             rest.result()   # the rest of the addon is in place (raises if a copy failed)
             copier.shutdown()
@@ -230,13 +277,18 @@ def main(argv: list[str]) -> int:
         except Exception as exc:  # strips are optional: files stay as written
             print(f"[WARN] VTX strips skipped: {exc}", flush=True)
     bytes_after = sum(p.stat().st_size for p in (out / "models").rglob("*") if p.is_file())
+    stream_bytes = sum(r.get("stream_bytes", 0) for r in rows if r.get("ok"))
     report = {"profile": args.profile, "models": n, "failed": sum(1 for r in rows if not r["ok"]),
               "models_bytes_before": bytes_before, "models_bytes_after": bytes_after,
               "vertices_before": sum(r.get("vertices_before", 0) for r in rows if r["ok"]),
               "vertices_after": sum(r.get("vertices_after", 0) for r in rows if r["ok"]),
+              "streamed": sum(1 for r in rows if r.get("ok") and r.get("stream")), "stream_bytes": stream_bytes,
               "seconds": round(time.time() - t0, 1), "rows": rows}
     (work / "logs").mkdir(parents=True, exist_ok=True)
     (work / "logs" / "modscreen_summary.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+    if stream_bytes:
+        print(f"[MODSCREEN] streamed={report['streamed']} stream_bytes={stream_bytes} (data_static/gmo, drawn by "
+              f"lua/autorun/client/gmo_stream_*.lua)", flush=True)
     print(f"[MODSCREEN] models={n} failed={report['failed']} bytes={bytes_before}->{bytes_after} "
           f"vertices={report['vertices_before']}->{report['vertices_after']} seconds={report['seconds']}", flush=True)
     print(f"Output addon: {out}", flush=True)

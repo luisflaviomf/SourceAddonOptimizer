@@ -141,6 +141,8 @@ var screenUnknown = SourceAddonOptimizerCommandBuilder.BuildArguments(new Source
 Assert(screenUnknown[Array.IndexOf(screenUnknown, "--profile") + 1] == "strong_mirror", "An unknown Tela profile must fall back to strong_mirror.");
 var screenBalanced = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:\a", WorkDir = @"C:\w", OptimizerMode = "screen", ScreenProfile = "balanced" }).ToArray();
 Assert(screenBalanced[Array.IndexOf(screenBalanced, "--profile") + 1] == "balanced", "Tela mode lost the explicit balanced (Equilibrado) profile.");
+var screenStream = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:\a", WorkDir = @"C:\w", OptimizerMode = "screen", ScreenProfile = "stream" }).ToArray();
+Assert(screenStream[Array.IndexOf(screenStream, "--profile") + 1] == "stream", "Tela mode lost the explicit stream (experimental) profile.");
 
 string runtimeProfileWithSpaces = @"C:\work folder\runtime profile snapshot";
 var maximumProfileOptions = new SourceAddonOptimizerRunOptions

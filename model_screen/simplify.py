@@ -19,7 +19,9 @@ close-up differences; also drops the VVD tangent block).
 """
 from __future__ import annotations
 
+import json
 import math
+import os
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,7 +48,9 @@ class Profile:
     uv_texels: float = 1.0
     drop_tangents: bool = False
     min_tris: int = 4
-    engine: str = "seams"     # "seams": this module; "remesh": remesh.py + mirror.py (whole parts + mirror)
+    engine: str = "seams"     # "seams": this module; "remesh": remesh.py + mirror.py (whole parts + mirror);
+                              # "stream": model_stream (big rigid models -> compressed stream drawn by Lua,
+                              # the rest with this profile's limits through the remesh engine)
 
 
 PROFILES = {
@@ -55,7 +59,13 @@ PROFILES = {
     # Forte's limits with the remesh engine: whole-part simplification + mirror instancing
     "strong_mirror": Profile("strong_mirror", px=6.0, normal_deg=35.0, uv_texels=3.0, rel_size=0.012,
                              drop_tangents=True, engine="remesh"),
+    # experimental: original geometry stored compressed and drawn by a Lua runtime (model_stream)
+    "stream": Profile("stream", px=6.0, normal_deg=35.0, uv_texels=3.0, rel_size=0.012,
+                      drop_tangents=True, engine="stream"),
 }
+
+if os.environ.get("GMO_MODSCREEN_LAB_PROFILE"):      # development only: an extra profile "lab"
+    PROFILES["lab"] = Profile("lab", **json.loads(os.environ["GMO_MODSCREEN_LAB_PROFILE"]))
 
 
 # ----------------------------------------------------------------------------- helpers

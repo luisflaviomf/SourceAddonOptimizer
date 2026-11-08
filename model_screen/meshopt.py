@@ -9,7 +9,10 @@ import numpy as np
 
 ERROR_ABSOLUTE = 1 << 2
 LOCK_BORDER = 1 << 0
+PRUNE = 1 << 3
+PERMISSIVE = 1 << 5
 V_LOCK = 1 << 0
+V_PROTECT = 1 << 1
 
 _lib = None
 

@@ -182,12 +182,19 @@ namespace GmodAddonCompressor.DataContexts
         {
             "Equilibrado",
             "Forte",
-            "Forte + espelho"
+            "Forte + espelho",
+            "Stream (experimental)"
         };
         // Default Tela profile: Forte + espelho (index 2): Forte's limits with the remesh engine and
         // mirror instancing, chosen after in-game tests on the LVS cars pack (models -61% vs -53%).
         internal const int DefaultModelsScreenProfileIndex = 2;
         private int _modelsScreenProfileIndex = DefaultModelsScreenProfileIndex;
+        private readonly string[] _compressScreenProfileList = new string[]
+        {
+            "Equilibrado (q50)",
+            "Forte (menor)"
+        };
+        private int _compressScreenProfileIndex;
         private string[] _compressModeList = new string[]
         {
             "Padrao",
@@ -342,7 +349,9 @@ namespace GmodAddonCompressor.DataContexts
 
         public string OptimizerModeDescriptionText =>
             OptimizerModeIsScreen
-                ? (_modelsScreenProfileIndex == 2
+                ? (_modelsScreenProfileIndex == 3
+                    ? "Tela (Stream, experimental): os modelos grandes guardam a geometria ORIGINAL comprimida (data_static/gmo) e um runtime Lua do addon a desenha no lugar do modelo, com a mesma iluminação, skins, bodygroups, cores, luzes e lanternas do motor. O .mdl fica com uma malha grossa (~2%) usada para sombra, longe da câmera e como reserva. Rodas e modelos pequenos usam o Forte + espelho. Na pasta: cerca de 1/4 do Forte + espelho com qualidade igual ou melhor; exige Lua do cliente ligada (gmo_stream 0 volta a desenhar só o .mdl)."
+                    : _modelsScreenProfileIndex == 2
                     ? "Tela (Forte + espelho): mesmos limites do Forte, mas cada peça é simplificada inteira (costuras e quinas acompanham os dois lados, sem frestas) e o lado direito de carros simétricos é desenhado como espelho do esquerdo por ossos-espelho, sem guardar os vértices dele. Só espelha onde a geometria e a textura são iguais nos dois lados (texto, sirenes e setas continuam certos). Modelos cerca de 60% menores; marcas de tiro podem não aparecer nas partes espelhadas."
                     : _modelsScreenProfileIndex == 1
                     ? "Tela (Forte): simplifica direto nos arquivos compilados, sem Blender/Crowbar/studiomdl. Costuras simplificadas igualmente dos dois lados (sem frestas), peças redondas e finas protegidas; normal até 35°, UV até 3 texels e VVD sem tangentes. Modelos cerca de 50% menores; pequenas diferenças de perto."
@@ -358,6 +367,23 @@ namespace GmodAddonCompressor.DataContexts
         public bool CompressModeIsMaximum => _compressModeIndex == 2;
         public bool CompressModeIsMagickPlus => _compressModeIndex == 3;
         public bool CompressModeIsScreen => _compressModeIndex == 4;
+        public Visibility CompressScreenOptionsVisibility => CompressModeIsScreen ? Visibility.Visible : Visibility.Collapsed;
+        public string[] CompressScreenProfileList => _compressScreenProfileList;
+
+        public int CompressScreenProfileIndex
+        {
+            get { return _compressScreenProfileIndex; }
+            set
+            {
+                _compressScreenProfileIndex = value < 0 || value >= _compressScreenProfileList.Length ? 0 : value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(CompressScreenProfileName));
+                OnPropertyChanged(nameof(CompressModeRoutingText));
+            }
+        }
+
+        // texscreen profile names (texlab/screen_compress.py PROFILES)
+        public string CompressScreenProfileName => _compressScreenProfileIndex == 1 ? "strong" : "q50";
         public Visibility CompressStandardOptionsVisibility => CompressModeIsStandard ? Visibility.Visible : Visibility.Collapsed;
         public Visibility CompressMagickOptionsVisibility => CompressModeIsMagick || CompressModeIsMagickPlus ? Visibility.Visible : Visibility.Collapsed;
         public Visibility CompressMaximumOptionsVisibility => CompressModeIsMaximum ? Visibility.Visible : Visibility.Collapsed;
@@ -392,7 +418,7 @@ namespace GmodAddonCompressor.DataContexts
                     return "Selected types use the Standard compressor. VTF now uses one unified pipeline: raw-split first, export-split fallback when needed, selective FX-safe DXT/alpha-aware resize/resolution guardrails for sensitive particle-style materials, then preserve unchanged on no gain or out-of-scope cases. PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on the Standard path.";
 
                 if (CompressModeIsScreen)
-                    return "VTF uses the screen-aware engine in the worker (texscreen, profile q50). Non-DXT formats and NOMIP textures fall back to the Standard VTF path. PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on Standard.";
+                    return $"VTF uses the screen-aware engine in the worker (texscreen, profile {CompressScreenProfileName}). Non-DXT formats and NOMIP textures fall back to the Standard VTF path. PNG, JPG/JPEG, WAV, MP3, OGG and LUA stay on Standard.";
 
                 if (CompressModeIsMaximum)
                     return "VTF uses the Universal VTF batch: semantic VMT/Lua/PCF analysis, a mandatory 2x floor, consecutive-level quality gates, structural audit and transactional replacement. Other selected types keep Standard routing.";
@@ -1304,6 +1330,7 @@ namespace GmodAddonCompressor.DataContexts
 
         private void NotifyCompressModePropertiesChanged()
         {
+            OnPropertyChanged(nameof(CompressScreenOptionsVisibility));
             OnPropertyChanged(nameof(CompressModeIsStandard));
             OnPropertyChanged(nameof(CompressModeIsMagick));
             OnPropertyChanged(nameof(CompressModeIsMaximum));

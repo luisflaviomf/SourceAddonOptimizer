@@ -49,6 +49,7 @@ namespace GmodAddonCompressor.Models
         public string? OptimizerPreset { get; set; }
         public int? OptimizerModeIndex { get; set; }
         public int? ModelsScreenProfileIndex { get; set; }
+        public int? CompressScreenProfileIndex { get; set; }
         public OptimizerCustomParams OptimizerCustom { get; set; } = new OptimizerCustomParams();
         public bool? OptimizerUsePlanar { get; set; }
         public double? OptimizerPlanarAngle { get; set; }

@@ -106,7 +106,7 @@ namespace GmodAddonCompressor.Systems
             }
             else if (_pipelineOptions.IsScreenMode)
             {
-                _compressServices.Add(extension, new ScreenVTFEdit(_directoryPath));
+                _compressServices.Add(extension, new ScreenVTFEdit(_directoryPath, _pipelineOptions.ScreenProfile));
             }
             else if (_pipelineOptions.IsMagickPlusMode)
             {

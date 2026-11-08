@@ -59,12 +59,20 @@ a = Analysis(
             "maximum_optimizer/profiles",
         ),
         (str(repo_root / "tools" / "vtx" / "LICENSE.meshoptimizer.txt"), "."),
+        # Models "Tela" profile "stream": Lua runtime + light-probe model written into optimized addons
+        (str(repo_root / "model_stream" / "runtime.lua"), "model_stream"),
+        (str(repo_root / "model_stream" / "probe" / "probe_v1.mdl"), "model_stream/probe"),
+        (str(repo_root / "model_stream" / "probe" / "probe_v1.vvd"), "model_stream/probe"),
+        (str(repo_root / "model_stream" / "probe" / "probe_v1.dx90.vtx"), "model_stream/probe"),
+        (str(repo_root / "model_stream" / "probe" / "probe_v1.vmt"), "model_stream/probe"),
+        (str(repo_root / "model_stream" / "probe" / "probe_v1_normal.vtf"), "model_stream/probe"),
     ] + exact_datas,
     hiddenimports=collect_submodules("maximum_optimizer") + collect_submodules("exact_distribution") + [
         # texlab screen-aware VTF engine: numpy-only core (lab modules with torch/numba stay out)
         "model_screen", "model_screen.cli", "model_screen.simplify", "model_screen.binary",
         "model_screen.uvtol", "model_screen.meshopt", "model_screen.remesh", "model_screen.mirror",
         "model_screen.gridsearch", "vvd_engine_exact",
+        "model_stream", "model_stream.encoder", "model_stream.coarse",
         "texlab", "texlab.screen_compress", "texlab.npsolve", "texlab.bcnp", "texlab.vtf",
         "texlab.density", "texlab.materials", "texlab.source_model", "texlab.allocate", "texlab.plan",
         "texlab.native",

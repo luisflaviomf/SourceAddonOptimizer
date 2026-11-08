@@ -38,6 +38,13 @@ PROFILES = {
     # 15-vehicle LVS sample (2026-11-06): q50 = the loss 2x already causes on the median texture.
     "q50": 0.00257,
     "q75": 0.00840,
+    # "Forte": for a total-size target (~100 MB LVS pack). Much looser detail threshold and up to 8x by
+    # detail energy alone, but textures used as $detail (LVS body AO "skin" atlases: large smooth
+    # surfaces where 8x shows DXT blocks) stop at 4x. Validated in game 2026-11-08 (docs/...stream).
+    "strong": 0.12,
+}
+PROFILE_OPTIONS = {
+    "strong": {"max_energy_drop": 3, "caps": {"$detail": 2}},
 }
 MAX_DROP = 3
 # Beyond this many levels a texture is only reduced when the dropped levels are provably never
@@ -50,6 +57,27 @@ EXACT_MIP_BELOW = 0.02   # below this magnified share the original encoded mip i
 CLAMP_S, CLAMP_T = 0x4, 0x8
 EIGHTBITALPHA = 0x2000
 NOMIP = 0x100
+
+
+def _param_caps(root: Path, caps: dict) -> dict:
+    """{texture ref: max levels} for textures used through the given material parameters."""
+    if not caps:
+        return {}
+    from .materials import MaterialResolver, normalize_texture_ref
+    res = MaterialResolver([root])
+    out = {}
+    mat = next((q for q in root.iterdir() if q.is_dir() and q.name.lower() == "materials"), None)
+    if mat is None:
+        return out
+    for vmt in mat.rglob("*.vmt"):
+        m = res.material(vmt.relative_to(mat).with_suffix("").as_posix().lower())
+        if m is None:
+            continue
+        for k, v in m.params.items():
+            if k in caps and isinstance(v, str):
+                ref = normalize_texture_ref(v)
+                out[ref] = min(out.get(ref, 99), int(caps[k]))
+    return out
 
 
 @dataclass
@@ -118,7 +146,8 @@ def _use_payload(use, view: ViewModel) -> _Use | None:
 
 def _plan_one(task) -> Item:
     """Decision for one texture (pure function of its file and the addon-wide usage)."""
-    p, root, ref, threshold, view, use, unused_alpha, coverage, need_map = task
+    p, root, ref, threshold, view, use, unused_alpha, coverage, need_map = task[:9]
+    energy_drop, cap = task[9] if len(task) > 9 else (MAX_DROP_BY_ENERGY, None)
     item = Item(p.relative_to(root).as_posix(), ref, p, before=p.stat().st_size)
     try:
         v = read_vtf(p)
@@ -137,6 +166,8 @@ def _plan_one(task) -> Item:
     limit = 0
     while limit < MAX_DROP and limit + 1 < v.mip_count and min(v.width, v.height) >> (limit + 1) >= MIN_SIDE:
         limit += 1
+    if cap is not None:
+        limit = min(limit, cap)
     drop = 1 if limit >= 1 else 0
     s_eff = area = None
     if use is not None and v.frames == 1:
@@ -154,7 +185,7 @@ def _plan_one(task) -> Item:
         while drop + 1 <= min(limit, len(local) - 1):
             k = drop + 1
             invisible = lam_q01 >= k
-            if invisible or (k <= MAX_DROP_BY_ENERGY and local[k] <= threshold):
+            if invisible or (k <= energy_drop and local[k] <= threshold):
                 drop = k
             else:
                 break
@@ -194,6 +225,8 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
         # the models scan runs in the pool while this process reads every material
         futures = [pool.submit(_model_usage, t) for t in usage_tasks(root)] if pool else None
         unused_alpha = alpha_unused_refs(root, [])
+        opts = PROFILE_OPTIONS.get(profile)
+        caps = _param_caps(root, opts.get("caps") or {}) if opts else {}
         coverage = alpha_coverage_refs(root, [])
         uses = merge_usage([f.result() for f in futures]) if pool else collect_usage(root)
         tasks = []
@@ -201,8 +234,11 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
             if not p.is_file() or p.suffix.lower() != ".vtf":
                 continue
             ref = p.relative_to(mat).as_posix()[:-4].lower()
-            tasks.append((p, root, ref, threshold, view, _use_payload(uses.get(ref), view), ref in unused_alpha,
-                          ref in coverage, need_map))
+            task = (p, root, ref, threshold, view, _use_payload(uses.get(ref), view), ref in unused_alpha,
+                    ref in coverage, need_map)
+            if opts:
+                task += ((opts.get("max_energy_drop", MAX_DROP_BY_ENERGY), caps.get(ref)),)
+            tasks.append(task)
         if pool is not None and len(tasks) > 1:
             return list(pool.map(_plan_one, tasks, chunksize=1))
     finally:

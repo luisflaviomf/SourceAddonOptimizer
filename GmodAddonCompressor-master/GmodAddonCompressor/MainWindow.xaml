@@ -1256,6 +1256,19 @@
                             </StackPanel>
                         </Border>
 
+                        <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0" Visibility="{Binding CompressScreenOptionsVisibility}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource LabelText}" Text="Perfil Tela" />
+                                <ComboBox Margin="0,6,0,0"
+                                          ItemsSource="{Binding CompressScreenProfileList, Mode=OneTime}"
+                                          SelectedIndex="{Binding CompressScreenProfileIndex, Mode=TwoWay}" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           Margin="0,6,0,0"
+                                           Text="Equilibrado: reduz onde a perda fica abaixo da de um 2x tipico. Forte: aceita mais perda de detalhe (ate 8x por textura; texturas de sombreamento da carroceria no maximo 4x) para chegar perto de 1/3 do tamanho do Equilibrado, um pouco mais suave de perto."
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
                         <Border Style="{StaticResource CardInnerPanel}" Margin="0,12,0,0" Visibility="{Binding CompressMaximumOptionsVisibility}">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource LabelText}" Text="Maximum VTF experiment" />

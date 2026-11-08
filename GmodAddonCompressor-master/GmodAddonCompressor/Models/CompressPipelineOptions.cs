@@ -20,6 +20,8 @@ namespace GmodAddonCompressor.Models
         public int MaximumVtfParallelism { get; init; } = 10;
         public UniversalVtfProfileKind MaximumVtfProfile { get; init; } =
             UniversalVtfProfileKind.Balanced;
+        // Tela VTF: texscreen profile ("q50" = Equilibrado, "strong" = Forte)
+        public string ScreenProfile { get; init; } = "q50";
 
         public bool IsMagickMode => Mode == CompressPipelineMode.Magick;
         public bool IsMaximumMode => Mode == CompressPipelineMode.Maximum;
@@ -35,7 +37,7 @@ namespace GmodAddonCompressor.Models
             const string vtfText = "VTF => unified pipeline: raw split first, export split fallback when needed, selective DXT routing plus premultiplied alpha-aware resize for FX-sensitive and opacity-alpha surfaces such as vehicle glass/cutouts, then preserve unchanged on no gain or out-of-scope cases.";
 
             if (IsScreenMode)
-                return "Routing: VTF => screen-aware texscreen engine (worker, profile q50): per-texture 2x/4x/8x from on-screen texel density, reconstruction-aware top level, exact lower mipmaps, alpha-safe DXT1; non-DXT and NOMIP VTFs fall back to the Standard VTF path. Other selected types remain on Standard.";
+                return $"Routing: VTF => screen-aware texscreen engine (worker, profile {ScreenProfile}): per-texture 2x/4x/8x from on-screen texel density, reconstruction-aware top level, exact lower mipmaps, alpha-safe DXT1; non-DXT and NOMIP VTFs fall back to the Standard VTF path. Other selected types remain on Standard.";
 
             if (IsMaximumMode)
                 return $"Routing: VTF => universal VTF batch, profile {MaximumVtfProfile}, " +
