@@ -1,4 +1,4 @@
-"""Models "Tela" profile "stream" (experimental): compressed original geometry drawn by a Lua runtime.
+"""Models "Tela" profile "stream": compressed original geometry drawn by a Lua runtime.
 
 A streamed model keeps its MDL (bones, bodygroups, attachments, physics) with a coarse stand-in mesh
 (~2% of the triangles, what the engine draws for shadows, far away and as fallback). Its full LOD0
@@ -24,9 +24,14 @@ DEFAULT_KEEP = r"wheel|tire|tyre|^(fw|rw|wh)\.mdl$"
 COARSE_RATIO = 0.02
 
 
-def stream_name(rel_model: str) -> str:
-    """data_static path of a model's stream (same for every addon that ships this model path)."""
-    return "data_static/gmo/" + hashlib.sha1(rel_model.lower().encode("utf-8")).hexdigest()[:16] + ".txt"
+STREAM_DIR = "data_static/gmo"
+
+
+def stream_name(rel_model: str, ext: str = ".dat") -> str:
+    """data_static path of a model's stream (same for every addon that ships this model path). ext is
+    the file type the addon's packer keeps (texlab.packing.stream_extension); the runtime reads the
+    path from the manifest."""
+    return f"{STREAM_DIR}/" + hashlib.sha1(rel_model.lower().encode("utf-8")).hexdigest()[:16] + ext
 
 
 def wants_stream(rel_model: str, size: int, min_bytes: int = DEFAULT_MIN_BYTES,
@@ -38,7 +43,8 @@ def wants_stream(rel_model: str, size: int, min_bytes: int = DEFAULT_MIN_BYTES,
     return not re.search(keep, Path(rel_model).name.lower())
 
 
-def stream_model(mdl: Path, rel_model: str, out_root: Path, resolver, ratio: float = COARSE_RATIO):
+def stream_model(mdl: Path, rel_model: str, out_root: Path, resolver, ratio: float = COARSE_RATIO,
+                 ext: str = ".dat"):
     """Encode mdl (original files) into out_root/<stream_name> and return the coarse stand-in bytes
     (mdl, vvd, vtx) and stream size. Raises ValueError when the model cannot be streamed."""
     from model_screen.binary import rewrite_model_bytes
@@ -49,7 +55,7 @@ def stream_model(mdl: Path, rel_model: str, out_root: Path, resolver, ratio: flo
     data = encoder.encode(mdl, resolver)
     tris = coarse.coarse_tris(mdl, ratio)
     m, v, x, _ = rewrite_model_bytes(mdl, tris, drop_tangents=True)
-    target = out_root / stream_name(rel_model)
+    target = out_root / stream_name(rel_model, ext)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".tmp")
     tmp.write_bytes(data)

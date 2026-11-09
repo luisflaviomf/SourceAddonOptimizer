@@ -292,13 +292,13 @@
                                             <TextBlock Text="Custo-benefício" FontSize="16" FontWeight="SemiBold" Margin="0,0,8,4" />
                                             <Border Style="{StaticResource M3Chip}" Margin="0,0,0,4"><TextBlock Text="Recomendado" FontSize="12" Foreground="{DynamicResource OnSecondaryContainer}" /></Border>
                                         </WrapPanel>
-                                        <TextBlock Text="Bem menor, com perda quase invisível. Levou o pacote LVS de 1375 para 132 MiB." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" />
+                                        <TextBlock Text="Bem menor, com perda quase invisível. Levou o pacote LVS de 1375 para 68 MiB." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" />
                                     </StackPanel>
                                 </RadioButton>
                                 <RadioButton Style="{StaticResource ChoiceCard}" GroupName="WizardProfile" IsChecked="{Binding ProfileMax, Mode=TwoWay}" Margin="6,0,0,8">
                                     <StackPanel>
                                         <TextBlock Text="Máximo" FontSize="16" FontWeight="SemiBold" />
-                                        <TextBlock Text="O menor possível. Texturas num formato compacto que o jogo decodifica: borradas nos primeiros segundos de cada modelo. Experimental." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                        <TextBlock Text="O menor possível: texturas em stream a 31 dB, perde um pouco de granulado de perto." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0" />
                                     </StackPanel>
                                 </RadioButton>
                             </UniformGrid>
@@ -346,6 +346,8 @@
                                                      IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=max, Mode=TwoWay}" />
                                         <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomTextures" Content="Stream"
                                                      IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=stream, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomTextures" Content="Stream máximo"
+                                                     IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=stream_max, Mode=TwoWay}" />
                                         </WrapPanel>
                                         <TextBlock Text="{Binding CustomTexturesHint}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,14" />
 
@@ -1232,6 +1234,8 @@
                                                  IsChecked="{Binding TexturesLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=2, Mode=TwoWay}" />
                                     <RadioButton Style="{StaticResource ChoiceChip}" GroupName="TexturesLevel" Content="Stream"
                                                  IsChecked="{Binding TexturesLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=4, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="TexturesLevel" Content="Stream máximo"
+                                                 IsChecked="{Binding TexturesLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=5, Mode=TwoWay}" />
                                 </WrapPanel>
                                 <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0" Text="{Binding CompressScreenProfileHint}"
                                            Visibility="{Binding CompressModeIsScreen, Converter={StaticResource BooleanToVisibilityConverter}}" />

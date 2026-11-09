@@ -285,7 +285,7 @@ namespace GmodAddonCompressor.DataContexts
 
         // ---------- Personalizado ----------
         private string _customModels = "stream";
-        private string _customTextures = "strong";
+        private string _customTextures = "stream";
         private string _customSounds = "adaptive";
         private int _customWavRateIndex = 1;
         private int _customWavChannelsIndex = 1;

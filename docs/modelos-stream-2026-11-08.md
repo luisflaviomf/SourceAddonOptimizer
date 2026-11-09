@@ -43,8 +43,11 @@ material. Então o addon guarda:
 - o `.mdl` original (ossos, bodygroups, attachments, física), com uma **malha grossa (~2%)** no
   VVD/VTX: é o que o motor desenha para a sombra (RTT), longe da câmera (`gmo_stream_far`, 4000),
   enquanto o stream decodifica, e como reserva se a Lua estiver desligada;
-- a **geometria original inteira comprimida** em `data_static/gmo/<hash>.txt` (formato GMOS, ver
-  `model_stream/encoder.py`);
+- a **geometria original inteira comprimida** em `data_static/gmo/<hash>.dat` (formato GMOS, ver
+  `model_stream/encoder.py`; a extensão é escolhida por `texlab/packing.py`: a primeira de
+  `.dat`/`.txt`/`.json`/`.xml`/`.csv` que a lista `ignore` do `addon.json` do addon não tira do pacote
+  — um addon com `"ignore": ["*.txt"]` era publicado sem os arquivos do stream; o runtime lê o
+  caminho do manifesto);
 - `lua/autorun/client/gmo_stream_<addon>.lua`: o runtime (`model_stream/runtime.lua`) com o
   manifesto (model → arquivo).
 
@@ -128,7 +131,7 @@ O addon completo (models stream + Forte final + WAV adaptativo) fica com ~132 Mi
 
 ## No produto
 
-- Models → modo **Tela** → perfil **"Stream (experimental)"** (worker `modscreen --profile stream`;
+- Models → modo **Tela** → perfil **"Stream"** (até 09/11/2026 "Stream (experimental)") (worker `modscreen --profile stream`;
   `--stream-min-kb`). O padrão continua "Forte + espelho".
 - Mídia e recursos → modo **Tela** → **Perfil Tela**: "Equilibrado (q50)" (padrão) ou "Forte (menor)"
   (`texscreen --profile strong`).

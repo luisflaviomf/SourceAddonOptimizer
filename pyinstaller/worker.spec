@@ -78,7 +78,7 @@ a = Analysis(
         "model_stream", "model_stream.encoder", "model_stream.coarse", "model_stream.geometry",
         "texlab", "texlab.screen_compress", "texlab.npsolve", "texlab.bcnp", "texlab.vtf",
         "texlab.density", "texlab.materials", "texlab.source_model", "texlab.allocate", "texlab.plan",
-        "texlab.native", "texlab.firstperson",
+        "texlab.native", "texlab.firstperson", "texlab.packing",
         "texture_stream", "texture_stream.codec", "texture_stream.choose",
         "PIL.Image",
         "PIL.ImageChops",

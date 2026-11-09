@@ -94,14 +94,18 @@ def _process_one(args):
         if p.engine == "stream" and mode == "stream":
             # original geometry -> data_static/gmo stream; the model keeps a coarse stand-in mesh
             import model_stream
+            from texlab.packing import stream_extension
             resolver = _resolver(addon_root, siblings=True)
             rel = mdl.relative_to(out_root).as_posix()
+            # a file type the addon's own addon.json "ignore" list keeps in the published package
+            ext = stream_extension(str(addon_root), model_stream.STREAM_DIR)[0]
+            name = model_stream.stream_name(rel, ext)
             try:
-                mdl_b, vvd_b, vtx_b, sbytes = model_stream.stream_model(mdl, rel, out_root, resolver)
+                mdl_b, vvd_b, vtx_b, sbytes = model_stream.stream_model(mdl, rel, out_root, resolver, ext=ext)
                 st = {"vertices_before": _vvd_count(mdl), "vertices_after": _vvd_count_bytes(vvd_b)}
-                streamed = {"stream": model_stream.stream_name(rel), "stream_bytes": sbytes}
+                streamed = {"stream": name, "stream_bytes": sbytes}
             except Exception as why:       # not streamable (weighted skinning...): Forte + espelho
-                (out_root / model_stream.stream_name(rel)).unlink(missing_ok=True)
+                (out_root / name).unlink(missing_ok=True)
                 mirror_stats = {"stream_skipped": f"{type(why).__name__}: {why}"}
         if streamed is not None:
             mirror_stats.update(streamed)
@@ -324,6 +328,9 @@ def main(argv: list[str]) -> int:
             import model_stream
             print(f"== Packaging: geometry streams ({len(manifest)} models) + Lua runtime ==", flush=True)
             model_stream.write_runtime(out, manifest, src.name)
+            from texlab import packing
+            if not packing.stream_extension(str(src), model_stream.STREAM_DIR)[1]:
+                print(packing.IGNORED_WARNING.format(folder=model_stream.STREAM_DIR), flush=True)
         if rest is not None:
             rest.result()   # the rest of the addon is in place (raises if a copy failed)
             copier.shutdown()

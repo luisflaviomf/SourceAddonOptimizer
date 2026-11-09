@@ -143,6 +143,9 @@ def test_cli_stream_profile_end_to_end(tmp_path):
     shutil.copytree(PACK / "materials/models/diggercars/bmw_e46", addon / "materials/models/diggercars/bmw_e46")
     shutil.copytree(LVS / "lvs_framework/materials/models/diggercars/shared",
                     tmp_path / "lvs" / "framework/materials/models/diggercars/shared")
+    # the author's addon.json keeps .dat files out of the published addon: the stream takes the next type
+    assert model_stream.stream_name("models/a.mdl").endswith(".dat")
+    (addon / "addon.json").write_text(json.dumps({"title": "e46", "ignore": ["*.psd", "*.dat"]}))
     assert main([str(addon), "--suffix", "_o", "--profile", "stream", "--jobs", "2"]) == 0
     out = tmp_path / "lvs" / "addon_o"
     summary = json.loads((tmp_path / "lvs" / "addon_o_work" / "logs" / "modscreen_summary.json").read_text())
@@ -150,7 +153,7 @@ def test_cli_stream_profile_end_to_end(tmp_path):
     rows = {Path(r["model"]).name: r for r in summary["rows"]}
     assert rows["e46.mdl"].get("stream") and not rows["wheel.mdl"].get("stream")   # wheels stay models
     stream = out / rows["e46.mdl"]["stream"]
-    assert stream.read_bytes()[:4] == b"GMOS"
+    assert stream.read_bytes()[:4] == b"GMOS" and stream.suffix == ".txt"
     luas = list((out / "lua/autorun/client").glob("gmo_stream_*.lua"))
     assert len(luas) == 1
     text = luas[0].read_text(encoding="utf-8")

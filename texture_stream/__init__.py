@@ -1,7 +1,7 @@
-"""Texture stream (experimental): VTFs stored as GMOT wavelet blobs, decoded by a Lua runtime in game.
+"""Texture stream: VTFs stored as GMOT wavelet blobs, decoded by a Lua runtime in game.
 
 convert() turns the DXT textures of the addon into:
-- data_static/gmot/<slug>/<i>.txt: the GMOT blob (codec.py), at the largest quantization step that keeps
+- data_static/gmot/<slug>/<i>.dat: the GMOT blob (codec.py), at the largest quantization step that keeps
   the target PSNR (choose.py; 34 dB by default, with noise filling of the two finest levels);
 - a placeholder VTF at the original path: the texture box-filtered to <= 16 px with full mips (what the
   game shows for the first seconds);
@@ -19,11 +19,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parent
-CORE_VERSION = 1
+CORE_VERSION = 2
 DEFAULT_TARGET_DB = 34.0
 DEFAULT_FILL_LEVELS = 2
 PLACEHOLDER_SIDE = 16
@@ -170,6 +170,67 @@ def classify(ours, reached, refs, shaders, roots) -> dict:
     return out
 
 
+def auto_jobs(minimum: int = 1) -> int:
+    """worker processes for the encoder: every logical CPU but two, as long as each can have ~0.8 GB of free
+    memory (a 2048 texture peaks around 0.6 GB); never fewer than `minimum`."""
+    cpus = max(1, (os.cpu_count() or 2) - 2)
+    free_gb = None
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("sullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        st = MEMORYSTATUSEX()
+        st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            free_gb = st.ullAvailPhys / 2 ** 30
+    except Exception:  # noqa: BLE001 - not Windows or no ctypes: CPU count only
+        pass
+    n = cpus if free_gb is None else min(cpus, max(1, int(free_gb / 0.8)))
+    return max(minimum, n)
+
+
+def _run_tasks(tasks, order, jobs, root, emit) -> dict:
+    """encode_one over the tasks in worker processes. A worker that dies (out of memory on a huge texture...)
+    breaks the pool: what did not finish is done again one at a time in a fresh pool, so one bad file keeps
+    its VTF instead of failing the whole addon."""
+    from concurrent.futures.process import BrokenProcessPool
+    emit("PROGRESS", "stream", 0, len(tasks), "")
+    results, done = {}, 0
+    todo = list(range(len(tasks)))
+    workers = max(1, jobs)
+    while todo:
+        broken = False
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futures = {ex.submit(encode_one, tasks[k]): k for k in todo}
+            for fut in as_completed(futures):
+                k = futures[fut]
+                try:
+                    r = fut.result()
+                except BrokenProcessPool:
+                    broken = True
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    r = {"path": tasks[k][0], "keep": f"error: {type(e).__name__}"}
+                results[order[k]] = r
+                done += 1
+                emit("PROGRESS", "stream", done, len(tasks), Path(r["path"]).relative_to(root).as_posix())
+        todo = [k for k in todo if order[k] not in results]
+        if not todo or not broken:
+            break
+        if workers == 1:
+            # one worker runs the tasks in order: the first unfinished one killed it; it stays a VTF
+            k = todo.pop(0)
+            results[order[k]] = {"path": tasks[k][0], "keep": "error: worker died"}
+            done += 1
+        workers = 1
+    return results
+
+
 def compose_runtime(manifest: dict) -> str:
     """the addon's autorun file: manifest + shared runtime (loaded once, newest core wins)."""
     payload = json.dumps(manifest, separators=(",", ":"), sort_keys=True)
@@ -193,9 +254,12 @@ def convert(root: Path, jobs: int = 4, target: float = DEFAULT_TARGET_DB, fill: 
     from texlab.materials import MaterialResolver
 
     from .choose import alpha_uses, read_vmts
+    from texlab.packing import stream_extension
     root = Path(root)
     emit = emit or (lambda *a: None)
     slug = slug_for(root.name)
+    # a file type the addon's own addon.json "ignore" list keeps in the published package
+    ext, packed = stream_extension(str(root), BLOB_DIR)
     summary = {"slug": slug, "target_db": target, "fill_levels": fill, "streamed": 0, "before": 0, "blobs": 0,
                "placeholders": 0, "runtime": 0, "kept": {}, "rows": []}
     mat_dir = root / "materials"
@@ -236,15 +300,20 @@ def convert(root: Path, jobs: int = 4, target: float = DEFAULT_TARGET_DB, fill: 
     reached = set().union(*model_tex.values()) if model_tex else set()
     classes = classify(ours, reached, refs, {vref: sh for vref, sh, _p in vmts}, roots)
     order = sorted(ours)
-    tmp_dir = root / BLOB_DIR / slug
+    tmp_dir = root / BLOB_DIR / ("tmp_" + slug)
     tasks = [(str(ours[ref]), uses.get(ref), target, fill, str(tmp_dir / f"{k}.tmp")) for k, ref in enumerate(order)]
-    emit("PROGRESS", "stream", 0, len(tasks), "")
-    results = {}
-    if tasks:
-        with ProcessPoolExecutor(max_workers=max(1, jobs)) as ex:
-            for k, r in enumerate(ex.map(encode_one, tasks, chunksize=1)):
-                results[order[k]] = r
-                emit("PROGRESS", "stream", k + 1, len(tasks), Path(r["path"]).relative_to(root).as_posix())
+    results = _run_tasks(tasks, order, jobs, root, emit)
+    # the slug also carries the content: two different addons whose folders have the same name never share
+    # data_static/gmot/<slug>/ or materials/gmot/<slug>/ (the game would serve one addon's files to the other)
+    content = hashlib.sha1()
+    for k, ref in enumerate(order):
+        if "keep" not in results[ref]:
+            content.update(ref.encode("utf-8") + b"\0" + hashlib.sha1((tmp_dir / f"{k}.tmp").read_bytes()).digest())
+    slug = slug[:5] + content.hexdigest()[:7]
+    summary["slug"] = slug
+    summary["blob_ext"], summary["packed"] = ext, packed
+    blob_dir = root / BLOB_DIR / slug
+    blob_dir.mkdir(parents=True, exist_ok=True)
     index = {}
     tex = []
     for k, ref in enumerate(order):
@@ -254,11 +323,11 @@ def convert(root: Path, jobs: int = 4, target: float = DEFAULT_TARGET_DB, fill: 
             continue
         i = len(tex) + 1
         index[ref] = i
-        os.replace(tmp_dir / f"{k}.tmp", tmp_dir / f"{i}.txt")
+        os.replace(tmp_dir / f"{k}.tmp", blob_dir / f"{i}{ext}")
         _write_atomic(ours[ref], r.pop("placeholder"))
         ph = ours[ref].stat().st_size
         flat = [x for pair in refs.get(ref, []) for x in pair]
-        tex.append([f"{BLOB_DIR}/{slug}/{i}.txt", ref, r["side"], flat, classes[ref]])
+        tex.append([f"{BLOB_DIR}/{slug}/{i}{ext}", ref, r["side"], flat, classes[ref]])
         summary["streamed"] += 1
         summary["before"] += r["before"]
         summary["blobs"] += r["blob"]
@@ -267,14 +336,14 @@ def convert(root: Path, jobs: int = 4, target: float = DEFAULT_TARGET_DB, fill: 
                                 "before": r["before"],
                                 "blob": r["blob"], "placeholder": ph,
                                 **{k2: r[k2] for k2 in ("normal", "alpha", "step", "drop", "alpha_step", "rgb_db", "alpha_db")}})
-    for leftover in tmp_dir.glob("*.tmp") if tmp_dir.is_dir() else []:
-        leftover.unlink()
+    if tmp_dir.is_dir():
+        for leftover in tmp_dir.glob("*"):
+            leftover.unlink()
+        tmp_dir.rmdir()
     if not tex:
-        if tmp_dir.is_dir():
-            tmp_dir.rmdir()
+        for d in (blob_dir, blob_dir.parent, blob_dir.parent.parent):
             try:
-                tmp_dir.parent.rmdir()
-                tmp_dir.parent.parent.rmdir()
+                d.rmdir()
             except OSError:
                 pass
         return summary

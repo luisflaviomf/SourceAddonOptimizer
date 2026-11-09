@@ -163,19 +163,16 @@ def _pack(body, ll, bands, st, drop, L):
 
 
 def _search(fn, target):
-    """largest step in STEPS with fn(step) >= target (fn decreasing in step); binary search."""
-    lo, hi = 0, len(STEPS) - 1
-    if fn(STEPS[0]) < target:
-        return STEPS[0]
-    if fn(STEPS[hi]) >= target:
-        return STEPS[hi]
+    """largest step in STEPS with fn(step) >= target (fn decreasing in step), else the smallest step; binary
+    search with virtual ends (5 evaluations for 19 steps)."""
+    lo, hi = -1, len(STEPS)
     while hi - lo > 1:
         mid = (lo + hi) // 2
         if fn(STEPS[mid]) >= target:
             lo = mid
         else:
             hi = mid
-    return STEPS[lo]
+    return STEPS[max(lo, 0)]
 
 
 def _size(body) -> int:

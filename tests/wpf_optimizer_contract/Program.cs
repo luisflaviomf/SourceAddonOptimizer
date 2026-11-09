@@ -142,7 +142,7 @@ Assert(screenUnknown[Array.IndexOf(screenUnknown, "--profile") + 1] == "strong_m
 var screenBalanced = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:\a", WorkDir = @"C:\w", OptimizerMode = "screen", ScreenProfile = "balanced" }).ToArray();
 Assert(screenBalanced[Array.IndexOf(screenBalanced, "--profile") + 1] == "balanced", "Tela mode lost the explicit balanced (Equilibrado) profile.");
 var screenStream = SourceAddonOptimizerCommandBuilder.BuildArguments(new SourceAddonOptimizerRunOptions { AddonPath = @"C:\a", WorkDir = @"C:\w", OptimizerMode = "screen", ScreenProfile = "stream" }).ToArray();
-Assert(screenStream[Array.IndexOf(screenStream, "--profile") + 1] == "stream", "Tela mode lost the explicit stream (experimental) profile.");
+Assert(screenStream[Array.IndexOf(screenStream, "--profile") + 1] == "stream", "Tela mode lost the explicit stream profile.");
 
 string runtimeProfileWithSpaces = @"C:\work folder\runtime profile snapshot";
 var maximumProfileOptions = new SourceAddonOptimizerRunOptions
@@ -316,12 +316,17 @@ var streamChoice = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.Find(
     GmodAddonCompressor.Systems.Optimizer.WizardProfiles.TextureChoices, "stream");
 Assert(streamChoice.Key == "stream" && streamChoice.Index == 4, "Texture choice Stream lost its Perfil Tela index.");
 var maxProfile = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.For(GmodAddonCompressor.Systems.Optimizer.WizardProfile.Max);
-Assert(maxProfile.Textures && maxProfile.CompressScreenProfileIndex == 4, "Máximo no longer uses the texture stream.");
+Assert(maxProfile.Textures && maxProfile.CompressScreenProfileIndex == 5, "Máximo no longer uses Stream máximo (31 dB).");
+var balancedProfile = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.For(GmodAddonCompressor.Systems.Optimizer.WizardProfile.Balanced);
+Assert(balancedProfile.Textures && balancedProfile.CompressScreenProfileIndex == 4, "Custo-benefício no longer uses the texture stream.");
+var streamMaxChoice = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.Find(
+    GmodAddonCompressor.Systems.Optimizer.WizardProfiles.TextureChoices, "stream_max");
+Assert(streamMaxChoice.Key == "stream_max" && streamMaxChoice.Index == 5, "Texture choice Stream máximo lost its Perfil Tela index.");
 var customStream = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.ForCustom("strong", "stream", "adaptive", 0, 0, 0, false);
 Assert(customStream.CompressScreenProfileIndex == 4, "Personalizado Stream chip does not select the texture stream.");
-Assert(GmodAddonCompressor.Systems.Reporting.AddonInventory.Classify("data_static/gmot/ab12/3.txt")
+Assert(GmodAddonCompressor.Systems.Reporting.AddonInventory.Classify("data_static/gmot/ab12/3.dat")
        == GmodAddonCompressor.Systems.Reporting.AddonFileKind.Textures, "Texture stream blobs are not counted as textures.");
-Assert(GmodAddonCompressor.Systems.Reporting.AddonInventory.Classify("data_static/gmo/ab12.txt")
+Assert(GmodAddonCompressor.Systems.Reporting.AddonInventory.Classify("data_static/gmo/ab12.dat")
        == GmodAddonCompressor.Systems.Reporting.AddonFileKind.Models, "Model stream blobs are not counted as models.");
 
 Console.WriteLine("WPF optimizer contract tests passed.");

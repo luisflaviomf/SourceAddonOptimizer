@@ -43,10 +43,15 @@ def fwd53(x):
     return s * S2, d / S2
 
 
+_A, _B = 1.0 / S2, 0.25 * S2
+
+
 def inv53(s, d):
-    s, d = s / S2, d * S2
-    s = s - 0.25 * (d + np.concatenate([d[..., :1], d[..., :-1]], -1))
-    d = d + 0.5 * (s + np.concatenate([s[..., 1:], s[..., -1:]], -1))
+    """inverse of fwd53, with the decoder.lua arithmetic (same operations in the same order, so the Python
+    mirror and the Lua output agree to the last bit)"""
+    dp = np.concatenate([d[..., :1], d[..., :-1]], -1)
+    s = s * _A - _B * (dp + d)
+    d = d * S2 + 0.5 * (s + np.concatenate([s[..., 1:], s[..., -1:]], -1))
     x = np.empty(s.shape[:-1] + (s.shape[-1] * 2,), np.float64)
     x[..., 0::2], x[..., 1::2] = s, d
     return x
@@ -295,7 +300,8 @@ def read_band(buf, pos, shape, st, index):
 
 
 def decode_planes(data: bytes, preview=False):
-    """-> planes, mode, VTF header, out_fmt, mips, (w, h) exactly as the Lua decoder builds them."""
+    """-> planes, mode, VTF header, out_fmt, mips, (w, h) exactly as the Lua decoder builds them.
+    preview: True for the preview (P finest levels left out), or the number of finest levels to leave out."""
     if data[:4] != b"GMOT" or data[4] != VERSION:
         raise ValueError("not GMOT v2")
     nch = data[5]
@@ -327,24 +333,23 @@ def decode_planes(data: bytes, preview=False):
                 trio.append(b)
             bands.append(tuple(trio))
         planes.append(idwt(ll, bands))
-    if preview or P == 0:
-        if P > 0:
-            planes = [p / 2 ** P for p in planes]
-            w, h = w >> P, h >> P
-            if mips > 1:
-                mips = max(1, mips - P)
-            struct.pack_into("<HH", header, 16, w, h)
-            header[56] = mips
-    else:
-        c = 1
-        for lvl in range(P, 0, -1):
-            for pi in range(n):
-                trio = []
-                for k in range(3):
-                    b, _ = read_band(chunk(c), 0, (h >> lvl, w >> lvl), steps[pi], seed_index(pi, lvl, k + 1))
-                    c += 1
-                    trio.append(b)
-                planes[pi] = idwt(planes[pi], [tuple(trio)])
+    drop = P if preview is True else min(int(preview or 0), P)
+    c = 1
+    for lvl in range(P, drop, -1):
+        for pi in range(n):
+            trio = []
+            for k in range(3):
+                b, _ = read_band(chunk(c), 0, (h >> lvl, w >> lvl), steps[pi], seed_index(pi, lvl, k + 1))
+                c += 1
+                trio.append(b)
+            planes[pi] = idwt(planes[pi], [tuple(trio)])
+    if drop > 0:
+        planes = [p / 2 ** drop for p in planes]
+        w, h = w >> drop, h >> drop
+        if mips > 1:
+            mips = max(1, mips - drop)
+        struct.pack_into("<HH", header, 16, w, h)
+        header[56] = mips
     return planes, mode, bytes(header), out_fmt, mips, (w, h)
 
 
@@ -377,14 +382,23 @@ def _q6(v):
     return np.clip(np.floor(v * 63 / 255 + 0.5), 0, 63)
 
 
+def _seq_sum(a):
+    """sum over axis 1 in index order, as the Lua loops add (numpy's own sum pairs the terms, which moves
+    the last bit and flips exact ties)."""
+    s = a[:, 0].copy()
+    for k in range(1, a.shape[1]):
+        s = s + a[:, k]
+    return s
+
+
 def lua_dxt1(px):
     """px (nb,16,3) float 0..255 -> (nb,8) uint8, same arithmetic as decoder.lua: bounding-box diagonal
     from the covariance signs, inset 1/16, selectors by projection, one least-squares refinement."""
     mn, mx = px.min(1), px.max(1)
-    m = px.sum(1) / 16
+    m = _seq_sum(px) / 16
     dg = px[..., 1] - m[:, None, 1]
-    crg = ((px[..., 0] - m[:, None, 0]) * dg).sum(1)
-    cbg = ((px[..., 2] - m[:, None, 2]) * dg).sum(1)
+    crg = _seq_sum((px[..., 0] - m[:, None, 0]) * dg)
+    cbg = _seq_sum((px[..., 2] - m[:, None, 2]) * dg)
     hi, lo = mx.copy(), mn.copy()
     s = crg < 0
     hi[s, 0], lo[s, 0] = mn[s, 0], mx[s, 0]
@@ -420,9 +434,9 @@ def lua_dxt1(px):
             break
         wt = 1 - t / 3
         wu = 1 - wt
-        a11, a22, a12 = (wt * wt).sum(1), (wu * wu).sum(1), (wt * wu).sum(1)
-        x1 = (wt[..., None] * px).sum(1)
-        x2 = (wu[..., None] * px).sum(1)
+        a11, a22, a12 = _seq_sum(wt * wt), _seq_sum(wu * wu), _seq_sum(wt * wu)
+        x1 = _seq_sum(wt[..., None] * px)
+        x2 = _seq_sum(wu[..., None] * px)
         det = a11 * a22 - a12 * a12
         good = active & (np.abs(det) > 1e-6)
         dsafe = np.where(good, det, 1.0)

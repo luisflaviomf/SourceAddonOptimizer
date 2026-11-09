@@ -183,7 +183,7 @@ namespace GmodAddonCompressor.DataContexts
             "Equilibrado",
             "Forte",
             "Forte + espelho",
-            "Stream (experimental)",
+            "Stream",
             "Sem perda"
         };
         // Default "Padrão" (screen-aware, worker modscreen) profile: Forte + espelho (index 2): Forte's limits with the remesh engine and
@@ -196,7 +196,8 @@ namespace GmodAddonCompressor.DataContexts
             "Forte",
             "Máximo",
             "Sem perda",
-            "Stream (experimental)"
+            "Stream",
+            "Stream máximo"
         };
         private int _compressScreenProfileIndex;
         private string[] _compressModeList = new string[]
@@ -357,7 +358,7 @@ namespace GmodAddonCompressor.DataContexts
                 ? (_modelsScreenProfileIndex == 4
                     ? "Modelos intactos; só o empacotamento que não muda a aparência (VTX antigos removidos, normais exatas, VTX compactado)."
                     : _modelsScreenProfileIndex == 3
-                    ? "Maior redução: os modelos grandes guardam a geometria original comprimida e são desenhados por Lua. Experimental; exige Lua do cliente ligada."
+                    ? "Maior redução: os modelos grandes guardam a geometria original comprimida e são desenhados por Lua no jogo. Exige Lua do cliente ligada."
                     : _modelsScreenProfileIndex == 2
                     ? "Como o Forte, usando a simetria do modelo: o lado direito vira espelho do esquerdo. Cerca de 60% menor."
                     : _modelsScreenProfileIndex == 1
@@ -438,6 +439,7 @@ namespace GmodAddonCompressor.DataContexts
             2 => "max",
             3 => "exact",
             4 => "stream",
+            5 => "stream_max",
             _ => "q50"
         };
         public Visibility CompressStandardOptionsVisibility => CompressModeIsStandard ? Visibility.Visible : Visibility.Collapsed;
@@ -472,7 +474,8 @@ namespace GmodAddonCompressor.DataContexts
             1 => "Até 8x onde a textura nunca aparece de perto; textos e texturas pequenas ficam em 2x.",
             2 => "No mínimo 4x, até 8x. Perda visível de perto.",
             3 => "Não reduz; só converte BC3→BC1 quando o alpha não é usado, sem mudar nenhuma cor.",
-            4 => "Como o Forte, e as texturas dos modelos ficam guardadas num formato compacto que o jogo decodifica na hora (cerca de 8x menor). Na primeira vez de cada arma ou veículo na sessão elas aparecem borradas por alguns segundos. Experimental.",
+            4 => "Como o Forte, e as texturas ficam num formato compacto que o jogo decodifica (cerca de 8x menor). Na primeira vez de cada arma ou veículo elas aparecem em resolução menor por alguns segundos; depois ficam guardadas no PC do jogador.",
+            5 => "Como o Stream, com um pouco menos de qualidade (31 dB): ainda menor, perde um pouco de granulado de perto.",
             _ => "Reduz só onde a perda é menor que a de um 2x."
         };
 

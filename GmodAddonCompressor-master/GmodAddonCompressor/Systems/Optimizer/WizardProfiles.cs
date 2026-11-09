@@ -61,7 +61,7 @@ namespace GmodAddonCompressor.Systems.Optimizer
             new("balanced", 0, "Equilibrado", "Quase idêntico ao original."),
             new("strong", 1, "Forte", "Cerca de 50% menor; pequenas diferenças de perto."),
             new("strong_mirror", 2, "Forte + espelho", "Como o Forte, usando a simetria do modelo. Cerca de 60% menor."),
-            new("stream", 3, "Stream", "Maior redução: modelos grandes desenhados por Lua. Experimental.")
+            new("stream", 3, "Stream", "Maior redução: modelos grandes desenhados por Lua no jogo.")
         };
 
         // Mídia "Perfil Tela" indices (MainWindowContext._compressScreenProfileList)
@@ -72,7 +72,8 @@ namespace GmodAddonCompressor.Systems.Optimizer
             new("q50", 0, "Equilibrado", "Reduz só onde a perda é menor que a de um 2x."),
             new("strong", 1, "Forte", "Até 8x onde nunca aparece de perto; textos e texturas pequenas em 2x."),
             new("max", 2, "Máximo", "No mínimo 4x, até 8x. Perda visível de perto."),
-            new("stream", 4, "Stream", "Forte + formato compacto decodificado pelo Lua no jogo (cerca de 8x menor); borradas nos primeiros segundos de cada modelo. Experimental.")
+            new("stream", 4, "Stream", "Forte + formato compacto decodificado no jogo (cerca de 8x menor). Resolução menor nos primeiros segundos de cada modelo na primeira vez."),
+            new("stream_max", 5, "Stream máximo", "Como o Stream, a 31 dB: ainda menor, um pouco de granulado perdido de perto.")
         };
 
         internal static readonly WizardChoice[] SoundChoices =
@@ -97,21 +98,21 @@ namespace GmodAddonCompressor.Systems.Optimizer
                 true, 3, "Sem reduzir, só conversão exata BC3→BC1",
                 IncludeWav: false, WavOptimizationIndex: 0, WavRateIndex: 0, WavChannelsIndex: 0, WavCodecIndex: 0,
                 "Não mexe nos sons"),
-            // Smallest size. Textures: Forte + the texture stream (texture_stream package, 34 dB + noise filling;
-            // test bench textures 837 -> ~100 MiB, chosen by Luis 2026-11-09 over the old "max" 4x-8x reduction).
-            // Sounds exactly as in Custo-benefício (adaptive conservative, same reference): Luis (2026-11-08)
-            // wants that one for every profile, not forced ADPCM.
+            // Smallest size. Textures: the texture stream at 31 dB ("Stream máximo"). Sounds exactly as in
+            // Custo-benefício (adaptive conservative, same reference): Luis (2026-11-08) wants that one for every
+            // profile, not forced ADPCM.
             WizardProfile.Max => new WizardSettings(
-                true, 3, "Stream (experimental)",
-                true, 4, "Stream: texturas decodificadas no jogo (experimental)",
+                true, 3, "Stream: modelos grandes desenhados por Lua no jogo",
+                true, 5, "Stream máximo: texturas decodificadas no jogo, 31 dB",
                 IncludeWav: true, WavOptimizationIndex: 1, WavRateIndex: 1, WavChannelsIndex: 1, WavCodecIndex: 0,
                 "Adaptativo conservador"),
-            // The LVS ~132 MiB configuration Luis tested in game (2026-11-08). The adaptive WAV profile
-            // compares against the manual reference: 22050 Hz mono PCM16 as in his runs (sounds 28.3 -> 9.5 MB);
-            // a 44100 Hz stereo reference makes the fallback files bigger than the originals.
+            // Models stream + the texture stream at 34 dB (Luis, 2026-11-09: the stream becomes the main method;
+            // test bench textures 839 -> 97 MiB). The adaptive WAV profile compares against the manual reference:
+            // 22050 Hz mono PCM16 as in his runs (sounds 28.3 -> 9.5 MB); a 44100 Hz stereo reference makes the
+            // fallback files bigger than the originals.
             _ => new WizardSettings(
-                true, 3, "Stream (experimental)",
-                true, 1, "Forte (textos e texturas pequenas em 2x)",
+                true, 3, "Stream: modelos grandes desenhados por Lua no jogo",
+                true, 4, "Stream: texturas decodificadas no jogo",
                 IncludeWav: true, WavOptimizationIndex: 1, WavRateIndex: 1, WavChannelsIndex: 1, WavCodecIndex: 0,
                 "Adaptativo conservador")
         };
@@ -134,8 +135,8 @@ namespace GmodAddonCompressor.Systems.Optimizer
             };
             if (lua)
                 soundsLine += " · Lua minificado";
-            string modelsLine = m.Key == None ? "Não mexe nos modelos" : m.Key == "stream" ? "Stream (experimental)" : m.Label;
-            string texturesLine = t.Key == None ? "Não mexe nas texturas" : t.Key == "stream" ? "Stream (experimental)" : t.Label;
+            string modelsLine = m.Key == None ? "Não mexe nos modelos" : m.Label;
+            string texturesLine = t.Key == None ? "Não mexe nas texturas" : t.Label;
             // adaptive uses the same reference as Custo-benefício (22050 Hz mono PCM16)
             bool adaptive = s.Key == "adaptive";
             return new WizardSettings(

@@ -53,10 +53,14 @@ PROFILES = {
     # 8x by detail energy with this threshold (or when the levels are never sampled). LVS estimate
     # 27.5-30.2 MiB for thresholds inf..0.12; 0.25 (28.1 MiB) keeps the ~40 most detailed at 4x.
     "max": 0.25,
-    # "Stream" (experimental): Forte, then the textures models draw become GMOT blobs decoded by Lua in game
-    # (texture_stream package, 34 dB + noise filling). Test bench textures 837 -> ~100 MiB.
+    # "Stream" (main method): Forte, then every single-frame DXT/8-bit texture becomes a GMOT blob decoded
+    # by Lua in game (texture_stream package, 34 dB + noise filling). Test bench textures 837 -> ~100 MiB.
     "stream": 0.12,
+    # "Stream máximo": the same at 31 dB (smallest size, a little grain lost up close)
+    "stream_max": 0.12,
 }
+# texture stream profiles -> PSNR target of texture_stream.convert
+STREAM_TARGETS = {"stream": 34.0, "stream_max": 31.0}
 # Extra rules of a profile (q50/q75 have none):
 # - max_energy_drop: levels a texture may lose on detail energy alone;
 # - caps {param: levels}: textures used through that material parameter lose at most that many levels;
@@ -86,7 +90,7 @@ PROFILE_OPTIONS = {
     "exact": {"max_drop": 0, "fallback": False},
     "max": {"max_energy_drop": 3, "caps": {"$detail": 2}, "text_cap": 2, "min_drop": 2},
 }
-PROFILE_OPTIONS["stream"] = PROFILE_OPTIONS["strong"]
+PROFILE_OPTIONS["stream"] = PROFILE_OPTIONS["stream_max"] = PROFILE_OPTIONS["strong"]
 # Textures the classic chain did not handle, rebuilt when the addon's models use them (2026-11-08 test
 # bench: 743 MiB of weapon textures stored without mips and 264 MiB uncompressed, all left untouched):
 # - "single": DXT stored without mips or flagged NOMIP: the top level is rebuilt and written alone (the
@@ -623,9 +627,13 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
             list(pool.map(write, prepared))
     stream = None
-    if profile == "stream":
+    if profile in STREAM_TARGETS:
         import texture_stream
-        stream = texture_stream.convert(root, jobs=jobs, emit=_emit)
+        stream = texture_stream.convert(root, jobs=texture_stream.auto_jobs(jobs), target=STREAM_TARGETS[profile],
+                                        emit=_emit)
+        if stream["streamed"] and not stream.get("packed", True):
+            from texlab.packing import IGNORED_WARNING
+            print(IGNORED_WARNING.format(folder=texture_stream.BLOB_DIR), flush=True)
         streamed = {r["path"].lower() for r in stream["rows"]}
         for item in items:
             if item.rel.replace("\\", "/").lower() in streamed:
