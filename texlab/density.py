@@ -55,6 +55,7 @@ class TextureUse:
     s_min: list = field(default_factory=list)      # per-triangle texels/unit, least stretched direction
     area: list = field(default_factory=list)       # per-triangle world area (units^2)
     uv: list = field(default_factory=list)         # per-triangle UV centroid (with material scale)
+    first_person: bool = False                     # some rows come from a first-person model (scaled)
 
     def arrays(self, anisotropy: float = 16.0):
         if not self.s_max:
@@ -63,9 +64,11 @@ class TextureUse:
         return np.maximum(smin, smax / max(anisotropy, 1.0)), np.concatenate(self.area)
 
 
-def triangle_density(mesh_positions, mesh_uvs, triangles, tex_w, tex_h, uv_scale=1.0):
-    """(s_max, s_min, area, uv_centroid) for every non-degenerate triangle."""
+def triangle_density(mesh_positions, mesh_uvs, triangles, tex_w, tex_h, uv_scale=1.0, centroids_out=None):
+    """(s_max, s_min, area, uv_centroid) for every non-degenerate triangle.
+    centroids_out (a list): receives the position centroids of the same triangles."""
     p = mesh_positions[triangles].astype(np.float64)
+    pc = p.mean(axis=1) if centroids_out is not None else None
     uvc = mesh_uvs[triangles].astype(np.float64).mean(axis=1) * uv_scale
     t = mesh_uvs[triangles].astype(np.float64) * np.array([tex_w * uv_scale, tex_h * uv_scale])
     e1, e2 = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
@@ -94,6 +97,8 @@ def triangle_density(mesh_positions, mesh_uvs, triangles, tex_w, tex_h, uv_scale
     s_max = np.sqrt((s_sum + disc) / 2.0)
     s_min = np.sqrt(np.maximum((s_sum - disc) / 2.0, 0.0))
     keep = np.isfinite(s_max) & (s_max > 0)
+    if centroids_out is not None:
+        centroids_out.append(pc[ok][ok2][keep])
     return s_max[keep], s_min[keep], (nlen[keep] / 2.0), uvc[keep]
 
 
@@ -123,6 +128,11 @@ def _model_usage(args) -> list[tuple]:
     """Density rows of one model, in the exact order the sequential scan appends them."""
     mdl, addon_root, roots = Path(args[0]), Path(args[1]), list(args[2])
     stream = args[3] if len(args) > 3 else None
+    # first-person model ("eye" / "near", texlab.firstperson): its densities are scaled to what the
+    # world-model camera at fp_ref units would see, so the screen engine treats the view-model look as
+    # the closest look (rows then carry a 12th field, True)
+    fp_kind = args[4] if len(args) > 4 else None
+    fp_ref = args[5] if len(args) > 5 else None
     if _USAGE_STATE.get("roots") != roots:
         _init_usage_worker(roots)
     resolver = _USAGE_STATE["resolver"]
@@ -153,14 +163,24 @@ def _model_usage(args) -> list[tuple]:
                 if info is None:
                     continue
                 w, h, mips, _ = info
+                cents = [] if fp_kind else None
                 smax, smin, area, uvc = triangle_density(positions, uvs, triangles, w, h,
-                                                         material.texture_scale(param))
-                rows.append((ref, w, h, mips, role, material.path, rel_model, smax, smin, area, uvc))
+                                                         material.texture_scale(param), cents)
+                if fp_kind:
+                    from .firstperson import distances, focal_ratio
+                    scale = distances(fp_kind, cents[0]) / float(fp_ref) / focal_ratio()
+                    rows.append((ref, w, h, mips, role, material.path, rel_model, smax * scale, smin * scale,
+                                 area, uvc, True))
+                else:
+                    rows.append((ref, w, h, mips, role, material.path, rel_model, smax, smin, area, uvc))
     return rows
 
 
-def usage_tasks(addon_root: Path, extra_roots: list[Path] | None = None) -> list[tuple]:
-    """One task per model (sorted), for _model_usage on any executor."""
+def usage_tasks(addon_root: Path, extra_roots: list[Path] | None = None,
+                first_person_ref: float | None = None) -> list[tuple]:
+    """One task per model (sorted), for _model_usage on any executor.
+    first_person_ref: closest world-model distance of the caller; with it, first-person models
+    (texlab.firstperson) get densities scaled to their view-model look."""
     addon_root = Path(addon_root)
     roots = tuple([str(addon_root)] + [str(r) for r in (extra_roots or [])])
     models = sorted((addon_root / "models").rglob("*.mdl"))
@@ -168,21 +188,100 @@ def usage_tasks(addon_root: Path, extra_roots: list[Path] | None = None) -> list
     if (addon_root / "lua" / "autorun" / "client").is_dir():
         from model_stream.geometry import read_manifests
         streams = read_manifests(addon_root)
+    fp = {}
+    if first_person_ref:
+        from .firstperson import classify
+        fp = classify(addon_root)
     tasks = []
     for m in models:
         task = (str(m), str(addon_root), roots)
-        stream = streams.get(m.relative_to(addon_root).as_posix().lower())
-        tasks.append(task + (str(stream),) if stream else task)
+        rel = m.relative_to(addon_root).as_posix().lower()
+        stream = streams.get(rel)
+        kind = fp.get(rel)
+        if kind:
+            tasks.append(task + (str(stream) if stream else None, kind, float(first_person_ref)))
+        else:
+            tasks.append(task + (str(stream),) if stream else task)
+    return tasks
+
+
+MAX_SIBLINGS = 40
+
+
+def sibling_roots(addon_root: Path) -> list[Path]:
+    """Addons beside this one whose models may use its textures (a framework and its packs, a weapon
+    base and its weapons). Skips the folder this one was copied from (the assistant's output sits next
+    to its source: <source><suffix>), copies of this one and work folders; none when the folder holds
+    more than MAX_SIBLINGS addons (a whole Workshop download folder would take too long)."""
+    addon_root = Path(addon_root)
+    me = addon_root.name.lower()
+    try:
+        dirs = [d for d in addon_root.parent.iterdir() if d.is_dir() and d != addon_root]
+    except OSError:
+        return []
+    out = []
+    for d in sorted(dirs, key=lambda q: q.name.lower()):
+        n = d.name.lower()
+        if me.startswith(n) or n.startswith(me) or n.endswith("_work") or not (d / "models").is_dir():
+            continue
+        out.append(d)
+    return out if len(out) <= MAX_SIBLINGS else []
+
+
+def sibling_usage_tasks(addon_root: Path, first_person_ref: float | None = None) -> list[tuple]:
+    """_model_usage tasks for the models of sibling addons that draw a material or texture of this
+    addon (their densities decide its textures as well). Header-only prefilter: MDL texture names x
+    cdmaterials against this addon's VMT/VTF files (directly, or through the sibling's own VMT)."""
+    addon_root = Path(addon_root)
+    mat = addon_root / "materials"
+    if not mat.is_dir():
+        return []
+    from .source_model import _read_mdl
+    tasks = []
+    for sib in sibling_roots(addon_root):
+        resolver = MaterialResolver([sib, addon_root])
+        fp = {}
+        if first_person_ref:
+            from .firstperson import classify
+            fp = classify(sib)
+        roots = (str(sib), str(addon_root))
+        for m in sorted((sib / "models").rglob("*.mdl")):
+            try:
+                _v, _n, _c, textures, cdmats, _sk, _bp = _read_mdl(m)
+            except Exception:
+                continue
+            hit = False
+            for tex in textures:
+                for cd in cdmats:
+                    rel = (cd.strip("/\\") + "/" + tex).replace("\\", "/").lower()
+                    if (mat / (rel + ".vmt")).is_file():
+                        hit = True
+                        break
+                    material = resolver.material(rel)
+                    if material is not None and any((mat / (r + ".vtf")).is_file() for r in material.textures.values()):
+                        hit = True
+                        break
+                if hit:
+                    break
+            if not hit:
+                continue
+            kind = fp.get(m.relative_to(sib).as_posix().lower())
+            task = (str(m), str(sib), roots)
+            tasks.append(task + (None, kind, float(first_person_ref)) if kind else task)
     return tasks
 
 
 def collect_usage(addon_root: Path, extra_roots: list[Path] | None = None, jobs: int = 1,
-                  executor=None) -> dict[str, TextureUse]:
+                  executor=None, first_person_ref: float | None = None,
+                  siblings: bool = False) -> dict[str, TextureUse]:
     """Scan every model in the addon and accumulate texel density per texture.
 
     With jobs > 1 (or an executor) the models are read in worker processes; rows are merged in
-    model order, so the result is identical to the sequential scan."""
-    work = usage_tasks(addon_root, extra_roots)
+    model order, so the result is identical to the sequential scan. siblings: also the models of the
+    addons beside this one that use its materials (sibling_usage_tasks)."""
+    work = usage_tasks(addon_root, extra_roots, first_person_ref)
+    if siblings:
+        work += sibling_usage_tasks(addon_root, first_person_ref)
     if executor is not None:
         per_model = list(executor.map(_model_usage, work, chunksize=1))
     elif jobs > 1 and len(work) > 1:
@@ -198,10 +297,13 @@ def merge_usage(per_model: list[list[tuple]]) -> dict[str, TextureUse]:
     """Accumulate _model_usage rows (models in sorted order) into TextureUse records."""
     uses: dict[str, TextureUse] = {}
     for rows in per_model:
-        for ref, w, h, mips, role, material_path, rel_model, smax, smin, area, uvc in rows:
+        for row in rows:
+            ref, w, h, mips, role, material_path, rel_model, smax, smin, area, uvc = row[:11]
             use = uses.get(ref)
             if use is None:
                 use = uses[ref] = TextureUse(ref, w, h, mips)
+            if len(row) > 11 and row[11]:
+                use.first_person = True
             use.roles.add(role)
             use.materials.add(material_path)
             use.models.add(rel_model)

@@ -221,6 +221,57 @@ def walk_mdl(raw: bytes):
     return parts, numflexdesc
 
 
+# ----------------------------------------------------------------------------- LODs
+
+def flatten_lods(mdl: Path) -> bool:
+    """Rewrite a model with LODs (VVD numLODs > 1 / fixup table, VTX numLODs > 1) as its LOD0 alone,
+    in place: the VVD gets LOD0's vertex list (the engine's own fixup rule for root LOD 0: every fixup
+    entry with lod >= 0, in table order, exactly what the MDL vertex offsets index), the VTX keeps its
+    first LOD. Returns False when there is nothing to do or the model asks for a root LOD > 0.
+    The engine then draws LOD0 at every distance (the simplified LOD0 of the profile)."""
+    vvd_p = mdl.with_suffix(".vvd")
+    vtx_p = Path(str(mdl.with_suffix("")) + ".dx90.vtx")
+    vvd = vvd_p.read_bytes()
+    vtx_raw = vtx_p.read_bytes()
+    nlods = struct.unpack_from("<i", vvd, 12)[0]
+    lodv = list(struct.unpack_from("<8i", vvd, 16))
+    nfix, fixstart, vstart, tstart = struct.unpack_from("<4i", vvd, 48)
+    vtx_nlods = struct.unpack_from("<i", vtx_raw, 20)[0]
+    if nlods <= 1 and nfix == 0 and vtx_nlods <= 1:
+        return False
+    if mdl.read_bytes()[377] != 0:          # studiohdr_t.rootLOD
+        return False
+    n_all = lodv[0]
+    V = np.frombuffer(vvd, np.uint8, n_all * VVD_V, vstart).reshape(n_all, VVD_V)
+    T = np.frombuffer(vvd, np.uint8, n_all * 16, tstart).reshape(n_all, 16) if tstart else None
+    if nfix:
+        parts = []
+        for i in range(nfix):
+            lod, src, count = struct.unpack_from("<3i", vvd, fixstart + i * 12)
+            if lod >= 0:
+                parts.append(np.arange(src, src + count))
+        order = np.concatenate(parts) if parts else np.zeros(0, np.int64)
+    else:
+        order = np.arange(n_all)
+    n0 = len(order)
+    header = bytearray(vvd[:64])
+    struct.pack_into("<i", header, 12, 1)
+    struct.pack_into("<8i", header, 16, *([n0] * 8))
+    struct.pack_into("<4i", header, 48, 0, 64, 64, (64 + n0 * VVD_V) if T is not None else 0)
+    new_vvd = bytes(header) + V[order].tobytes() + (T[order].tobytes() if T is not None else b"")
+    tree = parse_vtx(vtx_raw)
+    for models in tree.bodyparts:
+        for m, lods in enumerate(models):
+            models[m] = lods[:1]
+    head = bytearray(tree.header)
+    struct.pack_into("<i", head, 20, min(1, vtx_nlods))
+    tree.header = bytes(head)
+    new_vtx = write_vtx(tree)
+    vvd_p.write_bytes(new_vvd)
+    vtx_p.write_bytes(new_vtx)
+    return True
+
+
 # ----------------------------------------------------------------------------- rewrite
 
 def mesh_arrays(mdl: Path):

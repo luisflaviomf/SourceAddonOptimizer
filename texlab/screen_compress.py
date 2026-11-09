@@ -32,12 +32,12 @@ import numpy as np
 from PIL import Image
 
 from . import npsolve
-from .allocate import DEFAULT_DISTANCES, DEFAULT_WEIGHTS, band_energy_maps, texture_local_error
-from .density import ViewModel, _model_usage, collect_usage, merge_usage, usage_tasks
+from .allocate import DEFAULT_DISTANCES, DEFAULT_WEIGHTS, band_energy_maps, box_pyramid, texture_local_error
+from .density import ViewModel, _model_usage, collect_usage, merge_usage, sibling_usage_tasks, usage_tasks
 from .plan import alpha_coverage_refs, alpha_unused_refs, opaque_alpha
 from .vtf import (image_bytes, TEXTUREFLAGS_ENVMAP, bc3_blocks_to_bc1, decode_level, read_vtf, truncate_mips, write_vtf)
 
-ENGINE = "texscreen/v7"
+ENGINE = "texscreen/v8"
 PROFILES = {
     # Absolute local-loss thresholds (contrast-normalised detail loss) calibrated on the
     # 15-vehicle LVS sample (2026-11-06): q50 = the loss 2x already causes on the median texture.
@@ -73,7 +73,8 @@ PROFILES = {
 # "exact" (Sem perda): nothing reduced, nothing sent to the regular path.
 # "max" (Maximo): at least 4x everywhere, $detail and lettering stop at 4x, no small/magnify guard.
 TEXT_NAMES = re.compile(r"badge|gauge|tacho|speedo|sign|decal|sticker|logo|emblem|plate|cluster|dial|"
-                        r"license|livery|polic|polizei|text|txt|label|font|number|digital|clock|odo|warn",
+                        r"license|livery|polic|polizei|text|txt|label|font|number|digital|clock|odo|warn|"
+                        r"cockpit|dash|interior|display|radio|screen",
                         re.IGNORECASE)
 NORMAL_SUFFIX = re.compile(r"(_nm|_normal|_n|_bump|_ddn)$", re.IGNORECASE)
 PROFILE_OPTIONS = {
@@ -82,6 +83,18 @@ PROFILE_OPTIONS = {
     "exact": {"max_drop": 0, "fallback": False},
     "max": {"max_energy_drop": 3, "caps": {"$detail": 2}, "text_cap": 2, "min_drop": 2},
 }
+# Textures the classic chain did not handle, rebuilt when the addon's models use them (2026-11-08 test
+# bench: 743 MiB of weapon textures stored without mips and 264 MiB uncompressed, all left untouched):
+# - "single": DXT stored without mips or flagged NOMIP: the top level is rebuilt and written alone (the
+#   engine never samples anything else);
+# - "convert": uncompressed RGB(A) (mostly normal maps): becomes DXT1/DXT5 (DXT1 when no material reads
+#   the alpha or it is opaque) at the screen-aware size; lower mips are re-encoded from the original ones.
+# Unused ones (HUD, reticles, sprites drawn by Lua) stay as they are (or go to the caller's regular path).
+UNCOMPRESSED = (0, 1, 2, 3, 12, 16)
+# First-person textures (texlab.firstperson): the view-model look is the closest look; no forced 2x, and
+# the magnification guard of the profile applies from 4x on at that look.
+FP_MAGNIFY = (1.5, 2)
+FP_ENERGY_DROP = 1            # first-person levels by detail energy (2: almost no change on the bench)
 MAX_DROP = 3
 # Beyond this many levels a texture is only reduced when the dropped levels are provably never
 # sampled, even from the closest distance (regular high-contrast patterns such as meshes,
@@ -130,6 +143,8 @@ class Item:
     magnified_map: object = None   # per-texel share at the reduced resolution (atlases mix regimes)
     before: int = 0
     after: int = 0
+    rebuild: str = ""   # "single" / "convert" (see UNCOMPRESSED); "" = DXT with stored mips
+    first_person: bool = False
 
 
 def _emit(kind: str, *fields) -> None:
@@ -171,13 +186,15 @@ class _Use:
     area: np.ndarray
     s_iso: np.ndarray          # isotropic (anisotropy 1) density
     uv: np.ndarray | None      # per-triangle UV centroids, None when the use has none
+    fp: bool = False           # used by a first-person model (densities already scaled to that look)
 
 
 def _use_payload(use, view: ViewModel) -> _Use | None:
     if use is None:
         return None
     s_eff, area = use.arrays(view.anisotropy)
-    return _Use(s_eff, area, use.arrays(1.0)[0], np.concatenate(use.uv) if use.uv else None)
+    return _Use(s_eff, area, use.arrays(1.0)[0], np.concatenate(use.uv) if use.uv else None,
+                bool(getattr(use, "first_person", False)))
 
 
 def _plan_one(task) -> Item:
@@ -194,23 +211,58 @@ def _plan_one(task) -> Item:
         item.action, item.reason = fallback, f"unreadable:{type(exc).__name__}"
         return item
     ok, why = _eligible(v)
-    if not ok:
+    kind = ""
+    # rebuilt when models use the texture, or when it is a model texture (materials/models/) no model of the
+    # addon draws: those get the default reduction of unused textures (HUD, reticles, sprites and skins live
+    # outside models/ and stay as they are)
+    model_tex = ref.startswith("models/")
+    if (not ok and why in ("non_dxt_format", "nomip") and cap != 0
+            and ((use is not None and len(use.s_eff)) or (use is None and model_tex))
+            and v.frames == 1 and v.faces == 1 and v.depth == 1 and not v.flags & TEXTUREFLAGS_ENVMAP
+            and min(v.width, v.height) > MIN_SIDE):
+        kind = "single" if v.fmt in (13, 15) else "convert" if v.fmt in UNCOMPRESSED else ""
+    if not ok and not kind:
         item.action = fallback if why in ("non_dxt_format", "nomip") else "keep"
         item.reason = why
         return item
-    item.out_fmt = v.fmt
+    fp = use is not None and use.fp
+    item.rebuild, item.first_person = kind, fp
+    if fp:
+        # the view-model look is the closest look, stared at all the time and zoomed when aiming:
+        # no forced reduction, the Equilibrado detail threshold, at most 2x on detail energy (more only
+        # where the dropped levels are never sampled), guard from 4x at that look. With the Forte
+        # threshold an M9K AUG scope label went 4x and became unreadable (bench, 2026-11-08)
+        min_drop = min_drop if min_drop > 1 else 0
+        threshold = min(threshold, PROFILES["q50"])
+        energy_drop = min(energy_drop, FP_ENERGY_DROP)
+        if magnify:
+            magnify = (CLOSEST_DISTANCE, magnify[1], FP_MAGNIFY[0], FP_MAGNIFY[1])
+    single_level = kind == "single" or (kind == "convert" and (v.mip_count < 2 or v.flags & NOMIP))
+    nomip_cap = opts[6] if len(opts) > 6 else None
+    if kind and v.flags & NOMIP and nomip_cap is not None:
+        # an explicit NOMIP flag marks textures meant to stay sharp (gauges, labels): the lettering cap
+        cap = min(cap if cap is not None else 99, int(nomip_cap))
+    top = None
     item.coverage_alpha = coverage
-    if v.fmt == 15 and v.frames == 1 and (unused_alpha or opaque_alpha(v)):
-        item.out_fmt = 13
+    if kind == "convert":
+        top = decode_level(v, 0)
+        item.out_fmt = 13 if unused_alpha or bool((top[..., 3] == 255).all()) else 15
+    else:
+        item.out_fmt = v.fmt
+        if v.fmt == 15 and v.frames == 1 and (unused_alpha or opaque_alpha(v)):
+            item.out_fmt = 13
     limit = 0
-    while limit < MAX_DROP and limit + 1 < v.mip_count and min(v.width, v.height) >> (limit + 1) >= MIN_SIDE:
+    while (limit < MAX_DROP and (kind or limit + 1 < v.mip_count)
+           and min(v.width, v.height) >> (limit + 1) >= MIN_SIDE):
         limit += 1
     if cap is not None:
         limit = min(limit, cap)
     if small_cap and limit > small_cap[1]:
         # small textures: going past 2x saves only a few KB but erases labels and numbers
-        at = sum(image_bytes(v.fmt, max(1, v.width >> lv), max(1, v.height >> lv))
-                 for lv in range(small_cap[1], v.mip_count))
+        fmt_c = item.out_fmt if kind else v.fmt
+        last = small_cap[1] + 1 if single_level else v.mip_count
+        at = sum(image_bytes(fmt_c, max(1, v.width >> lv), max(1, v.height >> lv))
+                 for lv in range(small_cap[1], last))
         if at * v.frames <= small_cap[0]:
             limit = small_cap[1]
     drop = min(min_drop, limit)
@@ -221,7 +273,12 @@ def _plan_one(task) -> Item:
             s_eff = area = None
     if s_eff is not None and limit > drop:
         uvc = use.uv if use.uv is not None else np.zeros((0, 2))
-        maps = band_energy_maps(p, max_levels=limit, vtf=v)
+        if kind and (single_level or v.mip_count <= limit):
+            # no stored chain to measure against: the 2x box pyramid of the top level
+            maps = band_energy_maps(p, max_levels=limit,
+                                    raw=box_pyramid(top if top is not None else decode_level(v, 0), limit))
+        else:
+            maps = band_energy_maps(p, max_levels=limit, vtf=v)
         local = texture_local_error(s_eff, area, uvc, maps, view.focal_px, min(limit, len(maps)))
         lam = np.log2(np.maximum(s_eff, 1e-12) * CLOSEST_DISTANCE / view.focal_px)
         order = np.argsort(lam)
@@ -286,14 +343,19 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
         # no reduction allowed: the models scan (screen density) has nothing to decide
         scan = not (opts and opts.get("max_drop") == 0)
         # the models scan runs in the pool while this process reads every material
-        futures = [pool.submit(_model_usage, t) for t in usage_tasks(root)] if pool and scan else None
+        # the addon's own models, then the models of sibling addons that draw its materials (a weapon
+        # base and its packs: 230 MiB of ARC9 textures were "unused" because their models live next door)
+        futures = ([pool.submit(_model_usage, t) for t in usage_tasks(root, first_person_ref=CLOSEST_DISTANCE)
+                    + sibling_usage_tasks(root, first_person_ref=CLOSEST_DISTANCE)]
+                   if pool and scan else None)
         unused_alpha = alpha_unused_refs(root, [])
         caps = _param_caps(root, opts.get("caps") or {}) if opts else {}
         coverage = alpha_coverage_refs(root, [])
         if not scan:
             uses = {}
         else:
-            uses = merge_usage([f.result() for f in futures]) if pool else collect_usage(root)
+            uses = (merge_usage([f.result() for f in futures]) if pool
+                    else collect_usage(root, first_person_ref=CLOSEST_DISTANCE, siblings=True))
         tasks = []
         for p in sorted(mat.rglob("*")):
             if not p.is_file() or p.suffix.lower() != ".vtf":
@@ -309,7 +371,7 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
                 if opts.get("max_drop") is not None:
                     cap = min(cap if cap is not None else 99, int(opts["max_drop"]))
                 task += ((opts.get("max_energy_drop", MAX_DROP_BY_ENERGY), cap, opts.get("magnify"), opts.get("small_cap"),
-                          opts.get("min_drop", 1), opts.get("fallback", True)),)
+                          opts.get("min_drop", 1), opts.get("fallback", True), opts.get("text_cap")),)
             tasks.append(task)
         if pool is not None and len(tasks) > 1:
             return list(pool.map(_plan_one, tasks, chunksize=1))
@@ -406,6 +468,39 @@ def _vtfcmd_encode(vtfcmd: Path, pngs: list[tuple[Path, str]], workdir: Path, jo
     return out
 
 
+def _vtfcmd_encode_chain(vtfcmd: Path, pngs: list[tuple[Path, str]], workdir: Path, jobs: int = 1) -> dict[Path, list[bytes]]:
+    """Like _vtfcmd_encode, but VTFCmd also builds the mip chain (box filter, no sharpening) from the
+    image: {png: [level 0, level 1, ...]}. For textures whose stored chain is not DXT ("convert")."""
+    chunks = []
+    for fmt in ("DXT1", "DXT5"):
+        group = [p for p, f in pngs if f == fmt]
+        size = 32 if jobs <= 1 else max(4, min(32, -(-len(group) // (jobs * 2))))
+        for start in range(0, len(group), size):
+            chunks.append((fmt, start, group[start:start + size]))
+
+    def encode(job):
+        fmt, start, chunk = job
+        outdir = workdir / f"chain_{fmt}_{start}"
+        outdir.mkdir()
+        cmd = [str(vtfcmd)]
+        for p in chunk:
+            cmd += ["-file", str(p)]
+        cmd += ["-output", str(outdir), "-format", fmt, "-alphaformat", fmt, "-mfilter", "BOX",
+                "-msharpen", "NONE", "-nothumbnail", "-noreflectivity", "-silent"]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=1800)
+        res = {}
+        for p in chunk:
+            vv = read_vtf(outdir / (p.stem + ".vtf"))
+            res[p] = [vv.level_data(l) for l in range(vv.mip_count)]
+        return res
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        for part in pool.map(encode, chunks):
+            out.update(part)
+    return out
+
+
 def lanczos_down(H: np.ndarray, factor: int) -> np.ndarray:
     """Per-channel Lanczos reduction of the level-0 image (low-pass: no aliasing of fine patterns)."""
     h, w = H.shape[0] // factor, H.shape[1] // factor
@@ -433,6 +528,20 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
 
         def prepare(item: Item):
             v = read_vtf(item.path)
+            if item.rebuild == "convert" or (item.rebuild == "single" and item.action == "reduce"):
+                # rebuilt from the decoded top level: written alone (no mips / NOMIP) or with a chain
+                # VTFCmd builds from it (uncompressed textures that had mips)
+                H = decode_level(v, 0).astype(np.float32) / 255.0
+                L = lanczos_down(H, 1 << item.drop) if item.drop else H
+                chain = item.rebuild == "convert" and v.mip_count > 1 and not v.flags & NOMIP
+                if item.coverage_alpha and chain and item.drop:
+                    L[..., 3] = decode_level(v, item.drop)[..., 3].astype(np.float32) / 255.0
+                png = tmp / f"r{abs(hash(item.ref)) % 10**12:012d}_{item.drop}.png"
+                Image.fromarray(np.round(L * 255.0).astype(np.uint8), "RGBA").save(png, compress_level=1)
+                with lock:
+                    counter[0] += 1
+                    _emit("PROGRESS", "rebuild", counter[0], len(work), item.rel)
+                return item, v, ("chain" if chain else "alone", png)
             if item.action == "transcode":
                 return item, v, None
             if v.frames > 1 or 0.0 <= item.magnified < EXACT_MIP_BELOW:
@@ -467,12 +576,21 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
             prepared = list(pool.map(prepare, work))
         encoded = _vtfcmd_encode(vtfcmd, [(png, fmt_name[item.out_fmt]) for item, _, png in prepared
-                                          if isinstance(png, Path)], tmp, encode_jobs)
+                                          if isinstance(png, Path)]
+                                 + [(png[1], fmt_name[item.out_fmt]) for item, _, png in prepared
+                                    if isinstance(png, tuple) and png[0] == "alone"], tmp, encode_jobs)
+        chains = _vtfcmd_encode_chain(vtfcmd, [(png[1], fmt_name[item.out_fmt]) for item, _, png in prepared
+                                               if isinstance(png, tuple) and png[0] == "chain"], tmp, encode_jobs)
         written = [0]
 
         def write(entry):
             item, v, png = entry
-            if item.action == "transcode":
+            if isinstance(png, tuple):
+                levels = chains[png[1]] if png[0] == "chain" else [encoded[png[1]]]
+                flags = v.flags & ~EIGHTBITALPHA if item.out_fmt == 13 else v.flags
+                data = write_vtf(v, item.out_fmt, max(1, v.width >> item.drop), max(1, v.height >> item.drop),
+                                 levels, flags)
+            elif item.action == "transcode":
                 levels = [bc3_blocks_to_bc1(v.level_data(l, f)) for l in range(v.mip_count) for f in [0]]
                 data = write_vtf(v, 13, v.width, v.height, levels, v.flags & ~EIGHTBITALPHA)
             elif png == "truncate":

@@ -30,15 +30,16 @@ DONE = ">>> DONE ({i}/{n}) {path}"
 _RESOLVERS: dict = {}
 
 
-def _sibling_roots(addon_root: str) -> list[Path]:
-    """Other addons next to this one (e.g. lvs_framework beside lvs_cars_pack): models often use
-    materials another addon ships. Our own outputs (<addon><suffix>, work folders) are skipped."""
+def _sibling_roots(addon_root: str, folder: str = "materials") -> list[Path]:
+    """Other addons next to this one (e.g. lvs_framework beside lvs_cars_pack) that have `folder`:
+    models often use materials (and Lua) another addon ships. Our own outputs (<addon><suffix>,
+    work folders) are skipped."""
     src = Path(addon_root)
     out = []
     try:
         for d in sorted(src.parent.iterdir(), key=lambda q: q.name.lower()):
             if d.is_dir() and d != src and not d.name.lower().startswith(src.name.lower()) \
-                    and (d / "materials").is_dir():
+                    and (d / folder).is_dir():
                 out.append(d)
     except OSError:
         pass
@@ -63,16 +64,32 @@ def _process_one(args):
     mdl_path, addon_root, profile_name = args[:3]
     mode = args[3] if len(args) > 3 else None          # "stream" for models the stream profile streams
     out_root = Path(args[4]) if len(args) > 4 else None
+    fp_kind = args[5] if len(args) > 5 else None       # first-person model (texlab.firstperson)
+    kept = args[6] if len(args) > 6 else None          # material made at run time (runtime_materials)
     from texlab.source_model import load_model
     from .binary import rewrite_model_bytes
-    from .simplify import PROFILES, simplify_model
+    from .simplify import PROFILES, first_person, simplify_model
     from .uvtol import mesh_uv_tolerance
     import vvd_engine_exact
     mdl = Path(mdl_path)
     p = PROFILES[profile_name]
+    if fp_kind:
+        p = first_person(p, fp_kind)
     sizes0 = {ext: _size(mdl, ext) for ext in (".mdl", ".vvd", ".dx90.vtx")}
+    if kept:
+        # the game makes this model's look at run time (render-target picture, Lua-driven see-through
+        # surface): neither streamed nor simplified, see runtime_materials.py
+        return {"model": str(mdl), "ok": True, "skipped": f"material made at run time (kept): {kept}",
+                "vertices_before": 0, "vertices_after": 0, "bytes_before": sum(sizes0.values()),
+                "bytes_after": sum(sizes0.values())}
     mirror_stats = {}
     try:
+        if p.engine != "copy":
+            # models with LODs (VVD fixups, several VTX LODs): their LOD0 alone, then simplified like
+            # any model (were all left as they were: 303 MiB of the 2026-11-08 test bench)
+            from .binary import flatten_lods
+            if flatten_lods(mdl):
+                mirror_stats["lods_flattened"] = True
         streamed = None
         if p.engine == "stream" and mode == "stream":
             # original geometry -> data_static/gmo stream; the model keeps a coarse stand-in mesh
@@ -92,7 +109,8 @@ def _process_one(args):
             from . import mirror, remesh
             resolver = _resolver(addon_root, siblings=True)
             uvt = mesh_uv_tolerance(mdl, resolver)
-            plan = remesh.build(mdl, p, uvt, remesh.mesh_uv_free(mdl, resolver), resolver)
+            # no mirror instancing on first-person models: extra bones on view models/hands for a small gain
+            plan = remesh.build(mdl, p, uvt, remesh.mesh_uv_free(mdl, resolver), resolver, mirror=not fp_kind)
             if plan is None:
                 raise ValueError("model has no triangles")
             st = plan["stats"]
@@ -134,6 +152,10 @@ def _process_one(args):
             tmp.unlink(missing_ok=True)
         if mirror_stats.get("stream") and out_root is not None:      # the model stays as it was
             (out_root / mirror_stats["stream"]).unlink(missing_ok=True)
+        if str(exc) == "model has no triangles":
+            # animation/attachment-only models (ARC9 hold_*): nothing to simplify, not a failure
+            return {"model": str(mdl), "ok": True, "skipped": "no triangles", "vertices_before": 0,
+                    "vertices_after": 0, "bytes_before": sum(sizes0.values()), "bytes_after": sum(sizes0.values())}
         return {"model": str(mdl), "ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
@@ -257,6 +279,21 @@ def main(argv: list[str]) -> int:
     done = 0
     jobs = args.jobs if args.jobs > 0 else _auto_jobs()
     modes = [None] * n
+    # first-person models (weapon view models, hands, attachments): limits of the view-model camera when
+    # simplified. Streamed when rigid like any model: the runtime draws view models through a RenderOverride
+    # set in PreDrawViewModel (runtime.lua) and decodes the carried weapons ahead of their first draw
+    from texlab.firstperson import classify
+    fp = classify(src)
+    fp_kinds = [fp.get(m.relative_to(out).as_posix().lower()) for m in models]
+    # models whose look the game makes at run time (render-target pictures, Lua-driven see-through
+    # surfaces: scopes, sight lenses, screens) stay as authored, whatever the addon or weapon base
+    kept = [None] * n
+    if not copy_only:
+        from texlab.materials import MaterialResolver
+        from .runtime_materials import kept_reasons
+        # a fresh index (not the per-process _resolver cache: this runs in the calling process)
+        kept = kept_reasons(models, MaterialResolver([src] + _sibling_roots(str(src))),
+                            [src] + _sibling_roots(str(src), "lua"))
     if _P[args.profile].engine == "stream":
         import model_stream
         for i, m in enumerate(models):
@@ -268,7 +305,8 @@ def main(argv: list[str]) -> int:
         if copy_only:
             rows = _kept_rows(models, out)
         else:
-            futures = {ex.submit(_process_one, (str(models[i]), str(src), args.profile, modes[i], str(out))): i
+            futures = {ex.submit(_process_one, (str(models[i]), str(src), args.profile, modes[i], str(out),
+                                                fp_kinds[i], kept[i])): i
                        for i in order}
             for fut in as_completed(futures):
                 res = fut.result()

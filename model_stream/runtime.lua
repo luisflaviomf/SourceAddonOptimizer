@@ -6,8 +6,10 @@
 -- distance beyond which the coarse model is drawn. Streams unused for 5 minutes are freed.
 if SERVER then return end
 
-local VERSION = 6
-if GMOS and (GMOS.VERSION or 0) >= VERSION then
+local VERSION = 6          -- GMOS stream format (encoder.VERSION)
+local REVISION = 2         -- runtime behaviour: 2 = view models, material overrides, candidate materials
+if GMOS and ((GMOS.VERSION or 0) > VERSION
+             or ((GMOS.VERSION or 0) == VERSION and (GMOS.REVISION or 1) >= REVISION)) then
     -- an equal or newer runtime is already loaded: only merge this addon's manifest
     if GMOS_PENDING_MANIFEST then GMOS.AddManifest(GMOS_PENDING_MANIFEST) end
     GMOS_PENDING_MANIFEST = nil
@@ -15,7 +17,7 @@ if GMOS and (GMOS.VERSION or 0) >= VERSION then
 end
 
 local old = GMOS
-GMOS = { VERSION = VERSION, manifest = old and old.manifest or {} }
+GMOS = { VERSION = VERSION, REVISION = REVISION, manifest = old and old.manifest or {} }
 local G = GMOS
 
 local cv_enable = CreateClientConVar("gmo_stream", "1", true, false, "Draw optimized model geometry streams")
@@ -151,7 +153,21 @@ local function build(st, yield)
     local info, d = decode(blob, yield)
     blob = nil
     local mats = {}
-    for i, name in pairs(info.mats) do mats[i] = Material(name) end
+    for i, name in pairs(info.mats) do
+        if string.find(name, "|", 1, true) then
+            -- material not found when the stream was made (shared texture packs): the engine's own
+            -- order of cdmaterials candidates, first one the game has
+            local first
+            for cand in string.gmatch(name, "[^|]+") do
+                local m = Material(cand)
+                first = first or m
+                if not m:IsError() then first = m break end
+            end
+            mats[i] = first
+        else
+            mats[i] = Material(name)
+        end
+    end
     local vbase, ibase = 0, 0
     local cp, cn, cu = 0, 0, 0          -- read cursors of the "new value" streams
     local vp, vn = Vector(), Vector()
@@ -404,7 +420,7 @@ local function build_lists(ent, st)
                     index[tr][g.bone] = byb
                     lists[tr][#lists[tr] + 1] = byb
                 end
-                byb.items[#byb.items + 1] = { mat = m, chunks = g.chunks, area = g.area or 0, bone = g.bone, ptb = g.ptb,
+                byb.items[#byb.items + 1] = { mat = m, tex = tex, chunks = g.chunks, area = g.area or 0, bone = g.bone, ptb = g.ptb,
                                              refract = tr and string.lower(m:GetShader() or "") == "refract" }
             end
         end
@@ -435,7 +451,33 @@ local function build_lists(ent, st)
     return lists
 end
 
+-- render.MaterialOverride / ModelMaterialOverride / MaterialOverrideByIndex replace the materials of models the
+-- engine draws; IMeshes are drawn with render.SetMaterial, so the stream applies them itself (ARC9 draws scope
+-- lenses a second time with a dark material and its depth pass with a DepthWrite material this way)
+for _, name in ipairs({ "MaterialOverride", "ModelMaterialOverride" }) do
+    local f = G["ORIG_" .. name] or (old and old["ORIG_" .. name]) or render[name]
+    G["ORIG_" .. name] = f
+    render[name] = function(m, ...)
+        G["ov_" .. name] = (m ~= nil and m ~= 0) and m or nil
+        return f(m, ...)
+    end
+end
+do
+    local f = G.ORIG_MaterialOverrideByIndex or (old and old.ORIG_MaterialOverrideByIndex) or render.MaterialOverrideByIndex
+    G.ORIG_MaterialOverrideByIndex = f
+    render.MaterialOverrideByIndex = function(i, m, ...)
+        if i == nil then G.ov_index = nil
+        else
+            G.ov_index = G.ov_index or {}
+            G.ov_index[i] = (m ~= nil and m ~= 0) and m or nil
+        end
+        return f(i, m, ...)
+    end
+end
+
 local function draw_list(ent, list, bms)
+    local ovr = G.ov_MaterialOverride or G.ov_ModelMaterialOverride
+    local ovi = G.ov_index
     for _, byb in ipairs(list) do
         local M = bms[byb.bone]
         if M == nil then
@@ -446,8 +488,10 @@ local function draw_list(ent, list, bms)
         if M then
             cam.PushModelMatrix(M)
             for _, it in ipairs(byb.items) do
-                if it.refract then render.UpdateRefractTexture() end
-                render.SetMaterial(it.mat)
+                -- by index wins over the global override (ARC9's scope mask: all black, the glass white)
+                local m = (ovi and ovi[it.tex]) or ovr or it.mat
+                if it.refract and m == it.mat then render.UpdateRefractTexture() end
+                render.SetMaterial(m)
                 local ch = it.chunks
                 for k = 1, #ch do ch[k]:Draw() end
             end
@@ -518,8 +562,13 @@ local function get_probe(ent)
     return p
 end
 
-local function draw_stream(ent, flags, st)
-    if flags and band(flags, SHADOW_FLAGS) ~= 0 then return ORIG(ent, flags) end
+-- is_vm: a view model drawn from its RenderOverride: never fall back to DrawModel there (on a view model it
+-- runs Pre/PostDrawViewModel and ViewModelDrawn a second time: attachments drawn twice)
+local function draw_stream(ent, flags, st, is_vm)
+    if flags and band(flags, SHADOW_FLAGS) ~= 0 then
+        if is_vm then return end
+        return ORIG(ent, flags)
+    end
     local only_tr = flags and band(flags, STUDIO_TRANSPARENCY) ~= 0
     local fn = FrameNumber()
     local cache = ent.gmo_cache
@@ -553,7 +602,7 @@ local function draw_stream(ent, flags, st)
         probe:SetPos(ent:LocalToWorld(st.info.illum))
         probe:SetAngles(ent:GetAngles())
         probe:DrawModel()
-    else
+    elseif not is_vm then
         ORIG(ent, flags)
     end
     G.priming = false
@@ -569,8 +618,9 @@ local function draw_stream(ent, flags, st)
     local cr, cg, cb, ca = ent:GetColor4Part()
     local r, g, b = render.GetColorModulation()
     local a = render.GetBlend()
-    render.SetColorModulation(cr / 255, cg / 255, cb / 255)
-    render.SetBlend(ca / 255)
+    -- multiply what the caller set (ARC9 hides the view model with SetBlend(0) behind flat scopes)
+    render.SetColorModulation(r * cr / 255, g * cg / 255, b * cb / 255)
+    render.SetBlend(a * ca / 255)
     if not only_tr then
         local list = cache.lists[false]
         draw_list(ent, list, fb.m)
@@ -602,15 +652,20 @@ function G.reset_lookup()
     by_raw = {}
     for k, v in pairs(states) do if v == false then states[k] = nil end end
 end
-function meta:DrawModel(flags)
-    if G.priming or not cv_enable:GetBool() then return ORIG(self, flags) end
-    local mdl = self:GetModel()
-    if not mdl then return ORIG(self, flags) end
+local function lookup(mdl)
     local st = by_raw[mdl]
     if st == nil then
         st = state_for(string.lower(mdl))
         by_raw[mdl] = st
     end
+    return st
+end
+
+function meta:DrawModel(flags)
+    if G.priming or not cv_enable:GetBool() then return ORIG(self, flags) end
+    local mdl = self:GetModel()
+    if not mdl then return ORIG(self, flags) end
+    local st = lookup(mdl)
     if not st then return ORIG(self, flags) end
     if not st.ready then
         step(st)
@@ -634,6 +689,48 @@ timer.Create("gmo_stream_gc", 30, 0, function()
             G.reset_lookup()
         end
     end
+end)
+
+-- view models: the engine draws them itself, without Lua's DrawModel. While the current model is streamed and
+-- decoded, a RenderOverride draws the stream instead of the stand-in mesh; GMod still runs PreDrawViewModel,
+-- ViewModelDrawn (attachments) and PostDrawViewModel (hands) around it, once. Set or cleared every frame,
+-- before the draw: weapon switches change the model of the same view-model entity.
+local function vm_override(self, flags)
+    local st = self.gmo_vm_st
+    if not st or not st.ready then return end
+    st.last_draw = RealTime()
+    draw_stream(self, flags, st, true)
+end
+hook.Add("PreDrawViewModel", "gmo_stream_vm", function(vm)
+    if not IsValid(vm) then return end
+    local mdl = cv_enable:GetBool() and vm:GetModel()
+    local st = mdl and mdl ~= "" and lookup(mdl) or nil
+    if st and not st.ready then step(st) end
+    if st and st.ready then
+        vm.gmo_vm_st = st
+        if vm.RenderOverride == nil then vm.RenderOverride = vm_override end
+    elseif vm.RenderOverride == vm_override then
+        vm.RenderOverride = nil
+    end
+end)
+
+-- decode the view models of the weapons the player carries before they are drawn (one slice per frame):
+-- otherwise the stand-in mesh shows in the hand for a moment at the first draw
+local warm_next = 0
+hook.Add("Think", "gmo_stream_warm", function()
+    local now = RealTime()
+    if now < warm_next or not cv_enable:GetBool() then return end
+    local ply = LocalPlayer()
+    if not IsValid(ply) then return end
+    for _, w in ipairs(ply:GetWeapons()) do
+        local m = w.GetWeaponViewModel and w:GetWeaponViewModel()
+        local st = m and m ~= "" and lookup(m) or nil
+        if st and not st.ready and not st.failed then
+            step(st)
+            return
+        end
+    end
+    warm_next = now + 1
 end)
 
 -- entities the engine draws without Lua (props, gibs): route them through DrawModel

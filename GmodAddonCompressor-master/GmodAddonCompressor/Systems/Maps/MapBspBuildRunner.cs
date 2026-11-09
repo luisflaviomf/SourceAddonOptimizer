@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
@@ -61,6 +62,10 @@ namespace GmodAddonCompressor.Systems.Maps
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // the worker writes UTF-8 (worker_main.py); the default console code page turns accented and
+                // Cyrillic paths into mojibake ("Output addon:" then points nowhere)
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
                 CreateNoWindow = true,
                 WorkingDirectory = Path.GetDirectoryName(options.WorkerExePath) ?? string.Empty
             };

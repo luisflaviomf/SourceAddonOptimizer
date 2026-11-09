@@ -140,3 +140,101 @@ def test_exact_profile_on_a_real_car(tmp_path, capsys):
     shutil.copytree(SAMPLE, addon / "models/diggercars/caterham_620r")
     summary = _run_exact(tmp_path, addon, capsys)
     assert summary["vertices_before"] > 0
+
+
+# ----------------------------------------------------------------------------- models with LODs (2026-11-08)
+
+GTA4 = Path(r"C:/WorkshopDL/steamcmd/steamapps/workshop/content/4000/bancadadetestes/simfphys/simfphys_gta_iv_vehicles")
+
+
+@pytest.mark.skipif(not (GTA4 / "models/gta4/vehicles/admiral.mdl").exists(), reason="test bench not on this machine")
+def test_flatten_lods_keeps_lod0_geometry(tmp_path):
+    import struct
+    import shutil
+    from model_screen.binary import flatten_lods, mesh_arrays
+    from texlab.source_model import load_model
+    src = GTA4 / "models/gta4/vehicles/admiral"
+    for ext in (".mdl", ".vvd", ".dx90.vtx"):
+        shutil.copyfile(str(src) + ext, tmp_path / ("admiral" + ext))
+    mdl = tmp_path / "admiral.mdl"
+    before = load_model(mdl)               # reads LOD0 through the fixup table
+    assert flatten_lods(mdl)
+    vvd = mdl.with_suffix(".vvd").read_bytes()
+    assert struct.unpack_from("<i", vvd, 12)[0] == 1 and struct.unpack_from("<i", vvd, 48)[0] == 0
+    after = load_model(mdl)
+    assert len(after.meshes) == len(before.meshes)
+    for a, b in zip(before.meshes, after.meshes):
+        assert np.array_equal(a.positions[a.triangles], b.positions[b.triangles])
+        assert np.array_equal(a.uvs[a.triangles], b.uvs[b.triangles])
+    assert sum(len(t) for _k, _s, _c, t in mesh_arrays(mdl)) == sum(len(m.triangles) for m in before.meshes)
+    assert not flatten_lods(mdl)           # already single-LOD
+
+
+def test_stream_keeps_every_material_candidate_when_none_is_found(tmp_path):
+    from model_stream import encoder
+
+    class _Nothing:
+        def material(self, _p):
+            return None
+    import model_stream.encoder as enc
+    orig = enc._read_mdl
+    enc._read_mdl = lambda _m: (None, None, None, ["body"], ["models/car/", "models/shared/"], None, None)
+    try:
+        assert encoder.material_paths(tmp_path / "x.mdl", _Nothing()) == ["models/car/body|models/shared/body"]
+    finally:
+        enc._read_mdl = orig
+
+
+# ----------------------------------------------------------------------------- materials made at run time
+
+def _vmt(root: Path, rel: str, text: str) -> None:
+    p = root / "materials" / (rel + ".vmt")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+def test_runtime_materials_are_found_from_the_files_alone(tmp_path):
+    from texlab.materials import MaterialResolver
+    from model_screen.runtime_materials import lua_proxy_names, runtime_reason
+    addon, base = tmp_path / "pack", tmp_path / "base"
+    _vmt(addon, "x/screen", '"UnlitGeneric" { "$basetexture" "_rt_Camera" }')
+    _vmt(addon, "x/glass", '"VertexLitGeneric" { "$basetexture" "x/g" "$additive" "1" "Proxies" { "my_glass" { } } }')
+    _vmt(addon, "x/paint", '"VertexLitGeneric" { "$basetexture" "x/p" "Proxies" { "my_glass" { } } }')
+    _vmt(addon, "x/sprite", '"UnlitGeneric" { "$basetexture" "x/s" "$translucent" 1 "Proxies" { "Sine" { } } }')
+    _vmt(addon, "x/window", '"Refract" { "$normalmap" "x/n" "$model" 1 }')
+    lua = base / "lua" / "autorun" / "client"
+    lua.mkdir(parents=True)
+    (lua / "proxies.lua").write_text('matproxy.Add({\n    name = "my_glass",\n    init = function(self, mat, v) end,\n})\n')
+    proxies = lua_proxy_names([addon, base], {"my_glass", "sine"})
+    assert proxies == {"my_glass"}                       # engine proxies (Sine) are not Lua-defined
+    res = MaterialResolver([addon])
+    assert "render target _rt_camera" in runtime_reason(res.material("x/screen"), proxies)
+    assert "Lua proxy my_glass" in runtime_reason(res.material("x/glass"), proxies)
+    for opaque_or_plain in ("x/paint", "x/sprite", "x/window"):    # Lua paint, engine proxy, plain Refract
+        assert runtime_reason(res.material(opaque_or_plain), proxies) is None
+
+
+def test_model_with_a_runtime_material_is_kept_as_authored(tmp_path, capsys):
+    from model_screen.cli import main
+    addon = tmp_path / "addon"
+    m = addon / "models" / "probe"
+    m.mkdir(parents=True)
+    for ext in (".mdl", ".vvd", ".dx90.vtx"):
+        shutil.copy2(PROBE / ("probe_v1" + ext), m / ("probe_v1" + ext))
+    # the probe's material (cdmaterials gmo_stream/) shows a picture the game renders at run time
+    _vmt(addon, "gmo_stream/probe_v1", '"UnlitGeneric" { "$basetexture" "_rt_Scope" }')
+    expected = tmp_path / "expected"
+    shutil.copytree(addon, expected)
+    _packaging_only(expected / "models")
+    assert main([str(addon), "--suffix", "_o", "--profile", "stream", "--stream-min-kb", "0", "--jobs", "1"]) == 0
+    out = addon.parent / "addon_o"
+    assert _tree(out) == _tree(expected)                 # packaging steps only: no stream, no simplification
+    summary = json.loads((tmp_path / "addon_o_work" / "logs" / "modscreen_summary.json").read_text())
+    row = summary["rows"][0]
+    assert row["ok"] and "material made at run time (kept)" in row["skipped"] and "_rt_scope" in row["skipped"]
+    assert summary["streamed"] == 0
+    # control: the same model with an ordinary material is streamed
+    _vmt(addon, "gmo_stream/probe_v1", '"VertexLitGeneric" { "$basetexture" "gmo_stream/x" }')
+    assert main([str(addon), "--suffix", "_c", "--profile", "stream", "--stream-min-kb", "0", "--jobs", "1"]) == 0
+    control = json.loads((tmp_path / "addon_c_work" / "logs" / "modscreen_summary.json").read_text())
+    assert control["streamed"] == 1 and not control["rows"][0].get("skipped")

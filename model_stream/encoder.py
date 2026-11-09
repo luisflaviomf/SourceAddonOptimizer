@@ -84,16 +84,21 @@ def eligible(mdl: Path) -> tuple[bool, str]:
 
 
 def material_paths(mdl: Path, resolver) -> list[str]:
+    """Material of each texture slot. When none of the cdmaterials candidates exists in the addon or its
+    neighbours (shared texture packs live in other Workshop items), every candidate is kept in the
+    engine's order, joined by "|": the runtime takes the first one the game has, like the engine does."""
     _v, _n, _c, textures, cdmats, _sk, _bp = _read_mdl(mdl)
     out = []
     for tex in textures:
         chosen = None
+        cands = []
         for cd in cdmats:
-            p = (cd.strip("/\\") + "/" + tex).replace("\\", "/")
+            p = (cd.strip("/\\") + "/" + tex).replace("\\", "/").lstrip("/")
+            cands.append(p)
             if resolver is None or resolver.material(p.lower()):
                 chosen = p
                 break
-        out.append(chosen or ((cdmats[0] if cdmats else "").strip("/\\") + "/" + tex).replace("\\", "/").lstrip("/"))
+        out.append(chosen or "|".join(dict.fromkeys(cands)) or tex.replace("\\", "/"))
     return out
 
 

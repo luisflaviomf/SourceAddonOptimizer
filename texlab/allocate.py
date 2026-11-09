@@ -30,12 +30,32 @@ DEFAULT_DISTANCES = (24.0, 48.0, 96.0, 192.0, 384.0)
 DEFAULT_WEIGHTS = (0.10, 0.20, 0.30, 0.25, 0.15)
 
 
-def band_energy_maps(vtf_path, max_levels: int = 4, contrast: bool = True, vtf=None) -> list[np.ndarray]:
+def box_pyramid(level0: np.ndarray, levels: int) -> list[np.ndarray]:
+    """level0 (h,w,4 uint8) and `levels` 2x box reductions (rounded): the mip chain a texture without
+    stored mips would have, for measuring what each dropped level removes."""
+    out = [level0]
+    for _ in range(levels):
+        a = out[-1].astype(np.uint16)
+        h, w = a.shape[0] // 2, a.shape[1] // 2
+        if h < 1 or w < 1:
+            break
+        a = a[:h * 2, :w * 2]
+        s = a[0::2, 0::2] + a[1::2, 0::2] + a[0::2, 1::2] + a[1::2, 1::2]
+        out.append(((s + 2) // 4).astype(np.uint8))
+    return out
+
+
+def band_energy_maps(vtf_path, max_levels: int = 4, contrast: bool = True, vtf=None,
+                     raw: list[np.ndarray] | None = None) -> list[np.ndarray]:
     """B_j maps (at mip j resolution, luminance-weighted RGB + alpha) for j = 0..max_levels-1.
 
-    `vtf` (an already read Vtf of the same file) avoids reading it again."""
-    v = vtf if vtf is not None else read_vtf(vtf_path)
-    raw = [decode_level(v, l) for l in range(min(v.mip_count, max_levels + 1))]
+    `vtf` (an already read Vtf of the same file) avoids reading it again. `raw`: the decoded levels
+    to use instead of the stored mips (textures without mips: box_pyramid of level 0)."""
+    if raw is None:
+        v = vtf if vtf is not None else read_vtf(vtf_path)
+        raw = [decode_level(v, l) for l in range(min(v.mip_count, max_levels + 1))]
+    else:
+        raw = raw[:max_levels + 1]
     if native.available():
         # Rust path: same float32 operations in the same order (bit-identical maps)
         maps = []

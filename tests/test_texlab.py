@@ -124,7 +124,13 @@ def test_plan_keeps_alpha_masks_and_routes_fallbacks(tmp_path):
     assert plan["masked"].out_fmt == 15            # $blendtintbybasealpha reads the alpha
     assert plan["plain"].out_fmt == 13             # alpha unread -> DXT1
     assert plan["opaque"].drop == 1 and plan["opaque"].reason == "not_seen_by_models"
-    assert plan["nomip"].action == "fallback"
+    # a model texture without mips no model draws: rebuilt alone at the default 2x of unused textures
+    assert plan["nomip"].action == "reduce" and plan["nomip"].rebuild == "single" and plan["nomip"].drop == 1
+    # outside materials/models/ (HUD, reticles, sprites): still the caller's regular path
+    hud = root / "materials" / "vgui" / "hud_nomip.vtf"
+    hud.parent.mkdir(parents=True)
+    hud.write_bytes(make_vtf(64, 64, 13, np.random.default_rng(14), flags=0x100, mips=1))
+    assert {Path(i.rel).stem: i for i in plan_addon(root)}["hud_nomip"].action == "fallback"
 
 
 @pytest.mark.skipif(not VTFCMD.exists(), reason="VTFCmd not extracted on this machine")
@@ -138,7 +144,8 @@ def test_engine_rewrites_valid_smaller_vtfs(tmp_path):
         if p.name in ("opaque.vtf", "plain.vtf", "masked.vtf"):
             assert v.width == 32 and p.stat().st_size < before[p.name]
     assert read_vtf(root / "materials/models/texlab_test/masked.vtf").fmt == 15
-    assert "materials/models/texlab_test/nomip.vtf" in report["fallback"]
+    nomip = read_vtf(root / "materials/models/texlab_test/nomip.vtf")
+    assert nomip.mip_count == 1 and nomip.width == 32 and nomip.flags & 0x100
 
 
 def test_magnified_map_stays_a_valid_weight_with_huge_pixel_weights():
@@ -206,7 +213,7 @@ _USES = {"models/t/body": 1000.0, "models/t/police_sign": 1000.0, "models/t/sign
 
 def _plan(root, profile, monkeypatch):
     from texlab import screen_compress as sc
-    monkeypatch.setattr(sc, "collect_usage", lambda _root: {k: _SeenAt(s) for k, s in _USES.items()})
+    monkeypatch.setattr(sc, "collect_usage", lambda _root, **_kw: {k: _SeenAt(s) for k, s in _USES.items()})
     return {Path(i.rel).stem: i for i in plan_addon(root, profile)}
 
 
@@ -223,7 +230,8 @@ def test_exact_profile_never_reduces_and_never_falls_back(tmp_path, monkeypatch)
     assert plan["broken"].reason.startswith("unreadable")
     # the default profile still routes those files to the regular path
     q50 = _plan(root, "q50", monkeypatch)
-    assert {n for n, i in q50.items() if i.action == "fallback"} == {"nomip", "rgba", "broken"}
+    assert {n for n, i in q50.items() if i.action == "fallback"} == {"broken"}
+    assert q50["nomip"].rebuild == "single" and q50["rgba"].rebuild == "convert"   # unused model textures: 2x
 
 
 def test_exact_profile_run_is_pixel_identical(tmp_path):
@@ -253,9 +261,63 @@ def test_max_profile_drops_at_least_two_levels_and_caps_text_and_detail(tmp_path
         "coarse": 2, "hud": 2,                     # detail lost up close / not seen by models: 4x
         "small": 2,                                # 32x32: 4x is as far as MIN_SIDE allows
         "tiny": 1,                                 # 16x16: only 2x is possible
+        "nomip": 2,                                # unused model texture without mips, NOMIP flag: lettering cap
+        "rgba": 2,                                 # unused uncompressed model texture: converted, at least 4x
     }
     assert plan["paint"].out_fmt == 13
-    assert {n for n, i in plan.items() if i.action == "fallback"} == {"nomip", "rgba", "broken"}
+    assert {n for n, i in plan.items() if i.action == "fallback"} == {"broken"}
     # same textures with the default profile: 2x unless the density logic proves more
     q50 = _plan(root, "q50", monkeypatch)
     assert q50["hud"].drop == 1 and q50["police_sign"].drop == 3 and q50["coarse"].drop == 1
+
+
+# ----------------------------------------------------------------------------- texscreen v8 (2026-11-08 test bench)
+
+def test_first_person_models_are_classified(tmp_path):
+    from texlab.firstperson import classify
+    root = tmp_path / "addon"
+    for rel in ("models/weapons/v_gun.mdl", "models/weapons/w_gun.mdl", "models/weapons/acc/scope.mdl",
+                "models/weapons/c_arms_test.mdl", "models/vehicles/v_car.mdl", "models/props/thing.mdl"):
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"")
+    lua = root / "lua" / "weapons" / "my_gun.lua"
+    lua.parent.mkdir(parents=True)
+    lua.write_text('SWEP.ViewModel = "models/weapons/arc9_x/rifles/ak.mdl"\nSWEP.WorldModel = "models/weapons/w_gun.mdl"\n')
+    assert classify(root) == {"models/weapons/v_gun.mdl": "eye", "models/weapons/acc/scope.mdl": "near",
+                              "models/weapons/c_arms_test.mdl": "eye", "models/weapons/arc9_x/rifles/ak.mdl": "eye"}
+
+
+class _SeenFirstPerson(_SeenAt):
+    first_person = True
+
+
+def test_no_mip_and_uncompressed_textures_are_rebuilt_when_models_use_them(tmp_path, monkeypatch):
+    from texlab import screen_compress as sc
+    root = _profiles_addon(tmp_path, np.random.default_rng(11))
+    uses = dict(_USES, **{"models/t/nomip": 1000.0, "models/t/rgba": 1000.0})
+    monkeypatch.setattr(sc, "collect_usage", lambda _root, **_kw: {k: _SeenAt(s) for k, s in uses.items()})
+    plan = {Path(i.rel).stem: i for i in plan_addon(root, "strong")}
+    assert plan["nomip"].rebuild == "single" and plan["nomip"].action == "reduce" and plan["nomip"].drop >= 1
+    assert plan["rgba"].rebuild == "convert" and plan["rgba"].out_fmt in (13, 15)
+    assert plan["broken"].action == "fallback"
+    if not VTFCMD.exists():
+        return
+    # jobs=1: the stubbed model usage only exists in this process
+    report = run(root, VTFCMD, "strong", jobs=1, report_path=tmp_path / "report.json")
+    nomip = read_vtf(root / "materials/models/t/nomip.vtf")
+    rgba = read_vtf(root / "materials/models/t/rgba.vtf")
+    assert nomip.mip_count == 1 and nomip.flags & 0x100 and nomip.width == 64 >> plan["nomip"].drop
+    assert rgba.fmt in (13, 15) and rgba.mip_count == 1 and rgba.width == 64 >> plan["rgba"].drop
+    assert "materials/models/t/nomip.vtf" not in report["fallback"]
+
+
+def test_first_person_textures_get_no_forced_reduction(tmp_path, monkeypatch):
+    from texlab import screen_compress as sc
+    root = _profiles_addon(tmp_path, np.random.default_rng(12))
+    for cls, expect in ((_SeenAt, 1), (_SeenFirstPerson, 0)):
+        monkeypatch.setattr(sc, "collect_usage", lambda _root, cls=cls, **_kw: {k: cls(s) for k, s in _USES.items()})
+        plan = {Path(i.rel).stem: i for i in plan_addon(root, "q50")}
+        # "coarse": magnified up close with a lot of detail energy -> 2x for world models, kept in first person
+        assert plan["coarse"].drop == expect, cls.__name__
+        assert plan["body"].drop == 3                 # never sampled up close: still 8x

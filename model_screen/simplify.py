@@ -68,6 +68,22 @@ PROFILES = {
     "exact": Profile("exact", px=0.0, engine="copy"),
 }
 
+FP_EYE_DISTANCE = 8.0      # first-person view models: the gun parts nearest the eye (units)
+
+
+def first_person(p: Profile, kind: str) -> Profile:
+    """The profile's limits for a first-person model (texlab.firstperson: "eye" / "near"): the same
+    pixel budget, measured from the view-model camera (FOV 62, a few units from the eye) instead of
+    40 units at FOV 75, ~5x less geometric tolerance."""
+    if p.engine == "copy":
+        return p
+    from dataclasses import replace
+    from texlab.firstperson import EYE_MIN_DISTANCE, NEAR_DISTANCE, focal_ratio
+    fr = focal_ratio()
+    d = (FP_EYE_DISTANCE if kind == "eye" else NEAR_DISTANCE) / fr
+    return replace(p, d=min(p.d, d), d_closest=min(p.d_closest, EYE_MIN_DISTANCE / fr))
+
+
 if os.environ.get("GMO_MODSCREEN_LAB_PROFILE"):      # development only: an extra profile "lab"
     PROFILES["lab"] = Profile("lab", **json.loads(os.environ["GMO_MODSCREEN_LAB_PROFILE"]))
 
