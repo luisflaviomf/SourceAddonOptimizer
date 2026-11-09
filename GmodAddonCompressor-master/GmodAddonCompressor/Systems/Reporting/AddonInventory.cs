@@ -16,8 +16,8 @@ namespace GmodAddonCompressor.Systems.Reporting
 
     /// <summary>
     /// File count and bytes of one addon folder grouped the way the "Otimizar" assistant shows them:
-    /// Modelos (models/ and the Lua-drawn geometry streams in data_static/gmo/), Texturas (VTF/VMT and
-    /// images), Sons (WAV/MP3/OGG) and Outros.
+    /// Modelos (models/ and the Lua-drawn geometry streams in data_static/gmo/), Texturas (VTF/VMT,
+    /// images and the Lua-decoded texture streams in data_static/gmot/), Sons (WAV/MP3/OGG) and Outros.
     /// </summary>
     internal sealed class AddonInventory
     {
@@ -44,6 +44,8 @@ namespace GmodAddonCompressor.Systems.Reporting
             if (rel.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
                 || rel.StartsWith("data_static/gmo/", StringComparison.OrdinalIgnoreCase))
                 return AddonFileKind.Models;
+            if (rel.StartsWith("data_static/gmot/", StringComparison.OrdinalIgnoreCase))
+                return AddonFileKind.Textures;
 
             switch (Path.GetExtension(rel).ToLowerInvariant())
             {

@@ -49,6 +49,8 @@ function Get-WorkerSourceFiles {
     Get-ChildItem -LiteralPath (Join-Path $PWD "model_screen") -File -Filter "*.py"
     Get-ChildItem -LiteralPath (Join-Path $PWD "model_stream") -Recurse -File |
         Where-Object { $_.FullName -notmatch '[\\/]__pycache__[\\/]' -and $_.Extension -ne '.pyc' }
+    Get-ChildItem -LiteralPath (Join-Path $PWD "texture_stream") -File |
+        Where-Object { $_.Extension -in @('.py', '.lua') }
     foreach ($name in @("screen_compress", "npsolve", "bcnp", "vtf", "density", "materials", "source_model", "allocate", "plan", "native", "firstperson", "__init__")) {
         Get-Item -LiteralPath (Join-Path $PWD ("texlab\" + $name + ".py"))
     }

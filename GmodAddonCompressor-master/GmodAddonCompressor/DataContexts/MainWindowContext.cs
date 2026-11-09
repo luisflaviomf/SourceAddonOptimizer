@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+﻿﻿﻿﻿using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
 
@@ -195,7 +195,8 @@ namespace GmodAddonCompressor.DataContexts
             "Equilibrado",
             "Forte",
             "Máximo",
-            "Sem perda"
+            "Sem perda",
+            "Stream (experimental)"
         };
         private int _compressScreenProfileIndex;
         private string[] _compressModeList = new string[]
@@ -436,6 +437,7 @@ namespace GmodAddonCompressor.DataContexts
             1 => "strong",
             2 => "max",
             3 => "exact",
+            4 => "stream",
             _ => "q50"
         };
         public Visibility CompressStandardOptionsVisibility => CompressModeIsStandard ? Visibility.Visible : Visibility.Collapsed;
@@ -470,6 +472,7 @@ namespace GmodAddonCompressor.DataContexts
             1 => "Até 8x onde a textura nunca aparece de perto; textos e texturas pequenas ficam em 2x.",
             2 => "No mínimo 4x, até 8x. Perda visível de perto.",
             3 => "Não reduz; só converte BC3→BC1 quando o alpha não é usado, sem mudar nenhuma cor.",
+            4 => "Como o Forte, e as texturas dos modelos ficam guardadas num formato compacto que o jogo decodifica na hora (cerca de 8x menor). Na primeira vez de cada arma ou veículo na sessão elas aparecem borradas por alguns segundos. Experimental.",
             _ => "Reduz só onde a perda é menor que a de um 2x."
         };
 

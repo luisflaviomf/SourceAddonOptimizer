@@ -298,7 +298,7 @@
                                 <RadioButton Style="{StaticResource ChoiceCard}" GroupName="WizardProfile" IsChecked="{Binding ProfileMax, Mode=TwoWay}" Margin="6,0,0,8">
                                     <StackPanel>
                                         <TextBlock Text="Máximo" FontSize="16" FontWeight="SemiBold" />
-                                        <TextBlock Text="O menor possível. Aceita perda visível de perto, como texturas 4x menores." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                        <TextBlock Text="O menor possível. Texturas num formato compacto que o jogo decodifica: borradas nos primeiros segundos de cada modelo. Experimental." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0" />
                                     </StackPanel>
                                 </RadioButton>
                             </UniformGrid>
@@ -344,6 +344,8 @@
                                                      IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=strong, Mode=TwoWay}" />
                                         <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomTextures" Content="Máximo"
                                                      IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=max, Mode=TwoWay}" />
+                                        <RadioButton Style="{StaticResource ChoiceChip}" GroupName="CustomTextures" Content="Stream"
+                                                     IsChecked="{Binding CustomTextures, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=stream, Mode=TwoWay}" />
                                         </WrapPanel>
                                         <TextBlock Text="{Binding CustomTexturesHint}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,14" />
 
@@ -1228,6 +1230,8 @@
                                                  IsChecked="{Binding TexturesLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=1, Mode=TwoWay}" />
                                     <RadioButton Style="{StaticResource ChoiceChip}" GroupName="TexturesLevel" Content="Máximo"
                                                  IsChecked="{Binding TexturesLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=2, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="TexturesLevel" Content="Stream"
+                                                 IsChecked="{Binding TexturesLevel, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=4, Mode=TwoWay}" />
                                 </WrapPanel>
                                 <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0" Text="{Binding CompressScreenProfileHint}"
                                            Visibility="{Binding CompressModeIsScreen, Converter={StaticResource BooleanToVisibilityConverter}}" />

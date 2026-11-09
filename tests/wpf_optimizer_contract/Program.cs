@@ -310,4 +310,18 @@ finally
         Directory.Delete(testRoot, recursive: true);
 }
 
+// Texturas "Stream" (texture_stream): Perfil Tela index 4 -> texscreen profile "stream"; the Máximo assistant
+// profile and the Personalizado "Stream" chip use it; its blobs count as textures in the size summary.
+var streamChoice = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.Find(
+    GmodAddonCompressor.Systems.Optimizer.WizardProfiles.TextureChoices, "stream");
+Assert(streamChoice.Key == "stream" && streamChoice.Index == 4, "Texture choice Stream lost its Perfil Tela index.");
+var maxProfile = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.For(GmodAddonCompressor.Systems.Optimizer.WizardProfile.Max);
+Assert(maxProfile.Textures && maxProfile.CompressScreenProfileIndex == 4, "Máximo no longer uses the texture stream.");
+var customStream = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.ForCustom("strong", "stream", "adaptive", 0, 0, 0, false);
+Assert(customStream.CompressScreenProfileIndex == 4, "Personalizado Stream chip does not select the texture stream.");
+Assert(GmodAddonCompressor.Systems.Reporting.AddonInventory.Classify("data_static/gmot/ab12/3.txt")
+       == GmodAddonCompressor.Systems.Reporting.AddonFileKind.Textures, "Texture stream blobs are not counted as textures.");
+Assert(GmodAddonCompressor.Systems.Reporting.AddonInventory.Classify("data_static/gmo/ab12.txt")
+       == GmodAddonCompressor.Systems.Reporting.AddonFileKind.Models, "Model stream blobs are not counted as models.");
+
 Console.WriteLine("WPF optimizer contract tests passed.");

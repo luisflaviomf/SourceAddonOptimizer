@@ -94,6 +94,14 @@ namespace GmodAddonCompressor.Objects
                 $"[Tela] {before:N0} -> {after:N0} bytes ({(before > 0 ? 100.0 * after / before : 100):0.0}%). " +
                 (_keepFallbacks ? $"{fallback.Length} file(s) the engine does not handle kept unchanged." : $"Regular path for {fallback.Length} file(s).") +
                 $" Report: {report}");
+            if (json.RootElement.TryGetProperty("stream", out JsonElement stream) && stream.TryGetProperty("streamed", out JsonElement streamed))
+            {
+                // profile "stream": textures models draw became GMOT blobs the Lua runtime decodes in game
+                _logger.LogInformation(
+                    $"[Tela] Stream: {streamed.GetInt32()} texture(s) decoded in game; " +
+                    $"{stream.GetProperty("before").GetInt64():N0} -> {stream.GetProperty("blobs").GetInt64():N0} bytes " +
+                    $"+ placeholders {stream.GetProperty("placeholders").GetInt64():N0} + runtime {stream.GetProperty("runtime").GetInt64():N0}.");
+            }
             if (_keepFallbacks)
                 return;
 

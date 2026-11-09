@@ -66,6 +66,9 @@ a = Analysis(
         (str(repo_root / "model_stream" / "probe" / "probe_v1.dx90.vtx"), "model_stream/probe"),
         (str(repo_root / "model_stream" / "probe" / "probe_v1.vmt"), "model_stream/probe"),
         (str(repo_root / "model_stream" / "probe" / "probe_v1_normal.vtf"), "model_stream/probe"),
+        # Texturas "Stream": Lua decoder + runtime written into optimized addons
+        (str(repo_root / "texture_stream" / "decoder.lua"), "texture_stream"),
+        (str(repo_root / "texture_stream" / "runtime.lua"), "texture_stream"),
     ] + exact_datas,
     hiddenimports=collect_submodules("maximum_optimizer") + collect_submodules("exact_distribution") + [
         # texlab screen-aware VTF engine: numpy-only core (lab modules with torch/numba stay out)
@@ -76,6 +79,7 @@ a = Analysis(
         "texlab", "texlab.screen_compress", "texlab.npsolve", "texlab.bcnp", "texlab.vtf",
         "texlab.density", "texlab.materials", "texlab.source_model", "texlab.allocate", "texlab.plan",
         "texlab.native", "texlab.firstperson",
+        "texture_stream", "texture_stream.codec", "texture_stream.choose",
         "PIL.Image",
         "PIL.ImageChops",
         "PIL.ImageDraw",

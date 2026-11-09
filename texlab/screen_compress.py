@@ -53,6 +53,9 @@ PROFILES = {
     # 8x by detail energy with this threshold (or when the levels are never sampled). LVS estimate
     # 27.5-30.2 MiB for thresholds inf..0.12; 0.25 (28.1 MiB) keeps the ~40 most detailed at 4x.
     "max": 0.25,
+    # "Stream" (experimental): Forte, then the textures models draw become GMOT blobs decoded by Lua in game
+    # (texture_stream package, 34 dB + noise filling). Test bench textures 837 -> ~100 MiB.
+    "stream": 0.12,
 }
 # Extra rules of a profile (q50/q75 have none):
 # - max_energy_drop: levels a texture may lose on detail energy alone;
@@ -83,6 +86,7 @@ PROFILE_OPTIONS = {
     "exact": {"max_drop": 0, "fallback": False},
     "max": {"max_energy_drop": 3, "caps": {"$detail": 2}, "text_cap": 2, "min_drop": 2},
 }
+PROFILE_OPTIONS["stream"] = PROFILE_OPTIONS["strong"]
 # Textures the classic chain did not handle, rebuilt when the addon's models use them (2026-11-08 test
 # bench: 743 MiB of weapon textures stored without mips and 264 MiB uncompressed, all left untouched):
 # - "single": DXT stored without mips or flagged NOMIP: the top level is rebuilt and written alone (the
@@ -618,6 +622,14 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
         # each entry writes its own file; threads overlap the disk/antivirus latency
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
             list(pool.map(write, prepared))
+    stream = None
+    if profile == "stream":
+        import texture_stream
+        stream = texture_stream.convert(root, jobs=jobs, emit=_emit)
+        streamed = {r["path"].lower() for r in stream["rows"]}
+        for item in items:
+            if item.rel.replace("\\", "/").lower() in streamed:
+                item.action, item.reason = "stream", "stream"
     for item in items:
         item.after = item.path.stat().st_size
     report = {
@@ -628,6 +640,10 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
                   "format": {13: "DXT1", 15: "DXT5"}.get(i.out_fmt, ""), "before": i.before, "after": i.after}
                  for i in items],
     }
+    if stream is not None:
+        # blobs and runtime are new files of the addon: counted in "after"
+        report["after"] += stream["blobs"] + stream["runtime"]
+        report["stream"] = stream
     if report_path:
         Path(report_path).write_text(json.dumps(report, indent=1), encoding="utf-8")
         _emit("REPORT", report_path)

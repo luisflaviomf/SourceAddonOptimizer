@@ -71,7 +71,8 @@ namespace GmodAddonCompressor.Systems.Optimizer
             new("exact", 3, "Sem perda", "Sem reduzir; só a conversão BC3→BC1 que não muda nenhuma cor."),
             new("q50", 0, "Equilibrado", "Reduz só onde a perda é menor que a de um 2x."),
             new("strong", 1, "Forte", "Até 8x onde nunca aparece de perto; textos e texturas pequenas em 2x."),
-            new("max", 2, "Máximo", "No mínimo 4x, até 8x. Perda visível de perto.")
+            new("max", 2, "Máximo", "No mínimo 4x, até 8x. Perda visível de perto."),
+            new("stream", 4, "Stream", "Forte + formato compacto decodificado pelo Lua no jogo (cerca de 8x menor); borradas nos primeiros segundos de cada modelo. Experimental.")
         };
 
         internal static readonly WizardChoice[] SoundChoices =
@@ -96,11 +97,13 @@ namespace GmodAddonCompressor.Systems.Optimizer
                 true, 3, "Sem reduzir, só conversão exata BC3→BC1",
                 IncludeWav: false, WavOptimizationIndex: 0, WavRateIndex: 0, WavChannelsIndex: 0, WavCodecIndex: 0,
                 "Não mexe nos sons"),
-            // Smallest size, visible loss up close accepted. Sounds exactly as in Custo-benefício (adaptive
-            // conservative, same reference): Luis (2026-11-08) wants that one for every profile, not forced ADPCM.
+            // Smallest size. Textures: Forte + the texture stream (texture_stream package, 34 dB + noise filling;
+            // test bench textures 837 -> ~100 MiB, chosen by Luis 2026-11-09 over the old "max" 4x-8x reduction).
+            // Sounds exactly as in Custo-benefício (adaptive conservative, same reference): Luis (2026-11-08)
+            // wants that one for every profile, not forced ADPCM.
             WizardProfile.Max => new WizardSettings(
                 true, 3, "Stream (experimental)",
-                true, 2, "Máximo: no mínimo 4x, até 8x",
+                true, 4, "Stream: texturas decodificadas no jogo (experimental)",
                 IncludeWav: true, WavOptimizationIndex: 1, WavRateIndex: 1, WavChannelsIndex: 1, WavCodecIndex: 0,
                 "Adaptativo conservador"),
             // The LVS ~132 MiB configuration Luis tested in game (2026-11-08). The adaptive WAV profile
@@ -132,7 +135,7 @@ namespace GmodAddonCompressor.Systems.Optimizer
             if (lua)
                 soundsLine += " · Lua minificado";
             string modelsLine = m.Key == None ? "Não mexe nos modelos" : m.Key == "stream" ? "Stream (experimental)" : m.Label;
-            string texturesLine = t.Key == None ? "Não mexe nas texturas" : t.Label;
+            string texturesLine = t.Key == None ? "Não mexe nas texturas" : t.Key == "stream" ? "Stream (experimental)" : t.Label;
             // adaptive uses the same reference as Custo-benefício (22050 Hz mono PCM16)
             bool adaptive = s.Key == "adaptive";
             return new WizardSettings(
