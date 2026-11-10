@@ -105,9 +105,10 @@ def _encode_one(path, use, target, fill, tmp_blob) -> dict:
     if why:
         return {"path": path, "keep": why}
     rgba = decode_level(v, 0).astype("float64")
-    c = choose(v, rgba, use, target)
+    transforms = []
+    c = choose(v, rgba, use, target, transforms)
     data = encode(v, rgba, c["step"], alpha_step=c["alpha_step"], chroma_drop=c["drop"], normal=c["normal"],
-                  keep_alpha=c["alpha"], fill_levels=fill, preview_side=PREVIEW_SIDE)
+                  keep_alpha=c["alpha"], fill_levels=fill, preview_side=PREVIEW_SIDE, transforms=transforms)
     ph = placeholder(v, rgba)
     if len(data) + len(ph) >= size:
         return {"path": path, "keep": "no_gain"}
@@ -173,25 +174,8 @@ def classify(ours, reached, refs, shaders, roots) -> dict:
 def auto_jobs(minimum: int = 1) -> int:
     """worker processes for the encoder: every logical CPU but two, as long as each can have ~0.8 GB of free
     memory (a 2048 texture peaks around 0.6 GB); never fewer than `minimum`."""
-    cpus = max(1, (os.cpu_count() or 2) - 2)
-    free_gb = None
-    try:
-        import ctypes
-
-        class MEMORYSTATUSEX(ctypes.Structure):
-            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                        ("sullAvailExtendedVirtual", ctypes.c_ulonglong)]
-        st = MEMORYSTATUSEX()
-        st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
-            free_gb = st.ullAvailPhys / 2 ** 30
-    except Exception:  # noqa: BLE001 - not Windows or no ctypes: CPU count only
-        pass
-    n = cpus if free_gb is None else min(cpus, max(1, int(free_gb / 0.8)))
-    return max(minimum, n)
+    from texlab.jobs import auto_jobs as shared
+    return shared(0.8, minimum)
 
 
 def _run_tasks(tasks, order, jobs, root, emit) -> dict:

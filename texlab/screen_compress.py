@@ -21,6 +21,7 @@ import json
 import math
 import os
 import re
+import struct
 import subprocess
 import tempfile
 import threading
@@ -114,6 +115,16 @@ EXACT_MIP_BELOW = 0.02   # below this magnified share the original encoded mip i
 CLAMP_S, CLAMP_T = 0x4, 0x8
 EIGHTBITALPHA = 0x2000
 NOMIP = 0x100
+NOLOD = 0x200
+
+
+def _one_level_flags(flags: int, levels: int) -> int:
+    """Flags of a texture written with `levels` mip levels. The game wants NOLOD and NOMIP on a texture
+    stored as a single level: loading one without them, it prints "Encountered VTF with 1 mip level and
+    without NoLOD flag! Fixing.." (and the same for NoMIP) and sets the flags itself. Written here, the
+    texture is the same in game and the console stays quiet (2026-11-10 server test: icons and small
+    textures rebuilt as one level)."""
+    return flags | NOLOD | NOMIP if levels == 1 else flags
 
 
 def _param_caps(root: Path, caps: dict) -> dict:
@@ -597,7 +608,7 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
                 levels = chains[png[1]] if png[0] == "chain" else [encoded[png[1]]]
                 flags = v.flags & ~EIGHTBITALPHA if item.out_fmt == 13 else v.flags
                 data = write_vtf(v, item.out_fmt, max(1, v.width >> item.drop), max(1, v.height >> item.drop),
-                                 levels, flags)
+                                 levels, _one_level_flags(flags, len(levels)))
             elif item.action == "transcode":
                 levels = [bc3_blocks_to_bc1(v.level_data(l, f)) for l in range(v.mip_count) for f in [0]]
                 data = write_vtf(v, 13, v.width, v.height, levels, v.flags & ~EIGHTBITALPHA)
@@ -605,16 +616,19 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
                 levels = [v.level_data(l, f) for l in range(item.drop, v.mip_count) for f in [0]]                     if v.frames == 1 else None
                 if levels is not None and item.out_fmt == 13 and v.fmt == 15:
                     data = write_vtf(v, 13, max(1, v.width >> item.drop), max(1, v.height >> item.drop),
-                                     [bc3_blocks_to_bc1(b) for b in levels], v.flags & ~EIGHTBITALPHA)
+                                     [bc3_blocks_to_bc1(b) for b in levels],
+                                     _one_level_flags(v.flags & ~EIGHTBITALPHA, len(levels)))
                 else:
                     data = truncate_mips(v, item.drop)
+                    if v.mip_count - item.drop == 1:
+                        data = data[:20] + struct.pack("<I", _one_level_flags(v.flags, 1)) + data[24:]
             else:
                 lower = [v.level_data(l) for l in range(item.drop + 1, v.mip_count)]
                 if item.out_fmt == 13 and v.fmt == 15:
                     lower = [bc3_blocks_to_bc1(b) for b in lower]
                 flags = v.flags & ~EIGHTBITALPHA if item.out_fmt == 13 else v.flags
                 data = write_vtf(v, item.out_fmt, max(1, v.width >> item.drop), max(1, v.height >> item.drop),
-                                 [encoded[png]] + lower, flags)
+                                 [encoded[png]] + lower, _one_level_flags(flags, 1 + len(lower)))
             if len(data) < item.before:
                 _write_atomic(item.path, data)
             else:
@@ -665,14 +679,19 @@ def main(argv=None) -> int:
     ap.add_argument("--vtfcmd", required=True)
     ap.add_argument("--profile", choices=sorted(PROFILES), default="q50")
     ap.add_argument("--method", choices=["lanczos", "solver"], default="lanczos")
-    ap.add_argument("--jobs", type=int, default=max(1, min(8, (os.cpu_count() or 2) // 2)))
+    ap.add_argument("--jobs", type=int, default=0, help="analysis processes and image threads (0 = automatic)")
     ap.add_argument("--report", required=True)
     args = ap.parse_args(argv)
     root = Path(args.addon)
     if not root.is_dir():
         print(f"addon folder not found: {root}")
         return 2
-    report = run(root, Path(args.vtfcmd), args.profile, args.jobs, Path(args.report), args.method)
+    jobs = args.jobs
+    if jobs <= 0:
+        # each analysis process peaked around 0.35 GB on the test bench (2.6 GB with 8 on the LVS cars pack)
+        from .jobs import auto_jobs
+        jobs = auto_jobs(0.6)
+    report = run(root, Path(args.vtfcmd), args.profile, jobs, Path(args.report), args.method)
     print(f"texscreen: {report['before']:,} -> {report['after']:,} bytes; fallback {len(report['fallback'])}", flush=True)
     return 0
 

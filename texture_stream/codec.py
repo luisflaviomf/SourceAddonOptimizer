@@ -212,9 +212,10 @@ def unlzma(c) -> bytes:
 
 
 def encode(v, rgba, step, alpha_step=None, chroma_drop=1, normal=False, keep_alpha=False, fill_levels=2,
-           preview_side=512, chroma_mul=2.0) -> bytes:
+           preview_side=512, chroma_mul=2.0, transforms=None) -> bytes:
     """v: texlab.vtf.VTF of the source (header, flags, mips); rgba: its level 0 decoded (float, 0..255).
-    Output format: the source's when it is uncompressed (RAW_ORDER), else DXT5 with alpha / DXT1."""
+    Output format: the source's when it is uncompressed (RAW_ORDER), else DXT5 with alpha / DXT1.
+    transforms: dwt() of each plane coded here, in order, when the caller already has them (choose())."""
     w, h = v.width, v.height
     L = levels_for(w, h)
     if L < 2:
@@ -237,12 +238,18 @@ def encode(v, rgba, step, alpha_step=None, chroma_drop=1, normal=False, keep_alp
         steps.append(alpha_step or step)
         drops.append(0)
         fills.append(fill_levels)
+    if transforms is not None and len(transforms) != len(planes):
+        raise ValueError("transforms do not match the planes")
     out_fmt = v.fmt if v.fmt in RAW_ORDER else (15 if keep_alpha else 13)
     mips = v.mip_count
     levels = [b"\0" * image_bytes(out_fmt, max(1, w >> i), max(1, h >> i)) for i in range(mips)]
     flags = v.flags
     if out_fmt == 13 or (out_fmt in RAW_ORDER and len(RAW_ORDER[out_fmt]) == 3):
         flags &= ~0x2000   # no eight-bit alpha
+    if mips == 1:
+        # the game sets NOMIP and NOLOD on a single-level texture when it loads one without them, with a
+        # console line each time; the texture built in game carries them from the start
+        flags |= 0x300
     full = write_vtf(v, out_fmt, w, h, levels, flags=flags)
     header = full[:len(full) - sum(len(x) for x in levels)]
     P = 0
@@ -255,7 +262,7 @@ def encode(v, rgba, step, alpha_step=None, chroma_drop=1, normal=False, keep_alp
     fine = {}
     for pi, (p, st, drop, fill) in enumerate(zip(planes, steps, drops, fills)):
         st = float(np.float32(st))               # the decoder reads the step as float32
-        ll, bands = dwt(p, L)
+        ll, bands = transforms[pi] if transforms is not None else dwt(p, L)
         put_band(head, np.round(ll / st).astype(np.int64))
         for li, trio in enumerate(bands):
             lvl = L - li

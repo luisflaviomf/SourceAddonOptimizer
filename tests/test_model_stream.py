@@ -38,6 +38,165 @@ def test_runtime_and_encoder_versions_match():
     lua = (ROOT / "model_stream" / "runtime.lua").read_text(encoding="utf-8")
     assert re.search(r"local VERSION = (\d+)", lua).group(1) == str(encoder.VERSION)
     assert "byte(raw, 5) ~= %d" % encoder.VERSION in lua
+    # one strip mesh: the game takes 65535 vertices, and a strip is cut at an even offset
+    limit = int(re.search(r"local MAX_STRIP = (\d+)", lua).group(1))
+    assert limit == encoder.MAX_STRIP and limit <= 65535 and limit % 2 == 0
+
+
+def _strip_triangles(strip):
+    """Triangles a strip draws: degenerate joins skipped, winding flipped on odd positions."""
+    out = []
+    s = [int(x) for x in strip]
+    for k in range(len(s) - 2):
+        a, b, c = s[k], s[k + 1], s[k + 2]
+        if a != b and b != c and a != c:
+            out.append(_canon((a, b, c) if k % 2 == 0 else (b, a, c)))
+    return out
+
+
+def test_strips_fit_one_game_mesh():
+    """Triangles that share no vertex strip into 5 indices each: 20000 of them made one strip of ~100000
+    vertices, which the game cannot put in a mesh (mesh.Begin raised an error and the client froze; one
+    Glide car of the test bench, 2026-11-10)."""
+    n = encoder.CHUNK_TRIS
+    loose = np.arange(n * 3, dtype=np.int64).reshape(n, 3)
+    assert len(encoder.stripify(loose, n * 3)) > 65535          # what the encoder used to write
+    grid = np.array([[i, i + 1, i + 2] for i in range(3000)], np.int64) + n * 3   # a well connected run
+    tris = np.concatenate([loose, grid])
+    strips = encoder.strips_for(tris, n * 3 + 3002)
+    assert max(len(s) for s in strips) <= encoder.MAX_STRIP
+    from collections import Counter
+    got = Counter(t for s in strips for t in _strip_triangles(s))
+    assert got == Counter(_canon(tuple(int(x) for x in t)) for t in tris)
+
+
+RUNTIME_STUBS = r"""
+SERVER = false
+MATERIAL_TRIANGLE_STRIP = 5
+bit = require("bit")
+hook = { Add = function() end }
+timer = { Create = function() end, Simple = function() end }
+render = { MaterialOverride = function() end, ModelMaterialOverride = function() end,
+           MaterialOverrideByIndex = function() end }
+function CreateClientConVar(_, default)
+    return { GetBool = function() return default ~= "0" end, GetFloat = function() return tonumber(default) end }
+end
+local ENT = {}
+ENT.__index = ENT
+function ENT:DrawModel() end
+function ENT:GetModel() return MODEL end
+function FindMetaTable() return ENT end
+function NewEntity() return setmetatable({}, ENT) end
+function Vector()
+    local v = { 0, 0, 0 }
+    function v:SetUnpacked(x, y, z) self[1], self[2], self[3] = x, y, z end
+    return v
+end
+MESHES = {}
+local cur
+function Mesh() return { n = 0 } end
+mesh = {}
+function mesh.Begin(obj, kind, prims)
+    assert(kind == MATERIAL_TRIANGLE_STRIP and cur == nil)
+    -- the game's own check
+    if prims + 2 > MESH_LIMIT then
+        error("called mesh.Begin with a primitive count which results in too many vertices (" .. (prims + 2) .. ")")
+    end
+    cur = obj
+    obj.prims = prims
+    MESHES[#MESHES + 1] = obj
+end
+function mesh.Position(v)
+    local n = cur.n
+    cur[n + 1], cur[n + 2], cur[n + 3] = v[1], v[2], v[3]
+    cur.n = n + 3
+end
+function mesh.Normal() end
+function mesh.TexCoord() end
+function mesh.UserData() end
+function mesh.AdvanceVertex() end
+function mesh.End()
+    assert(cur.n == (cur.prims + 2) * 3)
+    cur = nil
+end
+file = { Read = function(path, where) return PY_READ(path, where) end }
+util = { Decompress = function(s) return PY_DECOMPRESS(s) end }
+function Material(name) return { IsError = function() return false end } end
+function Matrix(rows) return rows end
+function SysTime() return os.clock() end
+function RealTime() return os.clock() end
+function ErrorNoHalt(s) LAST_ERROR = s end
+"""
+
+
+def _runtime_meshes(stream: bytes, max_strip: int, mesh_limit: int):
+    """Run the shipped runtime.lua in LuaJIT on one stream; returns (error text or None, list of meshes,
+    each a flat list of positions)."""
+    import lzma
+    from lupa import luajit21
+    rt = luajit21.LuaRuntime(encoding=None, unpack_returned_tuples=True)
+    src = (ROOT / "model_stream" / "runtime.lua").read_text(encoding="utf-8")
+    assert src.count("local MAX_STRIP = %d " % encoder.MAX_STRIP) == 1
+    src = src.replace("local MAX_STRIP = %d " % encoder.MAX_STRIP, "local MAX_STRIP = %d " % max_strip)
+
+    def decompress(data):
+        d = bytearray(data)
+        d[5:13] = bytes([255]) * 8
+        return lzma.decompress(bytes(d), format=lzma.FORMAT_ALONE)
+
+    g = rt.globals()
+    g[b"PY_READ"] = lambda path, where: stream
+    g[b"PY_DECOMPRESS"] = decompress
+    g[b"MODEL"] = b"models/test/car.mdl"
+    g[b"MESH_LIMIT"] = mesh_limit
+    rt.execute(RUNTIME_STUBS.encode())
+    rt.execute(src.encode("utf-8"))
+    rt.execute(b"""
+        GMOS.AddManifest({ [MODEL] = "data_static/gmo/test.dat" })
+        local ent = NewEntity()
+        for _ = 1, 200000 do
+            if GMOS.Ready(MODEL) then break end
+            ent:DrawModel(0)
+        end
+        assert(GMOS.Ready(MODEL), "the stream never got ready")
+    """)
+    err = g[b"LAST_ERROR"]
+    meshes = [[m[i] for i in range(1, int(m[b"n"]) + 1)] for m in g[b"MESHES"].values()]
+    return (err.decode() if err else None), meshes
+
+
+@need_lvs
+def test_runtime_cuts_long_strips_into_meshes_the_game_takes():
+    """The shipped Lua, run in LuaJIT: with the mesh size lowered so that this model's strips are too long,
+    every mesh stays within the limit and the meshes draw exactly the triangles of the stream."""
+    from collections import Counter
+    data = encoder.encode(E46, _resolver())
+    d = encoder.decode(data)
+    q = d["posq"]
+    want = Counter()
+    for g in d["groups"]:
+        P = np.round(g["pos"] / q).astype(np.int64)
+        for tri in g["tris"]:
+            a, b, c = (tuple(P[i]) for i in tri)
+            if a != b and b != c and a != c:
+                want[_canon((a, b, c))] += 1
+    longest = max(length for g in d["groups"] for length in g["lens"])
+    limit = 1000
+    assert longest > 4 * limit                      # the cut really happens, several times per strip
+    # uncut (limit above every strip): the reference, and the proof that the game's check would fire
+    err, _meshes = _runtime_meshes(data, max_strip=10 ** 9, mesh_limit=limit + 1)
+    assert err and "too many vertices" in err
+    err, meshes = _runtime_meshes(data, max_strip=limit, mesh_limit=limit + 1)
+    assert err is None
+    got = Counter()
+    for m in meshes:
+        P = np.round(np.array(m, np.float64).reshape(-1, 3) / q).astype(np.int64)
+        assert len(P) <= limit
+        for k in range(len(P) - 2):
+            a, b, c = tuple(P[k]), tuple(P[k + 1]), tuple(P[k + 2])
+            if a != b and b != c and a != c:
+                got[_canon((a, b, c) if k % 2 == 0 else (b, a, c))] += 1
+    assert got == want
 
 
 def test_wants_stream_rules():

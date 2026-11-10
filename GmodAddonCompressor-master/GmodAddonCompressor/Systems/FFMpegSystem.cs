@@ -196,7 +196,10 @@ namespace GmodAddonCompressor.Systems
             return 320;
         }
 
-        private async Task<FfmpegRunResult> StartFFMpegProcess(string arguments)
+        private Task<FfmpegRunResult> StartFFMpegProcess(string arguments) =>
+            StartFFMpegProcess(arguments, TimeSpan.FromMinutes(2));
+
+        private async Task<FfmpegRunResult> StartFFMpegProcess(string arguments, TimeSpan timeout)
         {
             Process? ffMpegProcess = null;
             var stdout = new StringBuilder();
@@ -235,7 +238,7 @@ namespace GmodAddonCompressor.Systems
             if (ffMpegProcess != null)
             {
                 var waitTask = ffMpegProcess.WaitForExitAsync();
-                var completed = await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromMinutes(2)));
+                var completed = await Task.WhenAny(waitTask, Task.Delay(timeout));
                 if (completed == waitTask)
                     result.ExitCode = ffMpegProcess.ExitCode;
                 else
@@ -310,6 +313,44 @@ namespace GmodAddonCompressor.Systems
             }
         }
 
+        // Output arguments of the three WAV commands of the adaptive profile. The one-sound commands and the
+        // batched ones (BatchedFfmpegAdaptiveAudioBackend: many sounds in one ffmpeg process) are built from
+        // the same strings, so a sound gets the same bytes either way.
+        internal static string BuildWavOutputArguments(int sampleRate, int channels, AudioContext.WavCodecKind codec)
+        {
+            string codecArg = codec == AudioContext.WavCodecKind.AdpcmMs ? "adpcm_ms" : "pcm_s16le";
+            return $"-c:a {codecArg} -ar {sampleRate} -ac {channels}";
+        }
+
+        internal static string BuildAdaptiveWavOutputArguments(
+            int sampleRate,
+            int channels,
+            AudioContext.WavCodecKind codec,
+            int blockAlign,
+            int sourceSampleRate)
+        {
+            string codecArguments = codec == AudioContext.WavCodecKind.AdpcmMs
+                ? $"-c:a adpcm_ms -block_size {blockAlign}"
+                : "-c:a pcm_s16le";
+            string filter = BuildAdaptiveResampleFilter(sourceSampleRate, sampleRate);
+            return $"-map_metadata -1 -vn -af \"{filter}\" -ac {channels} -ar {sampleRate} {codecArguments}";
+        }
+
+        internal static string BuildDecodeFloatOutputArguments(int sampleRate, int channels) =>
+            $"-vn -ac {channels} -ar {sampleRate} -f f32le -acodec pcm_f32le";
+
+        /// <summary>One ffmpeg process for a prepared argument string (inputs and outputs of many sounds).</summary>
+        internal async Task<FfmpegRunResult> RunBatchAsync(string arguments, TimeSpan timeout, string label)
+        {
+            FfmpegRunResult run = await StartFFMpegProcess(arguments, timeout).ConfigureAwait(false);
+            if (run.TimedOut || run.ExitCode != 0)
+                WriteRunLog(label, "(batch)", "(batch)", arguments, run);
+            return run;
+        }
+
+        internal static bool OutputFileLooksValid(string outputFilePath) =>
+            File.Exists(outputFilePath) && new FileInfo(outputFilePath).Length > 0;
+
         internal async Task<bool> ReencodeWavAsync(string filePath, string outputFilePath, int sampleRate, int channels, AudioContext.WavCodecKind codec)
         {
             try
@@ -317,8 +358,7 @@ namespace GmodAddonCompressor.Systems
                 if (File.Exists(outputFilePath))
                     File.Delete(outputFilePath);
 
-                string codecArg = codec == AudioContext.WavCodecKind.AdpcmMs ? "adpcm_ms" : "pcm_s16le";
-                string arguments = $"-y -i \"{filePath}\" -c:a {codecArg} -ar {sampleRate} -ac {channels} \"{outputFilePath}\"";
+                string arguments = $"-y -i \"{filePath}\" {BuildWavOutputArguments(sampleRate, channels, codec)} \"{outputFilePath}\"";
                 var run = await _runWav(arguments);
                 WriteRunLog("wav", filePath, outputFilePath, arguments, run);
                 return OutputLooksValid(outputFilePath, run);
@@ -359,14 +399,10 @@ namespace GmodAddonCompressor.Systems
             try
             {
                 TryDeleteFile(outputFilePath);
-                string codecArguments = codec == AudioContext.WavCodecKind.AdpcmMs
-                    ? $"-c:a adpcm_ms -block_size {blockAlign}"
-                    : "-c:a pcm_s16le";
-                string filter = BuildAdaptiveResampleFilter(sourceSampleRate, sampleRate);
                 string arguments =
                     $"-hide_banner -nostdin -y -loglevel warning -i \"{filePath}\" " +
-                    $"-map_metadata -1 -vn -af \"{filter}\" -ac {channels} -ar {sampleRate} " +
-                    $"{codecArguments} \"{outputFilePath}\"";
+                    $"{BuildAdaptiveWavOutputArguments(sampleRate, channels, codec, blockAlign, sourceSampleRate)} " +
+                    $"\"{outputFilePath}\"";
                 FfmpegRunResult run = await StartFFMpegProcess(arguments).ConfigureAwait(false);
                 WriteRunLog("wav-adaptive", filePath, outputFilePath, arguments, run);
                 return OutputLooksValid(outputFilePath, run);
@@ -385,8 +421,8 @@ namespace GmodAddonCompressor.Systems
             try
             {
                 string arguments =
-                    $"-hide_banner -nostdin -loglevel error -i \"{filePath}\" -vn " +
-                    $"-ac {channels} -ar {sampleRate} -f f32le -acodec pcm_f32le pipe:1";
+                    $"-hide_banner -nostdin -loglevel error -i \"{filePath}\" " +
+                    $"{BuildDecodeFloatOutputArguments(sampleRate, channels)} pipe:1";
                 process = new Process
                 {
                     StartInfo = new ProcessStartInfo

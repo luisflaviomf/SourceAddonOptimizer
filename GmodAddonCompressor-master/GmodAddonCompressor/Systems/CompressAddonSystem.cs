@@ -39,6 +39,8 @@ namespace GmodAddonCompressor.Systems
         }
 
         internal ProgressChangedEvent? e_ProgressChanged;
+        /// <summary>What a batch service is doing right now (ICompressStatus), for the screen.</summary>
+        internal Action<string>? e_StatusChanged;
         internal CompletedCompressEvent? e_CompletedCompress;
         internal MaximumProgressEvent? e_MaximumProgress;
 
@@ -268,7 +270,8 @@ namespace GmodAddonCompressor.Systems
             var singleFiles = new List<FileInfo>();
             foreach (FileInfo file in bucket.Files)
             {
-                if (GetService(file.Extension) is ICompressBatch batchService)
+                if (GetService(file.Extension) is ICompressBatch batchService &&
+                    (batchService is not ICompressBatchSelective selective || selective.UseBatch))
                 {
                     int index = batches.FindIndex(batch => ReferenceEquals(batch.Service, batchService));
                     if (index < 0)
@@ -286,6 +289,21 @@ namespace GmodAddonCompressor.Systems
 
             foreach (var (batchService, batchFiles) in batches)
             {
+                if (batchService is ICompressStatus status)
+                    status.StatusChanged = text => e_StatusChanged?.Invoke(text);
+
+                // a service that reports its own files (WAV) moves the progress as each one finishes
+                bool reportsItsFiles = false;
+                if (batchService is ICompressBatchSelective reporting)
+                {
+                    reportsItsFiles = true;
+                    reporting.FileCompleted = file =>
+                    {
+                        int fileIndex = Interlocked.Increment(ref progressCounter.Value);
+                        e_ProgressChanged?.Invoke(file.FullName, fileIndex, filesCount);
+                    };
+                }
+
                 try
                 {
                     await RunBatchServiceAsync(
@@ -299,6 +317,9 @@ namespace GmodAddonCompressor.Systems
                     _logger.LogError(ex.ToString());
                     throw;
                 }
+
+                if (reportsItsFiles)
+                    continue;
 
                 foreach (FileInfo file in batchFiles)
                 {

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-ABI_VERSION = 4
+ABI_VERSION = 5
 DLL_NAME = "gmo_native.dll"
 
 _lock = threading.Lock()
@@ -66,6 +66,15 @@ def lib():
                     dll.gmo_pyset_order.restype = ctypes.c_int64
                     dll.gmo_components.argtypes = [sz, vp, sz, vp]
                     dll.gmo_components.restype = ctypes.c_int32
+                    u32 = ctypes.c_uint32
+                    dll.gmo_ts_recon.argtypes = [vp, sz, u32, u32, u32, ctypes.c_int64, u32, vp]
+                    dll.gmo_ts_recon.restype = ctypes.c_int32
+                    dll.gmo_ts_sqerr_ycocg.argtypes = [vp, vp, vp, vp, sz, vp]
+                    dll.gmo_ts_sqerr_ycocg.restype = ctypes.c_int32
+                    dll.gmo_ts_sqerr_plane.argtypes = [vp, vp, sz, vp]
+                    dll.gmo_ts_sqerr_plane.restype = ctypes.c_int32
+                    dll.gmo_ts_sqerr_normal.argtypes = [vp, vp, vp, sz, vp]
+                    dll.gmo_ts_sqerr_normal.restype = ctypes.c_int32
                     _lib = dll
                     break
                 except (OSError, AttributeError):
@@ -170,4 +179,61 @@ def components(n: int, edges: np.ndarray) -> np.ndarray | None:
         return None
     out = np.empty(n, np.int64)
     rc = dll.gmo_components(n, e.ctypes.data if len(e) else None, len(e), out.ctypes.data)
+    return out if rc == 0 else None
+
+
+# ----------------------------------------------------------------------------- texture stream step search
+def _f64c(a) -> np.ndarray:
+    return np.ascontiguousarray(a, dtype=np.float64)
+
+
+def ts_recon(coef: np.ndarray, h: int, w: int, levels: int, step: int, drop: int) -> np.ndarray | None:
+    """texture_stream.choose._recon from the flat coefficients of a plane (LL, then LH, HL, HH of each level,
+    coarse to fine). (h, w) float64, or None when the DLL is not there."""
+    dll = lib()
+    if dll is None:
+        return None
+    coef = _f64c(coef)
+    out = np.empty((h, w), np.float64)
+    rc = dll.gmo_ts_recon(coef.ctypes.data, coef.size, h, w, levels, int(step), drop, out.ctypes.data)
+    return out if rc == 0 else None
+
+
+def ts_sqerr_ycocg(y: np.ndarray, co: np.ndarray, cg: np.ndarray, reference: np.ndarray) -> np.ndarray | None:
+    """(np.clip(np.round(ycocg_to_rgb(y, co, cg)), 0, 255) - reference) ** 2, shape (h, w, 3)."""
+    dll = lib()
+    if dll is None:
+        return None
+    y, co, cg, reference = _f64c(y), _f64c(co), _f64c(cg), _f64c(reference)
+    if reference.shape != y.shape + (3,) or co.shape != y.shape or cg.shape != y.shape:
+        return None
+    out = np.empty(reference.shape, np.float64)
+    rc = dll.gmo_ts_sqerr_ycocg(y.ctypes.data, co.ctypes.data, cg.ctypes.data, reference.ctypes.data, y.size,
+                                out.ctypes.data)
+    return out if rc == 0 else None
+
+
+def ts_sqerr_plane(plane: np.ndarray, reference: np.ndarray) -> np.ndarray | None:
+    """(np.clip(np.round(plane + 128), 0, 255) - reference) ** 2, same shape as plane."""
+    dll = lib()
+    if dll is None:
+        return None
+    plane, reference = _f64c(plane), _f64c(reference)
+    if reference.shape != plane.shape:
+        return None
+    out = np.empty(plane.shape, np.float64)
+    rc = dll.gmo_ts_sqerr_plane(plane.ctypes.data, reference.ctypes.data, plane.size, out.ctypes.data)
+    return out if rc == 0 else None
+
+
+def ts_sqerr_normal(x: np.ndarray, y: np.ndarray, reference: np.ndarray) -> np.ndarray | None:
+    """(unit_normals(stack([px, py, normal_z(px, py)])) - reference) ** 2 with px = clip(x + 128, 0, 255)."""
+    dll = lib()
+    if dll is None:
+        return None
+    x, y, reference = _f64c(x), _f64c(y), _f64c(reference)
+    if reference.shape != x.shape + (3,) or y.shape != x.shape:
+        return None
+    out = np.empty(reference.shape, np.float64)
+    rc = dll.gmo_ts_sqerr_normal(x.ctypes.data, y.ctypes.data, reference.ctypes.data, x.size, out.ctypes.data)
     return out if rc == 0 else None

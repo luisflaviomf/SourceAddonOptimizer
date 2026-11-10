@@ -18,11 +18,18 @@ using System.Threading.Tasks;
 
 namespace GmodAddonCompressor.Objects
 {
-    internal class WAVEdit : ICompress, ICompressPreparation, ICompressFinalizer
+    internal class WAVEdit : ICompress, ICompressPreparation, ICompressFinalizer, ICompressBatchSelective
     {
+        // Sounds in flight in the adaptive batch: enough for their ffmpeg steps to share processes, bounded by
+        // the decoded audio they hold (about 2 bytes of float per byte of 16-bit sound, for the original, the
+        // baseline and each candidate).
+        private const int AdaptiveBatchMaxSounds = 128;
+        private const long AdaptiveBatchMaxSourceBytes = 128L * 1024 * 1024;
+
         private readonly ILogger _logger = LogSystem.CreateLogger<WAVEdit>();
         private readonly FFMpegSystem _ffmpegSystem;
         private readonly AdaptiveAudioOptimizer _adaptiveOptimizer;
+        private readonly BatchedFfmpegAdaptiveAudioBackend _adaptiveBackend;
         private readonly Lazy<AudioWebSafetyReport> _webAudioSafetyReport;
         private readonly ConcurrentBag<AdaptiveWavFileRecord> _adaptiveRecords = new();
         private readonly Stopwatch _adaptiveWallClock = new();
@@ -35,7 +42,8 @@ namespace GmodAddonCompressor.Objects
         public WAVEdit()
         {
             _ffmpegSystem = new FFMpegSystem();
-            _adaptiveOptimizer = new AdaptiveAudioOptimizer(new FfmpegAdaptiveAudioBackend(_ffmpegSystem));
+            _adaptiveBackend = new BatchedFfmpegAdaptiveAudioBackend(_ffmpegSystem);
+            _adaptiveOptimizer = new AdaptiveAudioOptimizer(_adaptiveBackend);
             string addonRoot = CompressDirectoryContext.DirectoryPath;
             _webAudioSafetyReport = new Lazy<AudioWebSafetyReport>(
                 () => AudioWebSafetyClassifier.Analyze(addonRoot),
@@ -86,6 +94,64 @@ namespace GmodAddonCompressor.Objects
             _ = _webAudioSafetyReport.Value;
             if (AudioContext.WavOptimization == AudioContext.WavOptimizationKind.AdaptiveConservative)
                 _adaptiveWallClock.Restart();
+        }
+
+        /// <summary>The adaptive profile takes the whole list: the sounds run together and share ffmpeg processes.</summary>
+        public bool UseBatch => AudioContext.WavOptimization == AudioContext.WavOptimizationKind.AdaptiveConservative;
+
+        public Action<FileInfo>? FileCompleted { get; set; }
+
+        public async Task CompressBatchAsync(IReadOnlyList<FileInfo> files, System.Threading.CancellationToken cancellationToken)
+        {
+            // biggest first: a long sound does not end up alone at the end of the batch
+            FileInfo[] ordered = files.OrderByDescending(file => file.Exists ? file.Length : 0).ToArray();
+            long bytesInFlight = 0;
+            int soundsInFlight = 0;
+            var gate = new object();
+            var slotFreed = new System.Threading.SemaphoreSlim(0);
+            var running = new List<Task>(ordered.Length);
+            foreach (FileInfo file in ordered)
+            {
+                long weight = Math.Min(file.Exists ? file.Length : 0, AdaptiveBatchMaxSourceBytes);
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    lock (gate)
+                    {
+                        if (soundsInFlight == 0 ||
+                            (soundsInFlight < AdaptiveBatchMaxSounds && bytesInFlight + weight <= AdaptiveBatchMaxSourceBytes))
+                        {
+                            soundsInFlight++;
+                            bytesInFlight += weight;
+                            break;
+                        }
+                    }
+                    await slotFreed.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                running.Add(Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Compress(file.FullName).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex.ToString());
+                    }
+                    finally
+                    {
+                        lock (gate)
+                        {
+                            soundsInFlight--;
+                            bytesInFlight -= weight;
+                        }
+                        slotFreed.Release();
+                        try { FileCompleted?.Invoke(file); } catch { }
+                    }
+                }));
+            }
+            await Task.WhenAll(running).ConfigureAwait(false);
         }
 
         public async Task Compress(string wavFilePath)
@@ -249,6 +315,8 @@ namespace GmodAddonCompressor.Objects
                 return Task.CompletedTask;
 
             _adaptiveWallClock.Stop();
+            (long ffmpegProcesses, long ffmpegSteps, long redoneSteps) = _adaptiveBackend.Statistics;
+            _adaptiveBackend.Dispose();
             AdaptiveWavFileRecord[] records = _adaptiveRecords
                 .OrderBy(record => record.RelativePath, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
@@ -288,6 +356,9 @@ namespace GmodAddonCompressor.Objects
                     SavedVsBaselinePercent = baselineBytes == 0 ? 0 : 100.0 * (baselineBytes - outputBytes) / baselineBytes,
                     WallClockMilliseconds = _adaptiveWallClock.Elapsed.TotalMilliseconds,
                     SumFileMilliseconds = records.Sum(record => record.Result.Elapsed.TotalMilliseconds),
+                    FfmpegProcesses = ffmpegProcesses,
+                    FfmpegSteps = ffmpegSteps,
+                    FfmpegStepsRedoneAlone = redoneSteps,
                     Files = records
                 };
                 File.WriteAllText(

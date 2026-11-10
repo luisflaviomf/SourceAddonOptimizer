@@ -14,6 +14,12 @@ or disabled with `GMO_NATIVE=0`.
 | `gmo_sample_map` | `texlab.allocate._sample_map` (float32 cumsum box blur) | 3,117 maps identical; 14.8 s → 2.7 s |
 | `gmo_seams` | `model_screen.simplify._seams` (Models Tela, pass 1: seam chains) | 163 models x 2 profiles identical; `simplify_model` CPU 512 s → 60 s with the items below |
 | `gmo_components` | `model_screen.simplify.components` (label = smallest node of the component) | identical labels (random graphs and the pack) |
+| `gmo_ts_recon` | `texture_stream.choose._recon` (quantize + inverse 5/3 wavelet of a plane at a step) | merged ARC9 addon: 1,041 stream blobs identical; stream conversion 552 s → 199 s with the items below |
+| `gmo_ts_sqerr_ycocg`, `gmo_ts_sqerr_plane`, `gmo_ts_sqerr_normal` | the squared-error arrays `texture_stream.codec.psnr` averages (colour from Y/Co/Cg, alpha plane, unit normals) | identical arrays on random data and real textures |
+
+Texture stream: the functions return the array numpy would have built and numpy still takes the mean, so
+numpy's pairwise summation is not redone in Rust. The same change stopped measuring a step twice and
+compresses the two chroma candidates (to compare their sizes) only when both keep the target.
 
 Models: `_seams` walks chains in the iteration order of Python `set`s, so `seams.rs` emulates the
 CPython 3.11 set table (same slots, probing, resize: `gmo_pyset_order` is the test hook). Its float

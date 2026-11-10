@@ -9,9 +9,10 @@ pub mod band;
 pub mod bc;
 pub mod sample;
 pub mod seams;
+pub mod tstream;
 
 /// Bumped whenever an exported function changes behaviour or signature.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 /// `texlab.allocate._sample_map`: 8x8 wrapped box blur of `m` (h x w float32) sampled at `n`
 /// UV pairs (float64, interleaved u, v). Writes `n` floats to `out`.
@@ -56,6 +57,85 @@ pub unsafe extern "C" fn gmo_band_energy(hi: *const u8, lo: *const u8, hl: u32, 
 #[no_mangle]
 pub extern "C" fn gmo_native_abi_version() -> u32 {
     ABI_VERSION
+}
+
+/// `texture_stream.choose._recon`: the plane of `h` x `w` rebuilt from its wavelet coefficients at
+/// quantization step `step`, the `drop` finest levels taken as zero. `coef` holds LL then, coarse to
+/// fine, LH, HL, HH of each of the `levels` levels (h * w doubles in all); `out` holds h * w doubles.
+/// Returns 0, -3 for a null pointer or sizes that do not fit.
+///
+/// # Safety
+/// `coef` must hold `coef_len` doubles and `out` h * w doubles.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_recon(coef: *const f64, coef_len: usize, h: u32, w: u32, levels: u32, step: i64,
+                                      drop: u32, out: *mut f64) -> i32 {
+    let (h, w, levels, drop) = (h as usize, w as usize, levels as usize, drop as usize);
+    if coef.is_null() || out.is_null() || h == 0 || w == 0 || step <= 0 || levels > 16 || drop > levels
+        || h % (1 << levels) != 0 || w % (1 << levels) != 0 || coef_len != h * w {
+        return -3;
+    }
+    let coef = std::slice::from_raw_parts(coef, coef_len);
+    let out = std::slice::from_raw_parts_mut(out, h * w);
+    tstream::recon(coef, h, w, levels, step, drop, out);
+    0
+}
+
+/// Squared error of the colour rebuilt from Y, Co, Cg (`n` doubles each) against `reference`
+/// (3 * n doubles, RGB interleaved): what numpy averages in `texture_stream.codec.psnr`.
+///
+/// # Safety
+/// `y`, `co`, `cg` must hold n doubles, `reference` and `out` 3 * n doubles.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_sqerr_ycocg(y: *const f64, co: *const f64, cg: *const f64, reference: *const f64,
+                                            n: usize, out: *mut f64) -> i32 {
+    if y.is_null() || co.is_null() || cg.is_null() || reference.is_null() || out.is_null() || n == 0 {
+        return -3;
+    }
+    tstream::sqerr_ycocg(
+        std::slice::from_raw_parts(y, n),
+        std::slice::from_raw_parts(co, n),
+        std::slice::from_raw_parts(cg, n),
+        std::slice::from_raw_parts(reference, 3 * n),
+        std::slice::from_raw_parts_mut(out, 3 * n),
+    );
+    0
+}
+
+/// Squared error of a rebuilt plane (+128, rounded, clipped) against `reference` (`n` doubles each).
+///
+/// # Safety
+/// `plane`, `reference` and `out` must hold n doubles.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_sqerr_plane(plane: *const f64, reference: *const f64, n: usize, out: *mut f64) -> i32 {
+    if plane.is_null() || reference.is_null() || out.is_null() || n == 0 {
+        return -3;
+    }
+    tstream::sqerr_plane(
+        std::slice::from_raw_parts(plane, n),
+        std::slice::from_raw_parts(reference, n),
+        std::slice::from_raw_parts_mut(out, n),
+    );
+    0
+}
+
+/// Squared error of the unit normals rebuilt from the X and Y planes (`n` doubles each) against
+/// `reference` (3 * n doubles).
+///
+/// # Safety
+/// `x`, `y` must hold n doubles, `reference` and `out` 3 * n doubles.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_sqerr_normal(x: *const f64, y: *const f64, reference: *const f64, n: usize,
+                                             out: *mut f64) -> i32 {
+    if x.is_null() || y.is_null() || reference.is_null() || out.is_null() || n == 0 {
+        return -3;
+    }
+    tstream::sqerr_normal(
+        std::slice::from_raw_parts(x, n),
+        std::slice::from_raw_parts(y, n),
+        std::slice::from_raw_parts(reference, 3 * n),
+        std::slice::from_raw_parts_mut(out, 3 * n),
+    );
+    0
 }
 
 /// Decode a BC1/BC2/BC3 (VTF DXT1 = 13, DXT1_ONEBITALPHA = 20, DXT3 = 14, DXT5 = 15) image to RGBA8.

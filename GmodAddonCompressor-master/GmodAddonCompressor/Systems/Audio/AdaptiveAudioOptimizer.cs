@@ -95,6 +95,9 @@ namespace GmodAddonCompressor.Systems.Audio
             var candidateResults = new List<AdaptiveAudioCandidateResult>();
             bool baselineCreated = false;
             bool baselineCopiedByteIdentically = false;
+            // every backend step started here. ffmpeg keeps its input open without delete sharing, so the
+            // sound is only replaced, and the work folder only removed, once none of them is still running
+            var started = new List<Task>();
 
             try
             {
@@ -108,7 +111,14 @@ namespace GmodAddonCompressor.Systems.Audio
                 if (options.PreserveLoopMetadata)
                     loopMetadata = WaveLoopMetadata.Capture(fullPath, sourceFormat!.SampleRate);
 
-                if (sourceFormat!.MatchesManual(options.BaselineSpec))
+                // The steps that do not depend on each other are asked for together (the baseline with the
+                // decode of the original, the candidates with the decode of the baseline, then the decodes of
+                // the candidates): a backend that puts the steps of many sounds in one ffmpeg process gets
+                // them in three rounds. What is decided, and in which order it is recorded, is the same as
+                // with one step at a time.
+                Task<PcmAudio> referenceTask = Start(
+                    started, _backend.DecodeAsync(fullPath, sourceFormat!.SampleRate, sourceFormat.Channels));
+                if (sourceFormat.MatchesManual(options.BaselineSpec))
                 {
                     File.Copy(fullPath, baselinePath, overwrite: true);
                     baselineCreated = true;
@@ -131,14 +141,30 @@ namespace GmodAddonCompressor.Systems.Audio
                 PcmAudio reference;
                 PcmAudio baselinePcm;
                 AudioQualityScore baselineScore;
+                IReadOnlyList<AudioEncodingSpec> plan = Array.Empty<AudioEncodingSpec>();
+                string[] candidatePaths = Array.Empty<string>();
+                Task<bool>[] encodeTasks = Array.Empty<Task<bool>>();
                 try
                 {
-                    reference = await _backend.DecodeAsync(fullPath, sourceFormat.SampleRate, sourceFormat.Channels).ConfigureAwait(false);
-                    baselinePcm = await _backend.DecodeAsync(baselinePath, sourceFormat.SampleRate, sourceFormat.Channels).ConfigureAwait(false);
+                    reference = await referenceTask.ConfigureAwait(false);
+                    Task<PcmAudio> baselineDecodeTask = Start(
+                        started, _backend.DecodeAsync(baselinePath, sourceFormat.SampleRate, sourceFormat.Channels));
+                    // the candidates only need the original: encoded while the baseline is decoded
+                    plan = AdaptiveAudioPlan.Build(reference, options.BaselineSpec);
+                    candidatePaths = new string[plan.Count];
+                    encodeTasks = new Task<bool>[plan.Count];
+                    for (int index = 0; index < plan.Count; index++)
+                    {
+                        candidatePaths[index] = Path.Combine(workRoot, $"candidate-{index:D2}-{plan[index].Id}.wav");
+                        encodeTasks[index] = Start(
+                            started, _backend.EncodeCandidateAsync(fullPath, candidatePaths[index], plan[index]));
+                    }
+                    baselinePcm = await baselineDecodeTask.ConfigureAwait(false);
                     baselineScore = AudioQualityMetrics.Measure(reference, baselinePcm);
                 }
                 catch (Exception ex)
                 {
+                    await SettleAsync(started).ConfigureAwait(false);
                     CommitSelected(baselinePath, fullPath);
                     return Result(true, true, true, options.BaselineSpec, originalBytes, baselineBytes, stopwatch, candidateResults, "Quality decode failed; committed byte-identical baseline: " + ex.Message);
                 }
@@ -146,17 +172,22 @@ namespace GmodAddonCompressor.Systems.Audio
                 var baseline = new AdaptiveAudioCandidate(
                     "baseline", baselineBytes, baselineScore, isBaseline: true, payload: baselinePath);
                 var selectable = new List<AdaptiveAudioCandidate>();
-                IReadOnlyList<AudioEncodingSpec> plan = AdaptiveAudioPlan.Build(reference, options.BaselineSpec);
+
+                // every candidate, in plan order: checked as soon as it is encoded, and the ones smaller than
+                // the baseline sent to be decoded together
+                var outcomes = new AdaptiveAudioCandidateResult?[plan.Count];
+                var candidateBytesByIndex = new long[plan.Count];
+                var decodeTasks = new Task<PcmAudio>?[plan.Count];
                 for (int index = 0; index < plan.Count; index++)
                 {
                     AudioEncodingSpec spec = plan[index];
-                    string candidatePath = Path.Combine(workRoot, $"candidate-{index:D2}-{spec.Id}.wav");
+                    string candidatePath = candidatePaths[index];
                     try
                     {
-                        bool encoded = await _backend.EncodeCandidateAsync(fullPath, candidatePath, spec).ConfigureAwait(false);
+                        bool encoded = await encodeTasks[index].ConfigureAwait(false);
                         if (!encoded || !File.Exists(candidatePath))
                         {
-                            candidateResults.Add(new AdaptiveAudioCandidateResult(spec, 0, null, false, false, "encode-failed"));
+                            outcomes[index] = new AdaptiveAudioCandidateResult(spec, 0, null, false, false, "encode-failed");
                             continue;
                         }
 
@@ -176,24 +207,47 @@ namespace GmodAddonCompressor.Systems.Audio
                         long candidateBytes = new FileInfo(candidatePath).Length;
                         if (candidateBytes >= baselineBytes)
                         {
-                            candidateResults.Add(new AdaptiveAudioCandidateResult(spec, candidateBytes, null, true, false, "not-smaller-than-baseline"));
+                            outcomes[index] = new AdaptiveAudioCandidateResult(spec, candidateBytes, null, true, false, "not-smaller-than-baseline");
                             continue;
                         }
 
-                        PcmAudio decoded = await _backend.DecodeAsync(candidatePath, sourceFormat.SampleRate, sourceFormat.Channels).ConfigureAwait(false);
-                        AudioQualityScore score = AudioQualityMetrics.Measure(reference, decoded);
-                        bool accepted = score.IsNoWorseThan(baselineScore);
-                        candidateResults.Add(new AdaptiveAudioCandidateResult(
-                            spec, candidateBytes, score, true, accepted, accepted ? "quality-safe" : "quality-regression"));
-                        selectable.Add(new AdaptiveAudioCandidate(
-                            spec.Id, candidateBytes, score, isBaseline: false, payload: candidatePath));
+                        candidateBytesByIndex[index] = candidateBytes;
+                        decodeTasks[index] = Start(
+                            started, _backend.DecodeAsync(candidatePath, sourceFormat.SampleRate, sourceFormat.Channels));
                     }
                     catch (Exception ex)
                     {
-                        candidateResults.Add(new AdaptiveAudioCandidateResult(spec, FileLengthOrZero(candidatePath), null, false, false, ex.Message));
+                        outcomes[index] = new AdaptiveAudioCandidateResult(spec, FileLengthOrZero(candidatePath), null, false, false, ex.Message);
                     }
                 }
 
+                for (int index = 0; index < plan.Count; index++)
+                {
+                    AudioEncodingSpec spec = plan[index];
+                    Task<PcmAudio>? decodeTask = decodeTasks[index];
+                    decodeTasks[index] = null;          // the decoded audio is let go as soon as it is measured
+                    if (decodeTask != null)
+                    {
+                        started.Remove(decodeTask);
+                        try
+                        {
+                            PcmAudio decoded = await decodeTask.ConfigureAwait(false);
+                            AudioQualityScore score = AudioQualityMetrics.Measure(reference, decoded);
+                            bool accepted = score.IsNoWorseThan(baselineScore);
+                            outcomes[index] = new AdaptiveAudioCandidateResult(
+                                spec, candidateBytesByIndex[index], score, true, accepted, accepted ? "quality-safe" : "quality-regression");
+                            selectable.Add(new AdaptiveAudioCandidate(
+                                spec.Id, candidateBytesByIndex[index], score, isBaseline: false, payload: candidatePaths[index]));
+                        }
+                        catch (Exception ex)
+                        {
+                            outcomes[index] = new AdaptiveAudioCandidateResult(spec, FileLengthOrZero(candidatePaths[index]), null, false, false, ex.Message);
+                        }
+                    }
+                    candidateResults.Add(outcomes[index]!);
+                }
+
+                await SettleAsync(started).ConfigureAwait(false);
                 AdaptiveAudioCandidate selected = AdaptiveAudioSelector.Select(baseline, selectable);
                 string selectedPath = (string)selected.Payload!;
                 AudioEncodingSpec selectedSpec = selected == baseline
@@ -215,6 +269,7 @@ namespace GmodAddonCompressor.Systems.Audio
             }
             catch (Exception ex)
             {
+                await SettleAsync(started).ConfigureAwait(false);
                 if (baselineCreated && File.Exists(baselinePath))
                 {
                     try
@@ -232,7 +287,29 @@ namespace GmodAddonCompressor.Systems.Audio
             }
             finally
             {
+                await SettleAsync(started).ConfigureAwait(false);
                 try { if (Directory.Exists(workRoot)) Directory.Delete(workRoot, recursive: true); } catch { }
+            }
+        }
+
+        /// <summary>A step started ahead of its await: recorded, and a failure nobody ends up awaiting is still observed.</summary>
+        private static Task<T> Start<T>(List<Task> started, Task<T> task)
+        {
+            started.Add(task);
+            _ = task.ContinueWith(
+                static finished => _ = finished.Exception,
+                default,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return task;
+        }
+
+        /// <summary>Waits for the steps already started to finish, whatever their outcome.</summary>
+        private static async Task SettleAsync(List<Task> tasks)
+        {
+            for (int index = 0; index < tasks.Count; index++)
+            {
+                try { await tasks[index].ConfigureAwait(false); } catch { }
             }
         }
 

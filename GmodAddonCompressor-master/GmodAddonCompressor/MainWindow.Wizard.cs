@@ -33,6 +33,7 @@ public partial class MainWindow
     private readonly OptimizeWizardContext _wizard = new();
     private CancellationTokenSource? _wizardScanCts;
     private bool _wizardRunning;
+    private long _wizardTextureStatusTicks;
     private bool _wizardSettingsApplied;
     private WizardSettingsSnapshot? _wizardSnapshot;
     private readonly Stopwatch _wizardClock = new();
@@ -495,6 +496,7 @@ public partial class MainWindow
                     _pipelineCompressSystem = cs;
                     cs.e_ProgressChanged += (filePath, index, total) =>
                         Dispatcher.BeginInvoke(() => WizardCompressProgress(output, filePath, index, total));
+                    cs.e_StatusChanged += text => Dispatcher.BeginInvoke(() => WizardCompressStatus(text));
                 }, unlockUiOnComplete: false);
                 foreach (string line in _pipelineCompressSystem?.GetSummaries() ?? Array.Empty<string>())
                     AppendWizardLog(line);
@@ -686,10 +688,21 @@ public partial class MainWindow
         string rel = filePath;
         try { rel = Path.GetRelativePath(root, filePath).Replace('\\', '/'); }
         catch { }
-        _wizard.CurrentItem = rel;
+        // while the texture engine is reporting, its line stays (a sound finishing would hide it again)
+        if (Environment.TickCount64 - _wizardTextureStatusTicks > 2000)
+            _wizard.CurrentItem = rel;
         SetWizardStageFraction((double)index / total, $"{index} de {total}");
         if (index == total || index % 25 == 0)
             AppendWizardLog($"Texturas e sons {index}/{total} · {rel}");
+    }
+
+    /// <summary>The texture engine works on its whole list at once: its own line says what it is on.</summary>
+    private void WizardCompressStatus(string text)
+    {
+        if (!_wizardRunning || _pipelineStage != PipelineStage.Compress)
+            return;
+        _wizardTextureStatusTicks = Environment.TickCount64;
+        _wizard.CurrentItem = text;
     }
 
     private void AppendWizardLog(string line)

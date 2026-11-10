@@ -217,7 +217,10 @@ def _copy_tree(src: Path, dst: Path, threads: int = 8, skip_top: tuple[str, ...]
 
 
 def _auto_jobs() -> int:
-    return max(1, min(8, (os.cpu_count() or 2) // 2))
+    # a model is worked on alone, so the count changes the time and never the files; about 1 GB at the
+    # peak of the biggest models of the test bench
+    from texlab.jobs import auto_jobs
+    return auto_jobs(1.0)
 
 
 def _dll(name_dir: str, name: str) -> Path:

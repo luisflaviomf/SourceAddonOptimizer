@@ -54,7 +54,9 @@ material. Então o addon guarda:
 O runtime substitui `Entity.DrawModel` (as entidades scriptadas como o LVS chamam isso no `Draw`;
 props/gibs sem Lua recebem um `RenderOverride` que chama o mesmo caminho). Na primeira vez que um
 model aparece, o stream é decodificado em fatias de 4 ms por quadro (0,1–1 s por carro) e vira
-IMeshes (triangle strips, até 65535 vértices cada), um grupo por (bodypart, escolha, malha, osso).
+IMeshes (triangle strips, até 65534 vértices cada: o encoder divide o pedaço que passaria disso e o
+runtime corta qualquer tira maior, ver `docs/teste-servidor-2026-11-10.md`), um grupo por (bodypart,
+escolha, malha, osso).
 Depois disso, a cada quadro:
 
 - **Iluminação idêntica à do motor**: um "probe" de 1 triângulo por entidade

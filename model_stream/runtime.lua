@@ -7,7 +7,8 @@
 if SERVER then return end
 
 local VERSION = 6          -- GMOS stream format (encoder.VERSION)
-local REVISION = 2         -- runtime behaviour: 2 = view models, material overrides, candidate materials
+local REVISION = 3         -- runtime behaviour: 2 = view models, material overrides, candidate materials;
+                           -- 3 = strips longer than one game mesh are cut (they froze the game)
 if GMOS and ((GMOS.VERSION or 0) > VERSION
              or ((GMOS.VERSION or 0) == VERSION and (GMOS.REVISION or 1) >= REVISION)) then
     -- an equal or newer runtime is already loaded: only merge this addon's manifest
@@ -26,6 +27,7 @@ local cv_budget = CreateClientConVar("gmo_stream_budget_ms", "4", true, false, "
 
 local byte, sub, find, floor, ldexp = string.byte, string.sub, string.find, math.floor, math.ldexp
 local band = bit.band
+local MAX_STRIP = 65534    -- vertices of one strip IMesh: the game takes 65535, an even cut keeps the winding
 
 function G.AddManifest(t)
     for mdl, path in pairs(t) do G.manifest[string.lower(mdl)] = path end
@@ -281,26 +283,35 @@ local function build(st, yield)
                 TX[i], TY[i], TZ[i], TW[i] = t1, t2, t3, w
             end
         end
-        -- one strip IMesh per chunk (at most 65535 vertices each)
+        -- strip IMeshes: one per chunk, or several when the chunk is longer than a game mesh takes.
+        -- mesh.Begin with more than 65535 vertices raises an error and the game stops responding (seen with
+        -- a 81436-vertex chunk, 2026-11-10), so it is never asked for. A strip cut at an even offset keeps
+        -- its winding; each piece starts on the last two vertices of the one before, so no triangle is lost.
         local chunks = {}
         local c0 = 0
         for _, len in ipairs(g.chunks_len) do
-            local obj = Mesh()
-            mesh.Begin(obj, MATERIAL_TRIANGLE_STRIP, len - 2)
-            for c = c0 + 1, c0 + len do
-                local vi = C[c]
-                vp:SetUnpacked(X[vi], Y[vi], Z[vi])
-                vn:SetUnpacked(NX[vi], NY[vi], NZ[vi])
-                mesh.Position(vp)
-                mesh.Normal(vn)
-                mesh.TexCoord(0, U[vi], V[vi])
-                if hastan then mesh.UserData(TX[vi], TY[vi], TZ[vi], TW[vi]) else mesh.UserData(0, 0, 0, 1) end
-                mesh.AdvanceVertex()
+            local s = 0
+            while s < len - 2 do
+                local n = len - s
+                if n > MAX_STRIP then n = MAX_STRIP end
+                local obj = Mesh()
+                mesh.Begin(obj, MATERIAL_TRIANGLE_STRIP, n - 2)
+                for c = c0 + s + 1, c0 + s + n do
+                    local vi = C[c]
+                    vp:SetUnpacked(X[vi], Y[vi], Z[vi])
+                    vn:SetUnpacked(NX[vi], NY[vi], NZ[vi])
+                    mesh.Position(vp)
+                    mesh.Normal(vn)
+                    mesh.TexCoord(0, U[vi], V[vi])
+                    if hastan then mesh.UserData(TX[vi], TY[vi], TZ[vi], TW[vi]) else mesh.UserData(0, 0, 0, 1) end
+                    mesh.AdvanceVertex()
+                end
+                mesh.End()
+                chunks[#chunks + 1] = obj
+                s = s + n - 2
+                yield()
             end
-            mesh.End()
-            chunks[#chunks + 1] = obj
             c0 = c0 + len
-            yield()
         end
         g.chunks = chunks
         vbase = vbase + nvg

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
+from texlab import native
 from texlab.materials import TEXTURE_PARAMS, normalize_texture_ref
 
 from .codec import dwt, idwt, levels_for, normal_z, psnr, quant, rgb_to_ycocg, unit_normals, ycocg_to_rgb
@@ -175,6 +176,54 @@ def _search(fn, target):
     return STEPS[max(lo, 0)]
 
 
+def _search_together(evaluate, count, target):
+    """`count` searches like _search run side by side: evaluate(step, wanted) -> {i: value} for the searches
+    (indices) asking for that step in this round. Each ends where _search(lambda st: value of i, target) ends;
+    the steps asked for by more than one are evaluated once (the luma plane is the same for both chroma
+    resolutions)."""
+    lo, hi = [-1] * count, [len(STEPS)] * count
+    while True:
+        asks = {}
+        for i in range(count):
+            if hi[i] - lo[i] > 1:
+                asks.setdefault((lo[i] + hi[i]) // 2, []).append(i)
+        if not asks:
+            return [STEPS[max(x, 0)] for x in lo]
+        for mid, wanted in asks.items():
+            values = evaluate(STEPS[mid], wanted)
+            for i in wanted:
+                if values[i] >= target:
+                    lo[i] = mid
+                else:
+                    hi[i] = mid
+
+
+class _Plane:
+    """The wavelet coefficients of a plane and its reconstruction at a step: _recon, by the native library
+    when it is there (same bytes, texlab.native.ts_recon)."""
+
+    def __init__(self, coefficients, levels):
+        self.ll, self.bands = coefficients
+        self.levels = levels
+        self.flat = None
+
+    def recon(self, st, drop):
+        if native.available():
+            if self.flat is None:
+                self.flat = np.concatenate([self.ll.ravel()] + [b.ravel() for trio in self.bands for b in trio])
+            out = native.ts_recon(self.flat, self.ll.shape[0] << self.levels, self.ll.shape[1] << self.levels,
+                                  self.levels, st, drop)
+            if out is not None:
+                return out
+        return _recon(self.ll, self.bands, st, drop, self.levels)
+
+
+def _psnr_of(squared_error):
+    """codec.psnr from the squared error array it averages."""
+    mse = np.mean(squared_error)
+    return 99.0 if mse == 0 else 10 * np.log10(255.0 ** 2 / mse)
+
+
 def _size(body) -> int:
     return len(lzma.compress(bytes(body), format=lzma.FORMAT_ALONE, preset=6))
 
@@ -190,9 +239,11 @@ def eligible(v) -> str | None:
     return None
 
 
-def choose(v, rgba, use, target) -> dict:
+def choose(v, rgba, use, target, transforms=None) -> dict:
     """v: texlab.vtf.VTF, rgba: level 0 decoded (float 0..255), use: alpha_uses() entry or None.
-    -> {"normal", "alpha", "step", "drop", "alpha_step", "rgb_db", "alpha_db"}"""
+    -> {"normal", "alpha", "step", "drop", "alpha_step", "rgb_db", "alpha_db"}
+    transforms: a list that receives the wavelet transform of every plane the encoder will code, in its
+    order (codec.encode takes it and does not transform the same planes again)."""
     L = levels_for(v.width, v.height)
     rgb = rgba[..., :3]
     aw = use["w"] if use else 1.0          # textures no VMT names: keep their alpha
@@ -207,41 +258,83 @@ def choose(v, rgba, use, target) -> dict:
         is_normal, n0 = False, None       # vectors pointing into the surface: not a tangent-space normal map
     t = target + MARGIN
     cands = []
+    # Every quality below is the same number the plain numpy expressions give (kept as the fallback): the
+    # native library returns the array numpy would have averaged, and a value already measured is not
+    # measured again.
     if is_normal:
         dw = [dwt(n0[..., c] - 128.0, L) for c in (0, 1)]
+        planes = [_Plane(d, L) for d in dw]
+        n0_c = np.ascontiguousarray(n0)
+        measured = {}
 
         def q_rgb(st):
-            x, y = [np.clip(_recon(ll, bd, st, 0, L) + 128, 0, 255) for ll, bd in dw]
-            return psnr(unit_normals(np.stack([x, y, normal_z(x, y)], -1)), n0)
+            if st not in measured:
+                rx, ry = [p.recon(st, 0) for p in planes]
+                sq = native.ts_sqerr_normal(rx, ry, n0_c) if native.available() else None
+                if sq is not None:
+                    measured[st] = _psnr_of(sq)
+                else:
+                    x, y = [np.clip(r + 128, 0, 255) for r in (rx, ry)]
+                    measured[st] = psnr(unit_normals(np.stack([x, y, normal_z(x, y)], -1)), n0)
+            return measured[st]
         st = _search(q_rgb, t)
-        body = bytearray()
-        for ll, bd in dw:
-            _pack(body, ll, bd, st, 0, L)
-        cands.append((_size(body), st, 0, q_rgb(st)))
+        cands.append((None, st, 0, q_rgb(st)))          # the only candidate: its size decides nothing
     else:
         dw = [dwt(q, L) for q in rgb_to_ycocg(rgb)]
-        for drop in (1, 0):
-            def q_rgb(st, drop=drop):
-                yy = _recon(*dw[0], st, 0, L)
-                co = _recon(*dw[1], st * 2, drop, L)
-                cg = _recon(*dw[2], st * 2, drop, L)
-                return psnr(np.clip(np.round(ycocg_to_rgb(yy, co, cg)), 0, 255), rgb)
-            st = _search(q_rgb, t)
+        planes = [_Plane(d, L) for d in dw]
+        rgb_c = np.ascontiguousarray(rgb)
+        drops = (1, 0)
+        measured = {}
+
+        def q_rgb(st, wanted):
+            yy = None
+            for i in wanted:
+                drop = drops[i]
+                if (st, drop) not in measured:
+                    if yy is None:
+                        yy = planes[0].recon(st, 0)
+                    co = planes[1].recon(st * 2, drop)
+                    cg = planes[2].recon(st * 2, drop)
+                    sq = native.ts_sqerr_ycocg(yy, co, cg, rgb_c) if native.available() else None
+                    measured[(st, drop)] = (_psnr_of(sq) if sq is not None else
+                                            psnr(np.clip(np.round(ycocg_to_rgb(yy, co, cg)), 0, 255), rgb))
+            return {i: measured[(st, drops[i])] for i in wanted}
+        steps = _search_together(q_rgb, len(drops), t)
+
+        def packed_size(st, drop):
             body = bytearray()
             _pack(body, *dw[0], st, 0, L)
             _pack(body, *dw[1], st * 2, drop, L)
             _pack(body, *dw[2], st * 2, drop, L)
-            cands.append((_size(body), st, drop, q_rgb(st)))
+            return _size(body)
+        for i, drop in enumerate(drops):
+            cands.append((lambda st=steps[i], drop=drop: packed_size(st, drop), steps[i], drop,
+                          q_rgb(steps[i], [i])[i]))
     ok = [c for c in cands if c[3] >= t]
-    _size_, st, drop, q = min(ok, key=lambda c: c[0]) if ok else max(cands, key=lambda c: c[3])
+    if len(ok) > 1:
+        # the smaller of the candidates that keep the target; their sizes are only worked out here, where
+        # they decide (a compression pass over all the coefficients each)
+        _size_, st, drop, q = min(ok, key=lambda c: c[0]())
+    else:
+        _size_, st, drop, q = ok[0] if ok else max(cands, key=lambda c: c[3])
     ast = aq = None
     if has_alpha:
         a = rgba[..., 3]
         da = dwt(a - 128.0, L)
+        alpha_plane = _Plane(da, L)
+        a_c = np.ascontiguousarray(a)
+        measured_a = {}
 
         def q_a(s):
-            return psnr(np.clip(np.round(_recon(*da, s, 0, L) + 128), 0, 255), a)
+            if s not in measured_a:
+                r = alpha_plane.recon(s, 0)
+                sq = native.ts_sqerr_plane(r, a_c) if native.available() else None
+                measured_a[s] = (_psnr_of(sq) if sq is not None else
+                                 psnr(np.clip(np.round(r + 128), 0, 255), a))
+            return measured_a[s]
         ast = _search(q_a, max(30.0, t + 20 * np.log10(aw)))
         aq = q_a(ast)
+    if transforms is not None:
+        transforms[:] = list(dw) + ([da] if has_alpha else [])
     return {"normal": bool(is_normal), "alpha": bool(has_alpha), "step": st, "drop": drop, "alpha_step": ast,
             "rgb_db": round(float(q), 2), "alpha_db": round(float(aq), 2) if aq is not None else None}

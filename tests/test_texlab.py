@@ -136,6 +136,12 @@ def test_plan_keeps_alpha_masks_and_routes_fallbacks(tmp_path):
 @pytest.mark.skipif(not VTFCMD.exists(), reason="VTFCmd not extracted on this machine")
 def test_engine_rewrites_valid_smaller_vtfs(tmp_path):
     root = _material_only_addon(tmp_path, np.random.default_rng(5))
+    # flagged NOMIP but stored with its mip chain (weapon icons of the 2026-11-10 server test)
+    (root / "materials/models/texlab_test/nomip_chain.vtf").write_bytes(
+        make_vtf(64, 64, 15, np.random.default_rng(15), flags=0x2100))
+    # one level and no flag at all (particle textures of the same test)
+    (root / "materials/models/texlab_test/bare_single.vtf").write_bytes(
+        make_vtf(64, 64, 13, np.random.default_rng(16), flags=0, mips=1))
     before = {p.name: p.stat().st_size for p in root.rglob("*.vtf")}
     report = run(root, VTFCMD, "q50", jobs=2, report_path=tmp_path / "report.json")
     assert report["after"] < report["before"]
@@ -146,6 +152,14 @@ def test_engine_rewrites_valid_smaller_vtfs(tmp_path):
     assert read_vtf(root / "materials/models/texlab_test/masked.vtf").fmt == 15
     nomip = read_vtf(root / "materials/models/texlab_test/nomip.vtf")
     assert nomip.mip_count == 1 and nomip.width == 32 and nomip.flags & 0x100
+    # written as one level: NOLOD and NOMIP, or the game prints a notice and sets them at every load
+    chain = read_vtf(root / "materials/models/texlab_test/nomip_chain.vtf")
+    bare = read_vtf(root / "materials/models/texlab_test/bare_single.vtf")
+    assert chain.mip_count == 1 and chain.width == 32 and bare.mip_count == 1 and bare.width == 32
+    for v in (nomip, chain, bare):
+        assert v.flags & 0x300 == 0x300
+    # textures that keep a mip chain keep their flags
+    assert not read_vtf(root / "materials/models/texlab_test/opaque.vtf").flags & 0x200
 
 
 def test_magnified_map_stays_a_valid_weight_with_huge_pixel_weights():

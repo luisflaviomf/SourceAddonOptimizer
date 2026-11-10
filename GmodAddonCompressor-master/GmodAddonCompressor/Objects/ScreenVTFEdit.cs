@@ -21,8 +21,28 @@ namespace GmodAddonCompressor.Objects
     /// Lanczos top level, exact original lower mips and alpha-safe DXT1 selection. Files the
     /// engine reports as fallback (non-DXT formats, NOMIP) go through the regular VTF path.
     /// </summary>
-    internal sealed class ScreenVTFEdit : ICompress, ICompressPreparation, ICompressBatch
+    internal sealed class ScreenVTFEdit : ICompress, ICompressPreparation, ICompressBatch, ICompressStatus
     {
+        public Action<string>? StatusChanged { get; set; }
+
+        /// <summary>The worker's progress line as the screen shows it.</summary>
+        internal static string DescribeProgress(string stage, int index, int total, string item)
+        {
+            string what = stage switch
+            {
+                "analyze" => "Texturas: medindo como cada uma aparece no jogo",
+                "rebuild" => "Texturas: reduzindo",
+                "write" => "Texturas: gravando",
+                "stream" => "Texturas: convertendo para stream",
+                _ => "Texturas: " + stage
+            };
+            if (stage == "analyze" || total <= 0)
+                return what + "…";
+            return string.IsNullOrWhiteSpace(item)
+                ? $"{what} {index} de {total}"
+                : $"{what} {index} de {total} · {item.Replace('\\', '/')}";
+        }
+
         internal const string DefaultProfile = "q50";
         private const string VtfEditToolName = "VTFEdit";
         private const string VtfEditToolVersion = "1";
@@ -66,9 +86,9 @@ namespace GmodAddonCompressor.Objects
             string workDir = Path.Combine(ToolPaths.WorkRoot, "texscreen");
             Directory.CreateDirectory(workDir);
             string report = Path.Combine(workDir, $"texscreen_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.json");
-            // analysis processes + image threads; ~2.6 GB peak with 8 on the LVS cars pack. VTFCmd encodes
-            // use every logical CPU but two (texscreen --jobs only sets the analysis side).
-            int jobs = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
+            // analysis processes + image threads: 0 = the worker picks (every logical CPU but two, bounded by
+            // the free memory; texlab/jobs.py). The result does not depend on the count.
+            int jobs = 0;
 
             var arguments = new List<string>
             {
@@ -129,6 +149,7 @@ namespace GmodAddonCompressor.Objects
 
             using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             int lastLogged = -1;
+            long lastStatusTicks = 0;
             process.OutputDataReceived += (_, e) =>
             {
                 if (e.Data == null)
@@ -138,6 +159,15 @@ namespace GmodAddonCompressor.Objects
                     string[] parts = e.Data.Substring(20).Split('|');
                     if (parts.Length >= 3 && int.TryParse(parts[1], out int i) && int.TryParse(parts[2], out int n))
                     {
+                        // the screen: at most a few lines per second
+                        long now = Environment.TickCount64;
+                        if (i == n || now - lastStatusTicks >= 150)
+                        {
+                            lastStatusTicks = now;
+                            try { StatusChanged?.Invoke(DescribeProgress(parts[0], i, n, parts.Length > 3 ? parts[3] : string.Empty)); }
+                            catch { }
+                        }
+
                         int step = n > 0 ? i * 20 / n : 0;
                         if (step != lastLogged || i == n)
                         {

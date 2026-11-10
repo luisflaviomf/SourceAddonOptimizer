@@ -529,6 +529,18 @@ def test_dxt3_without_mips_becomes_dxt5():
     assert (out.fmt, out.mip_count) == (15, 1)
 
 
+def test_one_level_texture_is_built_with_the_flags_the_game_wants():
+    """A texture stored as one level without NOMIP / NOLOD (particle textures of the 2026-11-10 server test):
+    the game sets both when it loads the file and prints a console line each time."""
+    raw = bytearray(make_dxt3_vtf(smooth_image(128, 128, alpha=True)))
+    struct.pack_into("<I", raw, 20, 0x2000)
+    v = read_vtf(bytes(raw))
+    assert v.mip_count == 1 and not v.flags & 0x300
+    rgba = decode_level(v, 0).astype(np.float64)
+    out = read_vtf(codec.lua_vtf(codec.encode(v, rgba, 6, alpha_step=4, keep_alpha=True)))
+    assert out.mip_count == 1 and out.flags & 0x300 == 0x300
+
+
 @pytest.mark.parametrize("fmt", [12, 1, 3, 16])
 def test_lua_raw_output_matches_the_python_mirror(fmt):
     rt = _lua()

@@ -38,6 +38,7 @@ from texlab.source_model import _read_mdl
 
 VERSION = 6
 CHUNK_TRIS = 20000
+MAX_STRIP = 65534       # indices of one strip chunk: a game mesh takes 65535 vertices (runtime.lua MAX_STRIP)
 POS_Q = 1.0 / 64.0      # 0.016 units: at most 0.15 mm off
 UV_Q = 1.0 / 4096.0     # at most 1/4 texel of a 2048 texture
 WEIGHTED_LIMIT = 0.05   # models with more weighted (multi-bone) vertices are not streamed
@@ -137,6 +138,22 @@ def stripify(tris: np.ndarray, nverts: int) -> np.ndarray:
     return out[:n].astype(np.int64)
 
 
+def strips_for(tris: np.ndarray, nverts: int) -> list:
+    """Triangle strips of a group, each at most MAX_STRIP indices (one game mesh). The group is cut in
+    chunks of CHUNK_TRIS triangles; a chunk of poorly connected triangles strips into up to 5 indices per
+    triangle, so one that comes out too long is halved until it fits."""
+    def fit(part):
+        strip = stripify(part, nverts)
+        if len(strip) <= MAX_STRIP or len(part) <= 1:
+            return [strip]
+        half = len(part) // 2
+        return fit(part[:half]) + fit(part[half:])
+    out = []
+    for c in range(0, len(tris), CHUNK_TRIS):
+        out += fit(tris[c:c + CHUNK_TRIS])
+    return out
+
+
 def _refs(A: np.ndarray, delta: bool):
     """back-reference coding of rows of A (int64): (refs, new rows coded)"""
     last, refs, new = {}, [], []
@@ -179,7 +196,7 @@ def encode(mdl: Path, resolver, meshes_tris: dict | None = None) -> bytes:
             tri = T[tb == bb]
             ug = np.unique(tri)
             lt3 = np.searchsorted(ug, tri)
-            strips = [stripify(lt3[c:c + CHUNK_TRIS], len(ug)) for c in range(0, len(lt3), CHUNK_TRIS)]
+            strips = strips_for(lt3, len(ug))
             seq = np.concatenate(strips)
             uniq, first = np.unique(seq, return_index=True)
             order_local = uniq[np.argsort(first)]
