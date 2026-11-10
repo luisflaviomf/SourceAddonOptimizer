@@ -1,4 +1,5 @@
-"""What the Workshop packer (gmad) leaves out of an addon: the "ignore" list of its addon.json.
+"""What an addon's addon.json says about packing: the "ignore" list of the Workshop packer (gmad) and
+the "merged_from" list of the addon merge.
 
 The streams (model_stream, texture_stream) add data files to the addon. An addon whose addon.json says
 "ignore": ["*.txt"] (read-me files; seen in the 2026-11-09 multiplayer test, ARC9 Gunsmith Arms Source)
@@ -47,6 +48,26 @@ def stream_extension(addon_root: str, folder: str) -> tuple:
         if not ignored(f"{folder}/0123456789abcdef{ext}", patterns):
             return ext, True
     return STREAM_EXTENSIONS[0], False
+
+
+def merged_sources(addon_root) -> frozenset:
+    """Lower-case folder names this addon was merged from (addon.json "merged_from", written by
+    batch_merge_addons); empty for any other addon."""
+    try:
+        meta = json.loads((Path(addon_root) / "addon.json").read_text(encoding="utf-8-sig", errors="replace"))
+    except (OSError, ValueError):
+        return frozenset()
+    names = meta.get("merged_from") if isinstance(meta, dict) else None
+    return frozenset(n.lower() for n in names if isinstance(n, str) and n) if isinstance(names, list) else frozenset()
+
+
+def copies_of_each_other(addon_root, other) -> bool:
+    """A merged addon beside the folders it was made from (the merge writes next to its sources by
+    default): they hold the same files, so neither is a neighbour of the other, nor of the other's
+    optimized output ("<name><suffix>"). Looking there only measures every model twice."""
+    a, b = Path(addon_root), Path(other)
+    an, bn = a.name.lower(), b.name.lower()
+    return any(bn.startswith(s) for s in merged_sources(a)) or any(an.startswith(s) for s in merged_sources(b))
 
 
 IGNORED_WARNING = ('[WARN] addon.json "ignore" leaves the stream files ({folder}) out of the published addon: '

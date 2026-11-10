@@ -359,10 +359,68 @@ namespace GmodAddonCompressor
                 string targetFolder = GetAddonMergeTargetFolderPath();
                 if (string.Equals(Path.GetFullPath(rootPath), Path.GetFullPath(targetFolder), StringComparison.OrdinalIgnoreCase))
                     errors.Add("A pasta de saída não pode ser a própria pasta de origem.");
+                else if (!scanOnly && IsAddonMergeForeignFolder(targetFolder))
+                    errors.Add($"A pasta {targetFolder} já existe e não foi criada por esta versão do Juntar addons. Escolha outro nome para o novo addon ou apague essa pasta.");
             }
 
             errorMessage = string.Join(Environment.NewLine, errors);
             return errors.Count == 0;
+        }
+
+        // The worker empties the destination before copying. Only a folder the merge itself wrote may be emptied
+        // (addon.json with "merged_from", or the default title of the versions before that key): with the
+        // destination next to the sources, a new addon named like one of them would delete it. Same rule as
+        // batch_merge_addons.output_folder_problem.
+        private static bool IsAddonMergeForeignFolder(string folder)
+        {
+            try
+            {
+                if (!Directory.Exists(folder))
+                    return false;
+                if (!Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).Any())
+                    return false;
+
+                string manifestPath = Path.Combine(folder, "addon.json");
+                if (!File.Exists(manifestPath))
+                    return true;
+
+                using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+                JsonElement root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object)
+                    return true;
+                if (root.TryGetProperty("merged_from", out var marker) && marker.ValueKind == JsonValueKind.Array)
+                    return false;
+
+                string title = root.TryGetProperty("title", out var titleElement) && titleElement.ValueKind == JsonValueKind.String
+                    ? titleElement.GetString() ?? string.Empty
+                    : string.Empty;
+                return !title.StartsWith("Merged Addon Bundle (", StringComparison.Ordinal);
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        private static string DescribeAddonMergeStatus(string status)
+        {
+            return status switch
+            {
+                "merged" => "Juntado",
+                "blocked" => "Parado por conflito",
+                "scan-only" => "Só a busca",
+                "not-run" => "Não rodou",
+                "validated-local" => "Conferido (só a pasta)",
+                "validated-roundtrip" => "Conferido (pacote aberto e comparado)",
+                "roundtrip-diff" => "O pacote aberto ficou diferente",
+                "packaging-failed" => "O gmad.exe recusou o pacote",
+                "packaging-blocked-invalid-files" => "Há arquivos que o gmad.exe recusa",
+                "packaging-skipped-no-gmad" => "Sem gmad.exe, não empacotou",
+                "strict" => "Arquivo .gma (estrito)",
+                "compatibility" => "Arquivo .gma (compatível)",
+                "local-only" => "Só a pasta",
+                _ => status,
+            };
         }
 
         private static string BuildAddonMergeWorkDir(string rootPath)
@@ -711,8 +769,8 @@ namespace GmodAddonCompressor
                 TextBlock_AddonMergeConflictCount.Text = conflictCount.ToString();
                 TextBlock_AddonMergeDiscardedCount.Text = discardedCount.ToString();
                 TextBlock_AddonMergeMergedFileCount.Text = mergedFileCount.ToString();
-                TextBlock_AddonMergeMergeStatus.Text = mergeStatus;
-                TextBlock_AddonMergeValidationStatus.Text = validationStatus;
+                TextBlock_AddonMergeMergeStatus.Text = DescribeAddonMergeStatus(mergeStatus);
+                TextBlock_AddonMergeValidationStatus.Text = DescribeAddonMergeStatus(validationStatus);
 
                 var summaryLines = new List<string>
                 {
@@ -720,7 +778,7 @@ namespace GmodAddonCompressor
                     $"Nome do novo addon: {bundleName}",
                     $"Salvar em: {outputRoot}",
                     $"Pasta final: {Path.Combine(outputRoot, bundleName)}",
-                    $"Pacote: {packageMode}",
+                    $"Saída: {DescribeAddonMergeStatus(packageMode)}",
                     $"Addons encontrados: {addonCount}",
                     $"Arquivos listados: {fileCount}",
                     $"Caminhos únicos: {uniquePathCount}",
@@ -730,16 +788,32 @@ namespace GmodAddonCompressor
                 if (discardedCount > 0)
                     summaryLines.Add($"Descartados pelo modo compatível: {discardedCount} arquivo(s)");
 
+                if (addonCount == 0)
+                    summaryLines.Add("Nenhum addon encontrado: a pasta de origem precisa ter pastas de addon dentro dela (com addon.json, ou com lua, materials, models, sound…).");
+
+                foreach (JsonElement pair in EnumerateJsonArray(details, "likely_same_addon_pairs"))
+                {
+                    string[] names = GetJsonStringArray(pair, "addons");
+                    if (names.Length == 2)
+                        summaryLines.Add($"Atenção: {names[0]} e {names[1]} parecem ser duas cópias do mesmo addon ({GetJsonInt(pair, "shared_path_count")} de {GetJsonInt(pair, "smaller_file_count")} caminhos iguais). Tire uma delas da pasta antes de juntar.");
+                }
+
+                foreach (string previous in GetJsonStringArray(details, "previous_outputs_left_out"))
+                    summaryLines.Add($"Ficou de fora da busca (resultado de uma junção anterior): {Path.GetFileName(previous)}");
+
+                if (!string.IsNullOrWhiteSpace(GetJsonString(details, "output_problem")))
+                    summaryLines.Add("Atenção: a pasta final já existe e não foi criada por esta versão do Juntar addons. Escolha outro nome para o novo addon ou apague essa pasta antes de juntar.");
+
                 if (scanOnly)
                 {
                     summaryLines.Add("Só busca: nada foi juntado ainda.");
                 }
                 else
                 {
-                    summaryLines.Add($"Junção: {mergeStatus}");
+                    summaryLines.Add($"Junção: {DescribeAddonMergeStatus(mergeStatus)}");
                     if (mergedFileCount > 0)
                         summaryLines.Add($"Arquivos juntados: {mergedFileCount}");
-                    summaryLines.Add($"Validação: {validationStatus}");
+                    summaryLines.Add($"Validação: {DescribeAddonMergeStatus(validationStatus)}");
 
                     if (string.Equals(overallStatus, "merge-blocked", StringComparison.OrdinalIgnoreCase))
                         summaryLines.Add("A regra de conflito parou a junção: o mesmo caminho aparece com conteúdo diferente.");
@@ -836,6 +910,15 @@ namespace GmodAddonCompressor
             lines.Add(title + ":");
             foreach (JsonElement item in array.EnumerateArray())
                 lines.Add(formatter(item));
+        }
+
+        private static IEnumerable<JsonElement> EnumerateJsonArray(JsonElement element, string propertyName)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var array) || array.ValueKind != JsonValueKind.Array)
+                yield break;
+
+            foreach (JsonElement item in array.EnumerateArray())
+                yield return item;
         }
 
         private static string[] GetJsonStringArray(JsonElement element, string propertyName)

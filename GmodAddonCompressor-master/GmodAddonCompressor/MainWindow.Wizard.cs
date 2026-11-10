@@ -496,6 +496,8 @@ public partial class MainWindow
                     cs.e_ProgressChanged += (filePath, index, total) =>
                         Dispatcher.BeginInvoke(() => WizardCompressProgress(output, filePath, index, total));
                 }, unlockUiOnComplete: false);
+                foreach (string line in _pipelineCompressSystem?.GetSummaries() ?? Array.Empty<string>())
+                    AppendWizardLog(line);
                 if (token.IsCancellationRequested || _pipelineCancelRequested)
                     throw new OperationCanceledException(token);
                 if (!_pipelineCompressOk)
@@ -746,7 +748,9 @@ public partial class MainWindow
         _context.CompressWAV = s.IncludeWav;
         _context.CompressMP3 = false;
         _context.CompressOGG = false;
-        _context.CompressPNG = false;
+        // PNG: only the lossless recompression (same pixels), never the reduction of the advanced tab
+        _context.CompressPNG = s.Png;
+        _context.CompressPngLossless = true;
         _context.CompressJPG = false;
         _context.CompressLUA = s.Lua;
         _context.WavOptimizationIndex = s.WavOptimizationIndex;
@@ -768,13 +772,14 @@ public partial class MainWindow
     private sealed record WizardSettingsSnapshot(
         int OptimizerModeIndex, int ModelsScreenProfileIndex, bool OptimizerOverwrite,
         int CompressModeIndex, int CompressScreenProfileIndex,
-        bool Vtf, bool Wav, bool Mp3, bool Ogg, bool Png, bool Jpg, bool Lua,
+        bool Vtf, bool Wav, bool Mp3, bool Ogg, bool Png, bool PngLossless, bool Jpg, bool Lua,
         int WavOptimizationIndex, int WavRateIndex, int WavChannelsIndex, int WavCodecIndex, bool AudioLoopSafe)
     {
         internal static WizardSettingsSnapshot Capture(MainWindowContext c) => new(
             c.OptimizerModeIndex, c.ModelsScreenProfileIndex, c.OptimizerOverwrite,
             c.CompressModeIndex, c.CompressScreenProfileIndex,
-            c.CompressVTF, c.CompressWAV, c.CompressMP3, c.CompressOGG, c.CompressPNG, c.CompressJPG, c.CompressLUA,
+            c.CompressVTF, c.CompressWAV, c.CompressMP3, c.CompressOGG, c.CompressPNG, c.CompressPngLossless,
+            c.CompressJPG, c.CompressLUA,
             c.WavOptimizationIndex, c.WavRateListIndex, c.WavChannelsIndex, c.WavCodecIndex, c.AudioLoopSafe);
 
         internal void Restore(MainWindowContext c)
@@ -789,6 +794,7 @@ public partial class MainWindow
             c.CompressMP3 = Mp3;
             c.CompressOGG = Ogg;
             c.CompressPNG = Png;
+            c.CompressPngLossless = PngLossless;
             c.CompressJPG = Jpg;
             c.CompressLUA = Lua;
             c.WavOptimizationIndex = WavOptimizationIndex;

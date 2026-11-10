@@ -291,6 +291,7 @@ namespace GmodAddonCompressor.DataContexts
         private int _customWavChannelsIndex = 1;
         private int _customWavCodecIndex;
         private bool _customLua;
+        private bool _customPng = true;
 
         public string CustomModels { get => _customModels; set { _customModels = value ?? WizardProfiles.None; RaiseCustom(); } }
         public string CustomTextures { get => _customTextures; set { _customTextures = value ?? WizardProfiles.None; RaiseCustom(); } }
@@ -299,6 +300,7 @@ namespace GmodAddonCompressor.DataContexts
         public int CustomWavChannelsIndex { get => _customWavChannelsIndex; set { _customWavChannelsIndex = value; RaiseCustom(); } }
         public int CustomWavCodecIndex { get => _customWavCodecIndex; set { _customWavCodecIndex = value; RaiseCustom(); } }
         public bool CustomLua { get => _customLua; set { _customLua = value; RaiseCustom(); } }
+        public bool CustomPng { get => _customPng; set { _customPng = value; RaiseCustom(); } }
 
         public string CustomModelsHint => WizardProfiles.Find(WizardProfiles.ModelChoices, _customModels).Description;
         public string CustomTexturesHint => WizardProfiles.Find(WizardProfiles.TextureChoices, _customTextures).Description;
@@ -314,7 +316,7 @@ namespace GmodAddonCompressor.DataContexts
         /// <summary>What the run will apply: a preset profile, or the Personalizado chips.</summary>
         public WizardSettings CurrentSettings() => IsCustom
             ? WizardProfiles.ForCustom(_customModels, _customTextures, _customSounds,
-                _customWavRateIndex, _customWavChannelsIndex, _customWavCodecIndex, _customLua)
+                _customWavRateIndex, _customWavChannelsIndex, _customWavCodecIndex, _customLua, _customPng)
             : WizardProfiles.For(_profile);
 
         private void RaiseCustom()
@@ -322,7 +324,7 @@ namespace GmodAddonCompressor.DataContexts
             foreach (string name in new[]
             {
                 nameof(CustomModels), nameof(CustomTextures), nameof(CustomSounds), nameof(CustomWavRateIndex),
-                nameof(CustomWavChannelsIndex), nameof(CustomWavCodecIndex), nameof(CustomLua),
+                nameof(CustomWavChannelsIndex), nameof(CustomWavCodecIndex), nameof(CustomLua), nameof(CustomPng),
                 nameof(CustomModelsHint), nameof(CustomTexturesHint), nameof(CustomSoundsHint), nameof(ShowCustomManualWav)
             })
                 OnPropertyChanged(name);
@@ -356,7 +358,7 @@ namespace GmodAddonCompressor.DataContexts
         {
             var s = CurrentSettings();
             bool models = _goal != WizardGoal.Media && (_inventory?.HasModels ?? true) && s.Models;
-            bool media = _goal != WizardGoal.Models && (_inventory?.HasMedia ?? true) && (s.Textures || s.IncludeWav || s.Lua);
+            bool media = _goal != WizardGoal.Models && (_inventory?.HasMedia ?? true) && (s.Textures || s.IncludeWav || s.Lua || s.Png);
             return (models, media);
         }
 

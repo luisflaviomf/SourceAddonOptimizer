@@ -376,7 +376,13 @@
                                             </StackPanel>
                                         </UniformGrid>
 
-                                        <CheckBox IsChecked="{Binding CustomLua, Mode=TwoWay}" Margin="0,16,0,6">
+                                        <CheckBox IsChecked="{Binding CustomPng, Mode=TwoWay}" Margin="0,16,0,0">
+                                            <StackPanel>
+                                                <TextBlock Text="Recomprimir PNG sem perda" />
+                                                <TextBlock Text="Ícones e imagens de interface ficam menores com os mesmos pixels." FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </CheckBox>
+                                        <CheckBox IsChecked="{Binding CustomLua, Mode=TwoWay}" Margin="0,10,0,6">
                                             <StackPanel>
                                                 <TextBlock Text="Minificar scripts Lua" />
                                                 <TextBlock Text="Remove espaços e comentários. Teste o addon depois." FontSize="12" Foreground="{DynamicResource TextSecondary}" />
@@ -1279,6 +1285,13 @@
                         <!-- Redução de imagens (PNG, JPG e modos antigos) -->
                         <Expander Style="{StaticResource M3Expander}" Header="Imagens PNG e JPG">
                             <StackPanel>
+                                <CheckBox Margin="0,0,0,14" IsChecked="{Binding CompressPngLossless}" IsEnabled="{Binding CompressPNG}">
+                                    <StackPanel>
+                                        <TextBlock Text="PNG sem perda" />
+                                        <TextBlock Style="{StaticResource FieldHint}" Margin="0,2,0,0"
+                                                   Text="Recomprime os PNG com os mesmos pixels e o mesmo tamanho de imagem. Com isto marcado, o fator abaixo vale só para JPG." />
+                                    </StackPanel>
+                                </CheckBox>
                                 <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,12"
                                            Text="Fator de redução e tamanho mínimo. Uma imagem nunca fica menor que o limite." />
                                 <Grid>

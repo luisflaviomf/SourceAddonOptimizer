@@ -85,7 +85,7 @@ def _packaging_only(models: Path) -> None:
     import vtx_tristrip_optimizer
     import vvd_engine_exact
     from model_screen.cli import _dll
-    for pat in ("*.dx80.vtx", "*.sw.vtx"):
+    for pat in ("*.dx80.vtx", "*.sw.vtx", "*.xbox.vtx"):
         for p in models.rglob(pat):
             p.unlink()
     vvd_engine_exact.optimize_tree(models)
@@ -104,6 +104,7 @@ def _run_exact(tmp_path: Path, addon: Path, capsys) -> dict:
     for mdl in (addon / "models").rglob("*.mdl"):         # packaging never touches the .mdl files
         assert (out / mdl.relative_to(addon)).read_bytes() == mdl.read_bytes()
     assert not list(out.rglob("*.dx80.vtx")) and not list(out.rglob("*.sw.vtx"))
+    assert not list(out.rglob("*.xbox.vtx"))               # console variant the PC game never reads
     text = capsys.readouterr().out
     n = len(list((addon / "models").rglob("*.mdl")))
     assert f">>> DONE ({n}/{n})" in text and "Step 3/3: Packaging" in text and "[WARN]" not in text
@@ -122,7 +123,7 @@ def test_exact_profile_is_a_copy_plus_packaging(tmp_path, capsys):
     m.mkdir(parents=True)
     for ext in (".mdl", ".vvd", ".dx90.vtx"):
         shutil.copy2(PROBE / ("probe_v1" + ext), m / ("probe_v1" + ext))
-    for ext in (".dx80.vtx", ".sw.vtx"):
+    for ext in (".dx80.vtx", ".sw.vtx", ".xbox.vtx"):
         shutil.copy2(PROBE / "probe_v1.dx90.vtx", m / ("probe_v1" + ext))
     (m / "probe_v1.phy").write_bytes(b"physics, kept as it is")
     # a model no engine can read: the exact profile never parses geometry, so it is kept, not "failed"

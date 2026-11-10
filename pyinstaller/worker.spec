@@ -40,6 +40,8 @@ a = Analysis(
         (str(repo_root / "tools" / "meshopt" / "meshopt_simplify.dll"), "."),
         # Rust hot paths (native/gmo_native): bit-identical replacements loaded by texlab.native
         (str(repo_root / "tools" / "native" / "gmo_native.dll"), "."),
+        # Lossless PNG recompression (worker command pnglossless): oxipng 10.2.0, MIT
+        (str(repo_root / "tools" / "oxipng" / "oxipng.exe"), "."),
     ],
     datas=[
         (str(repo_root / "build_optimized_addon.py"), "."),
@@ -59,6 +61,7 @@ a = Analysis(
             "maximum_optimizer/profiles",
         ),
         (str(repo_root / "tools" / "vtx" / "LICENSE.meshoptimizer.txt"), "."),
+        (str(repo_root / "tools" / "oxipng" / "LICENSE.oxipng.txt"), "."),
         # Models "Tela" profile "stream": Lua runtime + light-probe model written into optimized addons
         (str(repo_root / "model_stream" / "runtime.lua"), "model_stream"),
         (str(repo_root / "model_stream" / "probe" / "probe_v1.mdl"), "model_stream/probe"),
@@ -80,7 +83,9 @@ a = Analysis(
         "texlab.density", "texlab.materials", "texlab.source_model", "texlab.allocate", "texlab.plan",
         "texlab.native", "texlab.firstperson", "texlab.packing",
         "texture_stream", "texture_stream.codec", "texture_stream.choose",
+        "png_lossless", "png_lossless.cli",
         "PIL.Image",
+        "PIL.PngImagePlugin",
         "PIL.ImageChops",
         "PIL.ImageDraw",
         "PIL.ImageFilter",

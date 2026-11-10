@@ -329,4 +329,28 @@ Assert(GmodAddonCompressor.Systems.Reporting.AddonInventory.Classify("data_stati
 Assert(GmodAddonCompressor.Systems.Reporting.AddonInventory.Classify("data_static/gmo/ab12.dat")
        == GmodAddonCompressor.Systems.Reporting.AddonFileKind.Models, "Model stream blobs are not counted as models.");
 
+// PNG sem perda (worker pnglossless): every preset recompresses the PNG files with the same pixels and says so
+// on its textures line; Personalizado has its own switch, on by default.
+foreach (var preset in new[]
+{
+    GmodAddonCompressor.Systems.Optimizer.WizardProfile.Lossless,
+    GmodAddonCompressor.Systems.Optimizer.WizardProfile.Balanced,
+    GmodAddonCompressor.Systems.Optimizer.WizardProfile.Max,
+})
+{
+    var presetSettings = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.For(preset);
+    Assert(presetSettings.Png, $"Preset {preset} no longer recompresses PNG without loss.");
+    Assert(presetSettings.TexturesLine.EndsWith(GmodAddonCompressor.Systems.Optimizer.WizardProfiles.PngSuffix, StringComparison.Ordinal),
+        $"Preset {preset} does not mention the lossless PNG step.");
+}
+Assert(customStream.Png, "Personalizado no longer recompresses PNG by default.");
+var customPngOnly = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.ForCustom("none", "none", "none", 0, 0, 0, false, true);
+Assert(customPngOnly.Png && !customPngOnly.Textures && !customPngOnly.IncludeWav,
+    "Personalizado cannot run the lossless PNG step on its own.");
+var customNoPng = GmodAddonCompressor.Systems.Optimizer.WizardProfiles.ForCustom("none", "stream", "none", 0, 0, 0, false, false);
+Assert(!customNoPng.Png && !customNoPng.TexturesLine.Contains("PNG", StringComparison.Ordinal),
+    "Personalizado with PNG off still announces the PNG step.");
+Assert(GmodAddonCompressor.Systems.Reporting.AddonInventory.Classify("materials/entities/weapon.png")
+       == GmodAddonCompressor.Systems.Reporting.AddonFileKind.Textures, "PNG files are not counted as textures.");
+
 Console.WriteLine("WPF optimizer contract tests passed.");

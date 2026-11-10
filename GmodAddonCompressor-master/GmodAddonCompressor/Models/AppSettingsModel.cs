@@ -73,5 +73,6 @@ namespace GmodAddonCompressor.Models
         public int? AudioOggBitrateIndex { get; set; }
         public int? CompressModeIndex { get; set; }
         public bool? CompressMagickUseAggressivePng { get; set; }
+        public bool? CompressPngLossless { get; set; }
     }
 }

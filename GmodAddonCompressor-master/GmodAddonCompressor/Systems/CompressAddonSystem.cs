@@ -134,7 +134,9 @@ namespace GmodAddonCompressor.Systems
         {
             string extension = ".png";
             AddValidFileExtensions(extension);
-            if (_pipelineOptions.ShouldUseMagickForAggressivePng)
+            if (_pipelineOptions.LosslessPng)
+                _compressServices.Add(extension, new LosslessPngEdit(_directoryPath));
+            else if (_pipelineOptions.ShouldUseMagickForAggressivePng)
                 _compressServices.Add(extension, new MagickPngEdit());
             else
                 _compressServices.Add(extension, new PNGEdit());
@@ -165,6 +167,15 @@ namespace GmodAddonCompressor.Systems
         }
 
         internal bool HasStarted() => _hasStarted;
+
+        /// <summary>One line per service that reports its result (e.g. lossless PNG), after the run.</summary>
+        internal IReadOnlyList<string> GetSummaries() =>
+            _compressServices.Values.OfType<ICompressSummary>()
+                .Select(service => service.Summary)
+                .Where(summary => !string.IsNullOrWhiteSpace(summary))
+                .Select(summary => summary!)
+                .Distinct()
+                .ToArray();
 
         private void AddValidFileExtensions(string extension)
         {
@@ -251,15 +262,35 @@ namespace GmodAddonCompressor.Systems
 
         private async Task ProcessBucketAsync(CompressionBucket bucket, int filesCount, ProgressCounter progressCounter)
         {
-            if (bucket.Name.Equals("vtf", StringComparison.OrdinalIgnoreCase) &&
-                bucket.Files.Count > 0 &&
-                GetService(bucket.Files[0].Extension) is ICompressBatch batchService)
+            // Services that take the whole list at once (worker engines: the VTF modes, lossless PNG) get
+            // their files in one call; the rest of the bucket goes file by file.
+            var batches = new List<(ICompressBatch Service, List<FileInfo> Files)>();
+            var singleFiles = new List<FileInfo>();
+            foreach (FileInfo file in bucket.Files)
+            {
+                if (GetService(file.Extension) is ICompressBatch batchService)
+                {
+                    int index = batches.FindIndex(batch => ReferenceEquals(batch.Service, batchService));
+                    if (index < 0)
+                    {
+                        batches.Add((batchService, new List<FileInfo>()));
+                        index = batches.Count - 1;
+                    }
+                    batches[index].Files.Add(file);
+                }
+                else
+                {
+                    singleFiles.Add(file);
+                }
+            }
+
+            foreach (var (batchService, batchFiles) in batches)
             {
                 try
                 {
                     await RunBatchServiceAsync(
                         batchService,
-                        bucket.Files,
+                        batchFiles,
                         _maximumBatchCancellation?.Token ?? CancellationToken.None)
                         .ConfigureAwait(false);
                 }
@@ -269,21 +300,22 @@ namespace GmodAddonCompressor.Systems
                     throw;
                 }
 
-                foreach (FileInfo file in bucket.Files)
+                foreach (FileInfo file in batchFiles)
                 {
                     int fileIndex = Interlocked.Increment(ref progressCounter.Value);
                     e_ProgressChanged?.Invoke(file.FullName, fileIndex, filesCount);
                 }
-
-                return;
             }
+
+            if (singleFiles.Count == 0)
+                return;
 
             var options = new ParallelOptions
             {
                 MaxDegreeOfParallelism = bucket.MaxDegreeOfParallelism
             };
 
-            await Parallel.ForEachAsync(bucket.Files, options, async (FileInfo file, CancellationToken cancellationToken) =>
+            await Parallel.ForEachAsync(singleFiles, options, async (FileInfo file, CancellationToken cancellationToken) =>
             {
                 ICompress? service = GetService(file.Extension);
                 if (service != null)

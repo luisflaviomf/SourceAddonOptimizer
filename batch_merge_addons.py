@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import hashlib
 import json
 import os
@@ -14,8 +13,10 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Callable
+
+from texlab import packing
 
 
 CANONICAL_CONTENT_DIRS = {
@@ -41,6 +42,15 @@ DEFAULT_GMAD_CANDIDATES = [
 DEFAULT_COMPAT_IGNORE = ["models/*.sw.vtx"]
 STRICT_PACKAGE_INVALID_PATTERNS = tuple(DEFAULT_COMPAT_IGNORE)
 SUMMARY_FILE_NAME = "addon_merge_summary.json"
+# addon.json key of a merged addon: the folder names it was made from. It marks the folder as an output of
+# this tool (gmad reads only title/type/tags/ignore/description, other keys are left alone), and the
+# optimizer copies addon.json, so "<bundle>_optimized" carries it too.
+MERGE_MARKER_KEY = "merged_from"
+LEGACY_DEFAULT_TITLE_PREFIX = "Merged Addon Bundle ("
+# two source addons sharing this share of the smaller one's paths (and at least this many) are reported as
+# copies of the same addon, e.g. "<addon>" next to its "<addon>_optimized"
+SAME_ADDON_MIN_SHARE = 0.5
+SAME_ADDON_MIN_FILES = 20
 
 
 @dataclass(frozen=True)
@@ -124,7 +134,8 @@ def _configure_stdio_for_console_fallback() -> None:
 
 
 def _safe_read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    # utf-8-sig: an addon.json saved with a byte order mark is still an addon.json
+    return json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
 
 
 def _truncate_text(value: str | None, max_chars: int = 1800) -> str | None:
@@ -201,7 +212,44 @@ def _resolve_output_paths(root: Path, output_root: str | None, bundle_name: str 
     return target_root, bundle, merged_root, gma_path
 
 
+def is_merge_output(folder: Path) -> bool:
+    """True when <folder>/addon.json was written by this tool: it has the merge marker, or the default
+    title of the versions before the marker. A title equal to the bundle name is not proof: an addon
+    titled "LVS" is a source when the new addon is named "lvs"."""
+    try:
+        raw = _safe_read_json(folder / "addon.json")
+    except (OSError, ValueError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    if isinstance(raw.get(MERGE_MARKER_KEY), list):
+        return True
+    return str(raw.get("title") or "").startswith(LEGACY_DEFAULT_TITLE_PREFIX)
+
+
+def folder_has_files(folder: Path) -> bool:
+    for _current, _dirs, files in os.walk(folder):
+        if files:
+            return True
+    return False
+
+
+def output_folder_problem(merged_root: Path) -> str | None:
+    """The merged folder is emptied before the copy. Only a folder this tool wrote (or an empty one) may be
+    emptied: with the output next to the sources, a bundle named like one of them would delete it."""
+    if not merged_root.exists():
+        return None
+    if not merged_root.is_dir():
+        return f"The output path is a file: {merged_root}"
+    if is_merge_output(merged_root) or not folder_has_files(merged_root):
+        return None
+    return (f"The output folder already exists and was not made by this version of the addon merge: "
+            f"{merged_root}. Choose another name for the new addon, or remove that folder.")
+
+
 def _collect_existing_merge_output_roots(root: Path, target_root: Path, bundle_name: str) -> list[Path]:
+    """Earlier outputs of this merge that sit among the sources ("<bundle>", "<bundle>_optimized"...). The
+    name alone does not tell: with the bundle named "lvs", "lvs_framework" and "lvs_cars_pack" are sources."""
     if target_root != root:
         return []
 
@@ -212,7 +260,7 @@ def _collect_existing_merge_output_roots(root: Path, target_root: Path, bundle_n
             continue
         if not child.name.casefold().startswith(folded_bundle):
             continue
-        if not (child / "addon.json").exists():
+        if not is_merge_output(child):
             continue
         extra_roots.append(child.resolve())
     return sorted(extra_roots, key=lambda item: str(item).casefold())
@@ -335,23 +383,10 @@ def discover_addons(
 
 
 def matches_ignore(pattern: str, rel_path: str) -> bool:
-    normalized_pattern = pattern.replace("\\", "/").strip()
-    normalized_rel = rel_path.replace("\\", "/")
-    rel_name = PurePosixPath(normalized_rel).name
-
-    checks = [
-        fnmatch.fnmatchcase(normalized_rel, normalized_pattern),
-        fnmatch.fnmatchcase(rel_name, normalized_pattern),
-    ]
-
-    dir_pattern = normalized_pattern.rstrip("/")
-    if dir_pattern and "/" not in dir_pattern:
-        checks.append(normalized_rel.startswith(f"{dir_pattern}/"))
-        checks.append(PurePosixPath(normalized_rel).parts[:1] == (dir_pattern,))
-    else:
-        checks.append(normalized_rel.startswith(f"{dir_pattern}/"))
-
-    return any(checks)
+    """gmad's own test (texlab.packing): the pattern against the whole path, '*' crossing folders. So
+    "readme.txt" is only the file at the addon root and "docs" is not a folder; a broader reading here
+    left out files that the packer publishes."""
+    return packing.ignored(rel_path, (pattern.replace("\\", "/").strip(),))
 
 
 def collect_pending_files(
@@ -518,6 +553,23 @@ def scan_addons(
         else:
             same_path_different.append(entry)
 
+    # two folders that are mostly the same paths: the same addon twice (original + optimized copy, two
+    # versions). Merging them mixes files of both, so it is reported before anything is copied.
+    files_per_addon = Counter(record.addon_name for record in all_records)
+    shared_paths: Counter[tuple[str, str]] = Counter()
+    for records in by_rel_key.values():
+        names = sorted({record.addon_name for record in records}, key=str.casefold)
+        for first_index, first_name in enumerate(names):
+            for second_name in names[first_index + 1:]:
+                shared_paths[(first_name, second_name)] += 1
+    likely_same_addon: list[dict[str, Any]] = []
+    for (first_name, second_name), shared in sorted(shared_paths.items()):
+        smaller = min(files_per_addon[first_name], files_per_addon[second_name])
+        if shared >= SAME_ADDON_MIN_FILES and shared >= smaller * SAME_ADDON_MIN_SHARE:
+            likely_same_addon.append(
+                {"addons": [first_name, second_name], "shared_path_count": shared, "smaller_file_count": smaller}
+            )
+
     duplicate_groups: list[dict[str, Any]] = []
     for sha256, records in sorted(by_hash.items()):
         unique_keys = sorted({record.rel_key for record in records})
@@ -550,6 +602,7 @@ def scan_addons(
         "same_path_identical_collisions": same_path_identical,
         "same_path_different_collisions": same_path_different,
         "cross_path_duplicate_groups": duplicate_groups,
+        "likely_same_addon_pairs": likely_same_addon,
     }
 
 
@@ -672,6 +725,7 @@ def build_merged_manifest(
             "type": merged_type,
             "tags": selected_tags,
             "ignore": safe_ignore,
+            MERGE_MARKER_KEY: [addon["name"] for addon in ordered_addons],
         },
         {
             "selected_type_reason": type_reason,
@@ -772,12 +826,27 @@ def merge_from_scan(
     merged_files.sort(key=lambda item: item["rel_path"].casefold())
     total_merged_files = len(merged_files)
     total_merged_bytes = sum(int(item["size"]) for item in merged_files)
+
+    # addon.json first: it carries the merge marker, so a run stopped in the middle leaves a folder that
+    # the next run recognizes as its own and may empty
+    manifest, manifest_diag = build_merged_manifest(
+        ordered_addons,
+        sorted(file["rel_path"] for file in merged_files),
+        title_override,
+        type_override,
+    )
+    (merged_root / "addon.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
     if total_merged_files > 0:
+        # every folder once and in a fixed order (not once per file, from the copy threads)
+        for folder in sorted({Path(item["destination_path"]).parent for item in merged_files},
+                             key=lambda item: str(item).casefold()):
+            folder.mkdir(parents=True, exist_ok=True)
         progress_every = _progress_interval(total_merged_files)
         copy_workers = _default_copy_workers()
         with ThreadPoolExecutor(max_workers=copy_workers) as executor:
             futures = {
-                executor.submit(copy_file_fast, Path(item["source_path"]), Path(item["destination_path"])): item
+                executor.submit(shutil.copyfile, item["source_path"], item["destination_path"]): item
                 for item in merged_files
             }
             copied_files = 0
@@ -790,14 +859,6 @@ def merge_from_scan(
                 if copied_files == total_merged_files or copied_files % progress_every == 0:
                     print(f"ADDON_MERGE_PROGRESS: merge-files|{copied_files}|{total_merged_files}|{item['rel_path']}")
                     print(f"ADDON_MERGE_PROGRESS: merge-bytes|{copied_bytes}|{max(total_merged_bytes, 1)}|{item['rel_path']}")
-
-    manifest, manifest_diag = build_merged_manifest(
-        ordered_addons,
-        sorted(file["rel_path"] for file in merged_files),
-        title_override,
-        type_override,
-    )
-    (merged_root / "addon.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     report = {
         "generated_at": _iso_now(),
@@ -1309,6 +1370,8 @@ def build_summary_payload(
     validation_report: dict[str, Any] | None,
     summary_md_path: Path,
     exit_code: int,
+    previous_outputs: list[Path] | None = None,
+    output_problem: str | None = None,
 ) -> dict[str, Any]:
     packaging = validation_report.get("packaging") if validation_report else None
     warninvalid = packaging.get("warninvalid_diagnostic") if packaging else None
@@ -1344,7 +1407,8 @@ def build_summary_payload(
             "merge_report": str(work_dir / "reports" / "merge_report.json"),
             "validation_report": str(work_dir / "reports" / "validation_report.json"),
             "summary_markdown": str(summary_md_path),
-            "merged_root": str(merged_root) if merged_root.exists() else None,
+            # a search copies nothing: a folder already at that path is not this run's result
+            "merged_root": str(merged_root) if merged_root.exists() and not scan_only else None,
             "gma_path": str(final_gma_path) if final_gma_path and final_gma_path.exists() else None,
             "warninvalid_gma_path": str(work_dir / "merged_addon_warninvalid.gma")
             if (work_dir / "merged_addon_warninvalid.gma").exists()
@@ -1401,6 +1465,9 @@ def build_summary_payload(
             for addon in scan_report["addons"]
         ],
         "details": {
+            "likely_same_addon_pairs": scan_report.get("likely_same_addon_pairs", [])[:25],
+            "previous_outputs_left_out": [str(path) for path in (previous_outputs or [])],
+            "output_problem": output_problem,
             "discarded_file_count": len(collect_discarded_files(scan_report)),
             "discarded_files_preview": collect_discarded_files(scan_report)[:50],
             "same_path_different_conflict_preview": [
@@ -1489,9 +1556,15 @@ def main(argv: list[str] | None = None) -> int:
     reports_dir.mkdir(parents=True, exist_ok=True)
     output_root, bundle_name, merged_root, final_gma_path = _resolve_output_paths(root, args.output_root, args.bundle_name)
     excluded_roots = [Path(value) for value in args.exclude_dir]
-    excluded_roots.extend(_collect_existing_merge_output_roots(root, output_root, bundle_name))
+    previous_outputs = _collect_existing_merge_output_roots(root, output_root, bundle_name)
+    excluded_roots.extend(previous_outputs)
     if merged_root == root or is_descendant(merged_root, root):
         excluded_roots.append(merged_root)
+
+    output_problem = output_folder_problem(merged_root)
+    if output_problem and not args.scan_only:
+        print(f"[ERROR] {output_problem}")
+        return 2
 
     gmad_path = resolve_gmad(args.gmad)
     extra_ignore_patterns: list[str] = []
@@ -1519,6 +1592,20 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     write_json(reports_dir / "scan_report.json", scan_report)
+
+    for previous in previous_outputs:
+        if previous != merged_root:
+            print(f"[INFO] Left out of the search (an earlier output of this merge): {previous}")
+    if output_problem:
+        print(f"[WARN] {output_problem}")
+    if scan_report["addon_count"] == 0:
+        print(f"[WARN] No addon found in {root}: it needs folders with addon.json or with lua/materials/models/sound...")
+    for pair in scan_report.get("likely_same_addon_pairs", []):
+        print(
+            f"[WARN] {pair['addons'][0]} and {pair['addons'][1]} look like two copies of the same addon "
+            f"({pair['shared_path_count']} of {pair['smaller_file_count']} paths are the same): "
+            "take one of them out of the folder before merging"
+        )
 
     merge_report: dict[str, Any] | None = None
     validation_report: dict[str, Any] | None = None
@@ -1550,6 +1637,8 @@ def main(argv: list[str] | None = None) -> int:
                 validation_report=None,
                 summary_md_path=summary_md,
                 exit_code=0,
+                previous_outputs=[path for path in previous_outputs if path != merged_root],
+                output_problem=output_problem,
             ),
         )
         print(f"ADDON_MERGE_SUMMARY: {summary_path}")
@@ -1612,6 +1701,7 @@ def main(argv: list[str] | None = None) -> int:
             validation_report=validation_report,
             summary_md_path=summary_md,
             exit_code=exit_code,
+            previous_outputs=[path for path in previous_outputs if path != merged_root],
         ),
     )
     print(f"ADDON_MERGE_SUMMARY: {summary_path}")

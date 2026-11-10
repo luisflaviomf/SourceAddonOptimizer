@@ -38,7 +38,8 @@ namespace GmodAddonCompressor.Systems.Optimizer
         int WavChannelsIndex,
         int WavCodecIndex,
         string SoundsLine,
-        bool Lua = false);
+        bool Lua = false,
+        bool Png = false);
 
     /// <summary>One option of the Personalizado chips.</summary>
     internal sealed record WizardChoice(string Key, int Index, string Label, string Description);
@@ -52,6 +53,12 @@ namespace GmodAddonCompressor.Systems.Optimizer
         internal const int CompressScreenModeIndex = 4;
 
         internal const string None = "none";
+
+        /// <summary>
+        /// Every preset recompresses the PNG files without changing a pixel (worker pnglossless); shown at
+        /// the end of the textures line.
+        /// </summary>
+        internal const string PngSuffix = " · PNG sem perda";
 
         // Models "Tela" profile indices (MainWindowContext._modelsScreenProfileList)
         internal static readonly WizardChoice[] ModelChoices =
@@ -95,31 +102,31 @@ namespace GmodAddonCompressor.Systems.Optimizer
             // Only changes that look and sound the same in game.
             WizardProfile.Lossless => new WizardSettings(
                 true, 4, "Geometria intacta, só empacotamento exato",
-                true, 3, "Sem reduzir, só conversão exata BC3→BC1",
+                true, 3, "Sem reduzir, só conversão exata BC3→BC1" + PngSuffix,
                 IncludeWav: false, WavOptimizationIndex: 0, WavRateIndex: 0, WavChannelsIndex: 0, WavCodecIndex: 0,
-                "Não mexe nos sons"),
+                "Não mexe nos sons", Png: true),
             // Smallest size. Textures: the texture stream at 31 dB ("Stream máximo"). Sounds exactly as in
             // Custo-benefício (adaptive conservative, same reference): Luis (2026-11-08) wants that one for every
             // profile, not forced ADPCM.
             WizardProfile.Max => new WizardSettings(
                 true, 3, "Stream: modelos grandes desenhados por Lua no jogo",
-                true, 5, "Stream máximo: texturas decodificadas no jogo, 31 dB",
+                true, 5, "Stream máximo: texturas decodificadas no jogo, 31 dB" + PngSuffix,
                 IncludeWav: true, WavOptimizationIndex: 1, WavRateIndex: 1, WavChannelsIndex: 1, WavCodecIndex: 0,
-                "Adaptativo conservador"),
+                "Adaptativo conservador", Png: true),
             // Models stream + the texture stream at 34 dB (Luis, 2026-11-09: the stream becomes the main method;
             // test bench textures 839 -> 97 MiB). The adaptive WAV profile compares against the manual reference:
             // 22050 Hz mono PCM16 as in his runs (sounds 28.3 -> 9.5 MB); a 44100 Hz stereo reference makes the
             // fallback files bigger than the originals.
             _ => new WizardSettings(
                 true, 3, "Stream: modelos grandes desenhados por Lua no jogo",
-                true, 4, "Stream: texturas decodificadas no jogo",
+                true, 4, "Stream: texturas decodificadas no jogo" + PngSuffix,
                 IncludeWav: true, WavOptimizationIndex: 1, WavRateIndex: 1, WavChannelsIndex: 1, WavCodecIndex: 0,
-                "Adaptativo conservador")
+                "Adaptativo conservador", Png: true)
         };
 
         /// <summary>Settings of the Personalizado profile from the chips the user picked.</summary>
         internal static WizardSettings ForCustom(string models, string textures, string sounds,
-            int wavRateIndex, int wavChannelsIndex, int wavCodecIndex, bool lua)
+            int wavRateIndex, int wavChannelsIndex, int wavCodecIndex, bool lua, bool png = true)
         {
             var m = Find(ModelChoices, models);
             var t = Find(TextureChoices, textures);
@@ -136,7 +143,7 @@ namespace GmodAddonCompressor.Systems.Optimizer
             if (lua)
                 soundsLine += " · Lua minificado";
             string modelsLine = m.Key == None ? "Não mexe nos modelos" : m.Label;
-            string texturesLine = t.Key == None ? "Não mexe nas texturas" : t.Label;
+            string texturesLine = (t.Key == None ? "Não mexe nas texturas" : t.Label) + (png ? PngSuffix : string.Empty);
             // adaptive uses the same reference as Custo-benefício (22050 Hz mono PCM16)
             bool adaptive = s.Key == "adaptive";
             return new WizardSettings(
@@ -148,7 +155,8 @@ namespace GmodAddonCompressor.Systems.Optimizer
                 WavChannelsIndex: adaptive ? 1 : channels,
                 WavCodecIndex: adaptive ? 0 : codec,
                 soundsLine,
-                lua);
+                lua,
+                png);
         }
 
         internal static string Title(WizardProfile profile) => profile switch

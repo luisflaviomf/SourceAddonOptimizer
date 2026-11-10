@@ -77,6 +77,7 @@ namespace GmodAddonCompressor.DataContexts
         private bool _keepImageAspectRatio = true;
         private int _compressModeIndex = 0;
         private bool _compressMagickUseAggressivePng = false;
+        private bool _compressPngLossless = false;
         private uint _imageSkipWidth = 0;
         private uint _imageSkipHeight = 0;
         private int _wavRate = 22050;
@@ -457,6 +458,21 @@ namespace GmodAddonCompressor.DataContexts
             }
         }
 
+        /// <summary>
+        /// PNG files are recompressed without changing any pixel (worker pnglossless) instead of going
+        /// through the reduction of the selected method. The Otimizar assistant always uses it.
+        /// </summary>
+        public bool CompressPngLossless
+        {
+            get { return _compressPngLossless; }
+            set
+            {
+                _compressPngLossless = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(CompressModeRoutingText));
+            }
+        }
+
         public string CompressModeDescriptionText =>
             CompressModeIsScreen
                 ? "Reduz cada textura conforme o quanto ela aparece na tela do jogo."
@@ -490,15 +506,22 @@ namespace GmodAddonCompressor.DataContexts
         {
             get
             {
-                string pngText = (CompressModeIsMagick || CompressModeIsMagickPlus) && CompressMagickUseAggressivePng
+                const string losslessPng = "PNG: sem perda (mesmos pixels, mesmo tamanho de imagem).";
+                string pngText = CompressPngLossless
+                    ? losslessPng
+                    : (CompressModeIsMagick || CompressModeIsMagickPlus) && CompressMagickUseAggressivePng
                     ? "PNG: ImageMagick agressivo (q256), com o Clássico se falhar."
                     : "PNG: Clássico.";
 
                 if (CompressModeIsScreen)
-                    return $"VTF: motor Padrão, perfil {CompressScreenProfileName}. VTF fora de DXT ou sem mipmaps usam o Clássico. PNG, JPG, sons e Lua usam o Clássico.";
+                    return CompressPngLossless
+                        ? $"VTF: motor Padrão, perfil {CompressScreenProfileName}. VTF fora de DXT ou sem mipmaps usam o Clássico. {losslessPng} JPG, sons e Lua usam o Clássico."
+                        : $"VTF: motor Padrão, perfil {CompressScreenProfileName}. VTF fora de DXT ou sem mipmaps usam o Clássico. PNG, JPG, sons e Lua usam o Clássico.";
 
                 if (CompressModeIsMaximum)
-                    return "VTF: lote Maximum (VTF universal) com checagens de qualidade por nível. Os outros tipos usam o Clássico.";
+                    return CompressPngLossless
+                        ? $"VTF: lote Maximum (VTF universal) com checagens de qualidade por nível. {losslessPng} Os outros tipos usam o Clássico."
+                        : "VTF: lote Maximum (VTF universal) com checagens de qualidade por nível. Os outros tipos usam o Clássico.";
 
                 if (CompressModeIsMagickPlus)
                     return $"VTF: Magick e depois conversão exata BC3→BC1 quando o alpha não é usado. {pngText} JPG, sons e Lua usam o Clássico.";
@@ -506,7 +529,9 @@ namespace GmodAddonCompressor.DataContexts
                 if (CompressModeIsMagick)
                     return $"VTF: mesmo caminho do Clássico. {pngText} JPG, sons e Lua usam o Clássico.";
 
-                return "Todos os tipos marcados usam o Clássico.";
+                return CompressPngLossless
+                    ? $"{losslessPng} Os outros tipos marcados usam o Clássico."
+                    : "Todos os tipos marcados usam o Clássico.";
             }
         }
 

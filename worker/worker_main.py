@@ -504,6 +504,9 @@ def main(argv: list[str]) -> int:
     if argv and argv[0] == "texscreen":
         from texlab.screen_compress import main as texscreen_main
         return texscreen_main(argv[1:])
+    if argv and argv[0] == "pnglossless":
+        from png_lossless.cli import main as pnglossless_main
+        return pnglossless_main(argv[1:])
     if argv and argv[0] == "exactpack":
         from exact_distribution.cli import main as exactpack_main
         return exactpack_main(argv[1:])

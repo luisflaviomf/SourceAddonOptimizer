@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import packing
 from .materials import MaterialResolver, TEXTURE_PARAMS
 from .source_model import SourceModel, load_model
 from .vtf import read_vtf, read_vtf_size  # noqa: F401  (read_vtf kept for callers importing it here)
@@ -211,8 +212,9 @@ MAX_SIBLINGS = 40
 def sibling_roots(addon_root: Path) -> list[Path]:
     """Addons beside this one whose models may use its textures (a framework and its packs, a weapon
     base and its weapons). Skips the folder this one was copied from (the assistant's output sits next
-    to its source: <source><suffix>), copies of this one and work folders; none when the folder holds
-    more than MAX_SIBLINGS addons (a whole Workshop download folder would take too long)."""
+    to its source: <source><suffix>), copies of this one, the folders a merged addon was made from (and
+    the merged addon, seen from one of them) and work folders; none when the folder holds more than
+    MAX_SIBLINGS addons (a whole Workshop download folder would take too long)."""
     addon_root = Path(addon_root)
     me = addon_root.name.lower()
     try:
@@ -223,6 +225,8 @@ def sibling_roots(addon_root: Path) -> list[Path]:
     for d in sorted(dirs, key=lambda q: q.name.lower()):
         n = d.name.lower()
         if me.startswith(n) or n.startswith(me) or n.endswith("_work") or not (d / "models").is_dir():
+            continue
+        if packing.copies_of_each_other(addon_root, d):
             continue
         out.append(d)
     return out if len(out) <= MAX_SIBLINGS else []

@@ -26,6 +26,9 @@ namespace GmodAddonCompressor.Models
         // Tela mode: leave the files the engine reports as fallback untouched instead of sending them through
         // the Clássico VTF path (the Otimizar assistant uses this so its result does not depend on hidden options).
         public bool KeepScreenFallbacks { get; init; }
+        // PNG: lossless recompression in the worker (pnglossless: same pixels, same image size) instead of
+        // the reduction of the selected method. Always on in the Otimizar assistant.
+        public bool LosslessPng { get; init; }
 
         public bool IsMagickMode => Mode == CompressPipelineMode.Magick;
         public bool IsMaximumMode => Mode == CompressPipelineMode.Maximum;
@@ -38,21 +41,25 @@ namespace GmodAddonCompressor.Models
 
         public string BuildRoutingSummary()
         {
-            string pngText = ShouldUseMagickForAggressivePng
+            const string losslessPng = "PNG: sem perda (mesmos pixels, mesmo tamanho de imagem).";
+            string pngText = LosslessPng
+                ? losslessPng
+                : ShouldUseMagickForAggressivePng
                 ? "PNG: ImageMagick agressivo (q256), com o Clássico se falhar."
                 : "PNG: Clássico.";
+            string others = LosslessPng ? $"{losslessPng} Os outros tipos usam o Clássico." : "Os outros tipos usam o Clássico.";
 
             if (IsScreenMode)
-                return $"VTF: motor Padrão (por visibilidade na tela), perfil {ScreenProfile}. VTF fora de DXT ou sem mipmaps usam o Clássico. Os outros tipos usam o Clássico.";
+                return $"VTF: motor Padrão (por visibilidade na tela), perfil {ScreenProfile}. VTF fora de DXT ou sem mipmaps usam o Clássico. {others}";
 
             if (IsMaximumMode)
-                return $"VTF: lote Maximum (VTF universal, perfil {MaximumVtfProfile}) com checagens de qualidade por nível. Os outros tipos usam o Clássico.";
+                return $"VTF: lote Maximum (VTF universal, perfil {MaximumVtfProfile}) com checagens de qualidade por nível. {others}";
 
             if (IsMagickPlusMode)
                 return $"VTF: Magick e depois conversão exata BC3→BC1 quando o alpha não é usado. {pngText} JPG, sons e Lua: Clássico.";
 
             if (!IsMagickMode)
-                return "Todos os tipos marcados usam o Clássico.";
+                return LosslessPng ? $"{losslessPng} Os outros tipos marcados usam o Clássico." : "Todos os tipos marcados usam o Clássico.";
 
             return $"VTF: mesmo caminho do Clássico. {pngText} JPG, sons e Lua: Clássico.";
         }

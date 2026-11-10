@@ -28,6 +28,8 @@ function Get-WorkerSourceFiles {
         (Join-Path $PWD "vvd_engine_exact.py"),
         (Join-Path $PWD "tools\meshopt\meshopt_simplify.dll"),
         (Join-Path $PWD "tools\native\gmo_native.dll"),
+        (Join-Path $PWD "tools\oxipng\oxipng.exe"),
+        (Join-Path $PWD "tools\oxipng\LICENSE.oxipng.txt"),
         (Join-Path $PWD "tools\\vtx\\meshopt_stripify.dll"),
         (Join-Path $PWD "tools\\vtx\\LICENSE.meshoptimizer.txt"),
         (Join-Path $PWD "pyinstaller\\worker.spec")
@@ -47,6 +49,7 @@ function Get-WorkerSourceFiles {
     }
 
     Get-ChildItem -LiteralPath (Join-Path $PWD "model_screen") -File -Filter "*.py"
+    Get-ChildItem -LiteralPath (Join-Path $PWD "png_lossless") -File -Filter "*.py"
     Get-ChildItem -LiteralPath (Join-Path $PWD "model_stream") -Recurse -File |
         Where-Object { $_.FullName -notmatch '[\\/]__pycache__[\\/]' -and $_.Extension -ne '.pyc' }
     Get-ChildItem -LiteralPath (Join-Path $PWD "texture_stream") -File |
@@ -217,6 +220,8 @@ function Assert-PackageZip {
         "CrowbarCommandLineDecomp.exe",
         "_internal/meshopt_stripify.dll",
         "_internal/LICENSE.meshoptimizer.txt",
+        "_internal/oxipng.exe",
+        "_internal/LICENSE.oxipng.txt",
         "_internal/base_library.zip",
         "_internal/python311.dll",
         "_internal/maximum_optimizer/native/bin/win-x64/meshopt_bridge.dll",

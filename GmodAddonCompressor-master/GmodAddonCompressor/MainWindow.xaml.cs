@@ -3294,6 +3294,8 @@ namespace GmodAddonCompressor
             }
             if (_settings.CompressMagickUseAggressivePng.HasValue)
                 _context.CompressMagickUseAggressivePng = _settings.CompressMagickUseAggressivePng.Value;
+            if (_settings.CompressPngLossless.HasValue)
+                _context.CompressPngLossless = _settings.CompressPngLossless.Value;
 
             if (_context.OptimizerPresetIndex == PresetCustomIndex)
             {
@@ -3380,7 +3382,8 @@ namespace GmodAddonCompressor
                 AudioOggChannelsIndex = _context.OggChannelsIndex,
                 AudioOggQualityIndex = _context.OggQualityIndex,
                 CompressModeIndex = _context.CompressModeIndex,
-                CompressMagickUseAggressivePng = _context.CompressMagickUseAggressivePng
+                CompressMagickUseAggressivePng = _context.CompressMagickUseAggressivePng,
+                CompressPngLossless = _context.CompressPngLossless
             };
             SaveAddonMergeSettings(settings);
             settings.ExactEngineRoot = TextBox_ExactEngine.Text.Trim();
@@ -4085,7 +4088,9 @@ namespace GmodAddonCompressor
                 ScreenProfile = _context.CompressScreenProfileName,
                 // the assistant's result depends only on its profile, never on the Clássico options of the
                 // advanced tabs: files the Tela engine does not handle (NOMIP, non-DXT) stay as they are
-                KeepScreenFallbacks = _wizardRunning
+                KeepScreenFallbacks = _wizardRunning,
+                // PNG: same pixels, smaller file (worker pnglossless) instead of the reduction of the method
+                LosslessPng = _context.CompressPngLossless
             };
         }
 

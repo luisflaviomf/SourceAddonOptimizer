@@ -6,10 +6,11 @@
 Copies the addon to <addon><suffix> (next to it), simplifies every compiled model in the copy
 straight in the binaries (strong_mirror: whole-part remesh + mirror instancing, see remesh.py and
 mirror.py), snaps VVD normals/tangents to the engine's own steps, removes
-.dx80/.sw VTX files and strips every .dx90.vtx. A model that fails (unsupported structure,
-validation error) is left exactly as it was. Progress lines follow the Models runner format.
+.dx80/.sw/.xbox VTX files (the PC game only reads .dx90.vtx) and strips every .dx90.vtx. A model that
+fails (unsupported structure, validation error) is left exactly as it was. Progress lines follow the
+Models runner format.
 Profile "exact" ("Sem perda") skips the per-model step: the models stay byte for byte as copied
-and only the packaging steps (dx80/sw removal, engine-exact normals, strips) change them.
+and only the packaging steps (dx80/sw/xbox removal, engine-exact normals, strips) change them.
 """
 from __future__ import annotations
 
@@ -33,13 +34,14 @@ _RESOLVERS: dict = {}
 def _sibling_roots(addon_root: str, folder: str = "materials") -> list[Path]:
     """Other addons next to this one (e.g. lvs_framework beside lvs_cars_pack) that have `folder`:
     models often use materials (and Lua) another addon ships. Our own outputs (<addon><suffix>,
-    work folders) are skipped."""
+    work folders) are skipped, and so are the folders a merged addon was made from (same files)."""
+    from texlab import packing
     src = Path(addon_root)
     out = []
     try:
         for d in sorted(src.parent.iterdir(), key=lambda q: q.name.lower()):
             if d.is_dir() and d != src and not d.name.lower().startswith(src.name.lower()) \
-                    and (d / folder).is_dir():
+                    and (d / folder).is_dir() and not packing.copies_of_each_other(src, d):
                 out.append(d)
     except OSError:
         pass
@@ -335,8 +337,9 @@ def main(argv: list[str]) -> int:
             rest.result()   # the rest of the addon is in place (raises if a copy failed)
             copier.shutdown()
         print("== Step 3/3: Packaging ==", flush=True)
-        print("== Packaging: Remove obsolete dx80/sw vtx ==", flush=True)
-        for pat in ("*.dx80.vtx", "*.sw.vtx"):
+        # the PC game only reads .dx90.vtx; .xbox.vtx is the original Xbox variant some old packs still ship
+        print("== Packaging: Remove obsolete dx80/sw/xbox vtx ==", flush=True)
+        for pat in ("*.dx80.vtx", "*.sw.vtx", "*.xbox.vtx"):
             for p in (out / "models").rglob(pat):
                 p.unlink(missing_ok=True)
         print("== Packaging: VVD engine-exact normals ==", flush=True)
