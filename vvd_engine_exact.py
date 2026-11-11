@@ -179,8 +179,8 @@ def optimize_tree(models_root: Path, report_path: Path | None = None, jobs: int 
     if executor is not None and len(paths) > 1:
         results = list(executor.map(_snap_file, [str(p) for p in paths], chunksize=1))
     elif jobs > 1 and len(paths) > 1:
-        from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=min(jobs, len(paths))) as pool:
+        from texlab.jobs import process_pool
+        with process_pool(min(jobs, len(paths))) as pool:
             results = list(pool.map(_snap_file, [str(p) for p in paths], chunksize=1))
     else:
         results = [_snap_file(p) for p in paths]

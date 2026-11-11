@@ -58,7 +58,17 @@ def inv53(s, d):
 
 
 def dwt(p, levels):
-    """plane -> (LL, [(LH, HL, HH) per level, coarse to fine])."""
+    """plane -> (LL, [(LH, HL, HH) per level, coarse to fine]). By the native library when it is there
+    (same bytes, texlab.native.ts_dwt); dwt_numpy is the reference."""
+    from texlab import native
+    if native.available() and getattr(p, "ndim", 0) == 2 and p.dtype == np.float64:
+        out = native.ts_dwt(p, levels)
+        if out is not None:
+            return out
+    return dwt_numpy(p, levels)
+
+
+def dwt_numpy(p, levels):
     bands = []
     ll = p
     for _ in range(levels):
@@ -89,6 +99,20 @@ def levels_for(w, h, max_levels=MAX_LEVELS):
 def quant(c, st):
     """dead-zone quantizer (rounding offset 0.4)."""
     return (np.sign(c) * np.floor(np.abs(c) / st + 0.4)).astype(np.int64)
+
+
+def put_quant(out: bytearray, b, st, noise=False):
+    """put_band(out, quant(b, st)), or put_band_nf with the band's noise map: one pass in the native library
+    when it is there (same bytes)."""
+    from texlab import native
+    data = native.ts_put_band(b, st, noise) if native.available() and getattr(b, "ndim", 0) == 2 else None
+    if data is not None:
+        out += data
+    elif noise:
+        q = quant(b, st)
+        put_band_nf(out, q, noise_codes(b, q, st))
+    else:
+        put_band(out, quant(b, st))
 
 
 def put_band(out: bytearray, q):
@@ -173,6 +197,15 @@ def put_band_nf(out: bytearray, q, codes):
 
 # ------------------------------------------------------------------ colour transforms
 def rgb_to_ycocg(rgb):
+    from texlab import native
+    if native.available() and isinstance(rgb, np.ndarray) and rgb.dtype == np.float64:
+        planes = native.ts_ycocg(rgb)
+        if planes is not None:
+            return planes
+    return rgb_to_ycocg_numpy(rgb)
+
+
+def rgb_to_ycocg_numpy(rgb):
     r, g, b = [rgb[..., i].astype(np.float64) for i in range(3)]
     return [0.25 * r + 0.5 * g + 0.25 * b - 128.0, 0.5 * r - 0.5 * b, -0.25 * r + 0.5 * g - 0.25 * b]
 
@@ -191,16 +224,42 @@ def normal_z(x, y):
 
 def unit_normals(rgb):
     """normal-map texels -> normalized vectors expressed in 0..255 (what the shader lights with)."""
+    from texlab import native
+    if native.available() and isinstance(rgb, np.ndarray) and rgb.dtype == np.float64 and rgb.ndim == 3:
+        out = native.ts_unit_normals(rgb)
+        if out is not None:
+            return out
+    return unit_normals_numpy(rgb)
+
+
+def unit_normals_numpy(rgb):
     n = rgb / 127.5 - 1.0
     ln = np.sqrt((n * n).sum(-1, keepdims=True))
     return (n / np.maximum(ln, 1e-6) + 1.0) * 127.5
 
 
 # ------------------------------------------------------------------ encoder
+DICT_SIZE = 1 << 24
+# The compression of every chunk. It is lossless: any setting decodes to the same bytes in game, only the
+# file size changes. Preset 9 is 2.5 times faster than 9 | PRESET_EXTREME for stream files 3.5% larger on
+# the test bench (82.6 -> 85.5 MiB of 728; Luis's choice, 2026-11-10: the extreme preset was more than half
+# of the conversion time; the numbers of every level are in docs/velocidade-2026-11-10.md). pb = 0: the
+# coefficients are single bytes with no 4-byte period, which makes the files 0.5% smaller at no cost.
+LZMA_SETTINGS = {"preset": 9, "pb": 0}
+
+
 def lzma_chunk(body) -> bytes:
+    # The encoder gets a dictionary just large enough for the chunk: before the first byte it clears tables
+    # sized by the dictionary (6 ms for 16 MB; a texture has some twenty chunks, many of a few bytes). The
+    # header keeps announcing 16 MB, as every file written before: a decoder only needs a dictionary at
+    # least as large as the encoder's.
+    size = 1 << 12
+    while size < len(body):
+        size <<= 1
     comp = bytearray(lzma.compress(bytes(body), format=lzma.FORMAT_ALONE,
-                                   filters=[{"id": lzma.FILTER_LZMA1, "preset": 9 | lzma.PRESET_EXTREME,
-                                             "dict_size": 1 << 24}]))
+                                   filters=[{"id": lzma.FILTER_LZMA1, **LZMA_SETTINGS,
+                                             "dict_size": min(size, DICT_SIZE)}]))
+    comp[1:5] = struct.pack("<I", DICT_SIZE)
     comp[5:13] = struct.pack("<Q", len(body))       # known size: what util.Decompress expects
     return bytes(comp)
 
@@ -222,23 +281,29 @@ def encode(v, rgba, step, alpha_step=None, chroma_drop=1, normal=False, keep_alp
         raise ValueError("size not suited")
     rgba = np.asarray(rgba, np.float64)
     if normal:
-        n = unit_normals(rgba[..., :3])
-        planes = [n[..., 0] - 128.0, n[..., 1] - 128.0]
         steps = [step, step]
         drops = [0, 0]
         fills = [0, 0]
         chroma_drop = 0
     else:
-        planes = rgb_to_ycocg(rgba)
         steps = [step, step * chroma_mul, step * chroma_mul]
         drops = [0, chroma_drop, chroma_drop]
         fills = [fill_levels, 0, 0]
     if keep_alpha:
-        planes.append(rgba[..., 3] - 128.0)
         steps.append(alpha_step or step)
         drops.append(0)
         fills.append(fill_levels)
-    if transforms is not None and len(transforms) != len(planes):
+    if transforms is None:
+        # the planes are only built when nobody transformed them before
+        if normal:
+            n = unit_normals(rgba[..., :3])
+            planes = [n[..., 0] - 128.0, n[..., 1] - 128.0]
+        else:
+            planes = rgb_to_ycocg(rgba)
+        if keep_alpha:
+            planes.append(rgba[..., 3] - 128.0)
+        transforms = [dwt(p, L) for p in planes]
+    elif len(transforms) != len(steps):
         raise ValueError("transforms do not match the planes")
     out_fmt = v.fmt if v.fmt in RAW_ORDER else (15 if keep_alpha else 13)
     mips = v.mip_count
@@ -255,14 +320,14 @@ def encode(v, rgba, step, alpha_step=None, chroma_drop=1, normal=False, keep_alp
     P = 0
     while P < L and max(w, h) >> P > preview_side:
         P += 1
-    head = bytearray(struct.pack("<HHBBBBB", w, h, L, len(planes), 1 if normal else 0, chroma_drop, P))
-    head += struct.pack("<%df" % len(planes), *steps)
+    head = bytearray(struct.pack("<HHBBBBB", w, h, L, len(steps), 1 if normal else 0, chroma_drop, P))
+    head += struct.pack("<%df" % len(steps), *steps)
     head += struct.pack("<I", len(header)) + header
     head += struct.pack("<BB", out_fmt, mips)
     fine = {}
-    for pi, (p, st, drop, fill) in enumerate(zip(planes, steps, drops, fills)):
+    for pi, (st, drop, fill) in enumerate(zip(steps, drops, fills)):
         st = float(np.float32(st))               # the decoder reads the step as float32
-        ll, bands = transforms[pi] if transforms is not None else dwt(p, L)
+        ll, bands = transforms[pi]
         put_band(head, np.round(ll / st).astype(np.int64))
         for li, trio in enumerate(bands):
             lvl = L - li
@@ -270,11 +335,8 @@ def encode(v, rgba, step, alpha_step=None, chroma_drop=1, normal=False, keep_alp
                 out = head if lvl > P else fine.setdefault((lvl, pi, k), bytearray())
                 if lvl <= drop:
                     put_band(out, np.zeros(1, np.int64))
-                elif lvl <= fill:
-                    q = quant(b, st)
-                    put_band_nf(out, q, noise_codes(b, q, st))
                 else:
-                    put_band(out, quant(b, st))
+                    put_quant(out, b, st, noise=lvl <= fill)
     chunks = [head] + [fine[key] for key in sorted(fine, key=lambda t: (-t[0], t[1], t[2]))]
     if len(chunks) > 255:
         raise ValueError("too many chunks")

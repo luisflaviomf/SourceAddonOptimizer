@@ -885,3 +885,107 @@ def test_lua_runtime_asks_for_the_sky_and_what_the_map_names_and_prefetches_up_t
     for m in names:
         assert _shown(g2, m) == _stream_name(g2, slug, m)
     assert g2.GMOT.Stats.decoded == 0
+
+
+def test_encoder_bytes_do_not_depend_on_the_native_library(monkeypatch):
+    """choose() + encode() of a colour texture with alpha and of a normal map: the same blob with the native
+    library, without it, and without the transforms choose() hands over."""
+    from texlab import native
+    if not native.available():
+        pytest.skip("gmo_native.dll not built")
+    y, x = np.mgrid[0:128, 0:128] / 128.0
+    nx, ny = 0.4 * np.sin(8 * x), 0.4 * np.cos(6 * y)
+    nz = np.sqrt(1 - nx ** 2 - ny ** 2)
+    normal = np.stack([(nx + 1) * 127.5, (ny + 1) * 127.5, (nz + 1) * 127.5, np.full_like(nx, 255)], -1)
+    cases = [(smooth_image(256, 128, alpha=True), 15, {"w": 1.0, "roles": {"base"}}),
+             (smooth_image(128, 256, seed=4), 13, None),
+             (normal, 13, {"w": None, "roles": {"normal"}})]
+
+    def blobs():
+        out = []
+        for img_, fmt, use in cases:
+            v, rgba = vtf_and_rgba(img_, fmt)
+            transforms = []
+            c = choose.choose(v, rgba, use, 34.0, transforms)
+            kw = dict(alpha_step=c["alpha_step"], chroma_drop=c["drop"], normal=c["normal"], keep_alpha=c["alpha"],
+                      fill_levels=2, preview_side=64)
+            out.append((c, codec.encode(v, rgba, c["step"], transforms=transforms, **kw),
+                        codec.encode(v, rgba, c["step"], **kw)))
+        return out
+    with_library = blobs()
+    monkeypatch.setattr(native, "available", lambda: False)
+    without = blobs()
+    assert with_library == without
+    for c, with_transforms, alone in with_library:
+        assert with_transforms == alone
+    assert with_library[0][0]["alpha"] and with_library[2][0]["normal"] and not with_library[1][0]["normal"]
+
+
+def test_chunk_header_and_round_trip():
+    """lzma_chunk: LZMA-alone with lc 3, lp 0, pb 0, a 16 MB dictionary announced and the size of the body in
+    the header (what util.Decompress reads); the encoder itself works with a dictionary sized to the chunk,
+    which gives the stream a 16 MB one would."""
+    import lzma
+    rng = np.random.default_rng(8)
+    bodies = [b"\0", bytes(5000), rng.integers(-3, 4, 70000).astype(np.int8).tobytes(),
+              (rng.normal(0, 1.2, 300000).round().astype(np.int8)).tobytes(),
+              rng.integers(-300, 300, 40000).astype("<i2").tobytes()]
+    for body in bodies:
+        chunk = codec.lzma_chunk(body)
+        assert chunk[0] == 3                                             # (pb * 5 + lp) * 9 + lc
+        assert struct.unpack_from("<IQ", chunk, 1) == (1 << 24, len(body))
+        assert codec.unlzma(chunk) == body
+        whole =bytearray(lzma.compress(body, format=lzma.FORMAT_ALONE,
+                                        filters=[{"id": lzma.FILTER_LZMA1, **codec.LZMA_SETTINGS,
+                                                  "dict_size": 1 << 24}]))
+        whole[5:13] = struct.pack("<Q", len(body))
+        assert chunk == bytes(whole)
+
+
+def test_direct_texture_is_coded_from_the_reduced_image(tmp_path, monkeypatch):
+    """convert(direct=...): the texture engine hands over the reduced image of a texture it did not write.
+    The blob is coded from that image with the header of the reduced file; the original on disk is only
+    read for its header."""
+    from PIL import Image
+    root = _addon(tmp_path)
+    body = root / "materials/models/car/body.vtf"
+    original = read_vtf(body)
+    reduced = smooth_image(128, 128, seed=9).round().astype(np.uint8)       # not a downscale of the original
+    png = tmp_path / "body_reduced.png"
+    Image.fromarray(reduced, "RGBA").save(png)
+    uses = {"car.mdl": {"models/car/body"}, "truck.mdl": {"models/car/truck"}}
+    monkeypatch.setattr(texture_stream, "_model_textures", lambda mdl, resolver: uses.get(mdl.name, set()))
+    s = texture_stream.convert(root, jobs=1, siblings=[], direct={body: (str(png), 13, 1, "top")})
+    assert s["direct"] == 1 and s["direct_kept"] == []
+    row = next(r for r in s["rows"] if r["path"].endswith("body.vtf"))
+    out = read_vtf(codec.lua_vtf((root / "data_static/gmot" / s["slug"] / f"{row['i']}.dat").read_bytes()))
+    assert (out.width, out.height, out.fmt, out.mip_count) == (128, 128, 13, original.mip_count - 1)
+    assert codec.psnr(decode_level(out, 0)[..., :3], reduced[..., :3].astype(np.float64)) >= 30.0
+    # the size it had to beat is the reduced file's, and the placeholder comes from the reduced image too
+    assert row["before"] == len(make_dxt_vtf(smooth_image(128, 128)))
+    assert read_vtf(body).width == 16
+    # the same slug whether the hashes come from the workers or from the files
+    import hashlib
+    content = hashlib.sha1()
+    for r in sorted(s["rows"], key=lambda r: r["path"][len("materials/"):-4]):
+        blob = (root / "data_static/gmot" / s["slug"] / f"{r['i']}.dat").read_bytes()
+        content.update(r["path"][len("materials/"):-4].encode("utf-8") + b"\0" + hashlib.sha1(blob).digest())
+    assert s["slug"].endswith(content.hexdigest()[:7])
+
+
+def test_direct_texture_the_encoder_leaves_goes_back_to_the_caller(tmp_path, monkeypatch):
+    from PIL import Image
+    root = _addon(tmp_path)
+    body, hud = root / "materials/models/car/body.vtf", root / "materials/models/car/hud.vtf"
+    before = {p: p.read_bytes() for p in (body, hud)}
+    wrong = tmp_path / "wrong.png"
+    Image.fromarray(smooth_image(64, 64).round().astype(np.uint8), "RGBA").save(wrong)     # not the planned size
+    small = tmp_path / "small.png"
+    Image.fromarray(smooth_image(32, 32).round().astype(np.uint8), "RGBA").save(small)
+    monkeypatch.setattr(texture_stream, "_model_textures", lambda mdl, resolver: set())
+    s = texture_stream.convert(root, jobs=1, siblings=[], direct={str(body): (str(wrong), 13, 1, "top"),
+                                                                  str(hud): (str(small), 13, 2, "top")})
+    # body: the image does not match the plan; hud: 32 px once reduced, below what the encoder takes
+    assert s["direct"] == 2 and sorted(Path(p).name for p in s["direct_kept"]) == ["body.vtf", "hud.vtf"]
+    assert all(p.read_bytes() == data for p, data in before.items())
+    assert not any(r["path"].endswith(("body.vtf", "hud.vtf")) for r in s["rows"])

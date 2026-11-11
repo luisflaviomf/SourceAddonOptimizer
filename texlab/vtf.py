@@ -24,6 +24,7 @@ LOWRES_TAG = b"\x01\x00\x00"
 NO_DATA_FLAG = 0x02
 
 TEXTUREFLAGS_NOMIP = 0x100
+TEXTUREFLAGS_NOLOD = 0x200
 TEXTUREFLAGS_ENVMAP = 0x4000
 TEXTUREFLAGS_NORMAL = 0x80
 TEXTUREFLAGS_ONEBITALPHA = 0x1000
@@ -278,3 +279,26 @@ def write_vtf(template: Vtf, fmt: int, width: int, height: int, levels: list[byt
             new = moved[tag]
         struct.pack_into("<I", header, 84 + i * 8, new)
     return bytes(header) + bytes(body) + image
+
+
+def one_level_flags(flags: int, levels: int) -> int:
+    """Flags of a texture written with `levels` mip levels. The game wants NOLOD and NOMIP on a texture
+    stored as a single level: loading one without them, it prints "Encountered VTF with 1 mip level and
+    without NoLOD flag! Fixing.." (and the same for NoMIP) and sets the flags itself. Written here, the
+    texture is the same in game and the console stays quiet (2026-11-10 server test: icons and small
+    textures rebuilt as one level)."""
+    return flags | TEXTUREFLAGS_NOLOD | TEXTUREFLAGS_NOMIP if levels == 1 else flags
+
+
+def planned_reduced_vtf(v: Vtf, out_fmt: int, drop: int, kind: str) -> bytes:
+    """The file the texture engine writes for `v` reduced by `drop` levels in DXT format `out_fmt`, with
+    zeros for pixels: the same header, flags, number of levels and size as the real one. kind: "top" (a
+    new top level over the original lower mips), "alone" (the top level alone, for a texture stored without
+    mips) or "chain" (a chain VTFCmd builds from the image: it always writes the full chain, down to 1x1).
+    The stream encoder takes its output header and the size to beat from it without the texture having
+    been DXT-encoded first."""
+    w, h = max(1, v.width >> drop), max(1, v.height >> drop)
+    count = {"top": v.mip_count - drop, "alone": 1, "chain": max(w, h).bit_length()}[kind]
+    flags = v.flags & ~TEXTUREFLAGS_EIGHTBITALPHA if out_fmt == 13 else v.flags
+    levels = [bytes(image_bytes(out_fmt, max(1, w >> i), max(1, h >> i))) for i in range(count)]
+    return write_vtf(v, out_fmt, w, h, levels, one_level_flags(flags, count))

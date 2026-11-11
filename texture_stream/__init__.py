@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parent
@@ -90,7 +90,12 @@ def encode_one(task) -> dict:
         return {"path": task[0], "keep": f"error: {type(e).__name__}: {e}"[:200]}
 
 
-def _encode_one(path, use, target, fill, tmp_blob) -> dict:
+def direct_key(path) -> str:
+    """One spelling per file for the `direct` textures of convert()."""
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _encode_one(path, use, target, fill, tmp_blob, direct=None) -> dict:
     from texlab.vtf import decode_level, read_vtf
 
     from .choose import choose, eligible
@@ -101,10 +106,24 @@ def _encode_one(path, use, target, fill, tmp_blob) -> dict:
         v = read_vtf(p)
     except Exception:
         return {"path": path, "keep": "unreadable"}
+    if direct is not None:
+        # The texture engine planned this texture reduced and hands over the reduced image itself (see
+        # convert): the header and the size to beat are those of the file it was going to write.
+        from texlab.vtf import planned_reduced_vtf
+        png, out_fmt, drop, kind = direct
+        planned = planned_reduced_vtf(v, out_fmt, drop, kind)
+        v, size = read_vtf(planned), len(planned)
     why = eligible(v)
     if why:
         return {"path": path, "keep": why}
-    rgba = decode_level(v, 0).astype("float64")
+    if direct is not None:
+        import numpy as np
+        from PIL import Image
+        rgba = np.asarray(Image.open(png).convert("RGBA")).astype("float64")
+        if rgba.shape[:2] != (v.height, v.width):
+            raise ValueError("the reduced image does not have the planned size")
+    else:
+        rgba = decode_level(v, 0).astype("float64")
     transforms = []
     c = choose(v, rgba, use, target, transforms)
     data = encode(v, rgba, c["step"], alpha_step=c["alpha_step"], chroma_drop=c["drop"], normal=c["normal"],
@@ -113,7 +132,8 @@ def _encode_one(path, use, target, fill, tmp_blob) -> dict:
     if len(data) + len(ph) >= size:
         return {"path": path, "keep": "no_gain"}
     _write_atomic(Path(tmp_blob), data)
-    return {"path": path, "blob": len(data), "placeholder": ph, "before": size, "side": max(v.width, v.height),
+    return {"path": path, "blob": len(data), "sha1": hashlib.sha1(data).digest(), "placeholder": ph, "before": size,
+            "side": max(v.width, v.height),
             **{k: c[k] for k in ("normal", "alpha", "step", "drop", "alpha_step", "rgb_db", "alpha_db")}}
 
 
@@ -183,13 +203,15 @@ def _run_tasks(tasks, order, jobs, root, emit) -> dict:
     breaks the pool: what did not finish is done again one at a time in a fresh pool, so one bad file keeps
     its VTF instead of failing the whole addon."""
     from concurrent.futures.process import BrokenProcessPool
+
+    from texlab.jobs import process_pool
     emit("PROGRESS", "stream", 0, len(tasks), "")
     results, done = {}, 0
     todo = list(range(len(tasks)))
     workers = max(1, jobs)
     while todo:
         broken = False
-        with ProcessPoolExecutor(max_workers=workers) as ex:
+        with process_pool(workers) as ex:
             futures = {ex.submit(encode_one, tasks[k]): k for k in todo}
             for fut in as_completed(futures):
                 k = futures[fut]
@@ -232,8 +254,12 @@ def compose_runtime(manifest: dict) -> str:
 
 
 def convert(root: Path, jobs: int = 4, target: float = DEFAULT_TARGET_DB, fill: int = DEFAULT_FILL_LEVELS,
-            siblings: list[Path] | None = None, emit=None) -> dict:
-    """Stream the textures of the addon folder `root` in place. Returns a summary (sizes, counts, rows)."""
+            siblings: list[Path] | None = None, emit=None, direct: dict | None = None) -> dict:
+    """Stream the textures of the addon folder `root` in place. Returns a summary (sizes, counts, rows).
+    direct: {VTF path: (PNG of the reduced image, DXT format, levels dropped, kind)} for textures
+    the texture engine reduced but did not write: the file on disk is still the original and the blob is
+    coded from the PNG, with the header of the reduced file (texlab.vtf.planned_reduced_vtf). The ones that
+    stay a VTF after all come back in summary["direct_kept"] for the caller to write the regular way."""
     from texlab.density import sibling_roots
     from texlab.materials import MaterialResolver
 
@@ -285,14 +311,21 @@ def convert(root: Path, jobs: int = 4, target: float = DEFAULT_TARGET_DB, fill: 
     classes = classify(ours, reached, refs, {vref: sh for vref, sh, _p in vmts}, roots)
     order = sorted(ours)
     tmp_dir = root / BLOB_DIR / ("tmp_" + slug)
-    tasks = [(str(ours[ref]), uses.get(ref), target, fill, str(tmp_dir / f"{k}.tmp")) for k, ref in enumerate(order)]
+    direct = {direct_key(p): d for p, d in (direct or {}).items()}
+    tasks = [(str(ours[ref]), uses.get(ref), target, fill, str(tmp_dir / f"{k}.tmp"), direct.get(direct_key(ours[ref])))
+             for k, ref in enumerate(order)]
     results = _run_tasks(tasks, order, jobs, root, emit)
+    summary["direct"] = sum(1 for t in tasks if t[5] is not None)
+    summary["direct_kept"] = [tasks[k][0] for k, ref in enumerate(order)
+                              if tasks[k][5] is not None and "keep" in results[ref]]
     # the slug also carries the content: two different addons whose folders have the same name never share
     # data_static/gmot/<slug>/ or materials/gmot/<slug>/ (the game would serve one addon's files to the other)
+    # (the hash of each blob comes from the process that wrote it: opening a thousand files that were just
+    # written, only to hash them, cost 10 s on a large addon, most of it the antivirus looking at each)
     content = hashlib.sha1()
     for k, ref in enumerate(order):
         if "keep" not in results[ref]:
-            content.update(ref.encode("utf-8") + b"\0" + hashlib.sha1((tmp_dir / f"{k}.tmp").read_bytes()).digest())
+            content.update(ref.encode("utf-8") + b"\0" + results[ref].pop("sha1"))
     slug = slug[:5] + content.hexdigest()[:7]
     summary["slug"] = slug
     summary["blob_ext"], summary["packed"] = ext, packed

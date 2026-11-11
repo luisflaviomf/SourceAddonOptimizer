@@ -289,8 +289,8 @@ def collect_usage(addon_root: Path, extra_roots: list[Path] | None = None, jobs:
     if executor is not None:
         per_model = list(executor.map(_model_usage, work, chunksize=1))
     elif jobs > 1 and len(work) > 1:
-        from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=jobs) as ex:
+        from .jobs import process_pool
+        with process_pool(jobs) as ex:
             per_model = list(ex.map(_model_usage, work, chunksize=1))
     else:
         per_model = [_model_usage(w) for w in work]

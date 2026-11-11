@@ -12,7 +12,7 @@ pub mod seams;
 pub mod tstream;
 
 /// Bumped whenever an exported function changes behaviour or signature.
-pub const ABI_VERSION: u32 = 5;
+pub const ABI_VERSION: u32 = 7;
 
 /// `texlab.allocate._sample_map`: 8x8 wrapped box blur of `m` (h x w float32) sampled at `n`
 /// UV pairs (float64, interleaved u, v). Writes `n` floats to `out`.
@@ -80,6 +80,90 @@ pub unsafe extern "C" fn gmo_ts_recon(coef: *const f64, coef_len: usize, h: u32,
     0
 }
 
+/// `texture_stream.codec.dwt`: the 5/3 wavelet transform of a plane of `h` x `w`, `levels` levels, in
+/// the layout `gmo_ts_recon` reads (LL, then LH, HL, HH of each level, coarse to fine).
+///
+/// # Safety
+/// `plane` and `out` must hold h * w doubles.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_dwt(plane: *const f64, h: u32, w: u32, levels: u32, out: *mut f64) -> i32 {
+    let (h, w, levels) = (h as usize, w as usize, levels as usize);
+    if plane.is_null() || out.is_null() || h == 0 || w == 0 || levels > 16 || h % (1 << levels) != 0
+        || w % (1 << levels) != 0 {
+        return -3;
+    }
+    tstream::dwt(
+        std::slice::from_raw_parts(plane, h * w),
+        h,
+        w,
+        levels,
+        std::slice::from_raw_parts_mut(out, h * w),
+    );
+    0
+}
+
+/// `texture_stream.codec.put_band(out, quant(band, st))` (`noise` 0) or `put_band_nf` with the band's
+/// noise map (`noise` 1) for a band of `h` x `w`: writes the bytes to `out` (`cap` bytes) and returns how
+/// many, -1 when the Python code would raise (coefficient out of range), -2 when `cap` is too small,
+/// -3 for a null pointer or zero size.
+///
+/// # Safety
+/// `band` must hold h * w doubles and `out` `cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_put_band(band: *const f64, h: u32, w: u32, st: f64, noise: u32, out: *mut u8,
+                                         cap: usize) -> isize {
+    let (h, w) = (h as usize, w as usize);
+    if band.is_null() || out.is_null() || h == 0 || w == 0 || !(st > 0.0) {
+        return -3;
+    }
+    match tstream::put_band(std::slice::from_raw_parts(band, h * w), h, w, st, noise != 0) {
+        None => -1,
+        Some(bytes) if bytes.len() > cap => -2,
+        Some(bytes) => {
+            std::slice::from_raw_parts_mut(out, bytes.len()).copy_from_slice(&bytes);
+            bytes.len() as isize
+        }
+    }
+}
+
+/// `texture_stream.codec.rgb_to_ycocg`: `n` pixels of `stride` doubles each (R, G, B first) to the
+/// planes Y, Co, Cg (`n` doubles each).
+///
+/// # Safety
+/// `rgb` must hold (n - 1) * stride + 3 doubles and `y`, `co`, `cg` n doubles each.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_ycocg(rgb: *const f64, n: usize, stride: usize, y: *mut f64, co: *mut f64,
+                                      cg: *mut f64) -> i32 {
+    if rgb.is_null() || y.is_null() || co.is_null() || cg.is_null() || n == 0 || stride < 3 {
+        return -3;
+    }
+    tstream::ycocg(
+        std::slice::from_raw_parts(rgb, (n - 1) * stride + 3),
+        stride,
+        std::slice::from_raw_parts_mut(y, n),
+        std::slice::from_raw_parts_mut(co, n),
+        std::slice::from_raw_parts_mut(cg, n),
+    );
+    0
+}
+
+/// `texture_stream.codec.unit_normals`: `n` pixels of `stride` doubles each to 3 * n doubles.
+///
+/// # Safety
+/// `rgb` must hold (n - 1) * stride + 3 doubles and `out` 3 * n doubles.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_unit_normals(rgb: *const f64, n: usize, stride: usize, out: *mut f64) -> i32 {
+    if rgb.is_null() || out.is_null() || n == 0 || stride < 3 {
+        return -3;
+    }
+    tstream::unit_normals(
+        std::slice::from_raw_parts(rgb, (n - 1) * stride + 3),
+        stride,
+        std::slice::from_raw_parts_mut(out, 3 * n),
+    );
+    0
+}
+
 /// Squared error of the colour rebuilt from Y, Co, Cg (`n` doubles each) against `reference`
 /// (3 * n doubles, RGB interleaved): what numpy averages in `texture_stream.codec.psnr`.
 ///
@@ -134,6 +218,56 @@ pub unsafe extern "C" fn gmo_ts_sqerr_normal(x: *const f64, y: *const f64, refer
         std::slice::from_raw_parts(y, n),
         std::slice::from_raw_parts(reference, 3 * n),
         std::slice::from_raw_parts_mut(out, 3 * n),
+    );
+    0
+}
+
+/// `np.mean` of the array `gmo_ts_sqerr_ycocg` writes (numpy's pairwise summation), to `out`.
+///
+/// # Safety
+/// `y`, `co`, `cg` must hold n doubles, `reference` 3 * n and `out` one.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_mse_ycocg(y: *const f64, co: *const f64, cg: *const f64, reference: *const f64,
+                                          n: usize, out: *mut f64) -> i32 {
+    if y.is_null() || co.is_null() || cg.is_null() || reference.is_null() || out.is_null() || n == 0 {
+        return -3;
+    }
+    *out = tstream::mse_ycocg(
+        std::slice::from_raw_parts(y, n),
+        std::slice::from_raw_parts(co, n),
+        std::slice::from_raw_parts(cg, n),
+        std::slice::from_raw_parts(reference, 3 * n),
+    );
+    0
+}
+
+/// `np.mean` of the array `gmo_ts_sqerr_plane` writes, to `out`.
+///
+/// # Safety
+/// `plane` and `reference` must hold n doubles and `out` one.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_mse_plane(plane: *const f64, reference: *const f64, n: usize, out: *mut f64) -> i32 {
+    if plane.is_null() || reference.is_null() || out.is_null() || n == 0 {
+        return -3;
+    }
+    *out = tstream::mse_plane(std::slice::from_raw_parts(plane, n), std::slice::from_raw_parts(reference, n));
+    0
+}
+
+/// `np.mean` of the array `gmo_ts_sqerr_normal` writes, to `out`.
+///
+/// # Safety
+/// `x`, `y` must hold n doubles, `reference` 3 * n and `out` one.
+#[no_mangle]
+pub unsafe extern "C" fn gmo_ts_mse_normal(x: *const f64, y: *const f64, reference: *const f64, n: usize,
+                                           out: *mut f64) -> i32 {
+    if x.is_null() || y.is_null() || reference.is_null() || out.is_null() || n == 0 {
+        return -3;
+    }
+    *out = tstream::mse_normal(
+        std::slice::from_raw_parts(x, n),
+        std::slice::from_raw_parts(y, n),
+        std::slice::from_raw_parts(reference, 3 * n),
     );
     0
 }

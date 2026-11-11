@@ -155,12 +155,15 @@ def _recon(ll, bands, st, drop, L):
 
 
 def _pack(body, ll, bands, st, drop, L):
-    from .codec import put_band
+    from .codec import put_band, put_quant
     put_band(body, np.round(ll / st).astype(np.int64))
     for li, trio in enumerate(bands):
         fine = li >= L - drop
         for b in trio:
-            put_band(body, np.zeros(1, np.int64) if fine else quant(b, st))
+            if fine:
+                put_band(body, np.zeros(1, np.int64))
+            else:
+                put_quant(body, b, st)
 
 
 def _search(fn, target):
@@ -198,6 +201,21 @@ def _search_together(evaluate, count, target):
                     hi[i] = mid
 
 
+def _flat_view(ll, bands):
+    """The array `ll` and the bands are consecutive pieces of (what native.ts_dwt hands out, already in the
+    layout native.ts_recon reads), or None."""
+    base = ll.base
+    if not (isinstance(base, np.ndarray) and base.ndim == 1 and base.dtype == np.float64
+            and base.flags.c_contiguous):
+        return None
+    pos = base.ctypes.data
+    for b in [ll] + [b for trio in bands for b in trio]:
+        if b.base is not base or not b.flags.c_contiguous or b.ctypes.data != pos:
+            return None
+        pos += b.nbytes
+    return base if pos == base.ctypes.data + base.nbytes else None
+
+
 class _Plane:
     """The wavelet coefficients of a plane and its reconstruction at a step: _recon, by the native library
     when it is there (same bytes, texlab.native.ts_recon)."""
@@ -210,6 +228,8 @@ class _Plane:
     def recon(self, st, drop):
         if native.available():
             if self.flat is None:
+                self.flat = _flat_view(self.ll, self.bands)
+            if self.flat is None:
                 self.flat = np.concatenate([self.ll.ravel()] + [b.ravel() for trio in self.bands for b in trio])
             out = native.ts_recon(self.flat, self.ll.shape[0] << self.levels, self.ll.shape[1] << self.levels,
                                   self.levels, st, drop)
@@ -218,9 +238,8 @@ class _Plane:
         return _recon(self.ll, self.bands, st, drop, self.levels)
 
 
-def _psnr_of(squared_error):
-    """codec.psnr from the squared error array it averages."""
-    mse = np.mean(squared_error)
+def _psnr_of(mse):
+    """codec.psnr from the mean of the squared errors (np.mean's own float64, from the native library)."""
     return 99.0 if mse == 0 else 10 * np.log10(255.0 ** 2 / mse)
 
 
@@ -251,8 +270,10 @@ def choose(v, rgba, use, target, transforms=None) -> dict:
     has_alpha = v.fmt in ALPHA_FORMATS and aw is not None and rgba[..., 3].min() < 255
     if v.fmt not in (13, 15, 14):
         target = max(target, RAW_TARGET)
-    zr = normal_z(rgb[..., 0], rgb[..., 1])
-    is_normal = roles == {"normal"} or (not roles and psnr(zr, rgb[..., 2]) >= 45.0 and rgb[..., 2].mean() > 170)
+    is_normal = roles == {"normal"}
+    if not is_normal and not roles:
+        # no material names it: a normal map by its content (blue is the Z of the red and green vector)
+        is_normal = psnr(normal_z(rgb[..., 0], rgb[..., 1]), rgb[..., 2]) >= 45.0 and rgb[..., 2].mean() > 170
     n0 = unit_normals(rgb) if is_normal else None
     if is_normal and np.mean(n0[..., 2] < 127.5) > 0.01:
         is_normal, n0 = False, None       # vectors pointing into the surface: not a tangent-space normal map
@@ -270,9 +291,9 @@ def choose(v, rgba, use, target, transforms=None) -> dict:
         def q_rgb(st):
             if st not in measured:
                 rx, ry = [p.recon(st, 0) for p in planes]
-                sq = native.ts_sqerr_normal(rx, ry, n0_c) if native.available() else None
-                if sq is not None:
-                    measured[st] = _psnr_of(sq)
+                mse = native.ts_mse_normal(rx, ry, n0_c) if native.available() else None
+                if mse is not None:
+                    measured[st] = _psnr_of(mse)
                 else:
                     x, y = [np.clip(r + 128, 0, 255) for r in (rx, ry)]
                     measured[st] = psnr(unit_normals(np.stack([x, y, normal_z(x, y)], -1)), n0)
@@ -295,8 +316,8 @@ def choose(v, rgba, use, target, transforms=None) -> dict:
                         yy = planes[0].recon(st, 0)
                     co = planes[1].recon(st * 2, drop)
                     cg = planes[2].recon(st * 2, drop)
-                    sq = native.ts_sqerr_ycocg(yy, co, cg, rgb_c) if native.available() else None
-                    measured[(st, drop)] = (_psnr_of(sq) if sq is not None else
+                    mse = native.ts_mse_ycocg(yy, co, cg, rgb_c) if native.available() else None
+                    measured[(st, drop)] = (_psnr_of(mse) if mse is not None else
                                             psnr(np.clip(np.round(ycocg_to_rgb(yy, co, cg)), 0, 255), rgb))
             return {i: measured[(st, drops[i])] for i in wanted}
         steps = _search_together(q_rgb, len(drops), t)
@@ -311,7 +332,12 @@ def choose(v, rgba, use, target, transforms=None) -> dict:
             cands.append((lambda st=steps[i], drop=drop: packed_size(st, drop), steps[i], drop,
                           q_rgb(steps[i], [i])[i]))
     ok = [c for c in cands if c[3] >= t]
-    if len(ok) > 1:
+    if len(ok) > 1 and ok[0][1] == ok[1][1]:
+        # Both chroma resolutions keep the target at the same step: the reduced one (first in the list) codes
+        # a part of the very same coefficients, and the size estimate picked it in every such texture of the
+        # test bench. They are 19 in 20 of the textures with two candidates: not worth compressing both.
+        _size_, st, drop, q = ok[0]
+    elif len(ok) > 1:
         # the smaller of the candidates that keep the target; their sizes are only worked out here, where
         # they decide (a compression pass over all the coefficients each)
         _size_, st, drop, q = min(ok, key=lambda c: c[0]())
@@ -328,8 +354,8 @@ def choose(v, rgba, use, target, transforms=None) -> dict:
         def q_a(s):
             if s not in measured_a:
                 r = alpha_plane.recon(s, 0)
-                sq = native.ts_sqerr_plane(r, a_c) if native.available() else None
-                measured_a[s] = (_psnr_of(sq) if sq is not None else
+                mse = native.ts_mse_plane(r, a_c) if native.available() else None
+                measured_a[s] = (_psnr_of(mse) if mse is not None else
                                  psnr(np.clip(np.round(r + 128), 0, 255), a))
             return measured_a[s]
         ast = _search(q_a, max(30.0, t + 20 * np.log10(aw)))

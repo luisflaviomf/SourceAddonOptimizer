@@ -36,7 +36,8 @@ from . import npsolve
 from .allocate import DEFAULT_DISTANCES, DEFAULT_WEIGHTS, band_energy_maps, box_pyramid, texture_local_error
 from .density import ViewModel, _model_usage, collect_usage, merge_usage, sibling_usage_tasks, usage_tasks
 from .plan import alpha_coverage_refs, alpha_unused_refs, opaque_alpha
-from .vtf import (image_bytes, TEXTUREFLAGS_ENVMAP, bc3_blocks_to_bc1, decode_level, read_vtf, truncate_mips, write_vtf)
+from .vtf import (image_bytes, TEXTUREFLAGS_ENVMAP, bc3_blocks_to_bc1, decode_level, one_level_flags,
+                  planned_reduced_vtf, read_vtf, truncate_mips, write_vtf)
 
 ENGINE = "texscreen/v8"
 PROFILES = {
@@ -118,13 +119,7 @@ NOMIP = 0x100
 NOLOD = 0x200
 
 
-def _one_level_flags(flags: int, levels: int) -> int:
-    """Flags of a texture written with `levels` mip levels. The game wants NOLOD and NOMIP on a texture
-    stored as a single level: loading one without them, it prints "Encountered VTF with 1 mip level and
-    without NoLOD flag! Fixing.." (and the same for NoMIP) and sets the flags itself. Written here, the
-    texture is the same in game and the console stays quiet (2026-11-10 server test: icons and small
-    textures rebuilt as one level)."""
-    return flags | NOLOD | NOMIP if levels == 1 else flags
+_one_level_flags = one_level_flags
 
 
 def _param_caps(root: Path, caps: dict) -> dict:
@@ -344,19 +339,20 @@ def _plan_one(task) -> Item:
 
 
 def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, jobs: int = 1,
-               need_map: bool = True) -> list[Item]:
+               need_map: bool = True, pool=None) -> list[Item]:
     """Per-texture plan. jobs > 1 spreads the models scan and the textures over processes;
-    the result is identical to the sequential plan (same order, same decisions)."""
+    the result is identical to the sequential plan (same order, same decisions).
+    pool: a process pool of the caller's to use (and leave running) instead of one made here."""
     root = Path(root)
     view = view or ViewModel(screen_height=1080)
     threshold = PROFILES[profile]
     mat = next((p for p in root.iterdir() if p.is_dir() and p.name.lower() == "materials"), None)
     if mat is None:
         return []
-    pool = None
-    if jobs > 1:
-        from concurrent.futures import ProcessPoolExecutor
-        pool = ProcessPoolExecutor(max_workers=jobs)
+    own_pool = pool is None and jobs > 1
+    if own_pool:
+        from .jobs import process_pool
+        pool = process_pool(jobs)
     try:
         opts = PROFILE_OPTIONS.get(profile)
         # no reduction allowed: the models scan (screen density) has nothing to decide
@@ -395,7 +391,7 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
         if pool is not None and len(tasks) > 1:
             return list(pool.map(_plan_one, tasks, chunksize=1))
     finally:
-        if pool is not None:
+        if own_pool:
             pool.shutdown()
     return [_plan_one(t) for t in tasks]
 
@@ -457,16 +453,42 @@ def magnified_map(s_eff, area, uv, drop: int, view: ViewModel, h: int, w: int, f
     return np.clip(share, 0.0, 1.0).astype(np.float32)
 
 
-def _vtfcmd_encode(vtfcmd: Path, pngs: list[tuple[Path, str]], workdir: Path, jobs: int = 1) -> dict[Path, bytes]:
-    """Encode every PNG with VTFCmd, chunks of up to 32 files, `jobs` VTFCmd processes at a time
-    (each chunk is an independent process with its own output folder: same bytes as one by one)."""
+def _png_pixels(path: Path) -> int:
+    with open(path, "rb") as f:
+        head = f.read(24)
+    width, height = struct.unpack(">II", head[16:24])
+    return width * height
+
+
+def _encode_chunks(pngs: list[tuple[Path, str]], jobs: int) -> list[tuple[str, int, list[Path]]]:
+    """The VTFCmd calls for the images: [(format, number, [png, ...])], the most expensive call first.
+    VTFCmd encodes every image on its own whatever the call it is in (same bytes), so the split only decides
+    how busy the processes stay. An image costs about its pixel count: a call closes at 1/(4 * jobs) of the
+    total or at 32 files, so the largest images get a process each and start first, and the small ones
+    fill the end. (Calls of equal file counts in the order of the list left a third of the processes idle:
+    one call with ten 2048 textures ran for half of the whole phase.)"""
+    cost = {p: _png_pixels(p) for p, _f in pngs}
+    target = sum(cost.values()) / (4 * max(1, jobs))
     chunks = []
     for fmt in ("DXT1", "DXT5"):
-        group = [p for p, f in pngs if f == fmt]
-        # smaller chunks keep every VTFCmd busy until the end (each image is encoded on its own)
-        size = 32 if jobs <= 1 else max(4, min(32, -(-len(group) // (jobs * 2))))
-        for start in range(0, len(group), size):
-            chunks.append((fmt, start, group[start:start + size]))
+        group = sorted((p for p, f in pngs if f == fmt), key=lambda p: (-cost[p], str(p)))
+        chunk, weight = [], 0
+        for p in group:
+            chunk.append(p)
+            weight += cost[p]
+            if weight >= target or len(chunk) == 32:
+                chunks.append((weight, fmt, chunk))
+                chunk, weight = [], 0
+        if chunk:
+            chunks.append((weight, fmt, chunk))
+    chunks.sort(key=lambda c: (-c[0], c[1], str(c[2][0])))
+    return [(fmt, number, chunk) for number, (_weight, fmt, chunk) in enumerate(chunks)]
+
+
+def _vtfcmd_encode(vtfcmd: Path, pngs: list[tuple[Path, str]], workdir: Path, jobs: int = 1) -> dict[Path, bytes]:
+    """Encode every PNG with VTFCmd, `jobs` VTFCmd processes at a time (each call is an independent
+    process with its own output folder: same bytes as one by one)."""
+    chunks = _encode_chunks(pngs, jobs)
 
     def encode(job):
         fmt, start, chunk = job
@@ -490,12 +512,7 @@ def _vtfcmd_encode(vtfcmd: Path, pngs: list[tuple[Path, str]], workdir: Path, jo
 def _vtfcmd_encode_chain(vtfcmd: Path, pngs: list[tuple[Path, str]], workdir: Path, jobs: int = 1) -> dict[Path, list[bytes]]:
     """Like _vtfcmd_encode, but VTFCmd also builds the mip chain (box filter, no sharpening) from the
     image: {png: [level 0, level 1, ...]}. For textures whose stored chain is not DXT ("convert")."""
-    chunks = []
-    for fmt in ("DXT1", "DXT5"):
-        group = [p for p, f in pngs if f == fmt]
-        size = 32 if jobs <= 1 else max(4, min(32, -(-len(group) // (jobs * 2))))
-        for start in range(0, len(group), size):
-            chunks.append((fmt, start, group[start:start + size]))
+    chunks = _encode_chunks(pngs, jobs)
 
     def encode(job):
         fmt, start, chunk = job
@@ -528,130 +545,173 @@ def lanczos_down(H: np.ndarray, factor: int) -> np.ndarray:
     return np.clip(np.stack(chans, axis=2), 0.0, 1.0)
 
 
+def _prepare_one(task):
+    """The new top level of one texture as a PNG for VTFCmd (a pure function of the file and its plan, run
+    in a worker process). -> (number, what write() does with it): a PNG path (new top level over the
+    original lower mips), ("alone" | "chain", PNG) for a texture rebuilt from its decoded top level,
+    "truncate" (the original mip is the new top level) or None (transcode only)."""
+    number, item, tmp, method = task
+    v = read_vtf(item.path)
+    if item.rebuild == "convert" or (item.rebuild == "single" and item.action == "reduce"):
+        # rebuilt from the decoded top level: written alone (no mips / NOMIP) or with a chain
+        # VTFCmd builds from it (uncompressed textures that had mips)
+        H = decode_level(v, 0).astype(np.float32) / 255.0
+        L = lanczos_down(H, 1 << item.drop) if item.drop else H
+        chain = item.rebuild == "convert" and v.mip_count > 1 and not v.flags & NOMIP
+        if item.coverage_alpha and chain and item.drop:
+            L[..., 3] = decode_level(v, item.drop)[..., 3].astype(np.float32) / 255.0
+        png = tmp / f"r{number:06d}_{item.drop}.png"
+        Image.fromarray(np.round(L * 255.0).astype(np.uint8), "RGBA").save(png, compress_level=1)
+        return number, ("chain" if chain else "alone", png)
+    if item.action == "transcode":
+        return number, None
+    if v.frames > 1 or 0.0 <= item.magnified < EXACT_MIP_BELOW:
+        # never (or almost never) magnified: the original mip is exactly what players see
+        return number, "truncate"
+    H = decode_level(v, 0).astype(np.float32) / 255.0
+    Mk = decode_level(v, item.drop).astype(np.float32) / 255.0
+    if item.magnified < 0:
+        alpha, beta = 0.8, 0.2        # usage unknown (HUD, Lua): favour close-up sharpness
+    elif item.magnified_map is not None:
+        share = item.magnified_map    # each atlas region weighted by how it is really seen
+        alpha, beta = share, np.maximum(1.0 - share, 0.05)
+    else:
+        alpha, beta = item.magnified, max(1.0 - item.magnified, 0.05)
+    if method == "solver":
+        L = npsolve.solve(H, Mk, 1 << item.drop, alpha * 4.0, beta, wrap_s=not v.flags & CLAMP_S,
+                          wrap_t=not v.flags & CLAMP_T, iters=10)
+    else:
+        L = lanczos_down(H, 1 << item.drop)
+    if item.coverage_alpha:
+        # alpha-tested/translucent: the threshold turns any reshaping of alpha into
+        # moved edges, so the new top level carries the original mip's alpha as-is
+        L[..., 3] = Mk[..., 3]
+    png = tmp / f"t{number:06d}_{item.drop}.png"
+    # lossless either way; level 1 only trades PNG size for speed (VTFCmd reads the same pixels)
+    Image.fromarray(np.round(L * 255.0).astype(np.uint8), "RGBA").save(png, compress_level=1)
+    return number, png
+
+
+def _prepare_all(work: list, tmp: Path, method: str, pool) -> tuple[dict, list]:
+    """_prepare_one for every planned texture, in the pool's processes when there is one (the images used to
+    be prepared by threads of this process, which spent most of their time waiting for each other). The
+    largest files go first so the last ones to finish are small.
+    -> ({number in `work`: result}, the tasks that failed in the pool). A task fails there when its process
+    runs out of memory or dies (which takes the rest of the pool with it); the caller runs those again with
+    _prepare_rest once the pool is gone and its memory is free."""
+    order = sorted(range(len(work)), key=lambda n: (-work[n].before, n))
+    tasks = [(n, work[n], tmp, method) for n in order]
+    progress = {"results": {}, "done": 0, "work": work}
+    if pool is None:
+        _prepare_rest(tasks, progress)
+        return progress["results"], []
+    from concurrent.futures import as_completed
+    futures = {pool.submit(_prepare_one, t): t for t in tasks}
+    failed = []
+    for future in as_completed(futures):
+        try:
+            _prepared(progress, *future.result())
+        except Exception:  # noqa: BLE001 - whatever stopped it there, it gets a second go alone
+            failed.append(futures[future])
+    failed.sort(key=lambda t: order.index(t[0]))
+    return progress["results"], (failed, progress)
+
+
+def _prepared(progress: dict, number: int, result) -> None:
+    progress["results"][number] = result
+    if isinstance(result, (tuple, Path)):
+        progress["done"] += 1
+        _emit("PROGRESS", "rebuild", progress["done"], len(progress["work"]), progress["work"][number].rel)
+
+
+def _prepare_rest(tasks: list, progress: dict) -> None:
+    """_prepare_one in this process, one texture at a time (an error here is a real one and stops the run)."""
+    for task in tasks:
+        _prepared(progress, *_prepare_one(task))
+
+
+def _stream_direct(prepared: list) -> dict:
+    """{path: (PNG, format, levels dropped, kind)} for the reduced textures the stream encoder takes: in a
+    stream profile they go to it straight from the reduced image. Sending them through VTFCmd first only
+    made a DXT file the stream encoder decoded again a moment later: most of the time of this stage, and
+    a DXT generation of error between the reduction and the stream (test bench sample: stream files 3%
+    smaller and 0.1 dB closer to the reduced image without it). kind: see texlab.vtf.planned_reduced_vtf.
+    Left out: textures whose reduced file would not be smaller than the original (write() keeps the
+    original) and the ones the stream encoder does not take (too small, wrong format)."""
+    from texture_stream.choose import eligible
+    out = {}
+    for item, _, png in prepared:
+        if isinstance(png, Path):
+            kind = "top"
+        elif isinstance(png, tuple):
+            kind, png = png
+        else:
+            continue
+        planned = planned_reduced_vtf(read_vtf(item.path), item.out_fmt, item.drop, kind)
+        if len(planned) < item.before and eligible(read_vtf(planned)) is None:
+            out[item.path] = (str(png), item.out_fmt, item.drop, kind)
+    return out
+
+
 def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_path: Path | None = None,
         method: str = "lanczos", encode_jobs: int | None = None) -> dict:
-    """`jobs`: analysis processes and image threads. `encode_jobs`: VTFCmd processes at a time
-    (default: every logical CPU but two; each VTFCmd is single-threaded and light on memory)."""
+    """`jobs`: worker processes of the analysis and of the image preparation, and writer threads.
+    `encode_jobs`: VTFCmd processes at a time (default: every logical CPU but two; each VTFCmd is
+    single-threaded and light on memory)."""
     root = Path(root)
     if encode_jobs is None:
         encode_jobs = max(1, jobs, (os.cpu_count() or 2) - 2)
     _emit("PROGRESS", "analyze", 0, 1, "")
-    items = plan_addon(root, profile, jobs=jobs, need_map=(method == "solver"))
-    work = [i for i in items if i.action in ("reduce", "transcode")]
-    _emit("PROGRESS", "analyze", 1, 1, f"{len(work)} textures planned")
+    tmp_holder = tempfile.TemporaryDirectory(prefix="texscreen_")
+    # one pool for the analysis and the image preparation: its processes are started once
+    pool = None
+    try:
+        if jobs > 1:
+            from .jobs import process_pool
+            pool = process_pool(jobs)
+        items = plan_addon(root, profile, jobs=jobs, need_map=(method == "solver"), pool=pool)
+        work = [i for i in items if i.action in ("reduce", "transcode")]
+        _emit("PROGRESS", "analyze", 1, 1, f"{len(work)} textures planned")
+        results, again = _prepare_all(work, Path(tmp_holder.name), method, pool)
+    except BaseException:
+        tmp_holder.cleanup()
+        raise
+    finally:
+        if pool is not None:
+            pool.shutdown()
+    if again:
+        failed, progress = again
+        if failed:
+            print(f"[WARN] texscreen: {len(failed)} texture(s) did not get through the worker processes "
+                  f"(out of memory, or a process stopped); doing them again one at a time", flush=True)
+            try:
+                _prepare_rest(failed, progress)
+            except BaseException:
+                tmp_holder.cleanup()
+                raise
     lock = threading.Lock()
-    counter = [0]
     fmt_name = {13: "DXT1", 15: "DXT5"}
-    with tempfile.TemporaryDirectory(prefix="texscreen_") as tmp:
-        tmp = Path(tmp)
-
-        def prepare(item: Item):
-            v = read_vtf(item.path)
-            if item.rebuild == "convert" or (item.rebuild == "single" and item.action == "reduce"):
-                # rebuilt from the decoded top level: written alone (no mips / NOMIP) or with a chain
-                # VTFCmd builds from it (uncompressed textures that had mips)
-                H = decode_level(v, 0).astype(np.float32) / 255.0
-                L = lanczos_down(H, 1 << item.drop) if item.drop else H
-                chain = item.rebuild == "convert" and v.mip_count > 1 and not v.flags & NOMIP
-                if item.coverage_alpha and chain and item.drop:
-                    L[..., 3] = decode_level(v, item.drop)[..., 3].astype(np.float32) / 255.0
-                png = tmp / f"r{abs(hash(item.ref)) % 10**12:012d}_{item.drop}.png"
-                Image.fromarray(np.round(L * 255.0).astype(np.uint8), "RGBA").save(png, compress_level=1)
-                with lock:
-                    counter[0] += 1
-                    _emit("PROGRESS", "rebuild", counter[0], len(work), item.rel)
-                return item, v, ("chain" if chain else "alone", png)
-            if item.action == "transcode":
-                return item, v, None
-            if v.frames > 1 or 0.0 <= item.magnified < EXACT_MIP_BELOW:
-                # never (or almost never) magnified: the original mip is exactly what players see
-                return item, v, "truncate"
-            H = decode_level(v, 0).astype(np.float32) / 255.0
-            Mk = decode_level(v, item.drop).astype(np.float32) / 255.0
-            if item.magnified < 0:
-                alpha, beta = 0.8, 0.2        # usage unknown (HUD, Lua): favour close-up sharpness
-            elif item.magnified_map is not None:
-                share = item.magnified_map    # each atlas region weighted by how it is really seen
-                alpha, beta = share, np.maximum(1.0 - share, 0.05)
-            else:
-                alpha, beta = item.magnified, max(1.0 - item.magnified, 0.05)
-            if method == "solver":
-                L = npsolve.solve(H, Mk, 1 << item.drop, alpha * 4.0, beta, wrap_s=not v.flags & CLAMP_S,
-                                  wrap_t=not v.flags & CLAMP_T, iters=10)
-            else:
-                L = lanczos_down(H, 1 << item.drop)
-            if item.coverage_alpha:
-                # alpha-tested/translucent: the threshold turns any reshaping of alpha into
-                # moved edges, so the new top level carries the original mip's alpha as-is
-                L[..., 3] = Mk[..., 3]
-            png = tmp / f"t{abs(hash(item.ref)) % 10**12:012d}_{item.drop}.png"
-            # lossless either way; level 1 only trades PNG size for speed (VTFCmd reads the same pixels)
-            Image.fromarray(np.round(L * 255.0).astype(np.uint8), "RGBA").save(png, compress_level=1)
-            with lock:
-                counter[0] += 1
-                _emit("PROGRESS", "rebuild", counter[0], len(work), item.rel)
-            return item, v, png
-
-        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-            prepared = list(pool.map(prepare, work))
-        encoded = _vtfcmd_encode(vtfcmd, [(png, fmt_name[item.out_fmt]) for item, _, png in prepared
-                                          if isinstance(png, Path)]
-                                 + [(png[1], fmt_name[item.out_fmt]) for item, _, png in prepared
-                                    if isinstance(png, tuple) and png[0] == "alone"], tmp, encode_jobs)
-        chains = _vtfcmd_encode_chain(vtfcmd, [(png[1], fmt_name[item.out_fmt]) for item, _, png in prepared
-                                               if isinstance(png, tuple) and png[0] == "chain"], tmp, encode_jobs)
-        written = [0]
-
-        def write(entry):
-            item, v, png = entry
-            if isinstance(png, tuple):
-                levels = chains[png[1]] if png[0] == "chain" else [encoded[png[1]]]
-                flags = v.flags & ~EIGHTBITALPHA if item.out_fmt == 13 else v.flags
-                data = write_vtf(v, item.out_fmt, max(1, v.width >> item.drop), max(1, v.height >> item.drop),
-                                 levels, _one_level_flags(flags, len(levels)))
-            elif item.action == "transcode":
-                levels = [bc3_blocks_to_bc1(v.level_data(l, f)) for l in range(v.mip_count) for f in [0]]
-                data = write_vtf(v, 13, v.width, v.height, levels, v.flags & ~EIGHTBITALPHA)
-            elif png == "truncate":
-                levels = [v.level_data(l, f) for l in range(item.drop, v.mip_count) for f in [0]]                     if v.frames == 1 else None
-                if levels is not None and item.out_fmt == 13 and v.fmt == 15:
-                    data = write_vtf(v, 13, max(1, v.width >> item.drop), max(1, v.height >> item.drop),
-                                     [bc3_blocks_to_bc1(b) for b in levels],
-                                     _one_level_flags(v.flags & ~EIGHTBITALPHA, len(levels)))
-                else:
-                    data = truncate_mips(v, item.drop)
-                    if v.mip_count - item.drop == 1:
-                        data = data[:20] + struct.pack("<I", _one_level_flags(v.flags, 1)) + data[24:]
-            else:
-                lower = [v.level_data(l) for l in range(item.drop + 1, v.mip_count)]
-                if item.out_fmt == 13 and v.fmt == 15:
-                    lower = [bc3_blocks_to_bc1(b) for b in lower]
-                flags = v.flags & ~EIGHTBITALPHA if item.out_fmt == 13 else v.flags
-                data = write_vtf(v, item.out_fmt, max(1, v.width >> item.drop), max(1, v.height >> item.drop),
-                                 [encoded[png]] + lower, _one_level_flags(flags, 1 + len(lower)))
-            if len(data) < item.before:
-                _write_atomic(item.path, data)
-            else:
-                item.action, item.reason = "keep", "no_gain"
-            with lock:
-                written[0] += 1
-                _emit("PROGRESS", "write", written[0], len(prepared), item.rel)
-
-        # each entry writes its own file; threads overlap the disk/antivirus latency
-        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-            list(pool.map(write, prepared))
     stream = None
-    if profile in STREAM_TARGETS:
-        import texture_stream
-        stream = texture_stream.convert(root, jobs=texture_stream.auto_jobs(jobs), target=STREAM_TARGETS[profile],
-                                        emit=_emit)
-        if stream["streamed"] and not stream.get("packed", True):
-            from texlab.packing import IGNORED_WARNING
-            print(IGNORED_WARNING.format(folder=texture_stream.BLOB_DIR), flush=True)
-        streamed = {r["path"].lower() for r in stream["rows"]}
-        for item in items:
-            if item.rel.replace("\\", "/").lower() in streamed:
-                item.action, item.reason = "stream", "stream"
+    with tmp_holder as tmp:
+        tmp = Path(tmp)
+        prepared = [(item, None, results[number]) for number, item in enumerate(work)]
+        direct = _stream_direct(prepared) if profile in STREAM_TARGETS else {}
+        _finish([e for e in prepared if e[0].path not in direct], vtfcmd, tmp / "pass1", jobs, encode_jobs, lock)
+        if profile in STREAM_TARGETS:
+            import texture_stream
+            stream = texture_stream.convert(root, jobs=texture_stream.auto_jobs(jobs), target=STREAM_TARGETS[profile],
+                                            emit=_emit, direct=direct)
+            # what the stream encoder left as a VTF after all (no gain, an error) is reduced the regular way
+            left = {texture_stream.direct_key(p) for p in stream.get("direct_kept", ())}
+            _finish([e for e in prepared if e[0].path in direct and texture_stream.direct_key(e[0].path) in left],
+                    vtfcmd, tmp / "pass2", jobs, encode_jobs, lock)
+            if stream["streamed"] and not stream.get("packed", True):
+                from texlab.packing import IGNORED_WARNING
+                print(IGNORED_WARNING.format(folder=texture_stream.BLOB_DIR), flush=True)
+            streamed = {r["path"].lower() for r in stream["rows"]}
+            for item in items:
+                if item.rel.replace("\\", "/").lower() in streamed:
+                    item.action, item.reason = "stream", "stream"
     for item in items:
         item.after = item.path.stat().st_size
     report = {
@@ -670,6 +730,62 @@ def run(root: Path, vtfcmd: Path, profile: str = "q50", jobs: int = 4, report_pa
         Path(report_path).write_text(json.dumps(report, indent=1), encoding="utf-8")
         _emit("REPORT", report_path)
     return report
+
+
+def _finish(entries: list, vtfcmd: Path, workdir: Path, jobs: int, encode_jobs: int, lock) -> None:
+    """VTFCmd for the entries that carry a new top level, then the file of every entry."""
+    if not entries:
+        return
+    workdir.mkdir()
+    fmt_name = {13: "DXT1", 15: "DXT5"}
+    encoded = _vtfcmd_encode(vtfcmd, [(png, fmt_name[item.out_fmt]) for item, _, png in entries
+                                      if isinstance(png, Path)]
+                             + [(png[1], fmt_name[item.out_fmt]) for item, _, png in entries
+                                if isinstance(png, tuple) and png[0] == "alone"], workdir, encode_jobs)
+    chains = _vtfcmd_encode_chain(vtfcmd, [(png[1], fmt_name[item.out_fmt]) for item, _, png in entries
+                                           if isinstance(png, tuple) and png[0] == "chain"], workdir, encode_jobs)
+    written = [0]
+
+    def write(entry):
+        item, _, png = entry
+        v = read_vtf(item.path)
+        if isinstance(png, tuple):
+            levels = chains[png[1]] if png[0] == "chain" else [encoded[png[1]]]
+            flags = v.flags & ~EIGHTBITALPHA if item.out_fmt == 13 else v.flags
+            data = write_vtf(v, item.out_fmt, max(1, v.width >> item.drop), max(1, v.height >> item.drop),
+                             levels, _one_level_flags(flags, len(levels)))
+        elif item.action == "transcode":
+            levels = [bc3_blocks_to_bc1(v.level_data(l, f)) for l in range(v.mip_count) for f in [0]]
+            data = write_vtf(v, 13, v.width, v.height, levels, v.flags & ~EIGHTBITALPHA)
+        elif png == "truncate":
+            levels = ([v.level_data(l, f) for l in range(item.drop, v.mip_count) for f in [0]]
+                      if v.frames == 1 else None)
+            if levels is not None and item.out_fmt == 13 and v.fmt == 15:
+                data = write_vtf(v, 13, max(1, v.width >> item.drop), max(1, v.height >> item.drop),
+                                 [bc3_blocks_to_bc1(b) for b in levels],
+                                 _one_level_flags(v.flags & ~EIGHTBITALPHA, len(levels)))
+            else:
+                data = truncate_mips(v, item.drop)
+                if v.mip_count - item.drop == 1:
+                    data = data[:20] + struct.pack("<I", _one_level_flags(v.flags, 1)) + data[24:]
+        else:
+            lower = [v.level_data(l) for l in range(item.drop + 1, v.mip_count)]
+            if item.out_fmt == 13 and v.fmt == 15:
+                lower = [bc3_blocks_to_bc1(b) for b in lower]
+            flags = v.flags & ~EIGHTBITALPHA if item.out_fmt == 13 else v.flags
+            data = write_vtf(v, item.out_fmt, max(1, v.width >> item.drop), max(1, v.height >> item.drop),
+                             [encoded[png]] + lower, _one_level_flags(flags, 1 + len(lower)))
+        if len(data) < item.before:
+            _write_atomic(item.path, data)
+        else:
+            item.action, item.reason = "keep", "no_gain"
+        with lock:
+            written[0] += 1
+            _emit("PROGRESS", "write", written[0], len(entries), item.rel)
+
+    # each entry writes its own file; threads overlap the disk/antivirus latency
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        list(pool.map(write, entries))
 
 
 def main(argv=None) -> int:

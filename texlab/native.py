@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-ABI_VERSION = 5
+ABI_VERSION = 7
 DLL_NAME = "gmo_native.dll"
 
 _lock = threading.Lock()
@@ -69,12 +69,26 @@ def lib():
                     u32 = ctypes.c_uint32
                     dll.gmo_ts_recon.argtypes = [vp, sz, u32, u32, u32, ctypes.c_int64, u32, vp]
                     dll.gmo_ts_recon.restype = ctypes.c_int32
+                    dll.gmo_ts_dwt.argtypes = [vp, u32, u32, u32, vp]
+                    dll.gmo_ts_dwt.restype = ctypes.c_int32
+                    dll.gmo_ts_put_band.argtypes = [vp, u32, u32, ctypes.c_double, u32, vp, sz]
+                    dll.gmo_ts_put_band.restype = ctypes.c_ssize_t
+                    dll.gmo_ts_ycocg.argtypes = [vp, sz, sz, vp, vp, vp]
+                    dll.gmo_ts_ycocg.restype = ctypes.c_int32
+                    dll.gmo_ts_unit_normals.argtypes = [vp, sz, sz, vp]
+                    dll.gmo_ts_unit_normals.restype = ctypes.c_int32
                     dll.gmo_ts_sqerr_ycocg.argtypes = [vp, vp, vp, vp, sz, vp]
                     dll.gmo_ts_sqerr_ycocg.restype = ctypes.c_int32
                     dll.gmo_ts_sqerr_plane.argtypes = [vp, vp, sz, vp]
                     dll.gmo_ts_sqerr_plane.restype = ctypes.c_int32
                     dll.gmo_ts_sqerr_normal.argtypes = [vp, vp, vp, sz, vp]
                     dll.gmo_ts_sqerr_normal.restype = ctypes.c_int32
+                    dll.gmo_ts_mse_ycocg.argtypes = [vp, vp, vp, vp, sz, vp]
+                    dll.gmo_ts_mse_ycocg.restype = ctypes.c_int32
+                    dll.gmo_ts_mse_plane.argtypes = [vp, vp, sz, vp]
+                    dll.gmo_ts_mse_plane.restype = ctypes.c_int32
+                    dll.gmo_ts_mse_normal.argtypes = [vp, vp, vp, sz, vp]
+                    dll.gmo_ts_mse_normal.restype = ctypes.c_int32
                     _lib = dll
                     break
                 except (OSError, AttributeError):
@@ -199,6 +213,82 @@ def ts_recon(coef: np.ndarray, h: int, w: int, levels: int, step: int, drop: int
     return out if rc == 0 else None
 
 
+def ts_dwt(plane: np.ndarray, levels: int):
+    """texture_stream.codec.dwt: (LL, [(LH, HL, HH) per level, coarse to fine]) as views of one flat array
+    in the layout ts_recon reads; None when the DLL is not there."""
+    dll = lib()
+    if dll is None or plane.ndim != 2:
+        return None
+    plane = _f64c(plane)
+    h, w = plane.shape
+    flat = np.empty(h * w, np.float64)
+    if dll.gmo_ts_dwt(plane.ctypes.data, h, w, levels, flat.ctypes.data) != 0:
+        return None
+    lh, lw = h >> levels, w >> levels
+    pos = lh * lw
+    ll = flat[:pos].reshape(lh, lw)
+    bands = []
+    for level in range(levels):
+        bh, bw = h >> (levels - level), w >> (levels - level)
+        n = bh * bw
+        bands.append(tuple(flat[pos + k * n:pos + (k + 1) * n].reshape(bh, bw) for k in range(3)))
+        pos += 3 * n
+    return ll, bands
+
+
+def ts_put_band(band: np.ndarray, st: float, noise: bool) -> bytes | None:
+    """The bytes codec.put_band(out, codec.quant(band, st)) appends, or those of codec.put_band_nf with the
+    band's noise map (noise=True). None when the DLL is not there or the Python code has to speak (a
+    coefficient out of range raises there)."""
+    dll = lib()
+    if dll is None or band.ndim != 2 or band.dtype != np.float64 or not band.size:
+        return None
+    band = _f64c(band)
+    h, w = band.shape
+    cap = 1 + max(1, h // 8) * max(1, w // 8) + 2 * h * w
+    out = np.empty(cap, np.uint8)
+    n = dll.gmo_ts_put_band(band.ctypes.data, h, w, float(st), 1 if noise else 0, out.ctypes.data, cap)
+    return out[:n].tobytes() if n > 0 else None
+
+
+def _pixels(rgb: np.ndarray):
+    """(array to keep alive, address, pixel stride in doubles) of an (h, w, >= 3) float64 image whose pixels
+    sit at a regular distance (a contiguous image or its [..., :3] view); copies anything else."""
+    if rgb.dtype != np.float64 or rgb.ndim != 3 or rgb.shape[2] < 3:
+        return None
+    s = rgb.strides
+    if not (s[2] == 8 and s[1] >= 24 and s[1] % 8 == 0 and s[0] == rgb.shape[1] * s[1]):
+        rgb = np.ascontiguousarray(rgb[..., :3])
+        s = rgb.strides
+    return rgb, rgb.ctypes.data, s[1] // 8
+
+
+def ts_ycocg(rgb: np.ndarray):
+    """codec.rgb_to_ycocg: [Y, Co, Cg] planes of an (h, w, >= 3) float64 image; None without the DLL."""
+    dll = lib()
+    px = _pixels(rgb) if dll is not None else None
+    if px is None or not rgb.size:
+        return None
+    keep, address, stride = px
+    h, w = rgb.shape[:2]
+    planes = [np.empty((h, w), np.float64) for _ in range(3)]
+    rc = dll.gmo_ts_ycocg(address, h * w, stride, *[p.ctypes.data for p in planes])
+    return planes if rc == 0 else None
+
+
+def ts_unit_normals(rgb: np.ndarray) -> np.ndarray | None:
+    """codec.unit_normals of an (h, w, 3) float64 image (or the [..., :3] view of a wider one)."""
+    dll = lib()
+    px = _pixels(rgb) if dll is not None else None
+    if px is None or not rgb.size or rgb.shape[2] != 3:
+        return None
+    keep, address, stride = px
+    h, w = rgb.shape[:2]
+    out = np.empty((h, w, 3), np.float64)
+    rc = dll.gmo_ts_unit_normals(address, h * w, stride, out.ctypes.data)
+    return out if rc == 0 else None
+
+
 def ts_sqerr_ycocg(y: np.ndarray, co: np.ndarray, cg: np.ndarray, reference: np.ndarray) -> np.ndarray | None:
     """(np.clip(np.round(ycocg_to_rgb(y, co, cg)), 0, 255) - reference) ** 2, shape (h, w, 3)."""
     dll = lib()
@@ -237,3 +327,44 @@ def ts_sqerr_normal(x: np.ndarray, y: np.ndarray, reference: np.ndarray) -> np.n
     out = np.empty(reference.shape, np.float64)
     rc = dll.gmo_ts_sqerr_normal(x.ctypes.data, y.ctypes.data, reference.ctypes.data, x.size, out.ctypes.data)
     return out if rc == 0 else None
+
+
+def ts_mse_ycocg(y: np.ndarray, co: np.ndarray, cg: np.ndarray, reference: np.ndarray):
+    """np.mean of ts_sqerr_ycocg's array (the same float64, by numpy's own summation order) without building
+    the array; None when the DLL is not there."""
+    dll = lib()
+    if dll is None:
+        return None
+    y, co, cg, reference = _f64c(y), _f64c(co), _f64c(cg), _f64c(reference)
+    if reference.shape != y.shape + (3,) or co.shape != y.shape or cg.shape != y.shape:
+        return None
+    out = ctypes.c_double()
+    rc = dll.gmo_ts_mse_ycocg(y.ctypes.data, co.ctypes.data, cg.ctypes.data, reference.ctypes.data, y.size,
+                              ctypes.byref(out))
+    return np.float64(out.value) if rc == 0 else None
+
+
+def ts_mse_plane(plane: np.ndarray, reference: np.ndarray):
+    """np.mean of ts_sqerr_plane's array."""
+    dll = lib()
+    if dll is None:
+        return None
+    plane, reference = _f64c(plane), _f64c(reference)
+    if reference.shape != plane.shape:
+        return None
+    out = ctypes.c_double()
+    rc = dll.gmo_ts_mse_plane(plane.ctypes.data, reference.ctypes.data, plane.size, ctypes.byref(out))
+    return np.float64(out.value) if rc == 0 else None
+
+
+def ts_mse_normal(x: np.ndarray, y: np.ndarray, reference: np.ndarray):
+    """np.mean of ts_sqerr_normal's array."""
+    dll = lib()
+    if dll is None:
+        return None
+    x, y, reference = _f64c(x), _f64c(y), _f64c(reference)
+    if reference.shape != x.shape + (3,) or y.shape != x.shape:
+        return None
+    out = ctypes.c_double()
+    rc = dll.gmo_ts_mse_normal(x.ctypes.data, y.ctypes.data, reference.ctypes.data, x.size, ctypes.byref(out))
+    return np.float64(out.value) if rc == 0 else None

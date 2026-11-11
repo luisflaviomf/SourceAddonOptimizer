@@ -21,7 +21,7 @@ import shutil
 import struct
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 PROGRESS_MODEL = "=== ({i}/{n}) MDL: {path}"
@@ -310,7 +310,8 @@ def main(argv: list[str]) -> int:
             rel = m.relative_to(out).as_posix()
             if model_stream.wants_stream(rel, size, args.stream_min_kb * 1024):
                 modes[i] = "stream"
-    with ProcessPoolExecutor(max_workers=jobs) as ex:
+    from texlab.jobs import process_pool
+    with process_pool(jobs) as ex:
         if copy_only:
             rows = _kept_rows(models, out)
         else:

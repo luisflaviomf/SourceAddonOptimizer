@@ -101,3 +101,9 @@ Conferido nos arquivos, não numa rodada com os originais:
   correção do travamento e mostrou que o aviso de um nível só estava corrigido pela metade.
 - O pior quadro do runtime de texturas foi 29 ms na terceira rodada e 179 ms na quarta (uma chamada do
   motor ao aplicar uma textura, logo depois de os arquivos serem gravados).
+- A quinta rodada (`mpfull5`) repetiu o teste depois da troca do nível da compressão dos arquivos de stream
+  de textura (LZMA nível 9 com `pb=0`, ver `docs/velocidade-2026-11-10.md`): 15 armas, 18 veículos, 263 PNG,
+  1.403 texturas decodificadas, nenhuma falha, as mesmas linhas no console; pior quadro do runtime 72 ms.
+- A sexta rodada (`mpfull6`, 2026-11-11) repetiu o teste com as texturas reduzidas indo direto para o stream
+  (`docs/velocidade-2026-11-11.md`): 15 armas, 18 veículos, 263 PNG, 1.400 texturas decodificadas, nenhuma
+  falha, as mesmas linhas no console; pior quadro do runtime 29 ms.

@@ -335,3 +335,154 @@ def test_first_person_textures_get_no_forced_reduction(tmp_path, monkeypatch):
         # "coarse": magnified up close with a lot of detail energy -> 2x for world models, kept in first person
         assert plan["coarse"].drop == expect, cls.__name__
         assert plan["body"].drop == 3                 # never sampled up close: still 8x
+
+
+def test_planned_reduced_file_matches_what_the_engine_writes():
+    """texlab.vtf.planned_reduced_vtf: the header, flags, level count and size of the reduced file, without
+    its pixels (what the stream encoder needs from a texture that never became a DXT file)."""
+    from texlab.vtf import bc3_blocks_to_bc1, one_level_flags, planned_reduced_vtf
+    rng = np.random.default_rng(31)
+    v = read_vtf(make_vtf(256, 128, 15, rng, flags=0x2000))
+    for out_fmt in (15, 13):                      # a new top level over the original lower mips
+        lower = [v.level_data(l) for l in range(2, v.mip_count)]
+        if out_fmt == 13:
+            lower = [bc3_blocks_to_bc1(b) for b in lower]
+        flags = v.flags & ~0x2000 if out_fmt == 13 else v.flags
+        real = write_vtf(v, out_fmt, 128, 64, [bytes(image_bytes(out_fmt, 128, 64))] + lower,
+                         one_level_flags(flags, 1 + len(lower)))
+        planned = planned_reduced_vtf(v, out_fmt, 1, "top")
+        assert len(planned) == len(real)
+        assert planned[:read_vtf(planned).highres_offset] == real[:read_vtf(real).highres_offset]
+    one = read_vtf(make_vtf(64, 64, 13, rng, flags=0, mips=1))        # stored without mips: written alone
+    alone = planned_reduced_vtf(one, 13, 1, "alone")
+    assert alone == write_vtf(one, 13, 32, 32, [bytes(image_bytes(13, 32, 32))], one_level_flags(one.flags, 1))
+    assert read_vtf(alone).mip_count == 1 and read_vtf(alone).flags & 0x300 == 0x300
+    chain = read_vtf(planned_reduced_vtf(v, 15, 1, "chain"))          # VTFCmd writes the chain down to 1x1
+    assert (chain.width, chain.height, chain.mip_count, chain.fmt) == (128, 64, 8, 15)
+
+
+def test_vtfcmd_calls_cover_every_image_once_the_most_expensive_first(tmp_path):
+    from PIL import Image
+
+    from texlab.screen_compress import _encode_chunks
+    sizes = [(1024, 1024)] * 3 + [(256, 256)] * 40 + [(64, 64)] * 100 + [(2048, 1024)]
+    pngs = []
+    for n, (w, h) in enumerate(sizes):
+        p = tmp_path / f"i{n:03d}.png"
+        Image.new("RGBA", (w, h)).save(p, compress_level=1)
+        pngs.append((p, "DXT5" if n % 3 == 0 else "DXT1"))
+    pixels = {p: w * h for (w, h), (p, _f) in zip(sizes, pngs)}
+    fmt = dict(pngs)
+    for jobs in (1, 4, 18):
+        calls = _encode_chunks(pngs, jobs)
+        files = [p for _f, _n, chunk in calls for p in chunk]
+        assert sorted(files) == sorted(fmt) and len(set(files)) == len(files)
+        assert all(1 <= len(chunk) <= 32 and all(fmt[p] == f for p in chunk) for f, _n, chunk in calls)
+        assert [n for _f, n, _chunk in calls] == list(range(len(calls)))
+        costs = [sum(pixels[p] for p in chunk) for _f, _n, chunk in calls]
+        assert costs == sorted(costs, reverse=True)
+    # with many processes the largest image runs alone and first; the split does not depend on the order given
+    largest = pngs[-1][0]
+    assert _encode_chunks(pngs, 18)[0][2] == [largest]
+    assert _encode_chunks(pngs, 4) == _encode_chunks(list(reversed(pngs)), 4)
+
+
+def test_stream_profile_picks_the_textures_that_skip_the_dxt_step(tmp_path):
+    """_stream_direct: reduced textures the stream encoder takes go to it from the reduced image; the ones
+    it would leave as a VTF, or whose reduced file is not smaller, keep the regular way."""
+    from texlab.screen_compress import Item, _stream_direct
+    rng = np.random.default_rng(41)
+
+    def item(name, w, h, fmt, drop, out_fmt, **kw):
+        path = tmp_path / name
+        path.write_bytes(make_vtf(w, h, fmt, rng, **kw))
+        return Item(name, name[:-4], path, drop=drop, out_fmt=out_fmt, action="reduce", before=path.stat().st_size)
+    big = item("big.vtf", 256, 256, 15, 1, 13)
+    small = item("small.vtf", 64, 64, 13, 1, 13)                       # 32 px once reduced: not a stream texture
+    single = item("single.vtf", 256, 256, 13, 1, 13, flags=0x100, mips=1)
+    chain = item("chain.vtf", 512, 256, 13, 1, 13)
+    larger = item("larger.vtf", 128, 128, 13, 0, 15)                   # DXT1 -> DXT5 at the same size: no gain
+    exact = item("exact.vtf", 256, 256, 13, 1, 13)
+    png = lambda name: tmp_path / f"{name}.png"
+    prepared = [(big, None, png("big")), (small, None, png("small")), (single, None, ("alone", png("single"))),
+                (chain, None, ("chain", png("chain"))), (larger, None, png("larger")), (exact, None, "truncate"),
+                (item("transcode.vtf", 256, 256, 15, 0, 13), None, None)]
+    assert _stream_direct(prepared) == {big.path: (str(png("big")), 13, 1, "top"),
+                                        single.path: (str(png("single")), 13, 1, "alone"),
+                                        chain.path: (str(png("chain")), 13, 1, "chain")}
+
+
+@pytest.mark.skipif(not VTFCMD.exists(), reason="VTFCmd not extracted on this machine")
+def test_stream_profile_reduces_and_streams_in_one_go(tmp_path):
+    """A stream profile end to end: every reduced texture is offered to the stream encoder as the reduced
+    image; what it takes becomes a blob and a placeholder, what it leaves is written by VTFCmd after all."""
+    from tests.test_texture_stream import make_dxt_vtf, smooth_image
+    root = tmp_path / "addon"
+    mat = root / "materials" / "models" / "texlab_stream"
+    mat.mkdir(parents=True)
+    (mat / "smooth.vtf").write_bytes(make_dxt_vtf(smooth_image(256, 256), 13))
+    (mat / "noise.vtf").write_bytes(make_vtf(256, 256, 13, np.random.default_rng(51)))
+    (mat / "tiny.vtf").write_bytes(make_dxt_vtf(smooth_image(64, 64, seed=2), 13))     # 32 px reduced: VTFCmd
+    report = run(root, VTFCMD, "stream", jobs=2, report_path=tmp_path / "report.json")
+    stream = report["stream"]
+    rows = {Path(r["path"]).name: r for r in report["rows"]}
+    assert stream["direct"] == 2 and rows["smooth.vtf"]["action"] == "stream"
+    assert read_vtf(mat / "smooth.vtf").width <= 16                    # the placeholder
+    blobs = sorted((root / "data_static" / "gmot" / stream["slug"]).iterdir())
+    from texture_stream import codec
+    decoded = [read_vtf(codec.lua_vtf(b.read_bytes())) for b in blobs]
+    assert all((d.width, d.height, d.fmt, d.mip_count) == (128, 128, 13, 8) for d in decoded)
+    # the noise texture: a blob, or the reduced VTF when the blob would not be smaller
+    left = [Path(p).name for p in stream["direct_kept"]]
+    assert len(blobs) + len(left) == 2
+    if left:
+        assert left == ["noise.vtf"] and rows["noise.vtf"]["action"] == "reduce"
+        noise = read_vtf(mat / "noise.vtf")
+        assert (noise.width, noise.fmt, noise.mip_count) == (128, 13, 8)
+    tiny = read_vtf(mat / "tiny.vtf")
+    assert (tiny.width, tiny.mip_count) == (32, 6) and rows["tiny.vtf"]["action"] == "reduce"
+    # ("after" also counts the Lua runtime the stream adds, larger than this whole fixture)
+    assert report["after"] - stream["runtime"] < report["before"]
+
+
+def test_a_texture_that_fails_in_a_worker_is_prepared_again_alone(tmp_path):
+    """A worker process that runs out of memory (or dies, failing the rest of the pool) does not stop the
+    run: its textures come back and are prepared in the main process once the pool is gone."""
+    from concurrent.futures import Future
+
+    from texlab import screen_compress as sc
+    rng = np.random.default_rng(61)
+    items = []
+    for n in range(4):
+        p = tmp_path / f"t{n}.vtf"
+        p.write_bytes(make_vtf(64, 64, 13, rng))
+        items.append(sc.Item(p.name, p.stem, p, drop=1, out_fmt=13, action="reduce", before=p.stat().st_size))
+
+    class Pool:
+        def submit(self, fn, task):
+            future = Future()
+            if task[0] in (1, 3):
+                future.set_exception(MemoryError())
+            else:
+                future.set_result(fn(task))
+            return future
+    results, (failed, progress) = sc._prepare_all(items, tmp_path, "lanczos", Pool())
+    assert sorted(results) == [0, 2] and [task[0] for task in failed] == [1, 3]
+    sc._prepare_rest(failed, progress)
+    assert sorted(results) == [0, 1, 2, 3] and all(isinstance(r, Path) and r.is_file() for r in results.values())
+    # without a pool everything is done in this process and nothing is left over
+    alone, left = sc._prepare_all(items, tmp_path, "lanczos", None)
+    assert sorted(alone) == [0, 1, 2, 3] and not left
+
+
+def test_worker_processes_keep_the_numeric_library_on_one_thread(monkeypatch):
+    """texlab.jobs.process_pool: OpenBLAS reserves ~32 MB per thread in every process that loads numpy
+    (660 MB each on a 20-thread machine); the workers of a pool start with one."""
+    from texlab import jobs
+    for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        monkeypatch.delenv(name, raising=False)
+    with jobs.process_pool(1) as pool:
+        assert pool.submit(os.getenv, "OPENBLAS_NUM_THREADS").result() == "1"
+        assert pool.submit(os.getenv, "OMP_NUM_THREADS").result() == "1"
+    free = jobs.free_memory_gb()
+    assert free is None or free > 0

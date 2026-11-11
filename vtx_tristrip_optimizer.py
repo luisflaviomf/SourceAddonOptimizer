@@ -849,9 +849,9 @@ def optimize_tree(
     if executor is not None and len(tasks) > 1:
         records = list(executor.map(_optimize_file_task, tasks, chunksize=1))
     elif jobs > 1 and len(tasks) > 1:
-        from concurrent.futures import ProcessPoolExecutor
+        from texlab.jobs import process_pool
 
-        with ProcessPoolExecutor(max_workers=min(jobs, len(tasks))) as pool:
+        with process_pool(min(jobs, len(tasks))) as pool:
             records = list(pool.map(_optimize_file_task, tasks, chunksize=1))
     else:
         records = [_optimize_file(path, root, dll_path, stripifier) for path in paths]
