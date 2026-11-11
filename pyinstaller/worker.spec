@@ -64,6 +64,7 @@ a = Analysis(
         (str(repo_root / "tools" / "oxipng" / "LICENSE.oxipng.txt"), "."),
         # Models "Tela" profile "stream": Lua runtime + light-probe model written into optimized addons
         (str(repo_root / "model_stream" / "runtime.lua"), "model_stream"),
+        (str(repo_root / "model_stream" / "server.lua"), "model_stream"),
         (str(repo_root / "model_stream" / "probe" / "probe_v1.mdl"), "model_stream/probe"),
         (str(repo_root / "model_stream" / "probe" / "probe_v1.vvd"), "model_stream/probe"),
         (str(repo_root / "model_stream" / "probe" / "probe_v1.dx90.vtx"), "model_stream/probe"),

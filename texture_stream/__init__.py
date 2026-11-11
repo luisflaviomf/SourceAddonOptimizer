@@ -23,7 +23,7 @@ from concurrent.futures import as_completed
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parent
-CORE_VERSION = 2
+CORE_VERSION = 3
 DEFAULT_TARGET_DB = 34.0
 DEFAULT_FILL_LEVELS = 2
 PLACEHOLDER_SIDE = 16
@@ -147,7 +147,7 @@ def _model_textures(mdl: Path, resolver) -> set[str]:
     for tex in textures:
         m = resolver.model_material(cdmaterials, tex)
         if m:
-            out.update(m.textures.values())
+            out.update(ref for _key, ref in m.all_textures())
     return out
 
 
@@ -281,15 +281,17 @@ def convert(root: Path, jobs: int = 4, target: float = DEFAULT_TARGET_DB, fill: 
     roots = [root] + list(siblings)
     resolver = MaterialResolver(roots)
     vmts = read_vmts(resolver)
-    uses = alpha_uses(vmts, roots)
+    uses = alpha_uses(vmts, roots, resolver)
     ours = {}
     for p in sorted(mat_dir.rglob("*.vtf")):
         ours[p.relative_to(mat_dir).as_posix().lower()[:-4]] = p
-    # materials (this addon's and its neighbours') -> parameters that name one of our textures
+    # materials (this addon's and its neighbours') -> parameters that name one of our textures: every value
+    # of the VMT that names one, whatever the parameter (the runtime only acts where the game really holds
+    # that texture under that parameter)
     refs = {}
     for vref, _sh, params in vmts:
         m = resolver.material(vref)
-        for param, tref in (m.textures.items() if m else ()):
+        for param, tref in (m.all_textures() if m else ()):
             if tref in ours:
                 refs.setdefault(tref, [])
                 if (vref, param) not in refs[tref]:

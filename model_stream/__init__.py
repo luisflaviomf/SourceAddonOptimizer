@@ -87,4 +87,13 @@ def write_runtime(out_root: Path, manifest: dict, addon_name: str) -> list[Path]
             "GMOS_PENDING_MANIFEST = util.JSONToTable([[" + json.dumps(manifest, sort_keys=True) + "]])\n" + body)
     lua.write_text(text, encoding="utf-8", newline="\n")
     written.append(lua)
+    # the server's part of the bullet marks: the game's own marks do not show on streamed models, so the
+    # server tells the clients where bullets stopped on them (server.lua, loaded once however many optimized
+    # addons carry it)
+    sv = out_root / "lua" / "autorun" / "server" / f"gmo_stream_sv_{slug}.lua"
+    sv.parent.mkdir(parents=True, exist_ok=True)
+    sv.write_text("-- streamed models of this addon (GMod Addon Optimizer): see the text below\n"
+                  "GMOS_SV_PENDING = util.JSONToTable([==[" + json.dumps(sorted(manifest)) + "]==])\n"
+                  + (PACKAGE / "server.lua").read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+    written.append(sv)
     return written

@@ -44,8 +44,12 @@ local cache_mb = CreateClientConVar("gmot_cache_mb", "512", true, false,
     0, 16384)
 
 local lower, gsub, SysTime = string.lower, string.gsub, SysTime
+-- a material or texture name as the game's file system reads it: either slash, repeated slashes as one, any
+-- case (the game keeps repeated slashes in the texture's name: a VMT written with two backslashes after
+-- "models" loads the file and calls the texture models//weapons/...)
 local function norm(s)
     s = lower((gsub(s, "\\", "/")))
+    s = gsub(s, "//+", "/")
     s = gsub(s, "^/+", "")
     s = gsub(s, "^materials/", "")
     return (gsub(s, "%.v[mt][tf]$", ""))    -- .vmt, .vtf
@@ -181,6 +185,7 @@ local function point_self(e, name)
     if m and not m:IsError() and texture_is(m, "$basetexture", e) then O.SetTexture(m, "$basetexture", name) end
 end
 
+local LOOKED, look = {}, {}     -- materials seen on screen: asked for what they hold (look_inside), and the line
 -- SEEN_*: 1 = named by Lua, 2 = on screen (preview), 3 = on screen at full resolution
 local function want_material(name, full, lo)
     if type(name) ~= "string" or name == "" then return end
@@ -197,6 +202,52 @@ local function want_material(name, full, lo)
             if e.lvl then point_self(e, fname(e, e.lvl)) end   -- decoded before anything named it this way
         end
         want(e, lvl == 3, lo)
+    end
+    if lvl >= 2 and not LOOKED[k] then
+        LOOKED[k] = true
+        look[#look + 1] = { name, k, lvl == 3 }
+    end
+end
+
+-- What a material on screen really holds. The manifests list, from the files, the materials that sat next to
+-- the addon when it was optimized; a material of another addon (a texture pack several addons share), or one
+-- the game put together in a way the files do not show, can hold these textures too. Each material is asked
+-- for its parameters once, a few materials per frame (look_some, from the Think hook).
+local function look_inside(name, k, full)
+    local m = O.Material(k)     -- k: the name without prefix and extension, the way Material() takes it
+    if not ITEX_NAME or not m or m:IsError() or not m.GetKeyValues then return end
+    for param, v in pairs(m:GetKeyValues() or {}) do
+        local tv = type(v)
+        if tv == "ITexture" or tv == "table" or tv == "userdata" then
+            local ok, tn = pcall(ITEX_NAME, v)
+            local e = ok and type(tn) == "string" and BYREF[norm(tn)]
+            if e then
+                local refs, known = e.refs, false
+                for j = 1, #refs, 2 do
+                    if refs[j] == k and refs[j + 1] == param then known = true break end
+                end
+                if not known then
+                    refs[#refs + 1] = k
+                    refs[#refs + 1] = param
+                    local l = BYMAT[k]
+                    if not l then l = {}; BYMAT[k] = l end
+                    l[#l + 1] = e
+                    stats.found = (stats.found or 0) + 1
+                    if e.lvl then O.SetTexture(m, param, fname(e, e.lvl)) end   -- decoded already: show it now
+                end
+                want(e, full)
+            end
+        end
+    end
+end
+local function look_some(n)
+    for _ = 1, math.min(#look, n) do
+        local it = table.remove(look)
+        local ok, err = pcall(look_inside, it[1], it[2], it[3])
+        if not ok and not stats.look_error then
+            stats.look_error = tostring(err)
+            print("[GMOT] material " .. tostring(it[1]) .. ": " .. stats.look_error)
+        end
     end
 end
 
@@ -1008,6 +1059,7 @@ hook.Add("Think", "gmot_stream", function()
     local now = SysTime()
     did = ""
     local ok_scan, err_scan = pcall(scan, now)
+    look_some(4)
     timed("scan", now)
     local t_scan = SysTime() - now
     if not ok_scan and not stats.scan_error then

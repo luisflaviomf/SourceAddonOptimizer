@@ -989,3 +989,90 @@ def test_direct_texture_the_encoder_leaves_goes_back_to_the_caller(tmp_path, mon
     assert s["direct"] == 2 and sorted(Path(p).name for p in s["direct_kept"]) == ["body.vtf", "hud.vtf"]
     assert all(p.read_bytes() == data for p, data in before.items())
     assert not any(r["path"].endswith(("body.vtf", "hud.vtf")) for r in s["rows"])
+
+
+def _odd_addon(tmp_path):
+    """The addon of _addon with its materials written the ways real addons write them: a name with repeated
+    separators (M9K's Winchester 1887: two backslashes after "models", backslash + slash before the file), a
+    name carrying an extension, a parameter the analysis does not model, a block, a conditional key."""
+    root = _addon(tmp_path)
+    mat = root / "materials" / "models" / "car"
+    (mat / "truck.vmt").write_text('"VertexLitGeneric" { "$basetexture" "models' + "\\\\" + 'car' + "\\/" + 'truck" }')
+    (mat / "body.vmt").write_text('"UnlitTwoTexture" { "$basetexture" "models/car/body.vmt" "$texture2" "models/car/hud" '
+                                  '">=dx90" { "$detail" "models/car/unused" } "srgb?$bumpmap" "effects/flash" '
+                                  '"include" "materials/models/car/small.vmt" }')
+    return root
+
+
+def test_materials_are_read_the_way_the_game_reads_them(tmp_path, monkeypatch):
+    from texlab.materials import MaterialResolver, clean_path, normalize_texture_ref
+    assert normalize_texture_ref("models" + "\\\\" + "weapons" + "\\" + "v_models" + "\\/" + "shot.VTF") == "models/weapons/v_models/shot"
+    assert clean_path("/Models//Car\\Truck/") == "models/car/truck"
+    root = _odd_addon(tmp_path)
+    res = MaterialResolver([root])
+    truck = res.material("models//car/truck")
+    assert truck.textures == {"$basetexture": "models/car/truck"} and truck.other == []
+    body = res.material("models/car/body")
+    assert body.textures == {"$basetexture": "models/car/body"}                 # the .vmt in the name is dropped
+    assert body.other == [("$texture2", "models/car/hud"), ("$detail", "models/car/unused"), ("$bumpmap", "effects/flash")]
+    assert res.model_material(["models" + "\\\\" + "car" + "\\"], "truck") is truck
+    # a texture named through a parameter the analysis does not model keeps its alpha
+    from texlab.plan import alpha_unused_refs
+    assert alpha_unused_refs(root, []) == {"models/car/truck"}      # body: a shader the analysis does not know
+    from texture_stream.choose import alpha_uses, read_vmts
+    uses = alpha_uses(read_vmts(res), [root], res)
+    assert uses["models/car/hud"] == {"w": 1.0, "roles": {"other"}}
+    assert uses["models/car/truck"]["roles"] == {"base"}
+
+
+def test_manifest_lists_every_material_value_that_names_a_texture(tmp_path, monkeypatch):
+    root = _odd_addon(tmp_path)
+    s = _convert(root, monkeypatch)
+    lua = texture_stream.runtime_path(root, s["slug"]).read_text(encoding="utf-8")
+    man = json.loads(lua.split("util.JSONToTable([==[", 1)[1].split("]==])", 1)[0])
+    by_ref = {t[1]: t for t in man["tex"]}
+    assert by_ref["models/car/truck"][3] == ["models/car/truck", "$basetexture"]
+    assert by_ref["models/car/body"][3] == ["models/car/body", "$basetexture"]
+    assert by_ref["models/car/hud"][3] == ["models/car/body", "$texture2"]
+    assert by_ref["models/car/unused"][3] == ["models/car/body", "$detail"]
+    assert by_ref["effects/flash"][3] == ["effects/flash", "$basetexture", "models/car/body", "$bumpmap"]
+
+
+def test_lua_runtime_knows_textures_by_the_names_the_game_gives_them(tmp_path, monkeypatch):
+    """The game keeps the repeated slash of the VMT in the texture's name (lab client, 2026-11-11:
+    models//weapons/v_models/1887winchester/shot_m3super90): the material shows the stream all the same."""
+    root = _odd_addon(tmp_path)
+    slug = _convert(root, monkeypatch)["slug"]
+    g, body = _session(root, slug, vmts={"models/car/truck": "models//car/truck"})
+    car = g.ENTS[1]
+    car.model = b"models/truck.mdl"
+    think = g.HOOKS[b"Think/gmot_stream"]
+    for _ in range(600):
+        think()
+    assert _shown(g, "models/car/truck") == _stream_name(g, slug, "models/car/truck")
+    # Lua naming it the same odd way gets the decoded texture too
+    mine = g.Material(b"mine")
+    mine.SetTexture(mine, b"$basetexture", b"models" + b"\\\\" + b"car" + b"\\/" + b"truck")
+    assert _shown(g, "mine") == _stream_name(g, slug, "models/car/truck")
+
+
+def test_lua_runtime_looks_inside_the_materials_on_screen(tmp_path, monkeypatch):
+    """A material no manifest knows (another addon's, using this addon's textures) holds a stream texture
+    under some parameter: found when an entity shows the material, and pointed at the decoded texture."""
+    root = _addon(tmp_path)
+    slug = _convert(root, monkeypatch)["slug"]
+    stubs = (b"function IMAT:GetKeyValues() local t = { ['$alpha'] = 1 } "
+             b"for k, v in pairs(self.tex) do t[k] = setmetatable({ name = v }, ITEXM) end return t end")
+    g, body = _session(root, slug, before=stubs)
+    other = g.Material(b"models/other_addon/paint")
+    other.tex[b"$texture2"] = b"models/car/truck"
+    other.tex[b"$basetexture"] = b"models/other_addon/paint"
+    car = g.ENTS[1]
+    car.mats = g.EVAL(b"{ 'models/other_addon/paint' }")
+    car.model = b"models/other_addon/car.mdl"
+    think = g.HOOKS[b"Think/gmot_stream"]
+    for _ in range(600):
+        think()
+    assert bytes(other.tex[b"$texture2"]).decode() == _stream_name(g, slug, "models/car/truck")
+    assert bytes(other.tex[b"$basetexture"]) == b"models/other_addon/paint"
+    assert g.GMOT.Stats.found == 1

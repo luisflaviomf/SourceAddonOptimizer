@@ -74,8 +74,20 @@ def parse_keyvalues(text: str) -> tuple[str, dict]:
     return shader, block()
 
 
+_SLASHES = re.compile(r"/{2,}")
+
+
+def clean_path(value: str) -> str:
+    """A material path as the game's file system reads it: either slash, repeated slashes as one, any case."""
+    return _SLASHES.sub("/", value.strip().replace("\\", "/").lower()).strip("/")
+
+
 def normalize_texture_ref(value: str) -> str:
-    value = value.strip().replace("\\", "/").lower()
+    """A texture name of a VMT as the engine reads it (clean_path, no materials/ prefix, no .vtf).
+    M9K's Winchester 1887 writes its texture with two backslashes after "models": the game loads that file
+    (and calls the texture models//weapons/v_models/...); read literally, the texture had no material and
+    stayed a 16 px placeholder in game (2026-11-11)."""
+    value = clean_path(value)
     if value.startswith("materials/"):
         value = value[len("materials/"):]
     if value.endswith(".vtf"):
@@ -89,6 +101,15 @@ class Material:
     shader: str
     params: dict
     textures: dict[str, str] = field(default_factory=dict)   # param -> texture ref
+    # (key, texture ref) of every other value of the VMT that names a texture file of the roots: parameters
+    # outside TEXTURE_PARAMS ($texture2, $refracttinttexture, $emissiveblendbasetexture...), keys inside
+    # blocks (">=dx90" { ... }, proxies) and conditional keys ("srgb?$basetexture"). The analysis does not
+    # model how these are drawn; whoever needs to know that a material holds a texture reads both.
+    other: list = field(default_factory=list)
+
+    def all_textures(self) -> list:
+        """[(key, texture ref)]: the modelled parameters, then the others."""
+        return list(self.textures.items()) + list(self.other)
 
     def flag(self, name: str) -> bool:
         value = str(self.params.get(name, "0")).strip().strip('"')
@@ -141,10 +162,35 @@ class MaterialResolver:
         self._cache: dict[str, Material | None] = {}
 
     def find(self, relative: str, ext: str) -> Path | None:
-        return self._index.get(f"{relative.lower().strip('/')}.{ext}")
+        return self._index.get(f"{clean_path(relative)}.{ext}")
+
+    def texture(self, value: str) -> str:
+        """The texture a VMT value names: normalize_texture_ref; when no such VTF exists and the name
+        without its extension does, that one (the engine drops whatever extension the name carries:
+        "$basetexture" "models/x/barrel.vmt" loads barrel.vtf, seen in M9K and ARC9)."""
+        ref = normalize_texture_ref(value)
+        if f"{ref}.vtf" not in self._index and "." in ref.rsplit("/", 1)[-1]:
+            short = ref.rsplit(".", 1)[0]
+            if f"{short}.vtf" in self._index:
+                return short
+        return ref
+
+    def _note_other(self, result: Material, key: str, value) -> None:
+        if isinstance(value, dict):
+            for k, v in value.items():
+                self._note_other(result, k, v)
+            return
+        if not isinstance(value, str) or not value.strip():
+            return
+        key = key.split("?")[-1]
+        if key == "include":            # a patch material's base: a VMT, never a texture
+            return
+        ref = self.texture(value)
+        if f"{ref}.vtf" in self._index and result.textures.get(key) != ref and (key, ref) not in result.other:
+            result.other.append((key, ref))
 
     def material(self, relative: str) -> Material | None:
-        key = relative.lower().strip("/")
+        key = clean_path(relative)
         if key in self._cache:
             return self._cache[key]
         path = self.find(key, "vmt")
@@ -162,14 +208,18 @@ class MaterialResolver:
             result = Material(key, shader, params)
             for param, value in params.items():
                 if param in TEXTURE_PARAMS and isinstance(value, str) and value.strip():
-                    result.textures[param] = normalize_texture_ref(value)
+                    result.textures[param] = self.texture(value)
+            for param, value in params.items():
+                if param not in result.textures:
+                    self._note_other(result, param, value)
         self._cache[key] = result
         return result
 
     def model_material(self, cdmaterials: list[str], texture_name: str) -> Material | None:
-        name = texture_name.replace("\\", "/").strip("/")
+        name = clean_path(texture_name)
         for cd in cdmaterials:
-            rel = f"{cd.strip('/')}/{name}" if cd.strip("/") else name
+            cd = clean_path(cd)
+            rel = f"{cd}/{name}" if cd else name
             mat = self.material(rel)
             if mat is not None:
                 return mat

@@ -105,8 +105,11 @@ def read_vmts(resolver):
     return out
 
 
-def alpha_uses(vmts, roots) -> dict:
-    """{texture ref: {"w": weight | None, "roles": set}} over the given VMTs."""
+def alpha_uses(vmts, roots, resolver=None) -> dict:
+    """{texture ref: {"w": weight | None, "roles": set}} over the given VMTs.
+    resolver: the MaterialResolver the VMTs came from; with it the textures are the ones it resolved (names
+    spelled the engine's way, see texlab.materials) and a texture named through a parameter the analysis
+    does not model gets the role "other" and its alpha kept in full."""
     lua_color = _lua_color_proxies(roots)
     w = defaultdict(lambda: None)
     roles = defaultdict(set)
@@ -115,11 +118,16 @@ def alpha_uses(vmts, roots) -> dict:
         cur = w[ref]
         w[ref] = val if cur is None else max(cur, val)
 
-    for _vref, sh, p in vmts:
-        for k, val in p.items():
-            if not (isinstance(val, str) and k in TEXTURE_PARAMS):
-                continue
-            ref = normalize_texture_ref(val)
+    for vref, sh, p in vmts:
+        m = resolver.material(vref) if resolver is not None else None
+        if m is not None:
+            known = m.textures
+            for _key, ref in m.other:
+                roles[ref].add("other")
+                put(ref, 1.0)
+        else:
+            known = {k: normalize_texture_ref(val) for k, val in p.items() if isinstance(val, str) and k in TEXTURE_PARAMS}
+        for k, ref in known.items():
             role = TEXTURE_PARAMS[k]
             roles[ref].add("ssbump" if role == "normal" and _flag(p, "$ssbump") else role)
             if role == "base":

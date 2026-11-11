@@ -26,6 +26,8 @@ def alpha_unused_refs(root: Path, extra_roots: list[Path]) -> set[str]:
             continue
         for param, ref in m.textures.items():
             verdict[ref] = verdict.get(ref, False) or alpha_required(m, param)
+        for _key, ref in m.other:       # named through a parameter the analysis does not model: keep it
+            verdict[ref] = True
     return {ref for ref, needed in verdict.items() if not needed}
 
 

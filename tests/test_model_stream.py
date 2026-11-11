@@ -75,6 +75,7 @@ SERVER = false
 MATERIAL_TRIANGLE_STRIP = 5
 bit = require("bit")
 hook = { Add = function() end }
+net = { Receive = function() end }
 timer = { Create = function() end, Simple = function() end }
 render = { MaterialOverride = function() end, ModelMaterialOverride = function() end,
            MaterialOverrideByIndex = function() end }
@@ -354,3 +355,180 @@ def test_texscreen_strong_profile_caps_detail(tmp_path):
     (mat / "paint.vmt").write_text('"VertexLitGeneric"\n{\n "$basetexture" "m/base"\n "$detail" "m/ao"\n}\n')
     caps = sc._param_caps(tmp_path, {"$detail": 2})
     assert caps == {"m/ao": 2}
+
+
+def _runtime(stream: bytes = b""):
+    """The shipped runtime.lua loaded in LuaJIT with the stubs (no stream decoded yet)."""
+    import lzma
+    from lupa import luajit21
+    rt = luajit21.LuaRuntime(encoding=None, unpack_returned_tuples=True)
+
+    def decompress(data):
+        d = bytearray(data)
+        d[5:13] = bytes([255]) * 8
+        return lzma.decompress(bytes(d), format=lzma.FORMAT_ALONE)
+
+    g = rt.globals()
+    g[b"PY_READ"] = lambda path, where: stream
+    g[b"PY_DECOMPRESS"] = decompress
+    g[b"MODEL"] = b"models/test/car.mdl"
+    g[b"MESH_LIMIT"] = 10 ** 9
+    rt.execute(RUNTIME_STUBS.encode())
+    rt.execute((ROOT / "model_stream" / "runtime.lua").read_text(encoding="utf-8").encode("utf-8"))
+    return rt, g
+
+
+def test_bullet_mark_is_cut_out_of_the_triangles_under_it():
+    """A flat 16 x 16 sheet of 2-unit squares, written as one strip per row: a ray finds it where it should and
+    the mark is exactly the square of the decal, whatever triangles it falls on."""
+    rt, g = _runtime()
+    rt.execute(b"""
+        local X, Y, Z, C, lens = {}, {}, {}, {}, {}
+        for r = 0, 8 do for c = 0, 8 do X[#X + 1], Y[#Y + 1], Z[#Z + 1] = c * 2, r * 2, 0 end end
+        for r = 0, 7 do
+            for c = 0, 8 do C[#C + 1] = r * 9 + c + 1; C[#C + 1] = (r + 1) * 9 + c + 1 end
+            lens[#lens + 1] = 18
+        end
+        GG = GMOS.marks.index_group(X, Y, Z, C, lens)
+        HIT, TRI = GMOS.marks.ray_group(GG, 8.3, 7.7, 5, 0, 0, -1, 10)
+        MISS = GMOS.marks.ray_group(GG, 8.3, 7.7, 5, 0, 0, -1, 4)
+        AWAY = GMOS.marks.ray_group(GG, 30, 7.7, 5, 0, 0, -1, 10)
+        CUT = GMOS.marks.cut(GG, 8, 8, 0, 0, 0, 1, 6.4)
+        NTRI = #GG.T / 3
+    """)
+    assert g[b"NTRI"] == 128 and abs(g[b"HIT"] - 5) < 1e-9 and g[b"MISS"] is None and g[b"AWAY"] is None
+    cut = [[v[i] for i in range(1, 6)] for v in g[b"CUT"].values()]
+    assert len(cut) % 3 == 0 and len(cut) > 0
+    assert all(abs(u) <= 0.5 + 1e-9 and abs(v) <= 0.5 + 1e-9 and z == 0 for u, v, _x, _y, z in cut)
+    area = 0.0
+    for k in range(0, len(cut), 3):
+        a, b, c = (np.array(p[2:]) for p in cut[k:k + 3])
+        area += np.linalg.norm(np.cross(b - a, c - a)) / 2
+    assert abs(area - 6.4 * 6.4) < 1e-6
+    # the texture coordinates are the position inside the square (whichever way the square is turned)
+    assert all(abs(u * u + v * v - ((x - 8) ** 2 + (y - 8) ** 2) / 6.4 ** 2) < 1e-9 for u, v, x, y, _z in cut)
+
+
+@need_lvs
+def test_bullet_marks_read_the_triangles_the_stream_draws():
+    """The triangles read again for the marks are the ones of the stream, and a ray finds the nearest one
+    (checked against every triangle of the group)."""
+    from collections import Counter
+    data = encoder.encode(E46, _resolver())
+    d = encoder.decode(data)
+    rt, g = _runtime(data)
+    rt.execute(b"""GROUPS = GMOS.marks.load({ path = "data_static/gmo/test.dat" }, function() end)""")
+    groups = g[b"GROUPS"]
+    assert len(groups) == len(d["groups"])
+    big = max(range(len(d["groups"])), key=lambda i: len(d["groups"][i]["tris"]))
+    for gi in (0, big):
+        ref, gg = d["groups"][gi], groups[gi + 1]
+        X = np.array(list(gg[b"X"].values())); Y = np.array(list(gg[b"Y"].values())); Z = np.array(list(gg[b"Z"].values()))
+        T = np.array(list(gg[b"T"].values()), np.int64).reshape(-1, 3) - 1
+        P = np.round(np.stack([X, Y, Z], 1) / d["posq"]).astype(np.int64)
+        got = Counter(tuple(sorted(tuple(int(x) for x in P[i]) for i in t)) for t in T)
+        R = np.round(ref["pos"] / d["posq"]).astype(np.int64)
+        want = Counter()
+        for tri in ref["tris"]:
+            a, b, c = (tuple(int(x) for x in R[i]) for i in tri)
+            if a != b and b != c and a != c:
+                want[tuple(sorted((a, b, c)))] += 1
+        assert set(got) == set(want)
+    # a ray at the middle of a triangle of the biggest group, from 5 units off its face
+    gg = groups[big + 1]
+    X = np.array(list(gg[b"X"].values())); Y = np.array(list(gg[b"Y"].values())); Z = np.array(list(gg[b"Z"].values()))
+    T = np.array(list(gg[b"T"].values()), np.int64).reshape(-1, 3) - 1
+    V = np.stack([X, Y, Z], 1)
+    areas = np.linalg.norm(np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]]), axis=1)
+    k = int(np.argsort(areas)[len(areas) * 9 // 10])
+    a, b, c = V[T[k]]
+    n = np.cross(b - a, c - a)
+    n /= np.linalg.norm(n)
+    o, dvec = (a + b + c) / 3 + n * 5, -n
+    # every triangle of the group (Moller-Trumbore), the nearest within 10 units
+    e1, e2 = V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]]
+    h = np.cross(dvec, e2)
+    det = np.einsum("ij,ij->i", e1, h)
+    ok = np.abs(det) > 1e-9
+    inv = np.where(ok, 1 / np.where(ok, det, 1), 0)
+    s = o - V[T[:, 0]]
+    u = np.einsum("ij,ij->i", s, h) * inv
+    q = np.cross(s, e1)
+    v = np.einsum("j,ij->i", dvec, q) * inv
+    t = np.einsum("ij,ij->i", e2, q) * inv
+    hits = t[ok & (u >= 0) & (u <= 1) & (v >= 0) & (u + v <= 1) & (t >= 0) & (t <= 10)]
+    g[b"GG"] = gg
+    lua_t = rt.eval(b"function(ox, oy, oz, dx, dy, dz) return (GMOS.marks.ray_group(GG, ox, oy, oz, dx, dy, dz, 10)) end")(*o, *dvec)
+    assert len(hits) and abs(lua_t - hits.min()) < 1e-6 and lua_t <= 5 + 1e-6
+
+
+def test_runtime_files_carry_the_server_part_of_the_bullet_marks(tmp_path):
+    files = model_stream.write_runtime(tmp_path, {"models/a/car.mdl": "data_static/gmo/1.dat",
+                                                  "models/a/Truck.mdl": "data_static/gmo/2.dat"}, "my_addon")
+    sv = [f for f in files if f.parent.name == "server"]
+    assert len(sv) == 1 and sv[0].parent.parent.name == "autorun" and sv[0].name.startswith("gmo_stream_sv_")
+    text = sv[0].read_text(encoding="utf-8")
+    assert 'GMOS_SV_PENDING = util.JSONToTable([==[["models/a/Truck.mdl", "models/a/car.mdl"]]==])' in text
+    assert (ROOT / "model_stream" / "server.lua").read_text(encoding="utf-8") in text
+    # the file as the game's server loads it
+    from lupa import luajit21
+    rt = luajit21.LuaRuntime(encoding=None, unpack_returned_tuples=True)
+    rt.execute(SERVER_STUBS.encode())
+    rt.globals().util.JSONToTable = lambda s: rt.table_from([m.encode() for m in json.loads(bytes(s).decode())])
+    rt.execute(text.encode("utf-8"))
+    models = rt.globals().GMOS_SV.models
+    assert models[b"models/a/truck.mdl"] is True and models[b"models/a/car.mdl"] is True
+    client = [f for f in files if f.parent.name == "client"]
+    assert len(client) == 1 and "function G.AddDecal" in client[0].read_text(encoding="utf-8")
+
+
+SERVER_STUBS = r"""
+SERVER = true
+FCVAR_ARCHIVE = 128
+NOW, SENT, HOOKS, STRINGS, ON = 10.2, {}, {}, {}, true
+function CurTime() return NOW end
+function CreateConVar() return { GetBool = function() return ON end } end
+util = { AddNetworkString = function(s) STRINGS[#STRINGS + 1] = s end,
+         JSONToTable = function(s) return loadstring("return " .. s:gsub("%[", "{"):gsub("%]", "}"))() end }
+hook = { Add = function(ev, name, f) HOOKS[ev] = (HOOKS[ev] or 0) + 1; FIRE = f end }
+local V = {}
+V.__index = V
+V.__sub = function(a, b) return setmetatable({ a[1] - b[1], a[2] - b[2], a[3] - b[3] }, V) end
+function V:LengthSqr() return self[1] ^ 2 + self[2] ^ 2 + self[3] ^ 2 end
+function V:Normalize() local l = math.sqrt(self:LengthSqr()); self[1], self[2], self[3] = self[1] / l, self[2] / l, self[3] / l end
+function Vec(x, y, z) return setmetatable({ x, y, z }, V) end
+local msg
+net = { Start = function(name, unreliable) msg = { name = name, unreliable = unreliable } end,
+        WriteEntity = function(e) msg.ent = e end, WriteVector = function(v) msg.pos = v end,
+        WriteNormal = function(v) msg.dir = v end, WriteUInt = function(v, bits) msg.mat = v end,
+        SendPVS = function(p) msg.pvs = p; SENT[#SENT + 1] = msg end }
+function Ent(model) return { model = model, IsValid = function() return true end, GetModel = function() return model end } end
+function Shot(ent) FIRE(nil, { Trace = { Entity = ent, HitPos = Vec(10, 0, 0), StartPos = Vec(0, 0, 0), MatType = 77 } }) end
+"""
+
+
+def test_server_tells_the_clients_where_bullets_hit_streamed_models():
+    from lupa import luajit21
+    rt = luajit21.LuaRuntime(encoding=None, unpack_returned_tuples=True)
+    g = rt.globals()
+    rt.execute(SERVER_STUBS.encode())
+    body = (ROOT / "model_stream" / "server.lua").read_text(encoding="utf-8").encode("utf-8")
+    rt.execute(b'GMOS_SV_PENDING = { "models/a/Car.mdl" }\n' + body)
+    rt.execute(b'GMOS_SV_PENDING = { "models/b/truck.mdl" }\n' + body)      # a second optimized addon
+    assert list(g[b"STRINGS"].values()) == [b"gmo_stream_decal"] and g[b"HOOKS"][b"PostEntityFireBullets"] == 1
+    rt.execute(b"""
+        CAR, TRUCK, PROP = Ent("models/a/car.mdl"), Ent("models\\\\B\\\\Truck.mdl"), Ent("models/props/barrel.mdl")
+        Shot(CAR) Shot(PROP) Shot(TRUCK)
+    """)
+    sent = list(g[b"SENT"].values())
+    assert [m[b"ent"][b"model"] for m in sent] == [b"models/a/car.mdl", b"models\\B\\Truck.mdl"]    # not the plain prop
+    m = sent[0]
+    assert m[b"name"] == b"gmo_stream_decal" and m[b"unreliable"] is True and m[b"mat"] == 77
+    assert list(m[b"dir"].values()) == [1, 0, 0] and list(m[b"pvs"].values()) == [10, 0, 0]
+    # a burst: at most 12 messages a second for one model, then again in the next second
+    rt.execute(b"for _ = 1, 40 do Shot(CAR) end")
+    assert len(g[b"SENT"]) == 2 + 11
+    rt.execute(b"NOW = 11.5 for _ = 1, 3 do Shot(CAR) end")
+    assert len(g[b"SENT"]) == 2 + 11 + 3
+    rt.execute(b"ON = false Shot(CAR)")                                       # gmo_stream_marks 0
+    assert len(g[b"SENT"]) == 2 + 11 + 3
