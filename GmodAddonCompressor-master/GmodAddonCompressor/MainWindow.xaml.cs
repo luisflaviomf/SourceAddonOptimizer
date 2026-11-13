@@ -916,6 +916,17 @@ namespace GmodAddonCompressor
                 TextBox_MapScanRootPath.Text = dialog.SelectedPath;
         }
 
+        private void Button_SelectMapScanFile_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = "Addon do Garry's Mod (*.gma;*.bin)|*.gma;*.bin|Todos os arquivos (*.*)|*.*",
+                Title = "Escolha o .gma ou o .bin do mapa"
+            };
+            if (dialog.ShowDialog(this).GetValueOrDefault())
+                TextBox_MapScanRootPath.Text = dialog.FileName;
+        }
+
         private void TextBox_MapScanRootPath_TextChanged(object sender, TextChangedEventArgs e)
         {
             if (!_mapScanRunning && !_mapStageOptimizeRunning && !_mapBuildRunning)
@@ -953,17 +964,20 @@ namespace GmodAddonCompressor
 
         private void UpdateMapScanActionStates()
         {
-            bool hasRoot = Directory.Exists(TextBox_MapScanRootPath.Text.Trim());
+            bool hasRoot = MapInputExists(TextBox_MapScanRootPath.Text.Trim());
             bool hasWork = !string.IsNullOrWhiteSpace(_mapScanWorkDir) && Directory.Exists(_mapScanWorkDir);
             bool hasStaging = _mapScanStagingDirs.Any(Directory.Exists);
             bool hasStageOptimizeSummary = !string.IsNullOrWhiteSpace(_mapStageOptimizeSummaryPath) && File.Exists(_mapStageOptimizeSummaryPath);
             bool hasOutput = !string.IsNullOrWhiteSpace(_mapBuildOutputPath) && Directory.Exists(_mapBuildOutputPath);
-            bool isBusy = _mapScanRunning || _mapStageOptimizeRunning || _mapBuildRunning;
+            bool isBusy = _mapScanRunning || _mapStageOptimizeRunning || _mapBuildRunning || _mapAllRunning;
 
+            Button_MapOptimizeAll.IsEnabled = !isBusy && hasRoot;
+            Button_SelectMapScanFile.IsEnabled = !isBusy;
+            Button_SelectMapScanRoot.IsEnabled = !isBusy;
             Button_MapScanRun.IsEnabled = !isBusy && hasRoot;
             Button_MapStageOptimize.IsEnabled = !isBusy && hasStaging;
             Button_MapBuildRun.IsEnabled = !isBusy && hasStaging && hasStageOptimizeSummary;
-            Button_MapScanCancel.IsEnabled = (_mapScanRunning || _mapBuildRunning) && !_mapScanCancelRequested;
+            Button_MapScanCancel.IsEnabled = (_mapScanRunning || _mapBuildRunning || _mapAllRunning) && !_mapScanCancelRequested;
             Button_MapScanOpenRoot.IsEnabled = !isBusy && hasRoot;
             Button_MapScanOpenWork.IsEnabled = !isBusy && hasWork;
             Button_MapBuildOpenOutput.IsEnabled = !isBusy && hasOutput;
@@ -1011,14 +1025,15 @@ namespace GmodAddonCompressor
 
         private async Task<string> PrepareMapInputRootAsync(string selectedRootPath, CancellationToken cancellationToken)
         {
-            if (DirectoryContainsMapBsp(selectedRootPath))
+            bool archiveFile = IsMapArchiveFile(selectedRootPath);
+            if (!archiveFile && DirectoryContainsMapBsp(selectedRootPath))
             {
                 _mapPreparedInputRootPath = null;
                 _mapInputModeDescription = "Addon já extraído (maps/*.bsp)";
                 return selectedRootPath;
             }
 
-            if (!DirectoryContainsAddonArchives(selectedRootPath))
+            if (!archiveFile && !DirectoryContainsAddonArchives(selectedRootPath))
                 throw new InvalidOperationException("Nenhum maps/*.bsp nem .gma/.bin nesta pasta.");
 
             string gmadPath = TextBox_UnpackGmadPath.Text.Trim();
@@ -1033,14 +1048,16 @@ namespace GmodAddonCompressor
             }
 
             if (!File.Exists(gmadPath))
-                throw new InvalidOperationException("Esta pasta só tem .gma/.bin: escolha o gmad.exe primeiro.");
+                throw new InvalidOperationException("Para abrir .gma/.bin o programa precisa do gmad.exe: escolha o gmad.exe primeiro.");
 
             string workDir = _mapScanWorkDir ?? BuildMapScanWorkDir(selectedRootPath);
             string preparedRoot = BuildMapPreparedInputRoot(workDir);
             string unpackWorkDir = Path.Combine(workDir, "prepare_unpack");
 
             _mapPreparedInputRootPath = preparedRoot;
-            _mapInputModeDescription = "Pasta com .gma/.bin, extraída antes da busca";
+            _mapInputModeDescription = archiveFile
+                ? $"Arquivo {Path.GetExtension(selectedRootPath).ToLowerInvariant()}, extraído antes da busca"
+                : "Pasta com .gma/.bin, extraída antes da busca";
 
             AppendMapScanLog("[MAP-PREP] No maps/*.bsp found in the selected root. Preparing raw .gma/.bin archives into work...");
             AppendMapScanLog($"[MAP-PREP] Prepared input root: {preparedRoot}");
@@ -1082,7 +1099,8 @@ namespace GmodAddonCompressor
                 ScanOnly = false,
                 ExtractMapPakContent = false,
                 DeleteMapBspAfterExtract = false,
-                CancelFilePath = _mapScanCancelFile
+                CancelFilePath = _mapScanCancelFile,
+                PlainFolderNames = true
             };
 
             int exitCode = await prepareRunner.RunAsync(options, cancellationToken);
@@ -1096,6 +1114,16 @@ namespace GmodAddonCompressor
                 throw new InvalidOperationException("Os addons foram extraídos, mas não há maps/*.bsp neles.");
 
             AppendMapScanLog("[MAP-PREP] Raw archive extraction completed. Continuing with BSP scan...");
+            if (archiveFile)
+            {
+                // one .gma/.bin = one addon: its own folder is the root, so the result is <name>_optimized\maps\...
+                // (and <name>_optimized.gma), not <name>_optimized\<name>_extraido\maps\...
+                var addonDirs = Directory.EnumerateDirectories(preparedRoot)
+                    .Where(dir => Directory.Exists(Path.Combine(dir, "maps")))
+                    .ToList();
+                if (addonDirs.Count == 1)
+                    return addonDirs[0];
+            }
             return preparedRoot;
         }
 
@@ -1104,8 +1132,8 @@ namespace GmodAddonCompressor
             var errors = new List<string>();
             string rootPath = TextBox_MapScanRootPath.Text.Trim();
 
-            if (!Directory.Exists(rootPath))
-                errors.Add("Pasta do addon não encontrada.");
+            if (!MapInputExists(rootPath))
+                errors.Add("Escolha um .gma, um .bin ou a pasta do addon.");
 
             if (Directory.Exists(rootPath) &&
                 !DirectoryContainsMapBsp(rootPath) &&
@@ -1121,8 +1149,16 @@ namespace GmodAddonCompressor
             return errors.Count == 0;
         }
 
+        private static bool IsMapArchiveFile(string path) =>
+            File.Exists(path) &&
+            (path.EndsWith(".gma", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase));
+
+        private static bool MapInputExists(string path) => Directory.Exists(path) || IsMapArchiveFile(path);
+
         private static string BuildMapScanWorkDir(string rootPath)
         {
+            if (IsMapArchiveFile(rootPath))
+                rootPath = Path.Combine(Path.GetDirectoryName(rootPath) ?? string.Empty, Path.GetFileNameWithoutExtension(rootPath));
             string name = Path.GetFileName(rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             if (string.IsNullOrWhiteSpace(name))
                 name = "root";
@@ -1131,6 +1167,9 @@ namespace GmodAddonCompressor
 
         private static string BuildMapBuildOutputDir(string rootPath)
         {
+            // next to what was picked: <name>_optimized (for a .gma/.bin, <file name without extension>_optimized)
+            if (IsMapArchiveFile(rootPath))
+                rootPath = Path.Combine(Path.GetDirectoryName(rootPath) ?? string.Empty, Path.GetFileNameWithoutExtension(rootPath));
             string trimmed = rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             string name = Path.GetFileName(trimmed);
             if (string.IsNullOrWhiteSpace(name))
@@ -1140,11 +1179,11 @@ namespace GmodAddonCompressor
             if (string.IsNullOrWhiteSpace(parent))
                 throw new InvalidOperationException("Não foi possível achar a pasta acima do addon para salvar o resultado.");
 
-            string basePath = Path.Combine(parent, $"{name}_mapassets_optimized");
+            string basePath = Path.Combine(parent, $"{name}_optimized");
             if (!Directory.Exists(basePath) && !File.Exists(basePath))
                 return basePath;
 
-            return Path.Combine(parent, $"{name}_mapassets_optimized_{DateTime.Now:yyyyMMdd_HHmmss}");
+            return Path.Combine(parent, $"{name}_optimized_{DateTime.Now:yyyyMMdd_HHmmss}");
         }
 
         private static string BuildMapScanCancelFilePath()
@@ -1207,6 +1246,8 @@ namespace GmodAddonCompressor
             TextBlock_MapScanCurrent.Text = "Preparando o addon…";
             TextBlock_MapScanStatus.Text = "Rodando";
             TextBox_MapScanSummary.Text = "Preparando o addon e lendo os mapas…";
+            Panel_MapResult.Visibility = Visibility.Collapsed;
+            _mapResultPath = null;
 
             AppendMapScanLog(string.Empty);
             AppendMapScanLog("=== Preparing input, scanning BSP files and extracting staging for Optimize Maps ===");
@@ -1287,7 +1328,7 @@ namespace GmodAddonCompressor
 
         private void Button_MapScanCancel_Click(object sender, RoutedEventArgs e)
         {
-            if ((!_mapScanRunning && !_mapBuildRunning) || _mapScanCancelRequested)
+            if ((!_mapScanRunning && !_mapBuildRunning && !_mapAllRunning) || _mapScanCancelRequested)
                 return;
 
             _mapScanCancelRequested = true;
@@ -1420,19 +1461,26 @@ namespace GmodAddonCompressor
                     : "Terminou sem o resumo (map_bsp_scan_summary.json). Veja o log em Detalhes.";
             }
 
-            _mapScanCancelRequested = false;
+            if (!_mapAllRunning)
+                _mapScanCancelRequested = false;
             UpdateMapScanActionStates();
         }
 
         private async void Button_MapStageOptimize_Click(object sender, RoutedEventArgs e)
         {
+            await RunMapStageOptimizeAsync();
+        }
+
+        /// <summary>Step 2 with the chosen profile. True when it ran to the end.</summary>
+        private async Task<bool> RunMapStageOptimizeAsync()
+        {
             if (_mapScanRunning || _mapStageOptimizeRunning)
-                return;
+                return false;
 
             if (!LoadMapScanSummary())
             {
                 MessageBox.Show("Rode o passo 1, Preparar, antes.", "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                return false;
             }
 
             var stageRoots = _mapScanStagingDirs
@@ -1442,8 +1490,10 @@ namespace GmodAddonCompressor
 
             if (stageRoots.Length == 0)
             {
-                MessageBox.Show("Nenhum conteúdo de mapa preparado. Rode o passo 1, Preparar.", "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                // maps without embedded content: nothing to optimize inside them, the rebuild still compresses them
+                _mapStageOptimizeSummaryPath = null;
+                AppendMapScanLog("[MAP-OPT] No embedded content to optimize.");
+                return true;
             }
 
             _mapStageOptimizeRunning = true;
@@ -1462,8 +1512,10 @@ namespace GmodAddonCompressor
             AppendMapScanLog($"[MAP-OPT] Staging roots: {stageRoots.Length}");
             UpdateMapScanActionStates();
 
+            MapProfile profile = MapProfiles.At(_context.MapProfileIndex);
+            AppendMapScanLog($"[MAP-OPT] Profile: {profile.Name}");
             bool audioAvailable = true;
-            bool needsAudioProcessing = _context.CompressWAV || _context.CompressMP3 || _context.CompressOGG;
+            bool needsAudioProcessing = profile.AdaptiveWav;
             if (needsAudioProcessing && !EnsureFfmpegAvailable("Map staging audio compression"))
                 audioAvailable = false;
 
@@ -1478,25 +1530,24 @@ namespace GmodAddonCompressor
                     StageRoots = stageRoots,
                     WorkDir = _mapScanWorkDir ?? ToolPaths.WorkRoot,
                     SummaryPath = _mapStageOptimizeSummaryPath,
-                    IncludeVtf = _context.CompressVTF,
-                    IncludeWav = audioAvailable && _context.CompressWAV,
-                    IncludeMp3 = audioAvailable && _context.CompressMP3,
-                    IncludeOgg = audioAvailable && _context.CompressOGG,
-                    IncludeJpg = _context.CompressJPG,
-                    IncludePng = _context.CompressPNG,
-                    IncludeLua = _context.CompressLUA,
-                    WavSampleRate = _context.WavRateList[Math.Clamp(_context.WavRateListIndex, 0, _context.WavRateList.Length - 1)],
-                    WavChannels = _context.WavChannelsIndex == 0 ? 2 : 1,
-                    WavCodec = _context.WavCodecIndex == 1 ? AudioContext.WavCodecKind.AdpcmMs : AudioContext.WavCodecKind.Pcm16,
-                    WavOptimization = _context.WavOptimizationIndex == 1
-                        ? AudioContext.WavOptimizationKind.AdaptiveConservative
-                        : AudioContext.WavOptimizationKind.Manual,
+                    PipelineOptions = profile.PipelineOptions(),
+                    IncludeVtf = true,
+                    IncludeWav = audioAvailable && profile.AdaptiveWav,
+                    IncludeMp3 = false,
+                    IncludeOgg = false,
+                    IncludeJpg = false,
+                    IncludePng = true,
+                    IncludeLua = false,
+                    WavSampleRate = MapProfile.WavReferenceRate,
+                    WavChannels = MapProfile.WavReferenceChannels,
+                    WavCodec = AudioContext.WavCodecKind.Pcm16,
+                    WavOptimization = MapProfiles.WavOptimization(profile),
                     Mp3SampleRate = _context.WavRateList[Math.Clamp(_context.Mp3RateIndex, 0, _context.WavRateList.Length - 1)],
                     Mp3BitrateKbps = _context.AudioBitrateList[Math.Clamp(_context.Mp3BitrateIndex, 0, _context.AudioBitrateList.Length - 1)],
                     OggSampleRate = _context.WavRateList[Math.Clamp(_context.OggRateIndex, 0, _context.WavRateList.Length - 1)],
                     OggChannels = _context.OggChannelsIndex == 0 ? 2 : 1,
                     OggQuality = MapOggQualityFromIndex(_context.OggQualityIndex),
-                    PreserveLoopMetadata = _context.AudioLoopSafe,
+                    PreserveLoopMetadata = true,
                     ImageResolution = _context.ImageReducingResolutionList[resolutionIndex],
                     TargetWidth = targetWidth,
                     TargetHeight = targetHeight,
@@ -1504,7 +1555,7 @@ namespace GmodAddonCompressor
                     SkipHeight = (int)_context.ImageSkipHeight,
                     ReduceExactlyToLimits = _context.ReduceExactlyToLimits,
                     KeepImageAspectRatio = _context.KeepImageAspectRatio,
-                    LuaMinimalistic = _context.ChangeOriginalCodeToMinimalistic,
+                    LuaMinimalistic = false,
                     Log = message => Dispatcher.Invoke(() => AppendMapScanLog(message)),
                     Progress = (filePath, fileIndex, filesCount) =>
                     {
@@ -1540,6 +1591,7 @@ namespace GmodAddonCompressor
                 AppendMapScanLog($"[MAP-OPT] Summary: {result.SummaryPath}");
 
                 LoadMapScanSummary();
+                return true;
             }
             catch (Exception ex)
             {
@@ -1556,30 +1608,31 @@ namespace GmodAddonCompressor
                     "Resultado: falhou",
                     $"Motivo: {ex.Message}"
                 }.Where(line => !string.IsNullOrWhiteSpace(line)));
+                return false;
             }
             finally
             {
                 _mapStageOptimizeRunning = false;
-                _context.UnlockedUI = true;
+                _context.UnlockedUI = !_mapAllRunning;
                 UpdateMapScanActionStates();
             }
         }
 
         private async void Button_MapBuildRun_Click(object sender, RoutedEventArgs e)
         {
+            await RunMapBuildAsync();
+        }
+
+        /// <summary>Step 3: rebuild the .bsp files into a new folder. The worker's exit code (-1: not started).</summary>
+        private async Task<int> RunMapBuildAsync()
+        {
             if (_mapScanRunning || _mapStageOptimizeRunning || _mapBuildRunning)
-                return;
+                return -1;
 
             if (!LoadMapScanSummary())
             {
                 MessageBox.Show("Rode o passo 1, Preparar, antes.", "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(_mapStageOptimizeSummaryPath) || !File.Exists(_mapStageOptimizeSummaryPath))
-            {
-                MessageBox.Show("Rode o passo 2, Otimizar conteúdo, antes.", "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                return -1;
             }
 
             string plannedOutputDir;
@@ -1590,18 +1643,18 @@ namespace GmodAddonCompressor
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message, "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                return -1;
             }
 
             string? outputParent = Directory.GetParent(plannedOutputDir)?.FullName;
             if (string.IsNullOrWhiteSpace(outputParent) || !CanWriteToDirectory(outputParent))
             {
                 MessageBox.Show("Sem permissão de escrita na pasta acima do addon (o resultado é criado lá).", "Mapas", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                return -1;
             }
 
             if (!EnsureToolsAvailable("Mapas"))
-                return;
+                return -1;
 
             SaveSettings();
             ClearMapScanCancelFile();
@@ -1621,7 +1674,7 @@ namespace GmodAddonCompressor
             TextBlock_MapScanCurrent.Text = "Preparando a reconstrução dos .bsp…";
             TextBlock_MapScanStatus.Text = "Rodando";
             AppendMapScanLog(string.Empty);
-            AppendMapScanLog("=== Rebuilding staged pak ZIPs and reinjecting them into BSPs (Phase 4, EOF-only) ===");
+            AppendMapScanLog("=== Rebuilding the BSP files (LZMA lumps and embedded files, the engine's own format) ===");
             AppendMapScanLog($"[MAP-BUILD] Output dir: {_mapBuildOutputPath}");
             _context.UnlockedUI = false;
             UpdateMapScanActionStates();
@@ -1639,10 +1692,12 @@ namespace GmodAddonCompressor
 
                 int exitCode = await _mapBspBuildRunner.RunAsync(options, _mapBuildCts.Token);
                 FinishMapBuildRun(exitCode);
+                return exitCode;
             }
             catch (OperationCanceledException)
             {
                 FinishMapBuildRun(130);
+                return 130;
             }
             catch (Exception ex)
             {
@@ -1661,8 +1716,9 @@ namespace GmodAddonCompressor
                     "Resultado: falhou",
                     $"Motivo: {ex.Message}"
                 }.Where(line => !string.IsNullOrWhiteSpace(line)));
-                _context.UnlockedUI = true;
+                _context.UnlockedUI = !_mapAllRunning;
                 UpdateMapScanActionStates();
+                return 1;
             }
         }
 
@@ -1746,8 +1802,9 @@ namespace GmodAddonCompressor
                     : "Terminou sem o resumo (map_bsp_build_summary.json). Veja o log em Detalhes.";
             }
 
-            _mapScanCancelRequested = false;
-            _context.UnlockedUI = true;
+            if (!_mapAllRunning)
+                _mapScanCancelRequested = false;
+            _context.UnlockedUI = !_mapAllRunning;
             UpdateMapScanActionStates();
         }
 
@@ -3187,6 +3244,8 @@ namespace GmodAddonCompressor
             TextBox_UnpackRootPath.Text = _settings.UnpackRootPath ?? string.Empty;
             TextBox_UnpackOutputRoot.Text = _settings.UnpackOutputRootPath ?? string.Empty;
             TextBox_MapScanRootPath.Text = _settings.MapOptimizeRootPath ?? string.Empty;
+            _context.MapProfileIndex = _settings.MapProfileIndex ?? 1;
+            _context.MapMakeGma = _settings.MapMakeGma ?? true;
             TextBox_UnpackGmadPath.Text = _settings.GmadPath ?? string.Empty;
             _context.BlenderPath = _settings.BlenderPath ?? string.Empty;
             _context.StudioMdlPath = _settings.StudioMdlPath ?? string.Empty;
@@ -3336,6 +3395,8 @@ namespace GmodAddonCompressor
                 UnpackRootPath = TextBox_UnpackRootPath.Text.Trim(),
                 UnpackOutputRootPath = GetUnpackOutputRootPath(),
                 MapOptimizeRootPath = TextBox_MapScanRootPath.Text.Trim(),
+                MapProfileIndex = _context.MapProfileIndex,
+                MapMakeGma = _context.MapMakeGma,
                 GmadPath = TextBox_UnpackGmadPath.Text.Trim(),
                 BlenderPath = _context.BlenderPath,
                 StudioMdlPath = _context.StudioMdlPath,

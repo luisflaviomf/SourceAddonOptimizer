@@ -1888,28 +1888,31 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel MaxWidth="880" Margin="32,22,32,24">
                         <TextBlock Style="{StaticResource PageTitle}" Text="Mapas" />
-                        <TextBlock Style="{StaticResource PageSubtitle}" Text="Otimiza as texturas e os sons que ficam dentro dos mapas (.bsp)." />
+                        <TextBlock Style="{StaticResource PageSubtitle}" Text="Diminui os mapas (.bsp) e o que vem junto com eles. Aceita o .gma, o .bin antigo ou a pasta já extraída." />
 
-                        <!-- Addon -->
+                        <!-- Mapa -->
                         <Border Style="{StaticResource M3Card}" Margin="0,20,0,0">
                             <StackPanel>
-                                <TextBlock Style="{StaticResource SectionHeader}" Text="Addon" />
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Pasta do addon com mapas" />
+                                <TextBlock Style="{StaticResource SectionHeader}" Text="Mapa" />
+                                <TextBlock Style="{StaticResource FieldLabel}" Text=".gma, .bin ou pasta do addon" />
                                 <Grid>
-                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                                     <TextBox x:Name="TextBox_MapScanRootPath"
                                              TextChanged="TextBox_MapScanRootPath_TextChanged"
                                              Height="44" Padding="12,0" VerticalContentAlignment="Center"
                                              HorizontalScrollBarVisibility="Hidden" TextWrapping="NoWrap"
-                                             AutomationProperties.Name="Pasta do addon com mapas"
+                                             AutomationProperties.Name="Arquivo ou pasta do mapa"
                                              ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
-                                    <Button x:Name="Button_SelectMapScanRoot" Grid.Column="1" Margin="8,0,0,0"
-                                            Style="{StaticResource OutlinedButton}" Content="Escolher…"
+                                    <Button x:Name="Button_SelectMapScanFile" Grid.Column="1" Margin="8,0,0,0"
+                                            Style="{StaticResource OutlinedButton}" Content="Arquivo…"
+                                            Click="Button_SelectMapScanFile_Click" />
+                                    <Button x:Name="Button_SelectMapScanRoot" Grid.Column="2" Margin="8,0,0,0"
+                                            Style="{StaticResource OutlinedButton}" Content="Pasta…"
                                             Click="Button_SelectMapScanRoot_Click" />
                                 </Grid>
-                                <TextBlock Style="{StaticResource FieldHint}" Text="Um addon já extraído (com maps/*.bsp) ou uma pasta com .gma/.bin." />
+                                <TextBlock Style="{StaticResource FieldHint}" Text="O .bin é o formato antigo da Workshop: o programa extrai sozinho (.bin → .gma → pasta). O original não muda; o resultado fica ao lado, em &lt;nome&gt;_optimized." />
 
-                                <TextBlock Style="{StaticResource FieldLabel}" Margin="2,16,0,6" Text="gmad.exe (só para pastas com .gma/.bin)" />
+                                <TextBlock Style="{StaticResource FieldLabel}" Margin="2,16,0,6" Text="gmad.exe (para abrir .gma/.bin e gerar o .gma)" />
                                 <Grid>
                                     <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                                     <TextBox x:Name="TextBox_MapGmadPath"
@@ -1926,11 +1929,30 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- Passos, em ordem -->
+                        <!-- Quanto reduzir -->
                         <Border Style="{StaticResource M3Card}" Margin="0,12,0,0">
                             <StackPanel>
-                                <TextBlock Style="{StaticResource SectionHeader}" Text="Passos" />
+                                <TextBlock Style="{StaticResource SectionHeader}" Text="Quanto reduzir" />
+                                <WrapPanel>
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="MapProfile" Content="Sem perda"
+                                                 IsChecked="{Binding MapProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=0, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="MapProfile" Content="Custo-benefício"
+                                                 IsChecked="{Binding MapProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=1, Mode=TwoWay}" />
+                                    <RadioButton Style="{StaticResource ChoiceChip}" GroupName="MapProfile" Content="Máximo"
+                                                 IsChecked="{Binding MapProfileIndex, Converter={StaticResource ValueEqualsConverter}, ConverterParameter=2, Mode=TwoWay}" />
+                                </WrapPanel>
+                                <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0" Text="{Binding MapProfileDescription}" />
+                                <CheckBox Margin="0,14,0,0" IsChecked="{Binding MapMakeGma}">
+                                    <TextBlock Text="Gerar também o .gma (pronto para a Workshop)" TextWrapping="Wrap" />
+                                </CheckBox>
+                            </StackPanel>
+                        </Border>
 
+                        <!-- Etapas separadas: the same flow, one step at a time -->
+                        <Expander Style="{StaticResource M3Expander}" Header="Etapas separadas">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,12"
+                                           Text="O botão Otimizar mapa faz tudo de uma vez. Aqui dá para rodar uma etapa por vez, com o mesmo perfil." />
                                 <Grid Margin="0,4,0,0">
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                                     <Border Width="28" Height="28" CornerRadius="14" Background="{DynamicResource SecondaryContainer}" VerticalAlignment="Center" Margin="0,0,14,0">
@@ -1939,7 +1961,7 @@
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                         <TextBlock Text="Preparar" FontWeight="SemiBold" />
                                         <TextBlock FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap"
-                                                   Text="Encontra os .bsp e separa o conteúdo que fica dentro deles." />
+                                                   Text="Extrai o .gma/.bin se for o caso, encontra os .bsp e separa o conteúdo que fica dentro deles." />
                                     </StackPanel>
                                     <Button x:Name="Button_MapScanRun" Grid.Column="2" Margin="12,0,0,0" MinWidth="190"
                                             Style="{StaticResource TonalButton}" Content="Preparar"
@@ -1954,7 +1976,7 @@
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                         <TextBlock Text="Otimizar conteúdo" FontWeight="SemiBold" />
                                         <TextBlock FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap"
-                                                   Text="Reduz as texturas e os sons separados, com as opções abaixo." />
+                                                   Text="Otimiza o conteúdo separado com o perfil escolhido acima." />
                                     </StackPanel>
                                     <Button x:Name="Button_MapStageOptimize" Grid.Column="2" Margin="12,0,0,0" MinWidth="190"
                                             Style="{StaticResource TonalButton}" Content="Otimizar conteúdo"
@@ -1969,94 +1991,12 @@
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                         <TextBlock Text="Reconstruir mapa" FontWeight="SemiBold" />
                                         <TextBlock FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap"
-                                                   Text="Coloca o conteúdo otimizado de volta no .bsp, numa pasta nova." />
+                                                   Text="Grava cada .bsp de novo, comprimido no formato do próprio jogo, numa pasta nova." />
                                     </StackPanel>
                                     <Button x:Name="Button_MapBuildRun" Grid.Column="2" Margin="12,0,0,0" MinWidth="190"
-                                            Style="{StaticResource FilledButton}" Content="Reconstruir mapa"
+                                            Style="{StaticResource TonalButton}" Content="Reconstruir mapa"
                                             Click="Button_MapBuildRun_Click" IsEnabled="False" />
                                 </Grid>
-                                <TextBlock Style="{StaticResource FieldHint}" Margin="2,14,0,0"
-                                           Text="Só mexe no conteúdo embutido. Geometria, iluminação e visibilidade não mudam." />
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Opções de texturas e sons do mapa (as mesmas de Texturas e sons) -->
-                        <Expander Style="{StaticResource M3Expander}" Header="Opções de texturas e sons do mapa">
-                            <StackPanel>
-                                <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,12"
-                                           Text="São as mesmas opções de Avançado › Texturas e sons. Modelos dentro do mapa só são listados." />
-
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Tipos de arquivo" />
-                                <WrapPanel>
-                                    <CheckBox Margin="0,0,16,8" IsChecked="{Binding CompressVTF}"><TextBlock Text="VTF" /></CheckBox>
-                                    <CheckBox Margin="0,0,16,8" IsChecked="{Binding CompressWAV}"><TextBlock Text="WAV" /></CheckBox>
-                                    <CheckBox Margin="0,0,16,8" IsChecked="{Binding CompressMP3}"><TextBlock Text="MP3" /></CheckBox>
-                                    <CheckBox Margin="0,0,16,8" IsChecked="{Binding CompressOGG}"><TextBlock Text="OGG" /></CheckBox>
-                                    <CheckBox Margin="0,0,16,8" IsChecked="{Binding CompressJPG}"><TextBlock Text="JPG" /></CheckBox>
-                                    <CheckBox Margin="0,0,16,8" IsChecked="{Binding CompressPNG}"><TextBlock Text="PNG" /></CheckBox>
-                                    <CheckBox Margin="0,0,0,8" IsChecked="{Binding CompressLUA}"><TextBlock Text="Lua" /></CheckBox>
-                                </WrapPanel>
-
-                                <TextBlock Style="{StaticResource FieldLabel}" Margin="2,14,0,6" Text="Imagens" />
-                                <Grid>
-                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="12" /><ColumnDefinition /><ColumnDefinition Width="12" /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-                                    <StackPanel>
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Reduzir" />
-                                        <ComboBox ItemsSource="{Binding ImageReducingResolutionList}" SelectedIndex="{Binding ImageReducingResolutionListIndex, Mode=TwoWay}"
-                                                  AutomationProperties.Name="Fator de redução" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2">
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Largura mínima" />
-                                        <ComboBox ItemsSource="{Binding ImageSizeLimitList}" SelectedIndex="{Binding ImageWidthLimitIndex, Mode=TwoWay}"
-                                                  AutomationProperties.Name="Largura mínima" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="4">
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Altura mínima" />
-                                        <ComboBox ItemsSource="{Binding ImageSizeLimitList}" SelectedIndex="{Binding ImageHeightLimitIndex, Mode=TwoWay}"
-                                                  AutomationProperties.Name="Altura mínima" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="1" Margin="0,12,0,0">
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Ignorar largura até" />
-                                        <TextBox Text="{Binding ImageSkipWidth}" Height="40" Padding="12,0" VerticalContentAlignment="Center"
-                                                 AutomationProperties.Name="Ignorar largura até" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,12,0,0">
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Ignorar altura até" />
-                                        <TextBox Text="{Binding ImageSkipHeight}" Height="40" Padding="12,0" VerticalContentAlignment="Center"
-                                                 AutomationProperties.Name="Ignorar altura até" />
-                                    </StackPanel>
-                                </Grid>
-                                <CheckBox Margin="0,12,0,0" IsChecked="{Binding ReduceExactlyToLimits}"><TextBlock Text="Reduzir exatamente até os limites" TextWrapping="Wrap" /></CheckBox>
-                                <CheckBox Margin="0,8,0,0" IsChecked="{Binding KeepImageAspectRatio}"><TextBlock Text="Manter a proporção" TextWrapping="Wrap" /></CheckBox>
-
-                                <TextBlock Style="{StaticResource FieldLabel}" Margin="2,16,0,6" Text="Sons e scripts" />
-                                <Grid>
-                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="12" /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-                                    <StackPanel>
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Taxa do WAV" />
-                                        <ComboBox ItemsSource="{Binding WavRateList}" SelectedIndex="{Binding WavRateListIndex, Mode=TwoWay}"
-                                                  AutomationProperties.Name="Taxa do WAV" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2">
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Perfil WAV" />
-                                        <ComboBox ItemsSource="{Binding WavOptimizationList}" SelectedIndex="{Binding WavOptimizationIndex, Mode=TwoWay}"
-                                                  AutomationProperties.Name="Perfil WAV" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="1" Margin="0,12,0,0">
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Taxa do MP3 (kbps)" />
-                                        <ComboBox ItemsSource="{Binding AudioBitrateList}" SelectedIndex="{Binding Mp3BitrateIndex, Mode=TwoWay}"
-                                                  AutomationProperties.Name="Taxa do MP3" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,12,0,0">
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Qualidade do OGG" />
-                                        <ComboBox ItemsSource="{Binding OggQualityList}" SelectedIndex="{Binding OggQualityIndex, Mode=TwoWay}"
-                                                  AutomationProperties.Name="Qualidade do OGG" />
-                                    </StackPanel>
-                                </Grid>
-                                <CheckBox Margin="0,12,0,0" IsChecked="{Binding AudioLoopSafe}"><TextBlock Text="Proteger os loops dos WAV" TextWrapping="Wrap" /></CheckBox>
-                                <CheckBox Margin="0,8,0,0" IsChecked="{Binding ChangeOriginalCodeToMinimalistic}"><TextBlock Text="Minificar os scripts Lua do mapa" TextWrapping="Wrap" /></CheckBox>
                             </StackPanel>
                         </Expander>
 
@@ -2117,6 +2057,16 @@
                                                Foreground="{DynamicResource TextSecondary}" Text="—" TextTrimming="CharacterEllipsis"
                                                ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                                 </Grid>
+                                <Border x:Name="Panel_MapResult" Visibility="Collapsed" Margin="0,14,0,0" Padding="14,12"
+                                        CornerRadius="12" Background="{DynamicResource Surface2}">
+                                    <StackPanel>
+                                        <TextBlock x:Name="TextBlock_MapResult" TextWrapping="Wrap" LineHeight="20"
+                                                   AutomationProperties.AutomationId="TextBlock_MapResult" />
+                                        <Button x:Name="Button_MapOpenResult" Margin="0,8,0,0" HorizontalAlignment="Left"
+                                                Style="{StaticResource TonalButton}" Content="Abrir pasta do resultado"
+                                                Click="Button_MapOpenResult_Click" />
+                                    </StackPanel>
+                                </Border>
                                 <Expander Style="{StaticResource M3Expander}" Header="Detalhes" Background="{DynamicResource Surface2}">
                                     <StackPanel>
                                         <TextBlock Style="{StaticResource FieldLabel}" Text="Resumo do último passo" />
@@ -2134,9 +2084,11 @@
                         <Expander Style="{StaticResource M3Expander}" Header="Limites e proteções">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,8"
-                                           Text="Só otimiza o conteúdo guardado dentro do .bsp (o pak), começando pelos VTF. Geometria, lightmaps, visibilidade e a estrutura do mapa não mudam." />
+                                           Text="Geometria, iluminação, visibilidade e entidades do mapa não mudam: cada parte do .bsp é só comprimida no formato que o próprio jogo lê (LZMA), e o programa confere que cada uma volta byte a byte igual." />
+                                <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,8"
+                                           Text="As texturas das paredes e do chão, os decalques e sprites do mapa, o céu e os cubemaps nunca mudam de tamanho: o jogo calcula quantas vezes cada textura se repete a partir do tamanho dela, então uma menor apareceria repetida. Só as texturas dos modelos são reduzidas. Saem os arquivos de modelo que o jogo no PC nunca lê (.dx80, .sw, .xbox e .360.vtx)." />
                                 <TextBlock Style="{StaticResource FieldHint}" Margin="2,0,0,0"
-                                           Text="O mapa só é reconstruído quando o .bsp continua válido, o conteúdo continua um ZIP válido e as posições internas cabem. Senão o mapa fica como está." />
+                                           Text="Num servidor, use só a versão otimizada: um jogador com o mapa original e outro com o otimizado têm arquivos diferentes com o mesmo nome." />
                             </StackPanel>
                         </Expander>
                     </StackPanel>
@@ -2155,6 +2107,8 @@
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                             <Button x:Name="Button_MapScanCancel" Style="{StaticResource OutlinedButton}" Content="Cancelar"
                                     Click="Button_MapScanCancel_Click" IsEnabled="False" />
+                            <Button x:Name="Button_MapOptimizeAll" Margin="8,0,0,0" MinWidth="160" Style="{StaticResource FilledButton}"
+                                    Content="Otimizar mapa" Click="Button_MapOptimizeAll_Click" IsEnabled="False" />
                         </StackPanel>
                     </Grid>
                 </Border>

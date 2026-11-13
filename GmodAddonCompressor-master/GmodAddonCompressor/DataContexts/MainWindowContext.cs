@@ -378,6 +378,33 @@ namespace GmodAddonCompressor.DataContexts
         /// Modelos › "Quanto reduzir": the profile of the Padrão (screen) mode, or -1 while a Blender method
         /// is selected instead. Picking a level also switches the method back to Padrão.
         /// </summary>
+        // ---- Mapas: "Quanto reduzir" (Systems/Maps/MapProfiles) and the .gma option
+        private int _mapProfileIndex = 1;
+        private bool _mapMakeGma = true;
+
+        public int MapProfileIndex
+        {
+            get => _mapProfileIndex;
+            set
+            {
+                _mapProfileIndex = value < 0 || value >= GmodAddonCompressor.Systems.Maps.MapProfiles.All.Length ? 1 : value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(MapProfileDescription));
+            }
+        }
+
+        public string MapProfileDescription => GmodAddonCompressor.Systems.Maps.MapProfiles.At(_mapProfileIndex).Description;
+
+        public bool MapMakeGma
+        {
+            get => _mapMakeGma;
+            set
+            {
+                _mapMakeGma = value;
+                OnPropertyChanged();
+            }
+        }
+
         public int ModelsLevel
         {
             get => OptimizerModeIsScreen ? _modelsScreenProfileIndex : -1;

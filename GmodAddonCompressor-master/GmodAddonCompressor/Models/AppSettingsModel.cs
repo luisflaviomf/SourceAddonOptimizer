@@ -32,6 +32,8 @@ namespace GmodAddonCompressor.Models
         public string? AddonMergeOutputRootPath { get; set; }
         public string? AddonMergeBundleName { get; set; }
         public string? MapOptimizeRootPath { get; set; }
+        public int? MapProfileIndex { get; set; }
+        public bool? MapMakeGma { get; set; }
         public string? GmadPath { get; set; }
         public string? BlenderPath { get; set; }
         public string? StudioMdlPath { get; set; }

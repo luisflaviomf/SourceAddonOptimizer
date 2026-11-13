@@ -34,6 +34,7 @@ class RunConfig:
     output_root: Path | None = None
     cancel_file: Path | None = None
     gmad_error: str | None = None
+    folder_suffix: str = EXTRACTED_SUFFIX
 
 
 @dataclass
@@ -272,11 +273,12 @@ def _safe_relative(path: Path, root: Path) -> str:
         return path.name
 
 
-def plan_output_dir(source_path: Path, root: Path, output_root: Path | None = None) -> Path:
+def plan_output_dir(source_path: Path, root: Path, output_root: Path | None = None,
+                    suffix: str = EXTRACTED_SUFFIX) -> Path:
     if output_root:
         relative_parent = Path(_safe_relative(source_path.parent, root))
-        return output_root / relative_parent / f"{source_path.stem}{EXTRACTED_SUFFIX}"
-    return source_path.parent / f"{source_path.stem}{EXTRACTED_SUFFIX}"
+        return output_root / relative_parent / f"{source_path.stem}{suffix}"
+    return source_path.parent / f"{source_path.stem}{suffix}"
 
 
 def _decode_sig(sig: bytes) -> str:
@@ -320,11 +322,12 @@ def probe_bin(path: Path) -> tuple[bool, str, str]:
     return False, sig_text, f"unsupported_bin_payload:{sig_text or 'unknown'}"
 
 
-def probe_archive(path: Path, root: Path, output_root: Path | None = None) -> ArchiveCandidate:
+def probe_archive(path: Path, root: Path, output_root: Path | None = None,
+                  suffix: str = EXTRACTED_SUFFIX) -> ArchiveCandidate:
     kind = path.suffix.lower().lstrip(".")
     file_size = path.stat().st_size
     relative_path = _safe_relative(path, root)
-    planned_output_dir = plan_output_dir(path, root, output_root)
+    planned_output_dir = plan_output_dir(path, root, output_root, suffix)
 
     if kind == "gma":
         supported, source_sig, reason = probe_gma(path)
@@ -352,12 +355,21 @@ def scan_archive_candidates(
     root: Path,
     cancel_file: Path | None = None,
     output_root: Path | None = None,
+    suffix: str = EXTRACTED_SUFFIX,
 ) -> tuple[list[ArchiveCandidate], list[str]]:
     candidates: list[ArchiveCandidate] = []
     scan_errors: list[str] = []
 
     def on_error(err: OSError) -> None:
         scan_errors.append(str(err))
+
+    if root.is_file():
+        # one archive picked directly (Mapas: "jogue o .gma ou o .bin aqui")
+        try:
+            candidates.append(probe_archive(root.resolve(), root.parent, output_root, suffix))
+        except Exception as ex:
+            scan_errors.append(f"{root}: {type(ex).__name__}: {ex}")
+        return candidates, scan_errors
 
     try:
         for cur_dir, dirnames, filenames in os.walk(root, onerror=on_error):
@@ -372,7 +384,7 @@ def scan_archive_candidates(
                 if ext not in (".gma", ".bin"):
                     continue
                 try:
-                    candidates.append(probe_archive(path.resolve(), root, output_root))
+                    candidates.append(probe_archive(path.resolve(), root, output_root, suffix))
                 except Exception as ex:
                     candidates.append(
                         ArchiveCandidate(
@@ -384,7 +396,7 @@ def scan_archive_candidates(
                             payload_sig="",
                             supported=False,
                             support_reason=f"probe_error:{type(ex).__name__}",
-                            planned_output_dir=plan_output_dir(path.resolve(), root, output_root),
+                            planned_output_dir=plan_output_dir(path.resolve(), root, output_root, suffix),
                         )
                     )
                     scan_errors.append(f"{path}: {type(ex).__name__}: {ex}")
@@ -736,6 +748,63 @@ def extract_with_gmad(
     return proc.returncode, output
 
 
+# what gmad create accepts in addon.json (gmad's own lists)
+GMAD_TYPES = ("gamemode", "map", "weapon", "vehicle", "npc", "entity", "tool", "effects", "model", "servercontent")
+GMAD_TAGS = ("fun", "roleplay", "scenic", "movie", "realism", "cartoon", "water", "comic", "build")
+
+
+def read_gma_header(path: Path) -> dict:
+    """{"title", "description", "type", "tags", "author"} from a .gma header. Newer archives keep a JSON
+    {"description", "type", "tags"} in the description field; older ones plain text."""
+    with path.open("rb") as fh:
+        head = fh.read(1 << 20)
+    if head[:4] != b"GMAD":
+        raise UnpackError("not a GMAD archive")
+    version = head[4]
+    pos = 5 + 8 + 8
+    if version > 1:
+        while True:
+            end = head.index(b"\0", pos)
+            if end == pos:
+                pos = end + 1
+                break
+            pos = end + 1
+    fields = []
+    for _ in range(3):
+        end = head.index(b"\0", pos)
+        fields.append(head[pos:end].decode("utf-8", errors="replace"))
+        pos = end + 1
+    title, desc, author = fields
+    info = {"title": title, "description": desc, "type": "", "tags": [], "author": author}
+    try:
+        meta = json.loads(desc)
+        if isinstance(meta, dict):
+            info["description"] = str(meta.get("description", ""))
+            info["type"] = str(meta.get("type", "")).lower()
+            info["tags"] = [str(t).lower() for t in meta.get("tags", []) if isinstance(t, str)]
+    except ValueError:
+        pass
+    return info
+
+
+def write_addon_json_from_gma(archive: Path, out_dir: Path) -> bool:
+    """addon.json for an extracted folder that has none (gmad extract does not write one), from the
+    archive's header: title, type, tags (only what gmad create accepts, at most 2 tags) and description.
+    Without it the folder cannot be packed again. False when the folder already had one."""
+    target = out_dir / "addon.json"
+    if target.exists():
+        return False
+    info = read_gma_header(archive)
+    has_maps = any((out_dir / "maps").glob("*.bsp")) if (out_dir / "maps").is_dir() else False
+    kind = info["type"] if info["type"] in GMAD_TYPES else ("map" if has_maps else "servercontent")
+    tags = [t for t in info["tags"] if t in GMAD_TAGS][:2]
+    data = {"title": info["title"] or out_dir.name, "type": kind, "tags": tags, "ignore": []}
+    if info["description"]:
+        data["description"] = info["description"]
+    target.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return True
+
+
 def count_extracted_files(dest: Path) -> int:
     return sum(1 for p in dest.rglob("*") if p.is_file())
 
@@ -860,6 +929,7 @@ def run_scan(config: RunConfig) -> int:
             config.root,
             cancel_file=config.cancel_file,
             output_root=config.output_root,
+            suffix=config.folder_suffix,
         )
         results = build_item_results(candidates)
         _log_scan_summary(candidates, scan_errors)
@@ -888,6 +958,7 @@ def run_unpack(config: RunConfig) -> int:
             config.root,
             cancel_file=config.cancel_file,
             output_root=config.output_root,
+            suffix=config.folder_suffix,
         )
     except CancelRequested as ex:
         candidates = list(getattr(ex, "candidates", []))
@@ -976,6 +1047,12 @@ def run_unpack(config: RunConfig) -> int:
                         cancel_file=config.cancel_file,
                     )
 
+                try:
+                    if write_addon_json_from_gma(archive_for_extract, temp_output_dir):
+                        print("[INFO] addon.json written from the archive header (title, type, tags)")
+                except Exception as ex:  # noqa: BLE001 - the extraction itself is fine
+                    print(f"[WARN] addon.json not written: {type(ex).__name__}: {ex}")
+
                 extracted_files = count_extracted_files(temp_output_dir)
                 if extracted_files == 0:
                     print(f"[WARN] No files extracted under: {temp_output_dir}")
@@ -1037,10 +1114,10 @@ def run_unpack(config: RunConfig) -> int:
 
 def _build_config(args: argparse.Namespace) -> RunConfig:
     root = Path(args.root).expanduser().resolve()
-    if not root.exists() or not root.is_dir():
+    if not root.exists() or not (root.is_dir() or root.suffix.lower() in (".gma", ".bin")):
         raise SystemExit(f"[ERROR] Root folder not found: {root}")
 
-    work_dir = Path(args.work).expanduser().resolve() if args.work else _default_work_dir(root)
+    work_dir = Path(args.work).expanduser().resolve() if args.work else _default_work_dir(root if root.is_dir() else root.parent)
     gmad_exe = None
     gmad_error = None
     if not args.scan_only:
@@ -1057,6 +1134,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         output_root=Path(args.output_root).expanduser().resolve() if args.output_root else None,
         cancel_file=Path(args.cancel_file).expanduser().resolve() if args.cancel_file else None,
         gmad_error=gmad_error,
+        folder_suffix="" if getattr(args, "plain_names", False) else EXTRACTED_SUFFIX,
     )
 
 
@@ -1086,6 +1164,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--work", default=None, help="Work dir for temp files and unpack_summary.json")
     ap.add_argument("--output-root", default=None, help="Optional root directory for extracted addon folders")
     ap.add_argument("--cancel-file", default=None, help="Internal file path used to request graceful cancellation")
+    ap.add_argument("--plain-names", action="store_true",
+                    help="Name each extracted folder after its archive, without the _extraido suffix "
+                         "(Mapas: the result folder and its .gma keep the addon's name)")
     args = ap.parse_args(argv)
 
     config = _build_config(args)

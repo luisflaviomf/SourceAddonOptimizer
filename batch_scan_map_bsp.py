@@ -18,6 +18,8 @@ SUMMARY_NAME = "map_bsp_scan_summary.json"
 PAK_LUMP_INDEX = 40
 LUMP_SIZE = 16
 LUMP_COUNT = 64
+# lump directory layout of these versions (Source 2013 / GMod); 21 (L4D2) orders the fields differently
+SUPPORTED_BSP_VERSIONS = (19, 20)
 
 
 @dataclass
@@ -180,13 +182,30 @@ def _scan_total_bytes(root: Path, cancel_file: Path | None = None) -> tuple[int,
     return total, errors
 
 
+def _unreadable_member(archive: zipfile.ZipFile) -> str | None:
+    """The first member that does not decompress, else None. Unlike ZipFile.testzip the CRC stored in the
+    zip is not checked: the game does not check it either (ttt_plaza_b7 ships a VMT with a wrong CRC and
+    loads), and the rebuilt pakfile carries the real CRC of the same bytes."""
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        try:
+            with archive.open(info) as f:
+                f._expected_crc = None
+                while f.read(1 << 20):
+                    pass
+        except Exception:  # noqa: BLE001
+            return info.filename
+    return None
+
+
 def _validate_zip_payload(payload: bytes) -> tuple[bool, int, str]:
     if not payload.startswith(b"PK\x03\x04"):
         return False, 0, "pak_not_zip"
 
     try:
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-            bad_member = archive.testzip()
+            bad_member = _unreadable_member(archive)
             if bad_member:
                 return False, 0, f"pak_zip_invalid:{bad_member}"
             file_count = sum(1 for info in archive.infolist() if not info.is_dir())
@@ -256,13 +275,19 @@ def _scan_directory_inventory(root: Path, cancel_file: Path | None = None) -> tu
     return inventory, total_files, total_bytes
 
 
+def _pak_names(pak_bytes: bytes) -> list[str]:
+    """File names of the pakfile in their order (mapbuild writes them back in the same order)."""
+    with zipfile.ZipFile(io.BytesIO(pak_bytes)) as archive:
+        return [info.filename for info in archive.infolist() if not info.is_dir()]
+
+
 def _extract_pak_bytes_to_dir(pak_bytes: bytes, destination_dir: Path, cancel_file: Path | None = None) -> int:
     destination_dir.mkdir(parents=True, exist_ok=True)
     file_count = 0
 
     try:
         with zipfile.ZipFile(io.BytesIO(pak_bytes)) as archive:
-            bad_member = archive.testzip()
+            bad_member = _unreadable_member(archive)
             if bad_member:
                 raise MapScanError(f"Corrupted ZIP entry inside BSP pak: {bad_member}")
 
@@ -274,6 +299,7 @@ def _extract_pak_bytes_to_dir(pak_bytes: bytes, destination_dir: Path, cancel_fi
                 destination = _safe_zip_destination(destination_dir, info.filename)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(info, "r") as src, destination.open("wb") as dst:
+                    src._expected_crc = None        # see _unreadable_member
                     shutil.copyfileobj(src, dst)
                 file_count += 1
     except zipfile.BadZipFile as ex:
@@ -323,6 +349,7 @@ def _stage_bsp_pak(
             "staged_file_count": item.staged_file_count,
             "staged_total_bytes": item.staged_total_bytes,
             "inventory_by_extension": inventory,
+            "pak_order": _pak_names(pak_bytes),
         }
         (stage_root / "stage_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception as ex:
@@ -360,8 +387,10 @@ def _analyze_bsp(path: Path, root: Path, cancel_file: Path | None = None) -> Bsp
             phase2_blockers=[blocker],
         )
 
+    supported_version = version in SUPPORTED_BSP_VERSIONS
+    if not supported_version:
+        blockers.append(f"unsupported_bsp_version_{version}")
     if pak_size <= 0:
-        blockers.append("pak_missing_or_empty")
         return BspScanItem(
             relative_path=relative_path,
             bsp_path=str(path),
@@ -376,21 +405,20 @@ def _analyze_bsp(path: Path, root: Path, cancel_file: Path | None = None) -> Bsp
             pak_entry_count=0,
             pak_at_eof=False,
             staging_eligible=False,
-            phase2_candidate=False,
+            phase2_candidate=supported_version,
             phase2_blockers=blockers,
             inventory_by_extension=[],
         )
 
     pak_zip_valid, pak_entry_count, zip_message = _validate_zip_payload(pak_bytes)
-    if not pak_zip_valid:
-        blockers.append(zip_message)
-
     pak_at_eof = pak_offset + pak_size == bsp_size
-    if not pak_at_eof:
-        blockers.append("pak_not_at_eof")
 
-    phase2_candidate = pak_zip_valid and pak_at_eof and not blockers
-    message = "pak_ready_for_future_reinject" if phase2_candidate else (blockers[0] if blockers else "pak_scanned")
+    # mapbuild rewrites the whole file (bsp_repack), so the pakfile may sit anywhere; a pakfile that is not
+    # a readable zip is copied as it is while the other lumps are still compressed
+    phase2_candidate = supported_version
+    message = "pak_ready" if pak_zip_valid else f"pak_kept_as_is: {zip_message}"
+    if not supported_version:
+        message = blockers[0]
 
     return BspScanItem(
         relative_path=relative_path,
@@ -485,14 +513,12 @@ def _build_summary(
             "inventory_overall": overall_inventory,
         },
         "future_validation": {
-            "phase": "future_reinject_gate_not_implemented_in_phase_2",
+            "phase": "rebuild_by_mapbuild",
             "required_checks": [
-                "Output file must still start with VBSP and remain readable as a BSP.",
-                "PAKFILE lump offset and size must remain within file bounds after reinjection.",
-                "Rebuilt pak blob must open as ZIP and pass testzip().",
+                "Every lump of the rebuilt BSP decompresses back to the original bytes (bsp_repack.verify).",
+                "The game lump keeps its data inside lump 35; its absolute offsets move with it.",
+                "The pakfile holds the staged files in the original order, each one readable.",
                 "Original BSP must remain untouched; write to a new output location only.",
-                "Early reinjection support should only accept BSPs where the pak is at EOF or the layout is explicitly handled.",
-                "If reinjection would require shifting later lumps or unknown trailing data, block the operation.",
             ],
             "hard_blockers": [
                 "invalid_bsp_header",
@@ -505,7 +531,7 @@ def _build_summary(
                 "pak_not_at_eof",
                 "read_error",
             ],
-            "phase2_candidate_rule": "pak_zip_valid && pak_at_eof && no blockers",
+            "phase2_candidate_rule": "BSP version 19 or 20 (the whole file is rewritten; pakfile anywhere)",
         },
         "scan_errors": scan_errors,
         "items": [

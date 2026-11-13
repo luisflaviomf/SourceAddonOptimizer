@@ -15,6 +15,10 @@ namespace GmodAddonCompressor.Systems.Maps
         internal string WorkDir { get; init; } = string.Empty;
         internal string OutputDir { get; init; } = string.Empty;
         internal string? CancelFilePath { get; init; }
+        // "mapbuild" (rebuild the .bsp files into OutputDir) or "mappack" (pack the addon folders under
+        // RootPath into .gma files with GmadPath)
+        internal string Command { get; init; } = "mapbuild";
+        internal string? GmadPath { get; init; }
     }
 
     internal sealed class MapBspBuildProgressUpdate
@@ -51,10 +55,13 @@ namespace GmodAddonCompressor.Systems.Maps
                 throw new FileNotFoundException("Worker exe not found.", options.WorkerExePath);
             if (string.IsNullOrWhiteSpace(options.RootPath))
                 throw new ArgumentException("Root path is required.", nameof(options.RootPath));
-            if (string.IsNullOrWhiteSpace(options.WorkDir))
+            bool pack = options.Command == "mappack";
+            if (!pack && string.IsNullOrWhiteSpace(options.WorkDir))
                 throw new ArgumentException("Work dir is required.", nameof(options.WorkDir));
-            if (string.IsNullOrWhiteSpace(options.OutputDir))
+            if (!pack && string.IsNullOrWhiteSpace(options.OutputDir))
                 throw new ArgumentException("Output dir is required.", nameof(options.OutputDir));
+            if (pack && string.IsNullOrWhiteSpace(options.GmadPath))
+                throw new ArgumentException("gmad.exe is required.", nameof(options.GmadPath));
 
             var startInfo = new ProcessStartInfo
             {
@@ -70,14 +77,24 @@ namespace GmodAddonCompressor.Systems.Maps
                 WorkingDirectory = Path.GetDirectoryName(options.WorkerExePath) ?? string.Empty
             };
 
-            startInfo.ArgumentList.Add("mapbuild");
-            startInfo.ArgumentList.Add(options.RootPath);
-            startInfo.ArgumentList.Add("--work");
-            startInfo.ArgumentList.Add(options.WorkDir);
-            startInfo.ArgumentList.Add("--out");
-            startInfo.ArgumentList.Add(options.OutputDir);
+            if (pack)
+            {
+                startInfo.ArgumentList.Add("mappack");
+                startInfo.ArgumentList.Add(options.RootPath);
+                startInfo.ArgumentList.Add("--gmad");
+                startInfo.ArgumentList.Add(options.GmadPath!);
+            }
+            else
+            {
+                startInfo.ArgumentList.Add("mapbuild");
+                startInfo.ArgumentList.Add(options.RootPath);
+                startInfo.ArgumentList.Add("--work");
+                startInfo.ArgumentList.Add(options.WorkDir);
+                startInfo.ArgumentList.Add("--out");
+                startInfo.ArgumentList.Add(options.OutputDir);
+            }
 
-            if (!string.IsNullOrWhiteSpace(options.CancelFilePath))
+            if (!pack && !string.IsNullOrWhiteSpace(options.CancelFilePath))
             {
                 startInfo.ArgumentList.Add("--cancel-file");
                 startInfo.ArgumentList.Add(options.CancelFilePath);

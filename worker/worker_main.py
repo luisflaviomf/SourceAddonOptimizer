@@ -520,6 +520,8 @@ def main(argv: list[str]) -> int:
         return batch_scan_map_bsp.main(argv[1:])
     if argv and argv[0] == "mapbuild":
         return batch_build_map_bsp.main(argv[1:])
+    if argv and argv[0] == "mappack":
+        return batch_build_map_bsp.pack_main(argv[1:])
     return build_optimized_addon.main(argv)
 
 

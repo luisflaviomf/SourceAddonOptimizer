@@ -36,6 +36,7 @@ from . import npsolve
 from .allocate import DEFAULT_DISTANCES, DEFAULT_WEIGHTS, band_energy_maps, box_pyramid, texture_local_error
 from .density import ViewModel, _model_usage, collect_usage, merge_usage, sibling_usage_tasks, usage_tasks
 from .plan import alpha_coverage_refs, alpha_unused_refs, opaque_alpha
+from .size_bound import size_bound_refs
 from .vtf import (image_bytes, TEXTUREFLAGS_ENVMAP, bc3_blocks_to_bc1, decode_level, one_level_flags,
                   planned_reduced_vtf, read_vtf, truncate_mips, write_vtf)
 
@@ -101,6 +102,14 @@ PROFILE_OPTIONS["stream"] = PROFILE_OPTIONS["stream_max"] = PROFILE_OPTIONS["str
 #   the alpha or it is opaque) at the screen-aware size; lower mips are re-encoded from the original ones.
 # Unused ones (HUD, reticles, sprites drawn by Lua) stay as they are (or go to the caller's regular path).
 UNCOMPRESSED = (0, 1, 2, 3, 12, 16)
+# Never reduced, in any profile (only the exact DXT5 -> DXT1 transcode may still apply): the sky
+# (materials/skybox, always seen stretched over the whole horizon) and what a map compile writes for itself
+# under materials/maps/<map>/ (cubemaps and the materials patched to use them).
+NEVER_REDUCE = ("skybox/", "maps/")
+# Textures whose alpha cuts shapes out ($alphatest, $translucent...) lose at most this many levels: a sparse
+# cutout reduced further turns into blocks (de_wanda, Máximo at 4x: a 64x2048 sheet of small balloons
+# scrolling up the screen became big white squares floating everywhere, 2026-11-13).
+COVERAGE_MAX_DROP = 1
 # First-person textures (texlab.firstperson): the view-model look is the closest look; no forced 2x, and
 # the magnification guard of the profile applies from 4x on at that look.
 FP_MAGNIFY = (1.5, 2)
@@ -366,6 +375,9 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
         unused_alpha = alpha_unused_refs(root, [])
         caps = _param_caps(root, opts.get("caps") or {}) if opts else {}
         coverage = alpha_coverage_refs(root, [])
+        # textures a map draws at their own pixel size (world $basetexture, infodecal, env_sprite): a smaller
+        # one repeats on the walls (texlab.size_bound)
+        bound = size_bound_refs(root)
         if not scan:
             uses = {}
         else:
@@ -378,15 +390,22 @@ def plan_addon(root: Path, profile: str = "q50", view: ViewModel | None = None, 
             ref = p.relative_to(mat).as_posix()[:-4].lower()
             task = (p, root, ref, threshold, view, _use_payload(uses.get(ref), view), ref in unused_alpha,
                     ref in coverage, need_map)
-            if opts:
+            never_reduce = ref.startswith(NEVER_REDUCE) or ref in bound
+            cutout = ref in coverage
+            if opts or never_reduce or cutout:
+                o = opts or {}
                 cap = caps.get(ref)
                 stem = ref.rsplit("/", 1)[-1]
-                if opts.get("text_cap") is not None and TEXT_NAMES.search(stem) and not NORMAL_SUFFIX.search(stem):
-                    cap = min(cap if cap is not None else 99, int(opts["text_cap"]))
-                if opts.get("max_drop") is not None:
-                    cap = min(cap if cap is not None else 99, int(opts["max_drop"]))
-                task += ((opts.get("max_energy_drop", MAX_DROP_BY_ENERGY), cap, opts.get("magnify"), opts.get("small_cap"),
-                          opts.get("min_drop", 1), opts.get("fallback", True), opts.get("text_cap")),)
+                if o.get("text_cap") is not None and TEXT_NAMES.search(stem) and not NORMAL_SUFFIX.search(stem):
+                    cap = min(cap if cap is not None else 99, int(o["text_cap"]))
+                if o.get("max_drop") is not None:
+                    cap = min(cap if cap is not None else 99, int(o["max_drop"]))
+                if cutout:
+                    cap = min(cap if cap is not None else 99, COVERAGE_MAX_DROP)
+                if never_reduce:
+                    cap = 0
+                task += ((o.get("max_energy_drop", MAX_DROP_BY_ENERGY), cap, o.get("magnify"), o.get("small_cap"),
+                          o.get("min_drop", 1), o.get("fallback", True), o.get("text_cap")),)
             tasks.append(task)
         if pool is not None and len(tasks) > 1:
             return list(pool.map(_plan_one, tasks, chunksize=1))

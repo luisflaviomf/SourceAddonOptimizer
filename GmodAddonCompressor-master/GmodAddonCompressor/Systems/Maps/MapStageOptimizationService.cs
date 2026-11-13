@@ -1,4 +1,5 @@
 using GmodAddonCompressor.DataContexts;
+using GmodAddonCompressor.Models;
 using GmodAddonCompressor.Systems.Reporting;
 using System;
 using System.Collections.Generic;
@@ -39,6 +40,10 @@ namespace GmodAddonCompressor.Systems.Maps
         internal bool ReduceExactlyToLimits { get; init; }
         internal bool KeepImageAspectRatio { get; init; }
         internal bool LuaMinimalistic { get; init; }
+        // a Mapas profile (MapProfiles): the texture engine with that profile decides every VTF (sky,
+        // cubemaps and compile output are never reduced there) instead of the Clássico path behind
+        // MapVtfSafetyClassifier and the skybox special case
+        internal CompressPipelineOptions? PipelineOptions { get; init; }
         internal Action<string>? Log { get; init; }
         internal Action<string, int, int>? Progress { get; init; }
     }
@@ -80,7 +85,11 @@ namespace GmodAddonCompressor.Systems.Maps
 
             MapVtfSafetyReport? vtfSafety = null;
             MapSpecialVtfOptimizationSummary specialVtfOptimization = new();
-            if (options.IncludeVtf)
+            if (options.IncludeVtf && options.PipelineOptions != null)
+            {
+                options.Log?.Invoke($"[MAP-OPT] VTF: texture engine, profile {options.PipelineOptions.ScreenProfile} (sky, cubemaps and compile output kept)");
+            }
+            else if (options.IncludeVtf)
             {
                 vtfSafety = MapVtfSafetyClassifier.Analyze(stageRoots);
                 if (vtfSafety.SkippedVtfCount > 0)
@@ -206,7 +215,7 @@ namespace GmodAddonCompressor.Systems.Maps
                 };
             }
 
-            var compressSystem = new CompressAddonSystem(stageRoot, fileFilter);
+            var compressSystem = new CompressAddonSystem(stageRoot, fileFilter, options.PipelineOptions);
 
             if (options.IncludeVtf) compressSystem.IncludeVTF();
             if (options.IncludeWav) compressSystem.IncludeWAV();

@@ -285,6 +285,14 @@ def convert(root: Path, jobs: int = 4, target: float = DEFAULT_TARGET_DB, fill: 
     ours = {}
     for p in sorted(mat_dir.rglob("*.vtf")):
         ours[p.relative_to(mat_dir).as_posix().lower()[:-4]] = p
+    # textures a map of this addon draws at their pixel size stay VTF: the 16 px placeholder would set the
+    # world's texture coordinates when the map loads, and swapping the texture later does not move them
+    from texlab.size_bound import size_bound_refs
+    bound = size_bound_refs(root) & ours.keys()
+    for ref in bound:
+        del ours[ref]
+    if bound:
+        summary["kept"]["size_bound"] = len(bound)
     # materials (this addon's and its neighbours') -> parameters that name one of our textures: every value
     # of the VMT that names one, whatever the parameter (the runtime only acts where the game really holds
     # that texture under that parameter)

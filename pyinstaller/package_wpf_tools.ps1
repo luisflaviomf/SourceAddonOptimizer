@@ -21,6 +21,7 @@ function Get-WorkerSourceFiles {
         (Join-Path $PWD "optimize_edge_transfer_policy_v1.py"),
         (Join-Path $PWD "optimize_fidelity_partition_policy_v1.py"),
         (Join-Path $PWD "batch_unpack_addons.py"),
+        (Join-Path $PWD "bsp_repack.py"),
         (Join-Path $PWD "render_previews.py"),
         (Join-Path $PWD "selective_policy_models.py"),
         (Join-Path $PWD "vehicle_steer_turn_basis_fix.py"),
@@ -54,7 +55,7 @@ function Get-WorkerSourceFiles {
         Where-Object { $_.FullName -notmatch '[\\/]__pycache__[\\/]' -and $_.Extension -ne '.pyc' }
     Get-ChildItem -LiteralPath (Join-Path $PWD "texture_stream") -File |
         Where-Object { $_.Extension -in @('.py', '.lua') }
-    foreach ($name in @("screen_compress", "npsolve", "bcnp", "vtf", "density", "materials", "source_model", "allocate", "plan", "native", "firstperson", "packing", "__init__")) {
+    foreach ($name in @("screen_compress", "npsolve", "bcnp", "vtf", "density", "materials", "source_model", "allocate", "plan", "native", "firstperson", "packing", "jobs", "size_bound", "__init__")) {
         Get-Item -LiteralPath (Join-Path $PWD ("texlab\" + $name + ".py"))
     }
 

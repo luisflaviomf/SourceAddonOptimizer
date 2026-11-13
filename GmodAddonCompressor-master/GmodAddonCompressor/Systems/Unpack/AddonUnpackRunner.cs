@@ -20,6 +20,8 @@ namespace GmodAddonCompressor.Systems.Unpack
         internal bool ExtractMapPakContent { get; init; }
         internal bool DeleteMapBspAfterExtract { get; init; }
         internal string? CancelFilePath { get; init; }
+        /// <summary>Folders named after the archive, without "_extraido" (Mapas: the result keeps the addon's name).</summary>
+        internal bool PlainFolderNames { get; init; }
     }
 
     internal sealed class AddonUnpackProgressUpdate
@@ -91,6 +93,11 @@ namespace GmodAddonCompressor.Systems.Unpack
             {
                 startInfo.ArgumentList.Add("--output-root");
                 startInfo.ArgumentList.Add(options.OutputRootPath);
+            }
+
+            if (options.PlainFolderNames)
+            {
+                startInfo.ArgumentList.Add("--plain-names");
             }
 
             if (options.ExtractMapPakContent)
