@@ -86,6 +86,7 @@ a = Analysis(
         "texture_stream", "texture_stream.codec", "texture_stream.choose",
         "png_lossless", "png_lossless.cli",
         "bsp_repack",
+        "map_fps",
         "PIL.Image",
         "PIL.PngImagePlugin",
         "PIL.ImageChops",

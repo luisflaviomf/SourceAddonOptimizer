@@ -49,9 +49,7 @@ namespace GmodAddonCompressor.Systems
             appendedClosures = 0;
 
             string content = File.ReadAllText(vmtPath);
-            int openCount = content.Count(ch => ch == '{');
-            int closeCount = content.Count(ch => ch == '}');
-            int missingClosures = openCount - closeCount;
+            int missingClosures = VmtBraces.UnclosedBlocks(content);
 
             if (missingClosures <= 0 || missingClosures > MaxAutoRepairBraceDelta)
                 return false;

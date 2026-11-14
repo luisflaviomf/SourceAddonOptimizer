@@ -18,6 +18,7 @@ namespace GmodAddonCompressor.Systems.Maps
         string Name,
         string ScreenProfile,
         bool AdaptiveWav,
+        string FpsLevel,
         string Description)
     {
         internal CompressPipelineOptions PipelineOptions() => new()
@@ -40,12 +41,12 @@ namespace GmodAddonCompressor.Systems.Maps
     {
         internal static readonly MapProfile[] All =
         {
-            new("Sem perda", "exact", false,
+            new("Sem perda", "exact", false, "none",
                 "O mesmo mapa no jogo: .bsp comprimido no formato do próprio jogo, conversão exata BC3→BC1, PNG sem perda. Sons intactos."),
-            new("Custo-benefício", "strong", true,
-                "Texturas dos modelos reduzidas onde a perda é pequena, sons no Adaptativo conservador e o .bsp comprimido. Paredes, chão, céu, cubemaps, decalques e sprites ficam no tamanho original."),
-            new("Máximo", "max", true,
-                "Texturas dos modelos no mínimo 4x menores (perda visível de perto), sons no Adaptativo conservador e o .bsp comprimido. Paredes, chão, céu, cubemaps, decalques e sprites ficam no tamanho original.")
+            new("Custo-benefício", "strong", true, "balanced",
+                "Texturas dos modelos reduzidas onde a perda é pequena, sons no Adaptativo conservador e o .bsp comprimido. Mais FPS: holofotes sem a luz dinâmica (o facho continua) e brilhos de lâmpada (sprites) desenhados de um jeito mais leve. Paredes, chão, céu, cubemaps, decalques e sprites ficam no tamanho original."),
+            new("Máximo", "max", true, "max",
+                "Texturas dos modelos no mínimo 4x menores (perda visível de perto), sons no Adaptativo conservador e o .bsp comprimido. Mais FPS: holofotes sem a luz dinâmica (o facho continua) e brilhos de lâmpada (sprites) desenhados de um jeito mais leve. Paredes, chão, céu, cubemaps, decalques e sprites ficam no tamanho original.")
         };
 
         internal static MapProfile At(int index) => All[index < 0 || index >= All.Length ? 1 : index];

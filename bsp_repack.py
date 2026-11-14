@@ -209,6 +209,51 @@ def repack(src: bytes, pak: list[tuple[str, bytes]] | None = None, compress: boo
     return bytes(out)
 
 
+def replace_lumps(src: bytes, replace: dict[int, bytes]) -> bytes:
+    """src with the lumps in `replace` swapped for new uncompressed contents (the map's FPS edits: entities,
+    the static prop game lump). Every other lump is copied as it is, in the original order, 4-aligned; the
+    game lump's absolute offsets move with it. A replaced game lump is the original one patched in place
+    (same size, same offsets, as read from src)."""
+    L = lumps(src)
+    if LUMP_PAK in replace:
+        raise BspError("the pakfile is rebuilt by repack, not replaced here")
+    order = sorted((i for i in range(HEADER_LUMPS) if L[i][1] > 0 or i in replace), key=lambda i: (L[i][0], i))
+    out = bytearray(src[:8 + HEADER_LUMPS * 16 + 4])
+    new = [list(L[i]) for i in range(HEADER_LUMPS)]
+    for i in range(HEADER_LUMPS):
+        if L[i][1] <= 0 and i not in replace:
+            new[i] = [0, 0, L[i][2], 0]
+    for i in order:
+        while len(out) % 4:
+            out.append(0)
+        ofs, length, version, fourcc = L[i]
+        start = len(out)
+        if i == LUMP_GAME:
+            g = bytearray(replace[i]) if i in replace else bytearray(src[ofs:ofs + length])
+            if len(g) != length:
+                raise BspError("a replaced game lump must keep its size (patched in place)")
+            base = ofs
+            (count,) = struct.unpack_from("<i", g, 0) if len(g) >= 4 else (0,)
+            for k in range(count):
+                p = 4 + 16 * k
+                gofs = struct.unpack_from("<i", g, p + 8)[0]
+                if gofs:
+                    if not base <= gofs < base + len(g):
+                        raise BspError(f"game lump {k} has its data outside lump 35")
+                    struct.pack_into("<i", g, p + 8, gofs - base + start)
+            out += g
+            new[i] = [start, len(g), version, fourcc]
+        elif i in replace:
+            out += replace[i]
+            new[i] = [start, len(replace[i]), version, 0]
+        else:
+            out += src[ofs:ofs + length]
+            new[i] = [start, length, version, fourcc]
+    for i in range(HEADER_LUMPS):
+        struct.pack_into("<iiii", out, 8 + i * 16, *new[i])
+    return bytes(out)
+
+
 def verify(src: bytes, out: bytes, pak: list[tuple[str, bytes]] | None = None) -> list[str]:
     """[] when `out` holds the lumps of `src` (decompressed, game lump with its offsets moved back) and the
     pakfile holds exactly `pak` (default: the files of src's pakfile), in the same order."""

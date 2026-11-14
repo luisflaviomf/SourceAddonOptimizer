@@ -10,6 +10,7 @@ from pathlib import Path
 
 import batch_scan_map_bsp
 import bsp_repack
+import map_fps
 
 
 SUMMARY_NAME = "map_bsp_build_summary.json"
@@ -26,6 +27,7 @@ class RunConfig:
     keep_vtx_variants: bool = False     # keep .dx80/.sw/.xbox/.360.vtx (the PC game only reads .dx90.vtx)
     gmad: Path | None = None            # also pack the output into <output>.gma with this gmad.exe
     jobs: int = 0                       # worker processes for the LZMA compression (0: automatic)
+    fps: str = "none"                   # frame-rate edits (map_fps): none, balanced or max
 
 
 # Files the PC game never reads: model meshes for DirectX 8, software rendering and the consoles (only
@@ -106,6 +108,7 @@ class BuildItem:
     output_bsp_path: str = ""
     stage_dir: str = ""
     phase2_blockers: list[str] | None = None
+    fps: dict | None = None                 # map_fps report: what the frame-rate edits changed
 
 
 class MapBuildError(RuntimeError):
@@ -283,6 +286,14 @@ def _gmad_rejected(stdout: str) -> list[str]:
     return [lines[i - 1] for i, line in enumerate(lines) if i > 0 and line.startswith("[Not allowed")]
 
 
+def _fps_edits(src: bytes, config: RunConfig) -> tuple[bytes, dict]:
+    """map_fps.apply, with its report printed."""
+    out, report = map_fps.apply(src, config.fps)
+    changes = ", ".join(f"{k} {v}" for k, v in report.get("entities", {}).items() if v)
+    print(f"[BUILD][FPS] {config.fps}: " + (changes or "nothing to change"))
+    return out, report
+
+
 def _read_stage_manifest(stage_dir: Path) -> dict:
     """stage_manifest.json next to pak_contents (written by mapscan)."""
     path = stage_dir.parent / "stage_manifest.json"
@@ -416,6 +427,7 @@ def _build_summary(
                 "pak_zip_valid_after": item.pak_zip_valid_after,
                 "stage_dir": item.stage_dir,
                 "phase2_blockers": list(item.phase2_blockers or []),
+                "fps": item.fps or {},
             }
             for item in items
         ],
@@ -489,6 +501,9 @@ def run(config: RunConfig) -> int:
                 if stage_dir is not None and stage_dir.exists():
                     manifest = _read_stage_manifest(stage_dir)
                     pak, dropped = _staged_pak(stage_dir, manifest.get("pak_order", []), config.keep_vtx_variants)
+                if config.fps != "none":
+                    src_bytes, fps_report = _fps_edits(src_bytes, config)
+                    item.fps = fps_report
                 out_bytes = bsp_repack.repack(src_bytes, pak, compress=config.compress, map_fn=map_fn)
                 problems = bsp_repack.verify(src_bytes, out_bytes, pak)
                 if problems:
@@ -625,6 +640,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="Keep .dx80/.sw/.xbox/.360.vtx (the PC game only reads .dx90.vtx)")
     ap.add_argument("--gmad", default=None, help="Also pack the output folder into <output>.gma with this gmad.exe")
     ap.add_argument("--jobs", type=int, default=0, help="Worker processes for the compression (0: automatic)")
+    ap.add_argument("--fps", choices=("none", "balanced", "max"), default="none",
+                    help="Frame-rate edits of the map's entities (map_fps)")
     args = ap.parse_args(argv)
 
     root = Path(args.root).expanduser().resolve()
@@ -637,6 +654,7 @@ def main(argv: list[str] | None = None) -> int:
     cancel_file = Path(args.cancel_file).expanduser().resolve() if args.cancel_file else None
     config = RunConfig(root=root, work_dir=work_dir, output_dir=output_dir, cancel_file=cancel_file,
                        compress=not args.no_compress, keep_vtx_variants=args.keep_vtx_variants,
+                       fps=args.fps,
                        gmad=Path(args.gmad).expanduser().resolve() if args.gmad else None, jobs=args.jobs)
     return run(config)
 

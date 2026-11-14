@@ -22,6 +22,7 @@ function Get-WorkerSourceFiles {
         (Join-Path $PWD "optimize_fidelity_partition_policy_v1.py"),
         (Join-Path $PWD "batch_unpack_addons.py"),
         (Join-Path $PWD "bsp_repack.py"),
+        (Join-Path $PWD "map_fps.py"),
         (Join-Path $PWD "render_previews.py"),
         (Join-Path $PWD "selective_policy_models.py"),
         (Join-Path $PWD "vehicle_steer_turn_basis_fix.py"),

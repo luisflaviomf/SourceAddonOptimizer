@@ -13,5 +13,6 @@
     <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Tools\SourceAddonOptimizerPackageInstaller.cs" Link="SourceAddonOptimizerPackageInstaller.cs" />
     <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Optimizer\WizardProfiles.cs" Link="WizardProfiles.cs" />
     <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\Reporting\AddonInventory.cs" Link="AddonInventory.cs" />
+    <Compile Include="..\..\GmodAddonCompressor-master\GmodAddonCompressor\Systems\VmtBraces.cs" Link="VmtBraces.cs" />
   </ItemGroup>
 </Project>

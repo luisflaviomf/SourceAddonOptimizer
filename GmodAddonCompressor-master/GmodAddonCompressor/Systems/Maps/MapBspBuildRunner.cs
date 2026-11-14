@@ -19,6 +19,8 @@ namespace GmodAddonCompressor.Systems.Maps
         // RootPath into .gma files with GmadPath)
         internal string Command { get; init; } = "mapbuild";
         internal string? GmadPath { get; init; }
+        // mapbuild: frame-rate edits of the map's entities (map_fps: "none", "balanced", "max")
+        internal string FpsLevel { get; init; } = "none";
     }
 
     internal sealed class MapBspBuildProgressUpdate
@@ -92,6 +94,11 @@ namespace GmodAddonCompressor.Systems.Maps
                 startInfo.ArgumentList.Add(options.WorkDir);
                 startInfo.ArgumentList.Add("--out");
                 startInfo.ArgumentList.Add(options.OutputDir);
+                if (!string.IsNullOrWhiteSpace(options.FpsLevel) && options.FpsLevel != "none")
+                {
+                    startInfo.ArgumentList.Add("--fps");
+                    startInfo.ArgumentList.Add(options.FpsLevel);
+                }
             }
 
             if (!pack && !string.IsNullOrWhiteSpace(options.CancelFilePath))

@@ -353,4 +353,14 @@ Assert(!customNoPng.Png && !customNoPng.TexturesLine.Contains("PNG", StringCompa
 Assert(GmodAddonCompressor.Systems.Reporting.AddonInventory.Classify("materials/entities/weapon.png")
        == GmodAddonCompressor.Systems.Reporting.AddonFileKind.Textures, "PNG files are not counted as textures.");
 
+// VMT repair counts only KeyValues braces: "{" in a quoted texture name (GoldSrc alpha-tested textures) or in a
+// comment is text, so a valid VMT gets nothing appended; a truly unclosed block still counts.
+Assert(GmodAddonCompressor.Systems.VmtBraces.UnclosedBlocks(
+    "\"vertexlitgeneric\"\r\n{\r\n\t// original shader: { x\r\n\t\"$basetexture\" \"halflife/{grate2\"\r\n}\r\n") == 0,
+    "A brace inside a quoted string or a comment was counted as VMT syntax.");
+Assert(GmodAddonCompressor.Systems.VmtBraces.UnclosedBlocks("\"LightmappedGeneric\"\n{\n\"$basetexture\" \"a\"\n") == 1,
+    "An unclosed VMT block was not detected.");
+Assert(GmodAddonCompressor.Systems.VmtBraces.UnclosedBlocks("\"Patch\" { \"insert\" { \"$x\" \"1\" }") == 1,
+    "A nested unclosed VMT block was not counted.");
+
 Console.WriteLine("WPF optimizer contract tests passed.");

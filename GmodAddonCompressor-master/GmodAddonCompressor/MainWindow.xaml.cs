@@ -1687,7 +1687,8 @@ namespace GmodAddonCompressor
                     RootPath = _mapEffectiveRootPath ?? TextBox_MapScanRootPath.Text.Trim(),
                     WorkDir = _mapScanWorkDir ?? BuildMapScanWorkDir(TextBox_MapScanRootPath.Text.Trim()),
                     OutputDir = _mapBuildOutputPath ?? BuildMapBuildOutputDir(TextBox_MapScanRootPath.Text.Trim()),
-                    CancelFilePath = _mapScanCancelFile
+                    CancelFilePath = _mapScanCancelFile,
+                    FpsLevel = MapProfiles.At(_context.MapProfileIndex).FpsLevel
                 };
 
                 int exitCode = await _mapBspBuildRunner.RunAsync(options, _mapBuildCts.Token);
