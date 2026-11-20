@@ -34,7 +34,8 @@ na bancada) ou se é **estimativa** (conta, amostra pequena ou literatura).
     todas a menos de 4% do que existe na mesma qualidade.
 - **Modelos: o maior ganho barato é a malha grossa.** Hoje ela é 2% dos triângulos e custa 33,8 MiB (o VVD
   gasta 48 bytes por vértice, 10× o GMOS). Medido na bancada inteira, só o tamanho: **1% → −13,4 MiB;
-  0,5% → −18,7 MiB**. Falta olhar no jogo sombra, carro longe e os primeiros instantes.
+  0,5% → −18,7 MiB**. **Testado no jogo à tarde e recusado:** a 1% o carro perde painéis inteiros (ver
+  "Atualização").
 - **GMOS está perto do limite com ferramentas simples.** Medido na bancada inteira (107 MiB):
   previsão por paralelogramo −3,6% (−3,9 MiB, sem perda); codecs do meshoptimizer **+27%**;
   codificador adaptativo simples pior que o LZMA em todos os campos. O que ainda dá ganho grande está
@@ -47,8 +48,8 @@ na bancada) ou se é **estimativa** (conta, amostra pequena ou literatura).
 
 **O que fazer primeiro (detalhes na seção 7):**
 
-1. Alfa sem preenchimento de ruído (ganho dos dois lados, sem mudar o decodificador).
-2. Malha grossa menor (checar sombra e silhueta no jogo).
+1. Alfa sem preenchimento de ruído: **feito** (commit `4638f12`, branch `feature/alfa-sem-ruido`).
+2. Malha grossa menor: a 1% foi **recusada no jogo**; pede outro simplificador.
 3. Decidir o alvo do alfa com as imagens.
 4. Escolher entre o codificador com contexto (−13 MiB, decodificação +69%) e o mapa de não nulos com
    LZMA (−5 MiB, sem custo).
@@ -475,7 +476,7 @@ amostra e escalado; "estimativa" = conta. Ordenado pelo que entrega por risco e 
 | # | Ideia | Ganho | Qualidade | Custo no jogo | Esforço / risco | Base |
 |---|---|---:|---|---|---|---|
 | 1 | Alfa sem preenchimento de ruído (só o codificador) | ≈ −1,1 MiB | **melhor** (alfa +1,4 dB na mediana) | nenhum | mínimo; sem mudar o runtime | amostra |
-| 2 | Malha grossa 2% → 1% (0,5%) | **−13,44 MiB** (−18,72) | sombra/silhueta longe/primeiros instantes: checar no jogo | menos dados para carregar | mínimo (`COARSE_RATIO`); risco visual baixo | medido (tamanho) |
+| 2 | Malha grossa 2% → 1% (0,5%) — **recusada no jogo** | **−13,44 MiB** (−18,72) | painéis somem longe, com mira e no primeiro instante | menos dados para carregar | mínimo (`COARSE_RATIO`); risco visual baixo | medido (tamanho) |
 | 3 | Alvo do alfa −1,5 dB, sem ruído | ≈ −14 MiB | alfa −0,8 dB na mediana | nenhum | mínimo; decisão de qualidade | amostra |
 | 4a | GMOT: codificador aritmético com contexto | **−13,05 MiB** (Máximo −10,54) | idêntica | decodificação +69% na 1ª sessão; conversão 5× mais rápida | médio a alto; GMOT v3 + `CORE_VERSION` 4 | medido |
 | 4b | GMOT: mapa de não nulos + LZMA (alternativa a 4a) | ≈ −4,8 MiB | idêntica | ≈ nenhum | baixo a médio; GMOT v3 | amostra (800 blobs) |
@@ -548,8 +549,8 @@ somam quase em porcentagem):
 
 1. **Alfa sem preenchimento de ruído.** Mudança de uma linha no codificador, alfa melhor e um pouco
    menor, sem tocar no runtime. Pede só rodar a bancada inteira de novo para medir.
-2. **Malha grossa a 1%.** É o maior ganho fácil medido nos modelos (−13,4 MiB; −18,7 a 0,5%). Antes, uma volta no jogo
-   olhando sombra, carro longe e os primeiros instantes do spawn.
+2. ~~Malha grossa a 1%~~: testada no jogo e recusada (seção "Atualização"). O caminho é um simplificador
+   novo para a malha grossa, com orçamento por model e silhueta preservada.
 3. **Mostrar ao Luis as imagens do alvo do alfa** (−1,5 e −3 dB sem ruído) em uso real: vidro, máscara
    de brilho, recorte. Se aprovado, ≈ −14 MiB sem custo no jogo.
 4. **Codificação dos coeficientes.** Se ele aceitar a textura completa chegando ~1,7× mais tarde na
@@ -559,6 +560,67 @@ somam quase em porcentagem):
    protótipo ainda tem abortos de trace do LuaJIT.
 5. Depois, com testes no jogo: o stream parcial dos models com lente (≈ −25 MiB) e um estudo das
    animações dos `.mdl` (o maior bloco de modelos fora do GMOS).
+
+## Atualização (20/11, tarde): o que foi feito e testado no jogo
+
+### Alfa sem preenchimento de ruído: feito (commit `4638f12`, branch `feature/alfa-sem-ruido`)
+
+Bancada inteira pelo worker, comparada com a mesma rodada sem a mudança:
+
+- **Arquivos:** só mudaram os 1.889 blobs com alfa e o arquivo do runtime de cada addon.
+- **Tamanho:** GMOT 84,66 → 83,37 MiB (Custo-benefício) e 60,91 → 59,66 MiB (Máximo).
+- **Qualidade, nas 1.889 texturas com alfa:**
+  - alfa no jogo: mediana 33,7 → 35,2 dB, p10 30,1 → 32,2 dB;
+  - nenhuma textura piorou;
+  - cor idêntica.
+- **Tempo:** conversão igual; `GMOT.Decode` das 30 maiores texturas com alfa −5,8% no LuaJIT.
+- **Falta:** ainda não está no `publish/2026-03` nem no exe publicado.
+
+### Malha grossa a 1%: medida e recusada
+
+- **Tamanho (bancada inteira pelo worker):** modelos −13,44 MiB nos dois perfis. Só mudaram
+  `.mdl`/`.vvd`/`.vtx` dos models em stream; texturas idênticas.
+- **No jogo (medido, cliente do laboratório):**
+  - 11 models em stream (3 LVS, 3 Glide, 3 simfphys, 2 armas de mundo) como `prop_physics`, num campo
+    aberto do gm_construct, com céu limpo e hora fixa (StormFox2);
+  - rodadas a 2%, a 2% de novo (ruído entre sessões) e a 1%;
+  - vistas: perto com o stream; de cima; só a malha grossa (`gmo_stream 0`, o que aparece no primeiro
+    instante e sem Lua); longe com a malha grossa; longe com mira (FOV 8);
+  - scripts `coarselab.py`, `clab_crops.py`.
+- **Resultado:** a 1%, a malha grossa perde painéis inteiros (portas, capô, laterais). Na vista com
+  mira e no primeiro instante, o carro vira um esqueleto; a 2% ele ainda se reconhece.
+  - FLIP no recorte do carro, contra 2%: só a malha grossa 0,349 e com mira 0,306, contra 0,14–0,15
+    de ruído entre duas sessões iguais.
+  - A vista com o stream (0,240) também fica acima do ruído, porque a luz da cena varia entre sessões.
+    Por isso a conclusão sai das imagens, não do número.
+- **A sombra não foi avaliada.** Ao meio-dia (hora fixada) a sombra fica embaixo do carro, e a sombra
+  RTT é borrada.
+- **Conclusão:** não vale aplicar a 1% como está; o código do produto ficou como era. Um ganho real
+  pede outra forma de simplificar: orçamento de triângulos por model inteiro, preservando silhueta e
+  painéis grandes, em vez de 1% de cada grupo (a 2% os buracos já aparecem).
+
+![Malha grossa 2% x 1%, Charger do LVS: vistas A, C (só a malha grossa), D (longe), E (mira)](revisao-stream-claude-2026-11/malha_grossa_2x1_charger.jpg)
+
+(`malha_grossa_2x1_odyssey.jpg`: o mesmo no Honda Odyssey do Glide; a pintura sai rosa porque o
+teste não monta o Lua do Glide.)
+
+### Alvo do alfa −1,5 dB (sem ruído): visto no jogo, decisão pendente
+
+- **Teste:** mesmos 11 models, vistas próximas (lateral, frente, trás a ~0,85 do raio). Três versões:
+  hoje, sem ruído e sem ruído −1,5 dB.
+- **FLIP contra hoje:** 0,093 (sem ruído) e 0,077 (−1,5 dB), dentro do ruído entre sessões.
+- **A olho:** vidros, sirenes, faróis e o vidro vermelho da granada da ARC9 ficam iguais nas três.
+- **Ressalva:** esses models não incluem os piores casos medidos fora do jogo (grade do ventilador,
+  `alfa_1_fancase.png`). Ao todo, −1,5 dB custa 0,8 dB de alfa na mediana e ≈ −14 MiB.
+
+![Alfa no jogo: hoje, sem ruído, sem ruído -1,5 dB (Dodge Monaco do LVS)](revisao-stream-claude-2026-11/alfa_no_jogo_monaco.jpg)
+
+### Cliente do laboratório
+
+- Uso combinado com a sessão "Tarefas do Codex" (16:18–17:37).
+- Foco devolvido à janela do Luis pelo `foco-de-volta.ps1` dela; cursor do jogo livre.
+- Só pastas `zz_clab_*` e `data/clab`, removidas no fim. Nenhuma configuração salva do jogo ou do
+  StormFox2 foi mudada.
 
 ## Nota final: sons e Lua
 
