@@ -11,7 +11,8 @@ P = levels to drop until the largest side is <= the preview size: chunk 0 alone 
 Bands: u8 type (0 all zero, 1 int8, 2 int16; +16 when a noise map of TILE x TILE tiles precedes the
 coefficients) + data. Noise filling: per tile, the RMS of the coefficients quantized to zero (3 bits,
 NLEV levels); the decoder replaces those zeros with uniform noise of that amplitude from a 32-bit LCG
-seeded per band, so fine grain keeps its texture instead of turning flat.
+seeded per band, so fine grain keeps its texture instead of turning flat. Only the luma plane is noise
+filled (encode fill_levels); chroma, normal maps and alpha never are.
 
 The 5/3 lifting wavelet is scaled by sqrt(2) per step so one step size fits every band. Colour planes are
 YCoCg (chroma at a coarser step, optionally without its finest level); normal maps store the normalised
@@ -292,7 +293,10 @@ def encode(v, rgba, step, alpha_step=None, chroma_drop=1, normal=False, keep_alp
     if keep_alpha:
         steps.append(alpha_step or step)
         drops.append(0)
-        fills.append(fill_levels)
+        # no noise filling in the alpha plane: alpha is a mask (cut-out, gloss/envmap mask, see-through) whose
+        # flat areas the noise turned into speckles; without it the alpha shows closer to the source and the
+        # file is smaller (no noise maps). The decoder reads a band with or without a noise map alike.
+        fills.append(0)
     if transforms is None:
         # the planes are only built when nobody transformed them before
         if normal:

@@ -20,9 +20,10 @@ Desde a tarde de 09/11 o stream é o método principal: perfil **Custo-benefíci
      tamanho). O passo de quantização é o maior que mantém **34 dB** (31 no Stream máximo; +1,2 dB de
      margem para o DXT) contra o VTF de entrada (`choose.py`); o alpha só fica quando algum material o
      lê, com alvo pelo peso que ele tem na imagem (translúcido/selfillum 1, máscara de envmap pelo
-     `$envmaptint`, phong 0,7...). Os dois níveis mais finos recebem **preenchimento de ruído**: por
-     bloco de 8×8, a energia dos coeficientes zerados (3 bits); o decodificador devolve ruído dessa
-     intensidade e o granulado volta.
+     `$envmaptint`, phong 0,7...). Os dois níveis mais finos da luminância recebem **preenchimento de
+     ruído**: por bloco de 8×8, a energia dos coeficientes zerados (3 bits); o decodificador devolve
+     ruído dessa intensidade e o granulado volta. O alfa não recebe ruído desde 20/11/2026 (ver
+     "Alfa sem preenchimento de ruído" abaixo).
    - um VTF de 16 px com mipmaps no caminho original (o que aparece no primeiro instante);
    - uma linha no manifesto de `lua/autorun/!gmot_<slug>.lua`: blob, materiais e parâmetros que usam
      a textura, models que a desenham e a "classe" (como o runtime descobre que ela é necessária).
@@ -185,6 +186,32 @@ de qualquer Lua de addon rodar.
   limites").
 - Quem otimizou antes desta correção um addon cujo `addon.json` ignora `*.txt` precisa otimizar de novo
   antes de publicar.
+
+### Alfa sem preenchimento de ruído (20/11/2026)
+
+O canal alfa recebia o mesmo preenchimento de ruído dos dois níveis finos que a luminância. Alfa é
+máscara (recorte, máscara de brilho/reflexo, translúcido), e nas áreas lisas o ruído virava pontilhado.
+Desde 20/11 só a luminância recebe ruído (`codec.encode`). É mudança só do codificador: o
+`decoder.lua` lê banda com ou sem mapa de ruído, então `CORE_VERSION` não muda e os addons convertidos
+antes continuam iguais.
+
+Bancada inteira pelo worker (Custo-benefício; comparada com a mesma rodada sem a mudança, saídas em
+pastas isoladas):
+
+- Arquivos: só mudaram os blobs que têm alfa (1.889, todos) e o arquivo do runtime de cada addon
+  (o slug leva o conteúdo). Modelos, PNG, VTF e VMT ficaram idênticos.
+- Tamanho: GMOT 84,66 → 83,37 MiB (−1,29 MiB). No Máximo, 60,91 → 59,66 MiB (−1,25).
+- Qualidade, nas 1.889 texturas com alfa, contra a entrada do codificador, com o VTF que o runtime monta:
+  - alfa: mediana 33,7 → 35,2 dB, p10 30,1 → 32,2 dB, pior caso 27,2 → 28,7 dB;
+  - nenhuma textura piorou, e 1.744 melhoraram mais de 0,5 dB;
+  - cor idêntica.
+- Tempo:
+  - conversão no PC igual: etapa de texturas do LVS 52,1–52,5 s antes e 52,1–54,6 s depois, alternando
+    as rodadas (no m9k a variação entre rodadas é maior que a mudança);
+  - no jogo, a decodificação fica mais rápida: `GMOT.Decode` das 30 maiores texturas com alfa no
+    LuaJIT, 8,51 → 8,01 s (−5,8%), porque o alfa deixa de gerar ruído pixel a pixel.
+
+Análise e outras propostas: `docs/revisao-stream-claude-2026-11.md` (branch `review/claude-stream`).
 
 ## Custos e limites
 
