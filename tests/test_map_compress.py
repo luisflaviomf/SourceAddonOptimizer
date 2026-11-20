@@ -235,6 +235,55 @@ def test_build_takes_the_optimized_staging_in_the_pakfiles_order(tmp_path):
     assert dict(files)["materials/brick/wall01.vtf"] == b"VTF\x00smaller"
 
 
+def test_a_name_the_game_cannot_reach_is_kept_and_nothing_else_is_lost(tmp_path):
+    """ttt_rio_triforce_a3 packs files under the author's own drive ("G:/backCPL/root/lumps/...") before real
+    ones: the scan stopped there and the rebuilt map lost 354 files (2026-11-14). The scan now skips only that
+    name; the build writes every original entry (staged bytes where staged, original bytes otherwise)."""
+    files = {"materials/a.vmt": b'"LightmappedGeneric" { }',
+             "G:/backCPL/root/lumps/m_l_0.lmp": bytes(range(200)),
+             "materials/brick/wall01.vtf": b"VTF\x00" + bytes(300),
+             "models/props/crate.dx90.vtx": b"\x07" + bytes(30),
+             "models/props/crate.dx80.vtx": b"\x07" + bytes(30)}
+    root = tmp_path / "in"
+    (root / "m" / "maps").mkdir(parents=True)
+    (root / "m" / "maps" / "m.bsp").write_bytes(make_bsp(files))
+    work = tmp_path / "work"
+    assert batch_scan_map_bsp.main([str(root), "--work", str(work)]) == 0
+    summary = json.loads((work / "map_bsp_scan_summary.json").read_text(encoding="utf-8"))
+    assert summary["items"][0]["staging_status"] == "extracted"
+    stage = next(work.glob("staging/*/pak_contents"))
+    assert (stage / "materials" / "brick" / "wall01.vtf").is_file() and (stage.parent / "stage_manifest.json").is_file()
+    (stage / "materials" / "brick" / "wall01.vtf").write_bytes(b"VTF\x00smaller")
+    (stage / "materials" / "a.vmt").unlink()                      # a staged file gone: the original stays
+    assert batch_build_map_bsp.main([str(root), "--work", str(work), "--out", str(tmp_path / "out"), "--jobs", "1"]) == 0
+    built = dict(bsp_repack.pak_files((tmp_path / "out" / "m" / "maps" / "m.bsp").read_bytes())[0])
+    assert list(built) == [n for n in files if not n.endswith(".dx80.vtx")]
+    assert built["G:/backCPL/root/lumps/m_l_0.lmp"] == files["G:/backCPL/root/lumps/m_l_0.lmp"]
+    assert built["materials/a.vmt"] == files["materials/a.vmt"]
+    assert built["materials/brick/wall01.vtf"] == b"VTF\x00smaller"
+
+
+def test_odd_pakfile_names_survive_the_rebuild(tmp_path):
+    """Names the old staging lost on 8 maps: a leading slash (ttt_atlantis), a double slash (ttt_bb_teenroom_b2),
+    two names that differ only in case (ttt_office_gm). All entries come back, in order."""
+    original = [("/gmaps_contest.pcf", b"pcf"), ("materials/props//bench.vtf", b"vtf1"),
+                ("materials/Glass/break.vtf", b"upper"), ("materials/glass/break.vtf", b"lower")]
+    stage = tmp_path / "stage"
+    (stage / "materials" / "glass").mkdir(parents=True)
+    (stage / "materials" / "glass" / "break.vtf").write_bytes(b"optimized")
+    out, dropped = batch_build_map_bsp._rebuilt_pak(original, stage, keep_vtx_variants=False)
+    assert [n for n, _d in out] == [n for n, _d in original] and dropped == 0
+    assert dict(out)["/gmaps_contest.pcf"] == b"pcf" and dict(out)["materials/props//bench.vtf"] == b"vtf1"
+    assert batch_build_map_bsp._lost_entries(original, out, keep_vtx_variants=False) == []
+
+
+def test_a_pakfile_that_would_lose_a_file_is_refused():
+    original = [("materials/a.vmt", b"a"), ("models/x.dx90.vtx", b"x"), ("models/x.dx80.vtx", b"y")]
+    assert batch_build_map_bsp._lost_entries(original, original[:2], keep_vtx_variants=False) == []
+    assert batch_build_map_bsp._lost_entries(original, original[1:2], keep_vtx_variants=False) == ["materials/a.vmt"]
+    assert batch_build_map_bsp._lost_entries(original, original[:2], keep_vtx_variants=True) == ["models/x.dx80.vtx"]
+
+
 def _gma(path: Path, title: str, desc: dict, files: dict):
     """a GMAD v3 file as gmad writes it"""
     out = bytearray(b"GMAD\x03" + struct.pack("<QQ", 0, 0) + b"\x00")

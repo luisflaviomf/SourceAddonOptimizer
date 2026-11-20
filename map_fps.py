@@ -61,6 +61,7 @@ EDITS = {
     "max": ((b"point_spotlight", SPOTLIGHT_NO_DLIGHT, "spotlights_dynamic_light_off"),),
 }
 SPRITE_LEVELS = ("balanced", "max")      # glow sprites drawn as additive sprites (_sprite_edit)
+STRICT_SPRITE_LEVELS = ("balanced",)     # ... only those with nothing near them (_clear_around)
 
 
 def _set_kv(block: bytes, key: bytes, value: bytes) -> bytes:
@@ -81,7 +82,8 @@ def _flag_edit(block: bytes, kv: dict, add: int) -> bytes | None:
     return _set_kv(block, b"spawnflags", str(flags | add).encode())
 
 
-def _sprite_edit(block: bytes, kv: dict, contents: PointContents | None, report: dict) -> bytes | None:
+def _sprite_edit(block: bytes, kv: dict, contents: PointContents | None, report: dict,
+                 strict: bool = False, props=()) -> bytes | None:
     """A "World Space Glow" env_sprite drawn as a plain additive sprite (render mode 9 -> 5), None to keep it.
 
     A glow sprite asks the GPU every frame how much of it is visible (occlusion query); 556 of them were most
@@ -104,17 +106,79 @@ def _sprite_edit(block: bytes, kv: dict, contents: PointContents | None, report:
     if contents is not None and contents.solid(origin):
         report["sprites_kept_inside_solid"] += 1
         return None
+    if strict and not _clear_around(origin, contents, props):
+        report["sprites_kept_near_geometry"] += 1
+        return None
     report["sprites_glow_to_additive"] += 1
     return _set_kv(block, b"rendermode", b"5")
 
 
-def plan_entities(entities: bytes, level: str, contents: PointContents | None = None) -> tuple[bytes | None, dict]:
+# Custo-benefício converts a glow only with nothing near it: an additive sprite is cut by whatever stands in
+# front of it, and on ttt_rio_triforce_a3 the glow of a lamp became a hard edge against a wall and the glow
+# inside a hanging lamp's shade disappeared (2026-11-14). Máximo converts every glow that is not inside solid.
+CLEAR_SOLID = 32.0                 # no solid world point within this distance (sampled in 26 directions)
+CLEAR_PROP = 48.0                  # no static prop or prop entity origin within this distance
+_DIRS = [(x, y, z) for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1) if (x, y, z) != (0, 0, 0)]
+_DIRS = [tuple(c / (x * x + y * y + z * z) ** 0.5 for c in (x, y, z)) for x, y, z in _DIRS]
+
+
+def _clear_around(origin, contents: PointContents | None, props) -> bool:
+    if contents is None:
+        return False
+    for r in (8.0, 16.0, 24.0, CLEAR_SOLID):
+        for d in _DIRS:
+            if contents.solid((origin[0] + d[0] * r, origin[1] + d[1] * r, origin[2] + d[2] * r)):
+                return False
+    limit = CLEAR_PROP * CLEAR_PROP
+    return not any((p[0] - origin[0]) ** 2 + (p[1] - origin[1]) ** 2 + (p[2] - origin[2]) ** 2 <= limit for p in props)
+
+
+def prop_origins(data: bytes, L, entities: bytes) -> list[tuple[float, float, float]]:
+    """Origins of the static props (game lump sprp, read in place) and of the prop entities."""
+    out = []
+    ofs, length = L[bsp_repack.LUMP_GAME][0], L[bsp_repack.LUMP_GAME][1]
+    if length >= 4 and not L[bsp_repack.LUMP_GAME][3]:
+        g = data[ofs:ofs + length]
+        try:
+            (count,) = struct.unpack_from("<i", g, 0)
+            for k in range(count):
+                gid, flags, _ver, gofs, glen = struct.unpack_from("<iHHii", g, 4 + 16 * k)
+                if gid.to_bytes(4, "big") != b"sprp" or flags & 1 or not ofs <= gofs < ofs + length:
+                    continue
+                p = gofs - ofs
+                (n,) = struct.unpack_from("<i", g, p)
+                p += 4 + 128 * n
+                (nl,) = struct.unpack_from("<i", g, p)
+                p += 4 + 2 * nl
+                (np_,) = struct.unpack_from("<i", g, p)
+                p += 4
+                size = (gofs - ofs + glen - p) // np_ if np_ else 0
+                if size >= 12:
+                    out += [struct.unpack_from("<3f", g, p + i * size) for i in range(np_)]
+        except struct.error:
+            pass
+    for m in ENTITY.finditer(entities):
+        kv = {k.lower(): v for k, v in KEYVALUE.findall(m.group(0))}
+        if kv.get(b"classname", b"").lower().startswith(b"prop_"):
+            try:
+                o = tuple(float(x) for x in kv.get(b"origin", b"").split())
+            except ValueError:
+                continue
+            if len(o) == 3:
+                out.append(o)
+    return out
+
+
+def plan_entities(entities: bytes, level: str, contents: PointContents | None = None,
+                  props=()) -> tuple[bytes | None, dict]:
     """The entity lump with the edits of `level` (None: nothing to change), and a report."""
     edits = EDITS.get(level, ())
     sprites = level in SPRITE_LEVELS
     report = {key: 0 for _cls, _flag, key in edits}
     if sprites:
         report.update(sprites_glow_to_additive=0, sprites_kept_inside_solid=0, sprites_kept_parented=0)
+        if level in STRICT_SPRITE_LEVELS:
+            report["sprites_kept_near_geometry"] = 0
     if not edits and not sprites:
         return None, report
     by_class = {cls: (flag, key) for cls, flag, key in edits}
@@ -129,7 +193,7 @@ def plan_entities(entities: bytes, level: str, contents: PointContents | None = 
             if new is not None:
                 report[by_class[cls][1]] += 1
         elif cls == b"env_sprite" and sprites:
-            new = _sprite_edit(block, kv, contents, report)
+            new = _sprite_edit(block, kv, contents, report, level in STRICT_SPRITE_LEVELS, props)
         if new is None:
             continue
         out += entities[last:m.start()] + new
@@ -152,7 +216,9 @@ def apply(data: bytes, level: str) -> tuple[bytes, dict]:
         contents = PointContents(data, L) if level in SPRITE_LEVELS else None
     except (struct.error, bsp_repack.BspError):
         contents = None
-    ents, report = plan_entities(bsp_repack.lump_data(data, L, 0), level, contents)
+    entities = bsp_repack.lump_data(data, L, 0)
+    props = prop_origins(data, L, entities) if level in STRICT_SPRITE_LEVELS else ()
+    ents, report = plan_entities(entities, level, contents, props)
     if level in SPRITE_LEVELS and contents is None:
         ents, report = None, {}          # no tree to tell embedded sprites apart: nothing changes
     if ents is None:

@@ -44,9 +44,9 @@ namespace GmodAddonCompressor.Systems.Maps
             new("Sem perda", "exact", false, "none",
                 "O mesmo mapa no jogo: .bsp comprimido no formato do próprio jogo, conversão exata BC3→BC1, PNG sem perda. Sons intactos."),
             new("Custo-benefício", "strong", true, "balanced",
-                "Texturas dos modelos reduzidas onde a perda é pequena, sons no Adaptativo conservador e o .bsp comprimido. Mais FPS: holofotes sem a luz dinâmica (o facho continua) e brilhos de lâmpada (sprites) desenhados de um jeito mais leve. Paredes, chão, céu, cubemaps, decalques e sprites ficam no tamanho original."),
+                "Texturas dos modelos reduzidas onde a perda é pequena, sons no Adaptativo conservador e o .bsp comprimido. Mais FPS: holofotes sem a luz dinâmica (o facho continua) e, quando nada está perto deles, brilhos de lâmpada (sprites) desenhados de um jeito mais leve. Paredes, chão, céu, cubemaps, decalques e sprites ficam no tamanho original."),
             new("Máximo", "max", true, "max",
-                "Texturas dos modelos no mínimo 4x menores (perda visível de perto), sons no Adaptativo conservador e o .bsp comprimido. Mais FPS: holofotes sem a luz dinâmica (o facho continua) e brilhos de lâmpada (sprites) desenhados de um jeito mais leve. Paredes, chão, céu, cubemaps, decalques e sprites ficam no tamanho original.")
+                "Texturas dos modelos no mínimo 4x menores (perda visível de perto), sons no Adaptativo conservador e o .bsp comprimido. Mais FPS: holofotes sem a luz dinâmica e todos os brilhos de lâmpada (sprites) desenhados de um jeito mais leve (perto de paredes e luminárias o brilho pode aparecer cortado). Paredes, chão, céu, cubemaps, decalques e sprites ficam no tamanho original.")
         };
 
         internal static MapProfile At(int index) => All[index < 0 || index >= All.Length ? 1 : index];

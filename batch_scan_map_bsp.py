@@ -296,7 +296,15 @@ def _extract_pak_bytes_to_dir(pak_bytes: bytes, destination_dir: Path, cancel_fi
                 if info.is_dir():
                     continue
 
-                destination = _safe_zip_destination(destination_dir, info.filename)
+                try:
+                    destination = _safe_zip_destination(destination_dir, info.filename)
+                except MapScanError:
+                    # a name the game cannot reach (an absolute path of the author's PC, "d:/steamlibrary/...",
+                    # or ".."; ttt_rio_triforce_a3, ttt_cape_town_revamped, ttt_greenhillzone) is not staged; the
+                    # build keeps it from the original pakfile byte for byte. Stopping here left the rest of
+                    # the pakfile out of the staging, and the rebuilt map lost it (2026-11-14).
+                    print(f"[STAGE] Not staged (name outside the game's folders): {info.filename}")
+                    continue
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(info, "r") as src, destination.open("wb") as dst:
                     src._expected_crc = None        # see _unreadable_member

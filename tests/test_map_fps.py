@@ -81,3 +81,17 @@ def test_mapbuild_applies_the_fps_level_and_reports_it(tmp_path):
     summary = json.loads((work / "map_bsp_build_summary.json").read_text(encoding="utf-8"))
     item = summary["items"][0]
     assert item["status"] == "reinjected" and item["fps"]["entities"]["spotlights_dynamic_light_off"] == 2
+
+
+def test_custo_beneficio_converts_only_glows_with_nothing_near_them():
+    """A lamp glow next to a wall or inside a lamp shade is cut by them once additive (ttt_rio_triforce_a3):
+    Custo-benefício keeps those, Máximo converts every glow that is not inside solid."""
+    ents = (b'{\n"classname" "env_sprite"\n"origin" "0 0 100"\n"rendermode" "9"\n}\n'
+            b'{\n"classname" "env_sprite"\n"origin" "500 0 100"\n"rendermode" "9"\n}\n'
+            b'{\n"classname" "env_sprite"\n"origin" "900 0 20"\n"rendermode" "9"\n}\n\x00')
+    props = [(510.0, 0.0, 110.0)]                       # a lamp model next to the second glow
+    out, report = map_fps.plan_entities(ents, "balanced", _Contents(), props)
+    assert report["sprites_glow_to_additive"] == 1 and report["sprites_kept_near_geometry"] == 2
+    assert out.split(b"}\n")[0].count(b'"rendermode" "5"') == 1    # the first one: nothing near it
+    out_max, report_max = map_fps.plan_entities(ents, "max", _Contents(), props)
+    assert report_max["sprites_glow_to_additive"] == 3

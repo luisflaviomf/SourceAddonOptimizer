@@ -50,26 +50,51 @@ def _is_unused_vtx(rel: str, present: set[str]) -> bool:
     return False
 
 
-def _staged_pak(stage_dir: Path, order: list[str], keep_vtx_variants: bool) -> tuple[list[tuple[str, bytes]], int]:
-    """The files of a pakfile staging folder as [(name, bytes)]: in the pakfile's original order (names as
-    they were written there), then files added since, by name. Temporary files and (unless kept) the model
-    mesh files the PC game never reads are left out. -> (files, files left out)."""
-    files = {}
-    for p in sorted(stage_dir.rglob("*"), key=lambda q: str(q).lower()):
-        if p.is_file():
-            files[p.relative_to(stage_dir).as_posix().lower()] = p
-    present = set(files)
+def _pak_key(name: str) -> str:
+    """A pakfile name as the staging folder writes it: forward slashes, no leading or trailing slash, any case."""
+    return name.replace("\\", "/").strip("/").lower()
+
+
+def _rebuilt_pak(original: list[tuple[str, bytes]], stage_dir: Path | None,
+                 keep_vtx_variants: bool) -> tuple[list[tuple[str, bytes]], int]:
+    """The pakfile to write: every entry of the original pakfile in its order, with the staged (optimized)
+    bytes where the staging folder has the file and the original bytes where it does not (a name the scan
+    could not stage keeps its bytes), then files the staging added. Temporary files of the optimizers and
+    (unless kept) the model mesh files the PC game never reads are left out. -> (files, files left out)."""
+    staged = {}
+    if stage_dir is not None:
+        for f in sorted(stage_dir.rglob("*"), key=lambda q: str(q).lower()):
+            if f.is_file():
+                staged[f.relative_to(stage_dir).as_posix().lower()] = f
+    present = {_pak_key(n) for n, _d in original} | set(staged)
     out, seen, dropped = [], set(), 0
-    names = [(n, n.lower()) for n in order] + [(p.relative_to(stage_dir).as_posix(), k) for k, p in files.items()]
-    for name, key in names:
-        if key in seen or key not in files:
+    for name, data in original:
+        key = _pak_key(name)
+        if not keep_vtx_variants and _is_unused_vtx(key, present):
+            dropped += 1
             continue
+        f = staged.get(key) if key not in seen else None
         seen.add(key)
+        out.append((name, f.read_bytes() if f is not None else data))
+    for key, f in staged.items():
+        if key in seen:
+            continue
         if _is_temp(key) or (not keep_vtx_variants and _is_unused_vtx(key, present)):
             dropped += 1
             continue
-        out.append((name, files[key].read_bytes()))
+        out.append((f.relative_to(stage_dir).as_posix(), f.read_bytes()))
     return out, dropped
+
+
+def _lost_entries(original: list[tuple[str, bytes]], rebuilt: list[tuple[str, bytes]],
+                  keep_vtx_variants: bool) -> list[str]:
+    """Names of the original pakfile missing from the rebuilt one, apart from the mesh files left out on
+    purpose. Must be empty: a map is rebuilt only when nothing of its pakfile is lost (2026-11-14: a scan
+    that stopped at a name it could not stage left 354 files of ttt_rio_triforce_a3 out)."""
+    have = {_pak_key(n) for n, _d in rebuilt}
+    present = {_pak_key(n) for n, _d in original}
+    return [n for n, _d in original if _pak_key(n) not in have
+            and (keep_vtx_variants or not _is_unused_vtx(_pak_key(n), present))]
 
 
 def _drop_unused_files(root: Path, keep_vtx_variants: bool) -> tuple[int, int]:
@@ -109,6 +134,7 @@ class BuildItem:
     stage_dir: str = ""
     phase2_blockers: list[str] | None = None
     fps: dict | None = None                 # map_fps report: what the frame-rate edits changed
+    staging_ok: bool = False                # the scan staged the whole pakfile (else it is kept as it is)
 
 
 class MapBuildError(RuntimeError):
@@ -294,15 +320,6 @@ def _fps_edits(src: bytes, config: RunConfig) -> tuple[bytes, dict]:
     return out, report
 
 
-def _read_stage_manifest(stage_dir: Path) -> dict:
-    """stage_manifest.json next to pak_contents (written by mapscan)."""
-    path = stage_dir.parent / "stage_manifest.json"
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
 def _load_stage_opt_summary(work_dir: Path) -> dict | None:
     path = work_dir / "map_stage_optimize_summary.json"
     if not path.exists():
@@ -335,6 +352,7 @@ def _build_item_from_scan(entry: dict) -> BuildItem:
         pak_offset=int(entry.get("pak_offset", 0) or 0),
         original_pak_size=int(entry.get("pak_size", 0) or 0),
         stage_dir=str(entry.get("staging_dir", "")),
+        staging_ok=str(entry.get("staging_status", "")) == "extracted",
         phase2_blockers=blockers,
     )
 
@@ -493,14 +511,17 @@ def run(config: RunConfig) -> int:
                 print(f"[BUILD][FAIL] {item.relative_path}: {item.reason}")
                 continue
 
-            stage_dir = Path(item.stage_dir) if item.stage_dir else None
+            stage_dir = Path(item.stage_dir) if item.stage_dir and item.staging_ok else None
             try:
                 src_bytes = source_bsp.read_bytes()
-                pak = None
-                dropped = 0
-                if stage_dir is not None and stage_dir.exists():
-                    manifest = _read_stage_manifest(stage_dir)
-                    pak, dropped = _staged_pak(stage_dir, manifest.get("pak_order", []), config.keep_vtx_variants)
+                if item.stage_dir and not item.staging_ok:
+                    print(f"[BUILD] {item.relative_path}: the staging did not finish; the pakfile keeps its files as they are")
+                original = bsp_repack.pak_files(src_bytes)[0]
+                pak, dropped = _rebuilt_pak(original, stage_dir if stage_dir is not None and stage_dir.exists() else None,
+                                            config.keep_vtx_variants)
+                lost = _lost_entries(original, pak, config.keep_vtx_variants)
+                if lost:
+                    raise MapBuildError(f"{len(lost)} file(s) of the pakfile would be lost: " + ", ".join(lost[:3]))
                 if config.fps != "none":
                     src_bytes, fps_report = _fps_edits(src_bytes, config)
                     item.fps = fps_report
