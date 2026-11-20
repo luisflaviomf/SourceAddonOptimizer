@@ -1,0 +1,13 @@
+[package]
+name = "gmotcm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+debug = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
