@@ -14,9 +14,34 @@ from pathlib import Path
 
 import numpy as np
 
-VERSION = 7                       # = encoder.VERSION (checked by tests)
-VERSIONS = (6, 7)                 # = encoder.VERSIONS
+VERSION = 8                       # = encoder.VERSION (checked by tests)
+VERSIONS = (6, 7, 8)              # = encoder.VERSIONS
 _MANIFEST_START = "util.JSONToTable([["
+
+
+def _lzma_alone(part: bytes) -> bytes:
+    d = bytearray(part)
+    d[5:13] = b"\xff" * 8                          # Python's decoder wants "unknown size" + end mark
+    return lzma.decompress(bytes(d), format=lzma.FORMAT_ALONE)
+
+
+def stream_blob(data: bytes) -> tuple[int, bytes]:
+    """(format, decompressed blob) of a GMOS file. Formats 6 and 7: one LZMA-alone blob after the 5-byte
+    header. Format 8: the same blob cut in parts (u8 count, then per part u32 size + LZMA-alone), each
+    decompressed on its own and joined (encoder module docstring)."""
+    if data[:4] != b"GMOS" or data[4] not in VERSIONS:
+        raise ValueError("not a GMOS v%s stream" % "/".join(map(str, VERSIONS)))
+    ver = data[4]
+    if ver != 8:
+        return ver, _lzma_alone(data[5:])
+    pos, parts = 6, []
+    for _ in range(data[5]):
+        (size,) = struct.unpack_from("<I", data, pos)
+        parts.append(_lzma_alone(data[pos + 4:pos + 4 + size]))
+        pos += 4 + size
+    if pos != len(data):
+        raise ValueError("GMOS v8: %d bytes after the last part" % (len(data) - pos))
+    return ver, b"".join(parts)
 
 
 def _para_places(C: np.ndarray, lens: np.ndarray, nv: int):
@@ -91,12 +116,7 @@ def read_manifests(addon_root: Path) -> dict[str, Path]:
 
 def decode_geometry(data: bytes) -> list[dict]:
     """Per group: b, m, slot (skin ref), bone, pos (V,3) float32, uv (V,2) float32, tris (T,3) int64."""
-    if data[:4] != b"GMOS" or data[4] not in VERSIONS:
-        raise ValueError("not a GMOS v%s stream" % "/".join(map(str, VERSIONS)))
-    ver = data[4]
-    d = bytearray(data[5:])
-    d[5:13] = b"\xff" * 8
-    blob = lzma.decompress(bytes(d), format=lzma.FORMAT_ALONE)
+    ver, blob = stream_blob(data)
     pos = 0
 
     def take(fmt):

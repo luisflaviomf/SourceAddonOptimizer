@@ -38,7 +38,7 @@ def test_runtime_and_encoder_versions_match():
     lua = (ROOT / "model_stream" / "runtime.lua").read_text(encoding="utf-8")
     assert re.search(r"local VERSION = (\d+)", lua).group(1) == str(encoder.VERSION)
     # the runtime reads every format the encoders wrote (addons converted earlier keep working)
-    assert encoder.VERSIONS == (6, 7) and "if v == 6 or v == 7 then return v end" in lua
+    assert encoder.VERSIONS == (6, 7, 8) and "if v == 6 or v == 7 or v == 8 then return v end" in lua
     # one strip mesh: the game takes 65535 vertices, and a strip is cut at an even offset
     limit = int(re.search(r"local MAX_STRIP = (\d+)", lua).group(1))
     assert limit == encoder.MAX_STRIP and limit <= 65535 and limit % 2 == 0
@@ -147,6 +147,9 @@ function Material(name) return { IsError = function() return false end } end
 function Matrix(rows) return rows end
 function SysTime() return os.clock() end
 function RealTime() return os.clock() end
+-- a new frame at every call, unless a test holds the frame (FRAME_HOLD) and moves FRAME itself
+FRAME = 0
+function FrameNumber() if not FRAME_HOLD then FRAME = FRAME + 1 end return FRAME end
 function ErrorNoHalt(s) LAST_ERROR = s end
 """
 
@@ -436,7 +439,7 @@ def test_format_7_predicts_along_the_strips_and_keeps_the_geometry():
     reference decoder and in the fast one, and is smaller."""
     from model_stream import geometry
     v6 = encoder.encode(E46, _resolver(), version=6)
-    v7 = encoder.encode(E46, _resolver())
+    v7 = encoder.encode(E46, _resolver(), version=7)
     assert v6[4] == 6 and v7[4] == 7 and len(v7) < len(v6)
     a, b = encoder.decode(v6), encoder.decode(v7)
     assert len(a["groups"]) == len(b["groups"])
@@ -449,11 +452,60 @@ def test_format_7_predicts_along_the_strips_and_keeps_the_geometry():
 
 
 @need_lvs
+def test_format_8_cuts_big_streams_in_lzma_parts_and_draws_the_same():
+    """Format 8 = the blob of format 7 in LZMA parts of PART_BYTES: the same geometry in both decoders, the
+    same meshes and bullet-mark triangles from the runtime, and each part decompressed in a frame of its own
+    even when the game draws the model several times a frame (util.Decompress of a whole big stream took
+    65-76 ms in one frame). A blob that fits one part is written as format 7, byte for byte."""
+    from model_stream import geometry
+    v7 = encoder.encode(E46, _resolver(), version=7)
+    v8 = encoder.encode(E46, _resolver())
+    _ver, blob = geometry.stream_blob(v7)
+    nparts = -(-len(blob) // encoder.PART_BYTES)
+    assert nparts >= 3 and v8[4] == 8 and v8[5] == nparts
+    assert geometry.stream_blob(v8) == (8, blob)
+    assert encoder.pack(blob, 7) == v7 and encoder.pack(blob[:1000]) == encoder.pack(blob[:1000], 7)
+    a, b = encoder.decode(v7), encoder.decode(v8)
+    for ga, gb in zip(a["groups"], b["groups"]):
+        for k in ("pos", "uv", "normal", "ncodes", "strip", "tris"):
+            assert np.array_equal(ga[k], gb[k]), k
+    for fa, fb in zip(geometry.decode_geometry(v7), geometry.decode_geometry(v8)):
+        for k in ("pos", "uv", "tris"):
+            assert np.array_equal(fa[k], fb[k]), k
+    err7, m7 = _runtime_meshes(v7, max_strip=encoder.MAX_STRIP, mesh_limit=65535)
+    err8, m8 = _runtime_meshes(v8, max_strip=encoder.MAX_STRIP, mesh_limit=65535)
+    assert err7 is None and err8 is None and m7 == m8
+    geo = []
+    for data in (v7, v8):
+        rt, g = _runtime(data)
+        rt.execute(b"""GROUPS = GMOS.marks.load({ path = "data_static/gmo/test.dat" }, function() end)""")
+        geo.append([(list(gg[b"X"].values()), list(gg[b"Y"].values()), list(gg[b"Z"].values()), list(gg[b"T"].values()))
+                    for gg in g[b"GROUPS"].values()])
+    assert geo[0] == geo[1]
+    rt, g = _runtime(v8)
+    rt.execute(b"""
+        FRAME_HOLD = true
+        local dec = util.Decompress
+        PART_FRAMES = {}
+        util.Decompress = function(s) PART_FRAMES[#PART_FRAMES + 1] = FRAME; return dec(s) end
+        GMOS.AddManifest({ [MODEL] = "data_static/gmo/test.dat" })
+        local ent = NewEntity()
+        for _ = 1, 100000 do
+            if GMOS.Ready(MODEL) then break end
+            for _ = 1, 3 do if not GMOS.Ready(MODEL) then ent:DrawModel(0) end end
+            FRAME = FRAME + 1
+        end
+        assert(GMOS.Ready(MODEL))""")
+    frames = list(g[b"PART_FRAMES"].values())
+    assert len(frames) == nparts and len(set(frames)) == nparts
+
+
+@need_lvs
 def test_runtime_draws_the_same_meshes_from_format_6_and_7():
     """The shipped Lua builds the same strip meshes (positions in order) from both formats, and reads the same
     triangles back for the bullet marks."""
     v6 = encoder.encode(E46, _resolver(), version=6)
-    v7 = encoder.encode(E46, _resolver())
+    v7 = encoder.encode(E46, _resolver(), version=7)
     err6, m6 = _runtime_meshes(v6, max_strip=encoder.MAX_STRIP, mesh_limit=65535)
     err7, m7 = _runtime_meshes(v7, max_strip=encoder.MAX_STRIP, mesh_limit=65535)
     assert err6 is None and err7 is None

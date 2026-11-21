@@ -6,12 +6,13 @@
 -- distance beyond which the coarse model is drawn. Streams unused for 5 minutes are freed.
 if SERVER then return end
 
-local VERSION = 7          -- GMOS stream format (encoder.VERSION); this runtime reads 6 and 7
-local REVISION = 6         -- runtime behaviour: 2 = view models, material overrides, candidate materials;
+local VERSION = 8          -- GMOS stream format (encoder.VERSION); this runtime reads 6, 7 and 8
+local REVISION = 7         -- runtime behaviour: 2 = view models, material overrides, candidate materials;
                            -- 3 = strips longer than one game mesh are cut (they froze the game);
                            -- 4 = bullet marks on the stream (the server part is server.lua);
                            -- 5 = format 7 (positions and UVs predicted along the strips);
-                           -- 6 = faster build, the same meshes (12 largest bench models in the game: 3.04 -> 1.93 s)
+                           -- 6 = faster build, the same meshes (12 largest bench models in the game: 3.04 -> 1.93 s);
+                           -- 7 = format 8 (big streams in LZMA parts, one part decompressed per frame)
 if GMOS and ((GMOS.VERSION or 0) > VERSION
              or ((GMOS.VERSION or 0) == VERSION and (GMOS.REVISION or 1) >= REVISION)) then
     -- an equal or newer runtime is already loaded: only merge this addon's manifest
@@ -169,20 +170,43 @@ local function decode(blob, yield)
     return out, d
 end
 
--- streams of format 6 (no prediction) and 7 (prediction along the strips) are read
+-- streams of format 6 (no prediction), 7 (prediction along the strips) and 8 (7 in LZMA parts) are read
 local function stream_version(raw)
     if not raw or sub(raw, 1, 4) ~= "GMOS" then return nil end
     local v = byte(raw, 5)
-    if v == 6 or v == 7 then return v end
+    if v == 6 or v == 7 or v == 8 then return v end
 end
 
--- strip places of one group (high-water mark codes) -> vertex number of each place (C). Format 7 also gets,
+-- The decompressed blob of a stream. util.Decompress has no pause point: a whole big stream took 65-76 ms in
+-- one frame (12 largest bench models, 2026-11-21). Format 8 cuts it in parts of 1 MiB decompressed (~12 ms
+-- each in the game) and at most one part is decompressed per frame, by all the streams together.
+local part_frame
+local function stream_blob(raw, ver, path)
+    if ver ~= 8 then
+        local blob = util.Decompress(sub(raw, 6))
+        if not blob then error("decompress failed " .. path) end
+        return blob
+    end
+    local parts, pos = {}, 7
+    for k = 1, byte(raw, 6) do
+        while FrameNumber() == part_frame do coroutine.yield() end
+        part_frame = FrameNumber()
+        local a, b, c, e = byte(raw, pos, pos + 3)
+        local size = a + b * 256 + c * 65536 + e * 16777216
+        parts[k] = util.Decompress(sub(raw, pos + 4, pos + 3 + size))
+        if not parts[k] then error("decompress failed " .. path) end
+        pos = pos + 4 + size
+    end
+    return table.concat(parts)
+end
+
+-- strip places of one group (high-water mark codes) -> vertex number of each place (C). Formats 7, 8 also get,
 -- for each vertex whose new position and UV the parallelogram predicts, its first place FP[vertex] = c: the
 -- three places before it (same strip chunk) hold three different vertices (encoder.py, "Prediction"); the
 -- other vertices are predicted by the previous new value of the field
 local function strip_places(idx, ibase, chunks_len, ver)
     local C, FP, hwm, o = {}, {}, 0, 0
-    local para = ver == 7
+    local para = ver >= 7
     for _, len in ipairs(chunks_len) do
         for c = o + 1, o + len do
             local code = idx[ibase + c]
@@ -246,8 +270,7 @@ local function build(st, yield)
     local raw = file.Read(st.path, "GAME")
     local ver = stream_version(raw)
     if not ver then error("missing or bad stream " .. tostring(st.path)) end
-    local blob = util.Decompress(sub(raw, 6))
-    if not blob then error("decompress failed " .. st.path) end
+    local blob = stream_blob(raw, ver, st.path)
     raw = nil
     yield()
     local info, d = decode(blob, yield)
@@ -1015,8 +1038,7 @@ local function load_geometry(st, yield)
     local raw = file.Read(st.path, "GAME")
     local ver = stream_version(raw)
     if not ver then error("missing or bad stream " .. tostring(st.path)) end
-    local blob = util.Decompress(sub(raw, 6))
-    if not blob then error("decompress failed " .. st.path) end
+    local blob = stream_blob(raw, ver, st.path)
     raw = nil
     yield()
     local info, d = decode(blob, yield)

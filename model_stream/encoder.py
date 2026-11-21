@@ -1,7 +1,12 @@
-"""GMOS v7: compressed model geometry drawn by the Lua runtime (runtime.lua).
+"""GMOS v8: compressed model geometry drawn by the Lua runtime (runtime.lua).
 
-File = b"GMOS" + u8 version (7; 6 is still read) + LZMA-alone blob in the format Garry's Mod's util.Decompress reads
-(5 property bytes, u64 uncompressed size, LZMA data).
+File = b"GMOS" + u8 format + the blob below compressed with LZMA, in the LZMA-alone format Garry's Mod's
+util.Decompress reads (5 property bytes, u64 uncompressed size, LZMA data):
+  format 7 (and 6): one LZMA-alone blob. A stream whose blob is at most PART_BYTES is written this way.
+  format 8: the blob cut in parts of PART_BYTES (the last one shorter): u8 part count, then per part
+            u32 size + LZMA-alone. The runtime decompresses one part per frame: one util.Decompress of a whole
+            big stream took 65-76 ms in one frame in the game (2026-11-21); parts cost +0.3% on the bench.
+  The blob of format 8 is the same as format 7's (the same prediction).
 Blob (little endian):
   3 x f32 illumposition (lighting origin in model space), f32 POS_Q, f32 UV_Q
   u32 ntex, ntex x zstring material path (as studiomdl resolves cdmaterials + texture)
@@ -42,8 +47,10 @@ from model_screen.binary import mesh_arrays
 from model_screen.mirror import read_bones
 from texlab.source_model import _read_mdl
 
-VERSION = 7             # 7 (2026-11-20): parallelogram prediction of positions and UVs, 3.6% smaller on the bench
-VERSIONS = (6, 7)       # what the decoders read
+VERSION = 8             # 7 (2026-11-20): parallelogram prediction of positions and UVs, 3.6% smaller on the bench;
+                        # 8 (2026-11-21): big streams in LZMA parts (smaller ones are still written as 7)
+VERSIONS = (6, 7, 8)    # what the decoders read
+PART_BYTES = 1 << 20    # format 8: decompressed bytes of one LZMA part
 CHUNK_TRIS = 20000
 MAX_STRIP = 65534       # indices of one strip chunk: a game mesh takes 65535 vertices (runtime.lua MAX_STRIP)
 POS_Q = 1.0 / 64.0      # 0.016 units: at most 0.15 mm off
@@ -222,7 +229,7 @@ def _para_rows(A: np.ndarray, refs: np.ndarray, strip: np.ndarray, lens) -> np.n
 def encode(mdl: Path, resolver, meshes_tris: dict | None = None, version: int = VERSION) -> bytes:
     """GMOS bytes of a compiled model. meshes_tris: optional {mesh key: (T,3) mesh-local record ids}
     (e.g. a simplified set); default = the model's own LOD0 triangles. version: 7, or 6 (no prediction; the
-    tests compare both)."""
+    tests compare both; 8 writes 7 when the blob fits one part)."""
     if version not in VERSIONS:
         raise ValueError("GMOS version %r" % version)
     from vvd_engine_exact import pack_ubyte4
@@ -304,11 +311,27 @@ def encode(mdl: Path, resolver, meshes_tris: dict | None = None, version: int = 
     for j in range(2):
         blob += _planes(_zz(cat["uv"][:, j]) if len(cat["uv"]) else [])
     blob += _planes(cat["idx"].astype(np.uint64))
-    comp = bytearray(lzma.compress(bytes(blob), format=lzma.FORMAT_ALONE,
+    return pack(bytes(blob), version)
+
+
+def _lzma_alone(raw: bytes) -> bytes:
+    comp = bytearray(lzma.compress(raw, format=lzma.FORMAT_ALONE,
                                    filters=[{"id": lzma.FILTER_LZMA1, "preset": 9 | lzma.PRESET_EXTREME,
                                              "dict_size": 1 << 24}]))
-    comp[5:13] = struct.pack("<Q", len(blob))       # known size: util.Decompress allocates from it
-    return b"GMOS" + bytes([version]) + bytes(comp)
+    comp[5:13] = struct.pack("<Q", len(raw))        # known size: util.Decompress allocates from it
+    return bytes(comp)
+
+
+def pack(blob: bytes, version: int = VERSION) -> bytes:
+    """GMOS file of a blob: format 8 (LZMA parts) when the blob is bigger than one part, else one LZMA-alone
+    blob with the format of its prediction (7, or 6)."""
+    if version < 8 or len(blob) <= PART_BYTES:
+        return b"GMOS" + bytes([min(version, 7)]) + _lzma_alone(blob)
+    parts = [_lzma_alone(blob[i:i + PART_BYTES]) for i in range(0, len(blob), PART_BYTES)]
+    if len(parts) > 255:
+        raise ValueError("GMOS v8: %d parts" % len(parts))
+    return (b"GMOS" + bytes([8, len(parts)])
+            + b"".join(struct.pack("<I", len(p)) + p for p in parts))
 
 
 # ----------------------------------------------------------------------------- reference decoder
@@ -346,12 +369,8 @@ def predictor_places(C, lens):
 
 
 def decode(data: bytes) -> dict:
-    if data[:4] != b"GMOS" or data[4] not in VERSIONS:
-        raise ValueError("not a GMOS v%s stream" % "/".join(map(str, VERSIONS)))
-    ver = data[4]
-    d = bytearray(data[5:])
-    d[5:13] = b"\xff" * 8                          # Python's decoder wants "unknown size" + end mark
-    blob = lzma.decompress(bytes(d), format=lzma.FORMAT_ALONE)
+    from .geometry import stream_blob
+    ver, blob = stream_blob(data)
     pos = 0
 
     def take(fmt):

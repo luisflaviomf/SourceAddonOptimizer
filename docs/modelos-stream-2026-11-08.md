@@ -172,6 +172,46 @@ O encoder passa os triângulos de cada pedaço pela ordem de cache de strip do m
 
   A ordem antiga também era arbitrária (a do stripify sobre a ordem do VTX).
 
+### Formato 8: LZMA em partes, sem a travada da primeira aparição (21/11/2026)
+
+**O problema:** o `util.Decompress` do jogo não tem ponto de pausa. Descomprimir o stream inteiro de um model
+grande levava 65–76 ms num quadro só, na primeira vez que ele aparece.
+
+**O formato:** o formato 8 guarda o mesmo blob do formato 7 cortado em partes de até 1 MiB descomprimido
+(`encoder.PART_BYTES`): u8 com o número de partes e, por parte, u32 com o tamanho e o LZMA-alone. O runtime
+(`REVISION` 7, `stream_blob`) descomprime no máximo uma parte por quadro, somando todos os models que estão
+sendo montados, e junta as partes. Os streams que cabem numa parte continuam no formato 7, byte a byte iguais.
+
+**Bancada inteira pelo worker, nos dois perfis:**
+
+- 60 de 2.156 streams viram formato 8, com 2 a 6 partes;
+- streams GMOS 99,46 → 99,76 MiB (+0,30);
+- o blob descomprimido é idêntico em todos;
+- as malhas que o runtime entrega ao jogo são idênticas, vértice a vértice, nos 2.156;
+- mudaram só esses 60 streams e o arquivo do runtime de cada addon.
+
+**No jogo** (12 maiores models, um por vez, cliente do laboratório sem o stream de texturas; `REVISION` 6 contra 7):
+
+| | 300 fps | 60 fps |
+|---|---|---|
+| Pior quadro por model (mediana) | 73 → 42 ms | 68 → 38 ms |
+| Pior quadro de todos | 99 → 74 ms | 82 → 76 ms |
+| Tempo até aparecer (12 models) | 4,43 → 4,65 s | 5,94 → 6,36 s |
+
+**O que mudou na prática:**
+
+- **Tempo até aparecer:** +5 a 7%, porque o LZMA de um model grande se espalha por 2 a 6 quadros.
+- **Pior quadro, simulado** no LuaJIT com 3 desenhos por quadro: só de Lua e LZMA, ele cai de 47–71 ms para 15–24 ms.
+- **O que sobra no jogo:** quadros de ~65–80 ms em 2 dos 12 models, na primeira aparição. Isso bate com o jogo
+  carregando os materiais e as texturas do model, o que acontece também com o model original. Não foi medido
+  isolado.
+
+**Tentativas que não entraram:**
+
+- Pontos de pausa dentro dos laços longos: no jogo não mudaram o pior quadro (mediana 41–47 ms, no ruído).
+- Um orçamento único por quadro deixou os models mais lentos para aparecer a 60 fps. Os dois estão no branch
+  `lab/gmos-orcamento-por-quadro`.
+
 ### Quais models entram em stream
 
 `model_stream.wants_stream`: models ≥ 400 KB sempre; ≥ 20 KB se o nome não for de roda
