@@ -108,9 +108,12 @@ function mesh.Begin(obj, kind, prims)
     obj.prims = prims
     MESHES[#MESHES + 1] = obj
 end
-function mesh.Position(v)
+function mesh.Position(x, y, z)
+    -- the game takes a Vector or three numbers
+    if type(x) == "table" then x, y, z = x[1], x[2], x[3] end
+    assert(type(x) == "number" and type(y) == "number" and type(z) == "number")
     local n = cur.n
-    cur[n + 1], cur[n + 2], cur[n + 3] = v[1], v[2], v[3]
+    cur[n + 1], cur[n + 2], cur[n + 3] = x, y, z
     cur.n = n + 3
 end
 function mesh.Normal() end

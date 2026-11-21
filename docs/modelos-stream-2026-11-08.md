@@ -114,6 +114,47 @@ texturas. Os três leem v6 e v7.
 - Compatibilidade: o runtime novo tem formato 7 e vale sobre os runtimes de formato 6 de outros addons,
   e lê os dois formatos.
 
+### Tempo de montagem no jogo (runtime `REVISION` 6, 20/11/2026)
+
+**Como foi medido:**
+
+- cliente do laboratório, gm_construct;
+- os 12 maiores streams da bancada: 5,9 milhões de posições de strip e 2,7 milhões de vértices;
+- cada fase cronometrada com `SysTime`, chamadas de malha e `util.Decompress` do próprio jogo;
+- materiais instalados, melhor de 3 rodadas.
+
+**Resultado:** CPU total 3,04 → 1,93 s (−37%), com as mesmas malhas.
+
+| Fase | `REVISION` 5 | `REVISION` 6 |
+|---|---|---|
+| Chamadas de malha | 1,22 s | 0,52 s |
+| LZMA (`util.Decompress`) | 0,58 s | 0,58 s |
+| Vértices + tangentes + área | 0,79 s | 0,41 s |
+| Leitura dos planos de bytes | 0,25 s | 0,15 s |
+
+As malhas que o runtime entrega ao jogo são idênticas, vértice a vértice: os 2.156 streams nos dois
+perfis e os streams v6 antigos (`tests/test_model_stream.py` e a comparação do laboratório).
+
+O que mudou:
+
+- `mesh.Position(x, y, z)` e `mesh.Normal(x, y, z)` recebem os números direto, sem `Vector:SetUnpacked`.
+  São duas chamadas do motor a menos por vértice: no jogo, ~90 ns contra ~183 ns por vértice.
+- O laço que entrega os vértices ao jogo roda sem JIT (`jit.off`). As funções do motor não são
+  compiladas, e interpretado ele fica 10% mais rápido no jogo.
+- Planos de bytes lidos em laços por número de planos, com zigzag sem desvio.
+- Strips e lugares do paralelogramo num passo só.
+- Predição com os valores já em ponto flutuante: são múltiplos exatos de 1/64 e 1/4096, então a conta dá
+  o mesmo número.
+- Normais e tangentes pela tabela dos 65.536 códigos de 2 bytes.
+- Área somada no mesmo laço das tangentes.
+- Um laço por campo (posição, normal, UV).
+
+O piso medido está no motor, não na Lua:
+
+- O LZMA (0,54–0,58 s) e as chamadas de malha (0,52 s) já passam de 1 s nesses 12 models.
+- 41% das posições de strip são triângulos degenerados de emenda: os carros são muito fragmentados, em
+  média 3,6 triângulos por trecho contínuo. Juntar os triângulos isolados numa lista economizaria só ~3%.
+
 ### Quais models entram em stream
 
 `model_stream.wants_stream`: models ≥ 400 KB sempre; ≥ 20 KB se o nome não for de roda

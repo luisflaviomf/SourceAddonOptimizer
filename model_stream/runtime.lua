@@ -7,10 +7,11 @@
 if SERVER then return end
 
 local VERSION = 7          -- GMOS stream format (encoder.VERSION); this runtime reads 6 and 7
-local REVISION = 5         -- runtime behaviour: 2 = view models, material overrides, candidate materials;
+local REVISION = 6         -- runtime behaviour: 2 = view models, material overrides, candidate materials;
                            -- 3 = strips longer than one game mesh are cut (they froze the game);
                            -- 4 = bullet marks on the stream (the server part is server.lua);
-                           -- 5 = format 7 (positions and UVs predicted along the strips)
+                           -- 5 = format 7 (positions and UVs predicted along the strips);
+                           -- 6 = faster build, the same meshes (12 largest bench models in the game: 3.04 -> 1.93 s)
 if GMOS and ((GMOS.VERSION or 0) > VERSION
              or ((GMOS.VERSION or 0) == VERSION and (GMOS.REVISION or 1) >= REVISION)) then
     -- an equal or newer runtime is already loaded: only merge this addon's manifest
@@ -89,22 +90,41 @@ local function decode(blob, yield)
     local function u16() local a, b = byte(blob, pos, pos + 1); pos = pos + 2; return a + b * 256 end
     local function u32() local a, b, c, d = byte(blob, pos, pos + 3); pos = pos + 4; return a + b * 256 + c * 65536 + d * 16777216 end
     local function zstr() local e = find(blob, "\0", pos, true); local s = sub(blob, pos, e - 1); pos = e + 1; return s end
+    -- one field: nb byte planes (low first), zigzag when signed. A loop per plane count, in blocks with a
+    -- pause point between them (the values are the same as reading byte by byte with every test inside)
     local function stream(count, signed)
         local nb = u8()
         local vals = {}
-        local base = pos
-        for i = 1, count do
-            local v = byte(blob, base + i - 1)
-            if nb > 1 then v = v + byte(blob, base + count + i - 1) * 256 end
-            if nb > 2 then v = v + byte(blob, base + 2 * count + i - 1) * 65536 end
-            if nb > 3 then v = v + byte(blob, base + 3 * count + i - 1) * 16777216 end
-            if signed then
-                if v % 2 == 0 then v = v / 2 else v = -(v + 1) / 2 end
+        local b1 = pos - 1
+        local b2, b3, b4 = b1 + count, b1 + 2 * count, b1 + 3 * count
+        local i0 = 1
+        while i0 <= count do
+            local i1 = i0 + 32767
+            if i1 > count then i1 = count end
+            if nb == 1 then
+                for i = i0, i1 do vals[i] = byte(blob, b1 + i) end
+            elseif nb == 2 then
+                for i = i0, i1 do vals[i] = byte(blob, b1 + i) + byte(blob, b2 + i) * 256 end
+            elseif nb == 3 then
+                for i = i0, i1 do vals[i] = byte(blob, b1 + i) + byte(blob, b2 + i) * 256 + byte(blob, b3 + i) * 65536 end
+            else
+                for i = i0, i1 do
+                    vals[i] = byte(blob, b1 + i) + byte(blob, b2 + i) * 256 + byte(blob, b3 + i) * 65536
+                        + byte(blob, b4 + i) * 16777216
+                end
             end
-            vals[i] = v
-            if yield and i % 32768 == 0 then yield() end
+            if signed then
+                -- zigzag: 2h -> h, 2h + 1 -> -h - 1
+                for i = i0, i1 do
+                    local v = vals[i]
+                    local h = floor(v * 0.5)
+                    vals[i] = h - (v - 2 * h) * (2 * h + 1)
+                end
+            end
+            i0 = i1 + 1
+            if yield and i0 <= count then yield() end
         end
-        pos = base + nb * count
+        pos = b1 + 1 + nb * count
         return vals
     end
     local out = { mats = {}, skins = {}, groups = {} }
@@ -156,37 +176,71 @@ local function stream_version(raw)
     if v == 6 or v == 7 then return v end
 end
 
--- strip places of one group (high-water mark codes) -> vertex number of each place
-local function strip_places(idx, ibase, n)
-    local C, hwm = {}, 0
-    for c = 1, n do
-        local code = idx[ibase + c]
-        if code == 0 then hwm = hwm + 1; C[c] = hwm else C[c] = hwm + 1 - code end
-    end
-    return C
-end
-
--- format 7: per vertex, the three vertices of the parallelogram that predicts its new position and UV (the
--- three places before its first place, same strip chunk, three different vertices); nil where the previous
--- new value of the field is the prediction (encoder.py, "Prediction")
-local function para_places(C, chunks_len)
-    local PA, PB, PD = {}, {}, {}
-    local seen, o = 0, 0
+-- strip places of one group (high-water mark codes) -> vertex number of each place (C). Format 7 also gets,
+-- for each vertex whose new position and UV the parallelogram predicts, its first place FP[vertex] = c: the
+-- three places before it (same strip chunk) hold three different vertices (encoder.py, "Prediction"); the
+-- other vertices are predicted by the previous new value of the field
+local function strip_places(idx, ibase, chunks_len, ver)
+    local C, FP, hwm, o = {}, {}, 0, 0
+    local para = ver == 7
     for _, len in ipairs(chunks_len) do
         for c = o + 1, o + len do
-            local w = C[c]
-            if w > seen then                     -- first place of vertex w (numbered by first place)
-                seen = w
-                if c - 3 >= o + 1 then
+            local code = idx[ibase + c]
+            if code == 0 then
+                hwm = hwm + 1
+                C[c] = hwm
+                if para and c - 3 > o then
                     local a, b, e = C[c - 1], C[c - 2], C[c - 3]
-                    if a ~= b and b ~= e and a ~= e then PA[w], PB[w], PD[w] = a, b, e end
+                    if a ~= b and b ~= e and a ~= e then FP[hwm] = c end
                 end
+            else
+                C[c] = hwm + 1 - code
             end
         end
         o = o + len
     end
-    return PA, PB, PD
+    return C, FP
 end
+
+-- the 65536 two-byte codes of the engine's normals decode to fixed vectors: each one decoded once (the same
+-- numbers unpack_ubyte4 gives) and looked up from then on
+local LX, LY, LZ, LW = {}, {}, {}, {}
+local function unpack_code(cx, cy)
+    local key = cx * 256 + cy + 1
+    local x = LX[key]
+    if x then return x, LY[key], LZ[key], LW[key] end
+    local a, b, c, w = unpack_ubyte4(cx, cy)
+    LX[key], LY[key], LZ[key], LW[key] = a, b, c, w
+    return a, b, c, w
+end
+
+-- the vertices of strip places c1..c2 into the mesh being built. The numbers go straight to the engine
+-- (mesh.Position(x, y, z)): the same floats as through a Vector, two engine calls fewer per vertex (in the game
+-- the mesh calls of the 12 largest bench models took 1.22 s with Vectors, 0.57 s with numbers). The engine's
+-- functions are not compiled by the JIT and this loop runs faster interpreted (0.52 s, measured in the game)
+local function emit(C, c1, c2, X, Y, Z, NX, NY, NZ, U, V, TX, TY, TZ, TW, hastan)
+    local m_pos, m_nrm, m_uv, m_ud, m_adv = mesh.Position, mesh.Normal, mesh.TexCoord, mesh.UserData, mesh.AdvanceVertex
+    if hastan then
+        for c = c1, c2 do
+            local vi = C[c]
+            m_pos(X[vi], Y[vi], Z[vi])
+            m_nrm(NX[vi], NY[vi], NZ[vi])
+            m_uv(0, U[vi], V[vi])
+            m_ud(TX[vi], TY[vi], TZ[vi], TW[vi])
+            m_adv()
+        end
+    else
+        for c = c1, c2 do
+            local vi = C[c]
+            m_pos(X[vi], Y[vi], Z[vi])
+            m_nrm(NX[vi], NY[vi], NZ[vi])
+            m_uv(0, U[vi], V[vi])
+            m_ud(0, 0, 0, 1)
+            m_adv()
+        end
+    end
+end
+if jit and jit.off then jit.off(emit) end
 
 local function build(st, yield)
     local raw = file.Read(st.path, "GAME")
@@ -216,66 +270,69 @@ local function build(st, yield)
     end
     local vbase, ibase = 0, 0
     local cp, cn, cu = 0, 0, 0          -- read cursors of the "new value" streams
-    local vp, vn = Vector(), Vector()
     local pref, px, py, pz = d.pref, d.px, d.py, d.pz
     local nref, ncx, ncy = d.nref, d.ncx, d.ncy
     local uvref, uu, vv, idx = d.uvref, d.u, d.v, d.idx
     local sqrt = math.sqrt
     local POS_Q, UV_Q = info.posq, info.uvq
+    local INVP, INVU = 1 / POS_Q, 1 / UV_Q   -- 64 and 4096: X[i] * INVP is the quantized position again, exactly
     for gi, g in ipairs(info.groups) do
         local nvg = g.nv
         -- strip indices of all chunks first (high-water mark code): format 7 predicts from them
         local nt3 = g.nidx
-        local C = strip_places(idx, ibase, nt3)
-        local PA, PB, PD
-        if ver == 7 then PA, PB, PD = para_places(C, g.chunks_len) end
+        local C, FP = strip_places(idx, ibase, g.chunks_len, ver)
         local X, Y, Z, NX, NY, NZ, U, V = {}, {}, {}, {}, {}, {}, {}, {}
-        local XI, YI, ZI, UI, VI = {}, {}, {}, {}, {}      -- quantized values (the predictions add them)
-        local x, y, z, u, v = 0, 0, 0, 0, 0
+        -- one loop per field (fewer branch combinations for the JIT; the values do not depend on the order)
+        local x, y, z = 0, 0, 0
         for i = 1, nvg do
-            local k = vbase + i
-            local r = pref[k]
+            local r = pref[vbase + i]
             if r == 0 then
                 cp = cp + 1
-                local a = PA and PA[i]
-                if a then
-                    local b, e = PB[i], PD[i]
-                    x, y, z = XI[a] + XI[b] - XI[e], YI[a] + YI[b] - YI[e], ZI[a] + ZI[b] - ZI[e]
+                local c = FP[i]
+                if c then
+                    -- parallelogram (quantized values: positions are multiples of POS_Q, so these sums are exact)
+                    local a, b, e = C[c - 1], C[c - 2], C[c - 3]
+                    x, y, z = (X[a] + X[b] - X[e]) * INVP, (Y[a] + Y[b] - Y[e]) * INVP, (Z[a] + Z[b] - Z[e]) * INVP
                 end
                 x = x + px[cp]; y = y + py[cp]; z = z + pz[cp]
-                XI[i], YI[i], ZI[i] = x, y, z
+                X[i], Y[i], Z[i] = x * POS_Q, y * POS_Q, z * POS_Q
             else
-                XI[i], YI[i], ZI[i] = XI[i - r], YI[i - r], ZI[i - r]
+                X[i], Y[i], Z[i] = X[i - r], Y[i - r], Z[i - r]
             end
-            X[i], Y[i], Z[i] = XI[i] * POS_Q, YI[i] * POS_Q, ZI[i] * POS_Q
-            r = nref[k]
+        end
+        for i = 1, nvg do
+            local r = nref[vbase + i]
             if r == 0 then
                 cn = cn + 1
-                local a, b, c = unpack_ubyte4(ncx[cn], ncy[cn])
-                NX[i], NY[i], NZ[i] = a, b, c
+                NX[i], NY[i], NZ[i] = unpack_code(ncx[cn], ncy[cn])
             else
                 NX[i], NY[i], NZ[i] = NX[i - r], NY[i - r], NZ[i - r]
             end
-            r = uvref[k]
+        end
+        local u, v = 0, 0
+        for i = 1, nvg do
+            local r = uvref[vbase + i]
             if r == 0 then
                 cu = cu + 1
-                local a = PA and PA[i]
-                if a then
-                    local b, e = PB[i], PD[i]
-                    u, v = UI[a] + UI[b] - UI[e], VI[a] + VI[b] - VI[e]
+                local c = FP[i]
+                if c then
+                    local a, b, e = C[c - 1], C[c - 2], C[c - 3]
+                    u, v = (U[a] + U[b] - U[e]) * INVU, (V[a] + V[b] - V[e]) * INVU
                 end
                 u = u + uu[cu]; v = v + vv[cu]
-                UI[i], VI[i] = u, v
+                U[i], V[i] = u * UV_Q, v * UV_Q
             else
-                UI[i], VI[i] = UI[i - r], VI[i - r]
+                U[i], V[i] = U[i - r], V[i - r]
             end
-            U[i], V[i] = UI[i] * UV_Q, VI[i] * UV_Q
         end
-        XI, YI, ZI, UI, VI, PA, PB, PD = nil, nil, nil, nil, nil, nil, nil, nil
+        FP = nil
         yield()
-        -- surface area (the flashlight pass draws the biggest groups only)
+        -- surface area (the flashlight pass draws the biggest groups only) and tangents as studiomdl builds
+        -- them (UV derivatives per triangle, summed per vertex), in one pass over the triangles
         local area = 0
-        do
+        local hastan = g.flags % 2 == 1
+        local TX, TY, TZ, TW = {}, {}, {}, {}
+        if not hastan then
             local o = 0
             for _, len in ipairs(g.chunks_len) do
                 for c = o + 1, o + len - 2 do
@@ -289,12 +346,7 @@ local function build(st, yield)
                 end
                 o = o + len
             end
-        end
-        g.area = area
-        -- tangents as studiomdl builds them: UV derivatives per triangle, summed per vertex
-        local hastan = g.flags % 2 == 1
-        local TX, TY, TZ, TW = {}, {}, {}, {}
-        if hastan then
+        else
             local SX, SY, SZ, BX, BY, BZ = {}, {}, {}, {}, {}, {}
             for i = 1, nvg do SX[i], SY[i], SZ[i], BX[i], BY[i], BZ[i] = 0, 0, 0, 0, 0, 0 end
             local o = 0
@@ -304,6 +356,8 @@ local function build(st, yield)
                 if i0 ~= i1 and i1 ~= i2 and i0 ~= i2 then
                 local e1x, e1y, e1z = X[i1] - X[i0], Y[i1] - Y[i0], Z[i1] - Z[i0]
                 local e2x, e2y, e2z = X[i2] - X[i0], Y[i2] - Y[i0], Z[i2] - Z[i0]
+                local cx, cy, cz = e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x
+                area = area + sqrt(cx * cx + cy * cy + cz * cz)
                 local du1, dv1 = U[i1] - U[i0], V[i1] - V[i0]
                 local du2, dv2 = U[i2] - U[i0], V[i2] - V[i0]
                 local r = du1 * dv2 - du2 * dv1
@@ -333,7 +387,7 @@ local function build(st, yield)
                 local w = (cx * BX[i] + cy * BY[i] + cz * BZ[i] < 0) and -1 or 1
                 if l > 1e-12 then
                     -- the same 2-byte packing the engine applies to model tangents
-                    t1, t2, t3, w = unpack_ubyte4(pack_ubyte4(t1, t2, t3, w))
+                    t1, t2, t3, w = unpack_code(pack_ubyte4(t1, t2, t3, w))
                 end
                 TX[i], TY[i], TZ[i], TW[i] = t1, t2, t3, w
             end
@@ -351,16 +405,7 @@ local function build(st, yield)
                 if n > MAX_STRIP then n = MAX_STRIP end
                 local obj = Mesh()
                 mesh.Begin(obj, MATERIAL_TRIANGLE_STRIP, n - 2)
-                for c = c0 + s + 1, c0 + s + n do
-                    local vi = C[c]
-                    vp:SetUnpacked(X[vi], Y[vi], Z[vi])
-                    vn:SetUnpacked(NX[vi], NY[vi], NZ[vi])
-                    mesh.Position(vp)
-                    mesh.Normal(vn)
-                    mesh.TexCoord(0, U[vi], V[vi])
-                    if hastan then mesh.UserData(TX[vi], TY[vi], TZ[vi], TW[vi]) else mesh.UserData(0, 0, 0, 1) end
-                    mesh.AdvanceVertex()
-                end
+                emit(C, c0 + s + 1, c0 + s + n, X, Y, Z, NX, NY, NZ, U, V, TX, TY, TZ, TW, hastan)
                 mesh.End()
                 chunks[#chunks + 1] = obj
                 s = s + n - 2
@@ -980,27 +1025,25 @@ local function load_geometry(st, yield)
     local vbase, ibase, cp = 0, 0, 0
     local pref, px, py, pz, idx = d.pref, d.px, d.py, d.pz, d.idx
     local POS_Q = info.posq
+    local INVP = 1 / POS_Q
     for gi, g in ipairs(info.groups) do
-        local C = strip_places(idx, ibase, g.nidx)
-        local PA, PB, PD
-        if ver == 7 then PA, PB, PD = para_places(C, g.chunks_len) end
-        local X, Y, Z, XI, YI, ZI = {}, {}, {}, {}, {}, {}
+        local C, FP = strip_places(idx, ibase, g.chunks_len, ver)
+        local X, Y, Z = {}, {}, {}
         local x, y, z = 0, 0, 0
         for i = 1, g.nv do
             local r = pref[vbase + i]
             if r == 0 then
                 cp = cp + 1
-                local a = PA and PA[i]
-                if a then
-                    local b, e = PB[i], PD[i]
-                    x, y, z = XI[a] + XI[b] - XI[e], YI[a] + YI[b] - YI[e], ZI[a] + ZI[b] - ZI[e]
+                local c = FP[i]
+                if c then
+                    local a, b, e = C[c - 1], C[c - 2], C[c - 3]
+                    x, y, z = (X[a] + X[b] - X[e]) * INVP, (Y[a] + Y[b] - Y[e]) * INVP, (Z[a] + Z[b] - Z[e]) * INVP
                 end
                 x = x + px[cp]; y = y + py[cp]; z = z + pz[cp]
-                XI[i], YI[i], ZI[i] = x, y, z
+                X[i], Y[i], Z[i] = x * POS_Q, y * POS_Q, z * POS_Q
             else
-                XI[i], YI[i], ZI[i] = XI[i - r], YI[i - r], ZI[i - r]
+                X[i], Y[i], Z[i] = X[i - r], Y[i - r], Z[i - r]
             end
-            X[i], Y[i], Z[i] = XI[i] * POS_Q, YI[i] * POS_Q, ZI[i] * POS_Q
         end
         yield()
         groups[gi] = index_group(X, Y, Z, C, g.chunks_len, yield)
