@@ -661,6 +661,107 @@ teste não monta o Lua do Glide.)
 - **Tempo:** montagem no LuaJIT +4,5 a 6% nos 12 maiores models; os streams v6 antigos não mudam de
   tempo no runtime novo.
 - **Testes:** 28 passam, incluindo v6 × v7 no runtime em LuaJIT (malhas e geometria das marcas de bala).
+- **Produto:** `publish/2026-03` e `main` em `8f4ff83`, sem push; build de release feito, com o exe
+  levando o runtime `VERSION 7 / REVISION 5`.
+
+## Atualização (21/11): tempo de montagem do GMOS e ordem das strips
+
+O Luis perguntou se o tempo de montagem que eu tinha citado era dentro do jogo. Não era: era medido no
+LuaJIT, com a API de malha simulada. Ele pediu para reduzir esse tempo ao máximo, de preferência para
+menos de 1 s, idealmente menos de 0,5 s.
+
+### Medido no jogo
+
+Medição no cliente do laboratório:
+
+- gm_construct, os 12 maiores streams da bancada (5,9 milhões de posições de strip, 2,7 milhões de
+  vértices);
+- fases cronometradas com `SysTime`, com as chamadas de malha e o `util.Decompress` do próprio jogo;
+- materiais instalados, melhor de 3 rodadas.
+
+| Fase (CPU) | `REVISION` 5 (produto hoje) | `REVISION` 6 |
+|---|---|---|
+| Chamadas de malha do motor | 1,22 s | 0,52 s |
+| LZMA (`util.Decompress`) | 0,58 s | 0,58 s (0,54 com a ordem nova) |
+| Strips, vértices, tangentes, área | 0,79 s | 0,49 s |
+| Leitura dos planos de bytes | 0,25 s | 0,15 s |
+| `Material()` e leitura do arquivo | 0,20 s | 0,20 s |
+| **Total** | **3,04 s** | **1,93 s (−37%)** |
+
+### O que mudou no runtime (commit `56fc6ac`, branch `feature/gmos-velocidade`)
+
+O runtime passou para `REVISION` 6. As malhas entregues ao motor são idênticas, vértice a vértice: os
+2.156 streams nos dois perfis e os streams v6 antigos.
+
+O ganho maior:
+
+- `mesh.Position(x, y, z)` e `mesh.Normal(x, y, z)` recebem os números direto, sem
+  `Vector:SetUnpacked`. No jogo, ~90 ns por vértice contra ~183 ns.
+- O laço que entrega os vértices roda sem JIT (`jit.off`). As funções do motor não são compiladas, e
+  assim ele fica 10% mais rápido.
+
+O resto é Lua:
+
+- planos de bytes num laço por número de planos;
+- strips e lugares do paralelogramo num passo só;
+- predição em ponto flutuante exata;
+- tabela dos 65.536 códigos de normal;
+- área no laço das tangentes;
+- um laço por campo.
+
+### Por que não chega a 1 s
+
+O piso está no motor, não na Lua. Nesses 12 models, o LZMA (0,54–0,58 s) e as chamadas de malha
+(0,52 s) já somam mais de 1 s, antes de qualquer trabalho em Lua.
+
+Tentei e medi:
+
+- **Juntar os triângulos isolados numa lista:** 41% das posições de strip são emendas (os carros têm,
+  em média, 3,6 triângulos por trecho contínuo), mas a lista economizaria só ~3%.
+- **Coleta de lixo:** < 5% do tempo.
+- **Outras formas dos laços:** nada além de ~2%.
+
+O que ainda reduziria, cada um com o seu custo:
+
+- **Montar só os bodygroups que aparecem:** 10% das posições ficam em escolhas que não são a padrão.
+  Complica o runtime.
+- **Usar o tempo livre do quadro acima de 60 fps,** como o stream de texturas já faz. Isso não reduz a
+  CPU, mas encurta o tempo até o model aparecer; hoje o limite é 4 ms por quadro.
+- **Dividir o LZMA dos streams grandes em blocos:** evitaria um quadro de ~70 ms na primeira aparição,
+  mas deixa os arquivos maiores.
+
+### Ordem dos triângulos nas strips (commit `14a7308`)
+
+O encoder passa os triângulos de cada pedaço pela ordem de cache de strip do meshoptimizer v1.1
+(`meshopt_optimizeVertexCacheStrip`) antes do stripify. O Luis autorizou baixar os dois arquivos da tag
+v1.1, que ficam em `third_party/meshoptimizer-v1.1`, e a DLL `tools/vtx/meshopt_vcache.dll` tem o hash
+fixado.
+
+- **Formato e runtime:** o formato continua o 7 e o runtime não mudou.
+- **Bancada inteira pelo worker, nos dois perfis:**
+  - streams GMOS 103,33 → 99,46 MiB (**−3,88 MiB**), −7,2% nos 12 maiores;
+  - só mudaram os streams (2.139 de 2.156) e o arquivo do runtime de cada addon;
+  - texturas e todo o resto ficaram idênticos byte a byte.
+- **Geometria:**
+  - os 23,7 milhões de triângulos são os mesmos (posição, normal, UV, orientação);
+  - as tangentes, somadas por vértice em outra ordem, mudam em 0,03% dos códigos: um degrau, ou o sinal
+    onde a soma das bitangentes quase se anula.
+- **No jogo:** vistas de perto de 11 models, antigo × novo, ficam no ruído entre sessões do jogo (FLIP
+  dos recortes centrais 0,092 contra 0,092 entre duas rodadas do antigo).
+- **Limite do laboratório:** o carro do Glide sai magenta (material ausente) em todas as rodadas,
+  inclusive na antiga de ontem; o laboratório não monta o material dele.
+
+![Charger do LVS, 4 vistas: produto de hoje | runtime novo + ordem nova | produto (rodada de ontem)](revisao-stream-claude-2026-11/gmos_ordem_charger.jpg)
+
+### Estado
+
+- `feature/gmos-velocidade` (`56fc6ac` + `14a7308`) ainda não está no publish.
+- O Luis quer levar as duas mudanças juntas para o produto.
+- Os scripts do laboratório desta parte estão em `docs/revisao-stream-claude-2026-11/scripts/`:
+  - `gmos_ingame*.py`: medição no jogo;
+  - `gmos_equal.py`: malhas idênticas;
+  - `gmos_strip_*.py`: ordem das strips;
+  - `gmos_order_check.py` e `gmos_tan_detail.py`: triângulos e tangentes.
 
 ## Nota final: sons e Lua
 
