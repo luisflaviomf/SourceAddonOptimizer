@@ -24,8 +24,9 @@ na bancada) ou se é **estimativa** (conta, amostra pequena ou literatura).
 - **GMOT, alfa: o alfa é 30% dos blobs (25,6 MiB).**
   - Tirar o preenchimento de ruído do canal alfa (muda só o codificador) dá **−1,5% e o alfa fica
     melhor no jogo** (mediana +1,4 dB, nenhuma textura pior).
-  - Junto com um alvo 1,5 dB mais baixo para o alfa, a amostra cai **19%** (≈ −14 MiB na bancada,
-    estimativa), com o alfa 0,8 dB abaixo de hoje na mediana. É decisão de qualidade, com imagens.
+  - Junto com um alvo 1,5 dB mais baixo para o alfa, o GMOT cai mais **3,3 MiB** (bancada inteira; a
+    estimativa da amostra, ≈ −14 MiB, estava errada: ver 3.4). O alfa no jogo continua um pouco melhor
+    que o de hoje na mediana. Feito à tarde (commit `6e2506a`).
 - **GMOT, qualidade:** o alvo de 34 dB é medido antes do preenchimento de ruído e do DXT. O que o jogo
   mostra fica em **33,1 dB na mediana (cor) e 34,8 dB (normal maps)**, com uma cauda até 24 dB.
   - A cauda vem do próprio formato DXT1, não do codificador DXT do Lua: um DXT bem melhor mudou de
@@ -350,7 +351,8 @@ medida é de **~17% de bytes por dB** (mediana por textura).
 
 Teste curto (9 texturas, `out\texexp_*_9.json`) que não fui adiante:
 
-- reconstrução deslocada para zero (`(|q| − 0,12)·passo`, no decodificador): mesmo tamanho, −0,1 dB;
+- reconstrução deslocada para zero (`(|q| − 0,12)·passo`, no decodificador): **medida inválida**, o
+  script acumulava o deslocamento a cada textura (o mesmo erro da seção 3.4);
 - zona morta 0,30 no lugar de 0,40: +1,3% e −0,45 dB.
 
 O quantizador atual (arredondamento 0,4, reconstrução no centro) já está bem ajustado.
@@ -377,19 +379,42 @@ O quantizador atual (arredondamento 0,4, reconstrução no centro) já está bem
 | Variante (só o alfa muda) | Tamanho da amostra | Alfa no jogo: mediana / p10 (hoje 33,68 / 30,15 dB) | Pior que hoje |
 |---|---:|---:|---:|
 | **Sem preenchimento de ruído, mesmo alvo** (`anf`) | **−1,5%** | **35,09 / 32,22** | **nenhuma** (> 3 dB) |
-| Sem ruído, alvo −1,5 dB (`anf1.5`) | −19,0% | 32,91 / 27,94 | 32 de 108 (> 2 dB) |
-| Sem ruído, alvo −3 dB (`anf3`) | −19,3% | 32,50 / 27,68 | 24 de 108 (> 3 dB) |
-| Com ruído, alvo −3 dB (`alpha3`) | −17,8% | 30,83 / 25,88 | 39 de 108 (> 3 dB) |
+| ~~Sem ruído, alvo −1,5 dB (`anf1.5`)~~ | ~~−19,0%~~ | inválida | – |
+| ~~Sem ruído, alvo −3 dB (`anf3`)~~ | ~~−19,3%~~ | inválida | – |
+| ~~Com ruído, alvo −3 dB (`alpha3`)~~ | ~~−17,8%~~ | inválida | – |
 
-![alfa: entrada, hoje, -3 dB, -3 dB sem ruído](revisao-stream-claude-2026-11/alfa_1_fancase.png)
+**As três linhas riscadas estão erradas.** No `texexp.py`, essas variantes embrulhavam a função de busca
+do passo uma vez por textura. Num processo que atendia várias texturas, o deslocamento do alvo se
+acumulava (1,5, 3, 4,5 dB…). Por isso as linhas mostravam ganho e perda grandes demais.
+
+Medido de novo na bancada inteira, com o código do produto (`choose.ALPHA_RELIEF_DB`; mesmos blobs do
+teste no jogo):
+
+| Alvo do alfa −1,5 dB, sem ruído | Custo-benefício | Máximo |
+|---|---:|---:|
+| GMOT, contra o alfa sem ruído | 83,37 → **80,08 MiB (−3,29)** | 59,65 → **57,19 MiB (−2,46)** |
+
+Alfa no jogo nas 1.889 texturas com alfa, contra o produto de antes das duas mudanças:
+
+| | Antes | Sem ruído + −1,5 dB |
+|---|---:|---:|
+| Mediana | 33,68 dB | 33,94 dB |
+| p10 | 30,10 dB | 30,98 dB |
+| Pior caso | 27,17 dB | 27,55 dB |
+
+- 817 texturas melhoram mais de 1 dB e 99 pioram mais de 1 dB (31 mais de 2 dB; a pior cai 3,2 dB).
+- Cor idêntica.
+
+![alfa do ventilador: entrada, hoje, sem ruído, sem ruído -1,5 dB](revisao-stream-claude-2026-11/alfa_ventilador_fancase.png)
+
+`alfa_pior_bull.png`: o ícone de HUD que mais perde contra hoje (37,4 → 34,2 dB). A borda fica um pouco
+mais macia; hoje ele tem pontilhado por dentro.
 
   - Tirar o ruído do alfa é ganho dos dois lados. É mudança só do codificador: o `decoder.lua` já lê
     bandas sem mapa de ruído, então não muda `CORE_VERSION` e os addons antigos não são afetados.
     Estimativa na bancada: ≈ −1,1 MiB.
-  - Baixar o alvo do alfa economiza muito (≈ −14 MiB na bancada, estimativa: a amostra escalada pela
-    fatia de bytes com alfa, 63% do GMOT na bancada e 73% na amostra). O ganho satura logo, porque
-    muitos alfas já chegam ao maior passo da tabela (66). Custa ~0,8 dB de alfa na mediana. Decisão do
-    Luis, com o jogo: o efeito depende do uso (borda de recorte, máscara de brilho, vidro).
+  - Baixar o alvo do alfa em 1,5 dB: −3,3 MiB na bancada (medido, acima). Luis escolheu aplicar depois
+    da comparação no jogo (commit `6e2506a`).
 
 ### 3.5 Régua: o estado da arte no mesmo erro (medido)
 
@@ -477,7 +502,7 @@ amostra e escalado; "estimativa" = conta. Ordenado pelo que entrega por risco e 
 |---|---|---:|---|---|---|---|
 | 1 | Alfa sem preenchimento de ruído (só o codificador) | ≈ −1,1 MiB | **melhor** (alfa +1,4 dB na mediana) | nenhum | mínimo; sem mudar o runtime | amostra |
 | 2 | Malha grossa 2% → 1% (0,5%) — **recusada no jogo** | **−13,44 MiB** (−18,72) | painéis somem longe, com mira e no primeiro instante | menos dados para carregar | mínimo (`COARSE_RATIO`); risco visual baixo | medido (tamanho) |
-| 3 | Alvo do alfa −1,5 dB, sem ruído | ≈ −14 MiB | alfa −0,8 dB na mediana | nenhum | mínimo; decisão de qualidade | amostra |
+| 3 | Alvo do alfa −1,5 dB, sem ruído — **feito** (`6e2506a`) | **−3,29 MiB** (Máximo −2,46) | alfa ainda um pouco melhor que antes na mediana; 99 texturas pioram > 1 dB | nenhum | mínimo | medido |
 | 4a | GMOT: codificador aritmético com contexto | **−13,05 MiB** (Máximo −10,54) | idêntica | decodificação +69% na 1ª sessão; conversão 5× mais rápida | médio a alto; GMOT v3 + `CORE_VERSION` 4 | medido |
 | 4b | GMOT: mapa de não nulos + LZMA (alternativa a 4a) | ≈ −4,8 MiB | idêntica | ≈ nenhum | baixo a médio; GMOT v3 | amostra (800 blobs) |
 | 5 | Stream parcial dos 34 models mantidos por lente/mira | ≈ −25 a −29 MiB | igual, se as lentes ficarem com o motor | mais um desenho por arma | alto; proxies e render target | estimativa |
@@ -490,10 +515,10 @@ amostra e escalado; "estimativa" = conta. Ordenado pelo que entrega por risco e 
 **Somando o que é compatível entre si** (cada linha muda uma parte diferente; as do alfa e a 4a se
 somam quase em porcentagem):
 
-- Só o medido na bancada inteira (2 + 4a + 8): **−30,3 MiB** (728,4 → 698,1 MiB, −4,2%), sem mudar a
-  imagem das texturas.
-- Com as opções de alfa e a malha a 0,5%: ≈ −50 MiB.
-- Com as estimativas grandes de modelos (5, 6, 7): ≈ −100 a −120 MiB.
+- Já feito (1 + 3, branch `feature/alfa-sem-ruido`): **−4,58 MiB** no Custo-benefício (GMOT 84,66 → 80,08).
+- Medido e ainda a decidir (4a + 8): mais ≈ −16 MiB (o 4a aplica seus −15% sobre um GMOT já menor). A
+  malha grossa a 1% (2) foi recusada no jogo.
+- Com as estimativas grandes de modelos (5, 6, 7): ≈ −55 a −70 MiB a mais.
 
 **Não vale a pena (medido):**
 
@@ -506,7 +531,7 @@ somam quase em porcentagem):
 | Outras codificações das referências do GMOS | 0% |
 | Normais previstas pela geometria | +0,7% pior |
 | Zona morta 0,30 | +1,3% e −0,45 dB (9 texturas) |
-| Reconstrução deslocada | −0,1 dB (9 texturas) |
+| Reconstrução deslocada | medida inválida (ver 3.3) |
 | Zerar ±1 isolado | +0,2% e −0,13 dB |
 | Grade de passos fina | ≈ 0 na mesma qualidade |
 | Passo escolhido na imagem final, mesma qualidade | +0,1% |
@@ -547,12 +572,11 @@ somam quase em porcentagem):
 
 ## 7. Recomendação
 
-1. **Alfa sem preenchimento de ruído.** Mudança de uma linha no codificador, alfa melhor e um pouco
-   menor, sem tocar no runtime. Pede só rodar a bancada inteira de novo para medir.
+1. **Alfa sem preenchimento de ruído:** feito (`4638f12`).
 2. ~~Malha grossa a 1%~~: testada no jogo e recusada (seção "Atualização"). O caminho é um simplificador
    novo para a malha grossa, com orçamento por model e silhueta preservada.
-3. **Mostrar ao Luis as imagens do alvo do alfa** (−1,5 e −3 dB sem ruído) em uso real: vidro, máscara
-   de brilho, recorte. Se aprovado, ≈ −14 MiB sem custo no jogo.
+3. **Alvo do alfa −1,5 dB:** visto no jogo, aplicado (`6e2506a`): −3,3 MiB. Os dois commits estão no branch
+   `feature/alfa-sem-ruido`, ainda fora do `publish/2026-03` e do exe publicado.
 4. **Codificação dos coeficientes.** Se ele aceitar a textura completa chegando ~1,7× mais tarde na
    primeira sessão: o codificador com contexto (−13 MiB, conversão mais rápida). Se não: o mapa de não
    nulos + LZMA (−5 MiB, sem custo). Antes de integrar o primeiro, vale uma rodada de otimização do
@@ -604,14 +628,16 @@ Bancada inteira pelo worker, comparada com a mesma rodada sem a mudança:
 (`malha_grossa_2x1_odyssey.jpg`: o mesmo no Honda Odyssey do Glide; a pintura sai rosa porque o
 teste não monta o Lua do Glide.)
 
-### Alvo do alfa −1,5 dB (sem ruído): visto no jogo, decisão pendente
+### Alvo do alfa −1,5 dB (sem ruído): visto no jogo e aplicado (commit `6e2506a`)
 
 - **Teste:** mesmos 11 models, vistas próximas (lateral, frente, trás a ~0,85 do raio). Três versões:
   hoje, sem ruído e sem ruído −1,5 dB.
 - **FLIP contra hoje:** 0,093 (sem ruído) e 0,077 (−1,5 dB), dentro do ruído entre sessões.
 - **A olho:** vidros, sirenes, faróis e o vidro vermelho da granada da ARC9 ficam iguais nas três.
-- **Ressalva:** esses models não incluem os piores casos medidos fora do jogo (grade do ventilador,
-  `alfa_1_fancase.png`). Ao todo, −1,5 dB custa 0,8 dB de alfa na mediana e ≈ −14 MiB.
+- **Ressalva:** esses models não incluem os piores casos medidos fora do jogo (`alfa_pior_bull.png`).
+- **Bancada inteira:** −3,29 MiB (Custo-benefício) e −2,46 MiB (Máximo). A estimativa anterior,
+  ≈ −14 MiB, vinha de um erro no script de variantes (seção 3.4). Os blobs testados no jogo são
+  idênticos aos do commit.
 
 ![Alfa no jogo: hoje, sem ruído, sem ruído -1,5 dB (Dodge Monaco do LVS)](revisao-stream-claude-2026-11/alfa_no_jogo_monaco.jpg)
 
