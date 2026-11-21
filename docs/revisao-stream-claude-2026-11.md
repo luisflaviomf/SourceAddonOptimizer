@@ -763,6 +763,39 @@ fixado.
   - `gmos_strip_*.py`: ordem das strips;
   - `gmos_order_check.py` e `gmos_tan_detail.py`: triângulos e tangentes.
 
+## Atualização (21/11, tarde): "aparecer mais rápido" e a travada do LZMA
+
+**O que se mediu no jogo** (os 12 maiores models, um por vez, `gmos_appear.py`):
+
+- **Velocidade já é boa:** o runtime atual mostra cada carro grande completo em ~0,4–0,5 s. Ele monta a
+  cada chamada de desenho (~3,5 por quadro, ~20 ms por quadro).
+- **Orçamento por quadro, com a sobra acima de 60 fps:**
+  - a 300 fps: 4,70 → 4,00 s nos 12;
+  - a 60 fps: 5,82 → 6,80 s, mais lento.
+
+  Não entrou; ficou no branch `lab/gmos-orcamento-por-quadro`.
+- **O que se notava:** um quadro de 65–76 ms na primeira aparição de um model grande, do `util.Decompress`
+  inteiro.
+
+**Formato 8, feito (commit `ea215dd`, `feature/gmos-velocidade`):**
+
+- **O que é:** o mesmo blob em partes LZMA de até 1 MiB descomprimido. O runtime `REVISION` 7 descomprime no
+  máximo uma parte por quadro.
+- **Bancada inteira pelo worker:**
+  - 60 streams viram formato 8, +0,30 MiB;
+  - o mesmo blob e as mesmas malhas nos 2.156;
+  - o resto byte a byte igual.
+
+| No jogo | 300 fps | 60 fps |
+|---|---|---|
+| Pior quadro por model (mediana) | 73 → 42 ms | 68 → 38 ms |
+| Tempo até aparecer (12 models) | 4,43 → 4,65 s | 5,94 → 6,36 s |
+
+- **Simulado no LuaJIT** (3 desenhos por quadro): o pior quadro só de Lua e LZMA cai de 47–71 para 15–24 ms.
+- **O que sobra:** ~65–80 ms em 2 dos 12 models. Bate com o jogo carregando materiais e texturas na primeira
+  aparição; não foi medido isolado.
+- **Pontos de pausa dentro dos laços:** não mudaram nada no jogo e não entraram.
+
 ## Nota final: sons e Lua
 
 - **Sons (266 MiB, 37% da bancada):** não usam GMOT/GMOS. O perfil de sons é escolha do Luis

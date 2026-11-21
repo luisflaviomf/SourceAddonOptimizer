@@ -78,9 +78,11 @@ def main():
     ref, new, tag = Path(sys.argv[1]).read_bytes(), Path(sys.argv[2]).read_bytes(), sys.argv[3]
     n = sys.argv[4] if len(sys.argv) > 4 else "12"
     reps = int(sys.argv[5]) if len(sys.argv) > 5 else 2
+    tag_ref, _, tag_new = tag.partition(":")      # "old:new": the reference runtime on lab/old, the new on lab/new
+    tag_new = tag_new or tag_ref
     files = []
     for gr in ["m9k", "GLIDE", "LVS", "simfphys", "arc9"]:
-        files += list((LAB / tag / gr / f"{gr}_merged_optimized" / "data_static" / "gmo").iterdir())
+        files += list((LAB / tag_ref / gr / f"{gr}_merged_optimized" / "data_static" / "gmo").iterdir())
     files.sort(key=lambda p: -p.stat().st_size)
     if n != "all":
         files = files[:int(n)]
@@ -88,13 +90,14 @@ def main():
     bad = []
     for p in files:
         data = p.read_bytes()
+        data_new = Path(str(p).replace("\\" + tag_ref + "\\", "\\" + tag_new + "\\").replace("/" + tag_ref + "/", "/" + tag_new + "/")).read_bytes()
         _t, ga = build(ref, data, True)
-        _t, gb = build(new, data, True)
+        _t, gb = build(new, data_new, True)
         if meshes(ga) != meshes(gb):
             bad.append(p.name)
         if reps:
             tr += min(build(ref, data, False)[0] for _ in range(reps))
-            tn += min(build(new, data, False)[0] for _ in range(reps))
+            tn += min(build(new, data_new, False)[0] for _ in range(reps))
     print(f"{len(files)} streams: meshes different in {len(bad)} {bad[:5]}")
     if reps:
         print(f"build time: ref {tr:.3f} s, new {tn:.3f} s ({100 * (tn / tr - 1):+.1f}%)")
