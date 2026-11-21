@@ -88,8 +88,10 @@ def tone_db(w, f):
 
 
 def main():
+    global SND
     run = LAB / "game" / "run" / sys.argv[1]
-    plan = json.loads((LAB / "game" / "plan2.json").read_text(encoding="utf-8"))
+    plan = json.loads((LAB / "game" / (sys.argv[2] if len(sys.argv) > 2 else "plan2.json")).read_text(encoding="utf-8"))
+    SND = Path(plan["addon"]) / "sound"
     meta = {t["file"]: t for t in plan["tests"]}
     slots = {s["id"]: s for s in plan["slots"]}
     x, capname = ga.load_capture(run)
