@@ -129,7 +129,7 @@ texturas. Os três leem v6 e v7.
 |---|---|---|
 | Chamadas de malha | 1,22 s | 0,52 s |
 | LZMA (`util.Decompress`) | 0,58 s | 0,58 s |
-| Vértices + tangentes + área | 0,79 s | 0,41 s |
+| Strips, vértices, tangentes, área | 0,79 s | 0,49 s |
 | Leitura dos planos de bytes | 0,25 s | 0,15 s |
 
 As malhas que o runtime entrega ao jogo são idênticas, vértice a vértice: os 2.156 streams nos dois
