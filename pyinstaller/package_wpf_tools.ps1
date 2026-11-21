@@ -33,6 +33,7 @@ function Get-WorkerSourceFiles {
         (Join-Path $PWD "tools\oxipng\oxipng.exe"),
         (Join-Path $PWD "tools\oxipng\LICENSE.oxipng.txt"),
         (Join-Path $PWD "tools\\vtx\\meshopt_stripify.dll"),
+        (Join-Path $PWD "tools\\vtx\\meshopt_vcache.dll"),
         (Join-Path $PWD "tools\\vtx\\LICENSE.meshoptimizer.txt"),
         (Join-Path $PWD "pyinstaller\\worker.spec")
     )
@@ -221,6 +222,7 @@ function Assert-PackageZip {
         "SourceAddonOptimizerWorker.exe",
         "CrowbarCommandLineDecomp.exe",
         "_internal/meshopt_stripify.dll",
+        "_internal/meshopt_vcache.dll",
         "_internal/LICENSE.meshoptimizer.txt",
         "_internal/oxipng.exe",
         "_internal/LICENSE.oxipng.txt",

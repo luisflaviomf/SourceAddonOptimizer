@@ -55,6 +55,23 @@ def _strip_triangles(strip):
     return out
 
 
+def test_strip_order_keeps_every_triangle_and_winding():
+    """The encoder reorders each chunk's triangles for a strip cache (meshoptimizer) before stripify: the
+    same triangles with the same windings, and the strips draw exactly them."""
+    from collections import Counter
+    rng = np.random.default_rng(7)
+    grid = np.array([[i, i + 1, i + 2] if i % 2 == 0 else [i + 1, i, i + 2] for i in range(2000)], np.int64)
+    loose = rng.integers(0, 2002, (500, 3)).astype(np.int64)
+    loose = loose[(loose[:, 0] != loose[:, 1]) & (loose[:, 1] != loose[:, 2]) & (loose[:, 0] != loose[:, 2])]
+    tris = rng.permutation(np.concatenate([grid, loose]))
+    want = Counter(_canon(tuple(int(x) for x in t)) for t in tris)
+    ordered = encoder.strip_order(tris, 2002)
+    assert ordered.shape == tris.shape and not np.array_equal(ordered, tris)
+    assert Counter(_canon(tuple(int(x) for x in t)) for t in ordered) == want
+    assert Counter(_strip_triangles(encoder.stripify(tris, 2002))) == want
+    assert len(encoder.strip_order(np.zeros((0, 3), np.int64), 0)) == 0
+
+
 def test_strips_fit_one_game_mesh():
     """Triangles that share no vertex strip into 5 indices each: 20000 of them made one strip of ~100000
     vertices, which the game cannot put in a mesh (mesh.Begin raised an error and the client froze; one

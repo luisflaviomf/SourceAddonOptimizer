@@ -23,7 +23,8 @@ value(C[c-3]), when those three places are in the same strip chunk as c and hold
 otherwise, and always in v6, the previous new value of that field in the group (0 for the first). A decoder
 therefore reads the strips before the vertices.
 A group is one (bodypart, choice, mesh, bone): its triangles become triangle strips (degenerate joins,
-meshoptimizer) of at most CHUNK_TRIS triangles, one IMesh each. Tangents are rebuilt by the runtime
+meshoptimizer, the triangles first in meshoptimizer's strip cache order) of at most CHUNK_TRIS triangles,
+one IMesh each. Tangents are rebuilt by the runtime
 (per-triangle UV derivatives summed per vertex, Gram-Schmidt, handedness from the bitangent, then the
 same 2-byte packing the engine applies).
 """
@@ -110,9 +111,10 @@ def material_paths(mdl: Path, resolver) -> list[str]:
 
 
 _strip_dll = None
+_vcache_dll = None
 
 
-def _strip_dll_path() -> Path:
+def _strip_dll_path(name: str = "meshopt_stripify.dll") -> Path:
     roots = []
     if getattr(sys, "frozen", False):
         roots.append(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)))
@@ -120,14 +122,34 @@ def _strip_dll_path() -> Path:
     repo = Path(__file__).resolve().parents[1]
     roots += [repo / "tools" / "vtx", repo]
     for root in roots:
-        for p in (root / "meshopt_stripify.dll", root / "tools" / "vtx" / "meshopt_stripify.dll"):
+        for p in (root / name, root / "tools" / "vtx" / name):
             if p.is_file():
                 return p
-    raise FileNotFoundError("meshopt_stripify.dll not found (tools/vtx)")
+    raise FileNotFoundError(f"{name} not found (tools/vtx)")
+
+
+def strip_order(tris: np.ndarray, nverts: int) -> np.ndarray:
+    """The same triangles (and windings) in meshoptimizer's order for a strip-like vertex cache
+    (optimizeVertexCacheStrip, meshoptimizer v1.1, tools/vtx/meshopt_vcache.dll). Stripify finds longer
+    strips from it and the stream codes better: GMOS streams of the bench 103.33 -> 99.45 MiB (2026-11-21)."""
+    global _vcache_dll
+    if _vcache_dll is None:
+        lib = ctypes.CDLL(str(_strip_dll_path("meshopt_vcache.dll")))
+        u32p = ctypes.POINTER(ctypes.c_uint)
+        lib.probe_vcache_strip.restype = None
+        lib.probe_vcache_strip.argtypes = [u32p, u32p, ctypes.c_size_t, ctypes.c_size_t]
+        _vcache_dll = lib
+    idx = np.ascontiguousarray(tris, np.uint32).ravel()
+    out = np.zeros_like(idx)
+    if len(idx):
+        _vcache_dll.probe_vcache_strip(out.ctypes.data_as(ctypes.POINTER(ctypes.c_uint)),
+                                       idx.ctypes.data_as(ctypes.POINTER(ctypes.c_uint)), len(idx), nverts)
+    return out.reshape(-1, 3)
 
 
 def stripify(tris: np.ndarray, nverts: int) -> np.ndarray:
-    """meshoptimizer triangle strip (degenerate joins, same winding rules as the GPU)."""
+    """meshoptimizer triangle strip (degenerate joins, same winding rules as the GPU) of the triangles in
+    strip_order."""
     global _strip_dll
     if _strip_dll is None:
         lib = ctypes.CDLL(str(_strip_dll_path()))
@@ -137,7 +159,7 @@ def stripify(tris: np.ndarray, nverts: int) -> np.ndarray:
         lib.probe_stripify.restype = ctypes.c_size_t
         lib.probe_stripify.argtypes = [u32p, u32p, ctypes.c_size_t, ctypes.c_size_t]
         _strip_dll = lib
-    idx = np.ascontiguousarray(tris, np.uint32).ravel()
+    idx = np.ascontiguousarray(strip_order(tris, nverts), np.uint32).ravel()
     out = np.zeros(_strip_dll.probe_stripify_bound(len(idx)), np.uint32)
     n = _strip_dll.probe_stripify(out.ctypes.data_as(ctypes.POINTER(ctypes.c_uint)),
                                   idx.ctypes.data_as(ctypes.POINTER(ctypes.c_uint)), len(idx), nverts)

@@ -155,6 +155,23 @@ O piso medido está no motor, não na Lua:
 - 41% das posições de strip são triângulos degenerados de emenda: os carros são muito fragmentados, em
   média 3,6 triângulos por trecho contínuo. Juntar os triângulos isolados numa lista economizaria só ~3%.
 
+### Ordem dos triângulos nas strips (21/11/2026)
+
+O encoder passa os triângulos de cada pedaço pela ordem de cache de strip do meshoptimizer v1.1
+(`meshopt_optimizeVertexCacheStrip`) antes do `meshopt_stripify`.
+
+- **Código:** `encoder.strip_order`, DLL `tools/vtx/meshopt_vcache.dll`, fontes em `third_party/meshoptimizer-v1.1`.
+- **Formato e runtime:** o formato continua o 7 e o runtime não mudou.
+- **Tamanho, bancada inteira pelo worker, nos dois perfis:** streams GMOS 103,33 → 99,46 MiB (−3,88 MiB); nos 12 maiores models, −7,2%.
+- **Arquivos:** só mudaram os streams (2.139 de 2.156) e o arquivo do runtime de cada addon. Texturas e todo o resto ficaram idênticos byte a byte.
+- **No jogo:** o LZMA dos 12 maiores cai ~6% (0,58 → 0,54 s) e as posições de strip, 1,9%.
+- **Geometria:** os mesmos triângulos, com a mesma orientação, posição, normal e UV, conferidos nos streams que o runtime monta.
+- **Tangentes:** são somadas por vértice na ordem dos triângulos. Nos 12 maiores models, 108 de 2,57 milhões de vértices mudam de código:
+  - 26 andam um degrau do código de 2 bytes (~1,6°);
+  - 82 trocam o sinal onde a soma das bitangentes quase se anula, ou seja, onde o sinal já é indefinido.
+
+  A ordem antiga também era arbitrária (a do stripify sobre a ordem do VTX).
+
 ### Quais models entram em stream
 
 `model_stream.wants_stream`: models ≥ 400 KB sempre; ≥ 20 KB se o nome não for de roda

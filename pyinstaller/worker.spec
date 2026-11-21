@@ -36,6 +36,8 @@ a = Analysis(
             "maximum_optimizer/native/bin/win-x64",
         ),
         (str(repo_root / "tools" / "vtx" / "meshopt_stripify.dll"), "."),
+        # Models stream: triangle order for strips (meshoptimizer v1.1 optimizeVertexCacheStrip)
+        (str(repo_root / "tools" / "vtx" / "meshopt_vcache.dll"), "."),
         # Models "Tela" mode: meshoptimizer v1.2 C API (third_party/meshoptimizer)
         (str(repo_root / "tools" / "meshopt" / "meshopt_simplify.dll"), "."),
         # Rust hot paths (native/gmo_native): bit-identical replacements loaded by texlab.native
