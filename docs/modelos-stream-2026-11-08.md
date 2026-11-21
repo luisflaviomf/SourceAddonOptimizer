@@ -83,13 +83,36 @@ Depois disso, a cada quadro:
 Comandos no console: `gmo_stream 0` desenha só o `.mdl` (comparar/desligar), `gmo_stream_far`,
 `gmo_stream_budget_ms`, `gmo_stream_probe 0` (pré-iluminação pelo próprio model, mais lenta).
 
-### Formato GMOS v6 (resumo)
+### Formato GMOS v7 (resumo)
 
-LZMA no formato do `util.Decompress`. Por grupo: posições quantizadas a 1/64 de unidade (erro ≤
-0,15 mm), UV a 1/4096 (≤ 1/4 texel de uma textura 2048), normais nos 2 bytes do motor; cada campo
-com "back-reference" (mesmo valor de um vértice anterior), delta, zigzag e planos de bytes; índices
-das strips com código de "high-water mark". E46 original: 12,5 MB de arquivos → 0,98 MB.
-`encoder.decode()` é um decodificador de referência que espelha a Lua (usado nos testes).
+LZMA no formato do `util.Decompress`. Por grupo:
+
+- posições quantizadas a 1/64 de unidade (erro ≤ 0,15 mm), UV a 1/4096 (≤ 1/4 texel de uma textura
+  2048), normais nos 2 bytes do motor;
+- cada campo com "back-reference" (mesmo valor de um vértice anterior), zigzag e planos de bytes;
+- índices das strips com código de "high-water mark";
+- desde o v7 (20/11/2026), posição e UV novas são guardadas como a diferença para o paralelogramo do
+  triângulo anterior da strip: as três posições antes da primeira aparição do vértice, no mesmo pedaço
+  e com três vértices diferentes. Sem isso, a diferença é para o valor novo anterior (o "delta" do v6).
+  Por isso o decodificador lê as strips antes dos vértices.
+
+E46 original: 12,5 MB de arquivos → 0,98 MB. `encoder.decode()` é um decodificador de referência que
+espelha a Lua (usado nos testes); `geometry.decode_geometry()` é o rápido, usado pela análise de
+texturas. Os três leem v6 e v7.
+
+**v7 na bancada** (20/11/2026, worker, comparado com a mesma rodada em v6):
+
+- Tamanho: streams GMOS 107,18 → 103,33 MiB (−3,85 MiB, −3,6%) nos dois perfis.
+- Arquivos: só mudaram os 2.156 streams e o runtime de cliente de cada addon (`REVISION` 5). Texturas
+  e todo o resto ficaram idênticos byte a byte.
+- Geometria idêntica em todos os streams: posições, UVs e triângulos iguais, e referências, normais e
+  strips com os mesmos bytes.
+- Tempo no LuaJIT (runtime com a API de malha simulada, 12 maiores models): montagem +4,5 a +6%.
+  Streams v6 de addons convertidos antes não mudaram de tempo no runtime novo.
+- `geometry.decode_geometry` ficou sequencial no v7 (15,6 → 23,9 s de CPU na bancada inteira, espalhados
+  pelos processos da análise); o tempo da etapa de texturas não mudou.
+- Compatibilidade: o runtime novo tem formato 7 e vale sobre os runtimes de formato 6 de outros addons,
+  e lê os dois formatos.
 
 ### Quais models entram em stream
 

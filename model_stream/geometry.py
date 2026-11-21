@@ -14,8 +14,58 @@ from pathlib import Path
 
 import numpy as np
 
-VERSION = 6                       # = encoder.VERSION (checked by tests)
+VERSION = 7                       # = encoder.VERSION (checked by tests)
+VERSIONS = (6, 7)                 # = encoder.VERSIONS
 _MANIFEST_START = "util.JSONToTable([["
+
+
+def _para_places(C: np.ndarray, lens: np.ndarray, nv: int):
+    """v7: per vertex, whether its new values are predicted by the parallelogram, and the three vertices
+    (encoder module docstring, "Prediction")."""
+    _ids, first = np.unique(C, return_index=True)
+    start = np.repeat(np.concatenate([[0], np.cumsum(lens)[:-1]]), lens)
+    cc = np.maximum(first, 3)
+    a, b, d = C[cc - 1], C[cc - 2], C[cc - 3]
+    ok = (first - 3 >= start[first]) & (a != b) & (b != d) & (a != d)
+    return ok[:nv], a[:nv], b[:nv], d[:nv]
+
+
+def _resolve_v7(refs, cols, start, places):
+    """v7 values of a back-referenced field of one group: in vertex order (a prediction reads earlier vertices)."""
+    ok, a, b, d = (x.tolist() for x in places)
+    n = len(refs)
+    k = int((refs == 0).sum())
+    res = [c[start:start + k].tolist() for c in cols]
+    refl = refs.tolist()
+    if len(cols) == 3:
+        rx, ry, rz = res
+        X, Y, Z = [0] * n, [0] * n, [0] * n
+        x = y = z = j = 0
+        for i in range(n):
+            r = refl[i]
+            if r:
+                X[i], Y[i], Z[i] = X[i - r], Y[i - r], Z[i - r]
+                continue
+            if ok[i]:
+                p, q, s = a[i], b[i], d[i]
+                x, y, z = X[p] + X[q] - X[s], Y[p] + Y[q] - Y[s], Z[p] + Z[q] - Z[s]
+            x += rx[j]; y += ry[j]; z += rz[j]; j += 1
+            X[i], Y[i], Z[i] = x, y, z
+        return np.array([X, Y, Z], np.int64).T.reshape(n, 3), start + k
+    ru, rv = res
+    U, V = [0] * n, [0] * n
+    u = v = j = 0
+    for i in range(n):
+        r = refl[i]
+        if r:
+            U[i], V[i] = U[i - r], V[i - r]
+            continue
+        if ok[i]:
+            p, q, s = a[i], b[i], d[i]
+            u, v = U[p] + U[q] - U[s], V[p] + V[q] - V[s]
+        u += ru[j]; v += rv[j]; j += 1
+        U[i], V[i] = u, v
+    return np.array([U, V], np.int64).T.reshape(n, 2), start + k
 
 
 def read_manifests(addon_root: Path) -> dict[str, Path]:
@@ -41,8 +91,9 @@ def read_manifests(addon_root: Path) -> dict[str, Path]:
 
 def decode_geometry(data: bytes) -> list[dict]:
     """Per group: b, m, slot (skin ref), bone, pos (V,3) float32, uv (V,2) float32, tris (T,3) int64."""
-    if data[:4] != b"GMOS" or data[4] != VERSION:
-        raise ValueError("not a GMOS v%d stream" % VERSION)
+    if data[:4] != b"GMOS" or data[4] not in VERSIONS:
+        raise ValueError("not a GMOS v%s stream" % "/".join(map(str, VERSIONS)))
+    ver = data[4]
     d = bytearray(data[5:])
     d[5:13] = b"\xff" * 8
     blob = lzma.decompress(bytes(d), format=lzma.FORMAT_ALONE)
@@ -107,13 +158,18 @@ def decode_geometry(data: bytes) -> list[dict]:
     vb = ib = cp = cu = 0
     for g in groups:
         nv = g["nv"]
-        P, cp = resolve(pref[vb:vb + nv], (px, py, pz), cp)
-        U, cu = resolve(uvref[vb:vb + nv], (uu, vv), cu)
         lens = g["lens"]
         n3 = int(lens.sum())
         codes = idx[ib:ib + n3]
         z = np.cumsum(codes == 0)
         C = np.where(codes == 0, z - 1, z - codes)
+        if ver >= 7:
+            places = _para_places(C, lens, nv)
+            P, cp = _resolve_v7(pref[vb:vb + nv], (px, py, pz), cp, places)
+            U, cu = _resolve_v7(uvref[vb:vb + nv], (uu, vv), cu, places)
+        else:
+            P, cp = resolve(pref[vb:vb + nv], (px, py, pz), cp)
+            U, cu = resolve(uvref[vb:vb + nv], (uu, vv), cu)
         offs = np.concatenate([[0], np.cumsum(lens)[:-1]])
         ks = [np.arange(max(0, int(ln) - 2)) for ln in lens]
         k = np.concatenate(ks) if ks else np.zeros(0, np.int64)

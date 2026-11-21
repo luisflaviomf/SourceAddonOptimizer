@@ -37,7 +37,8 @@ def _canon(t):
 def test_runtime_and_encoder_versions_match():
     lua = (ROOT / "model_stream" / "runtime.lua").read_text(encoding="utf-8")
     assert re.search(r"local VERSION = (\d+)", lua).group(1) == str(encoder.VERSION)
-    assert "byte(raw, 5) ~= %d" % encoder.VERSION in lua
+    # the runtime reads every format the encoders wrote (addons converted earlier keep working)
+    assert encoder.VERSIONS == (6, 7) and "if v == 6 or v == 7 then return v end" in lua
     # one strip mesh: the game takes 65535 vertices, and a strip is cut at an even offset
     limit = int(re.search(r"local MAX_STRIP = (\d+)", lua).group(1))
     assert limit == encoder.MAX_STRIP and limit <= 65535 and limit % 2 == 0
@@ -407,6 +408,43 @@ def test_bullet_mark_is_cut_out_of_the_triangles_under_it():
     assert abs(area - 6.4 * 6.4) < 1e-6
     # the texture coordinates are the position inside the square (whichever way the square is turned)
     assert all(abs(u * u + v * v - ((x - 8) ** 2 + (y - 8) ** 2) / 6.4 ** 2) < 1e-9 for u, v, x, y, _z in cut)
+
+
+@need_lvs
+def test_format_7_predicts_along_the_strips_and_keeps_the_geometry():
+    """v7 (parallelogram prediction of new positions and UVs) decodes to exactly the v6 geometry, in the
+    reference decoder and in the fast one, and is smaller."""
+    from model_stream import geometry
+    v6 = encoder.encode(E46, _resolver(), version=6)
+    v7 = encoder.encode(E46, _resolver())
+    assert v6[4] == 6 and v7[4] == 7 and len(v7) < len(v6)
+    a, b = encoder.decode(v6), encoder.decode(v7)
+    assert len(a["groups"]) == len(b["groups"])
+    for ga, gb in zip(a["groups"], b["groups"]):
+        for k in ("pos", "uv", "normal", "ncodes", "strip", "tris"):
+            assert np.array_equal(ga[k], gb[k]), k
+    for fa, fb in zip(geometry.decode_geometry(v6), geometry.decode_geometry(v7)):
+        for k in ("pos", "uv", "tris"):
+            assert np.array_equal(fa[k], fb[k]), k
+
+
+@need_lvs
+def test_runtime_draws_the_same_meshes_from_format_6_and_7():
+    """The shipped Lua builds the same strip meshes (positions in order) from both formats, and reads the same
+    triangles back for the bullet marks."""
+    v6 = encoder.encode(E46, _resolver(), version=6)
+    v7 = encoder.encode(E46, _resolver())
+    err6, m6 = _runtime_meshes(v6, max_strip=encoder.MAX_STRIP, mesh_limit=65535)
+    err7, m7 = _runtime_meshes(v7, max_strip=encoder.MAX_STRIP, mesh_limit=65535)
+    assert err6 is None and err7 is None
+    assert len(m6) == len(m7) and all(x == y for x, y in zip(m6, m7))
+    geo = []
+    for data in (v6, v7):
+        rt, g = _runtime(data)
+        rt.execute(b"""GROUPS = GMOS.marks.load({ path = "data_static/gmo/test.dat" }, function() end)""")
+        geo.append([(list(gg[b"X"].values()), list(gg[b"Y"].values()), list(gg[b"Z"].values()), list(gg[b"T"].values()))
+                    for gg in g[b"GROUPS"].values()])
+    assert geo[0] == geo[1]
 
 
 @need_lvs

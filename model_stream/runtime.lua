@@ -6,10 +6,11 @@
 -- distance beyond which the coarse model is drawn. Streams unused for 5 minutes are freed.
 if SERVER then return end
 
-local VERSION = 6          -- GMOS stream format (encoder.VERSION)
-local REVISION = 4         -- runtime behaviour: 2 = view models, material overrides, candidate materials;
+local VERSION = 7          -- GMOS stream format (encoder.VERSION); this runtime reads 6 and 7
+local REVISION = 5         -- runtime behaviour: 2 = view models, material overrides, candidate materials;
                            -- 3 = strips longer than one game mesh are cut (they froze the game);
-                           -- 4 = bullet marks on the stream (the server part is server.lua)
+                           -- 4 = bullet marks on the stream (the server part is server.lua);
+                           -- 5 = format 7 (positions and UVs predicted along the strips)
 if GMOS and ((GMOS.VERSION or 0) > VERSION
              or ((GMOS.VERSION or 0) == VERSION and (GMOS.REVISION or 1) >= REVISION)) then
     -- an equal or newer runtime is already loaded: only merge this addon's manifest
@@ -148,9 +149,49 @@ local function decode(blob, yield)
     return out, d
 end
 
+-- streams of format 6 (no prediction) and 7 (prediction along the strips) are read
+local function stream_version(raw)
+    if not raw or sub(raw, 1, 4) ~= "GMOS" then return nil end
+    local v = byte(raw, 5)
+    if v == 6 or v == 7 then return v end
+end
+
+-- strip places of one group (high-water mark codes) -> vertex number of each place
+local function strip_places(idx, ibase, n)
+    local C, hwm = {}, 0
+    for c = 1, n do
+        local code = idx[ibase + c]
+        if code == 0 then hwm = hwm + 1; C[c] = hwm else C[c] = hwm + 1 - code end
+    end
+    return C
+end
+
+-- format 7: per vertex, the three vertices of the parallelogram that predicts its new position and UV (the
+-- three places before its first place, same strip chunk, three different vertices); nil where the previous
+-- new value of the field is the prediction (encoder.py, "Prediction")
+local function para_places(C, chunks_len)
+    local PA, PB, PD = {}, {}, {}
+    local seen, o = 0, 0
+    for _, len in ipairs(chunks_len) do
+        for c = o + 1, o + len do
+            local w = C[c]
+            if w > seen then                     -- first place of vertex w (numbered by first place)
+                seen = w
+                if c - 3 >= o + 1 then
+                    local a, b, e = C[c - 1], C[c - 2], C[c - 3]
+                    if a ~= b and b ~= e and a ~= e then PA[w], PB[w], PD[w] = a, b, e end
+                end
+            end
+        end
+        o = o + len
+    end
+    return PA, PB, PD
+end
+
 local function build(st, yield)
     local raw = file.Read(st.path, "GAME")
-    if not raw or sub(raw, 1, 4) ~= "GMOS" or byte(raw, 5) ~= 6 then error("missing or bad stream " .. tostring(st.path)) end
+    local ver = stream_version(raw)
+    if not ver then error("missing or bad stream " .. tostring(st.path)) end
     local blob = util.Decompress(sub(raw, 6))
     if not blob then error("decompress failed " .. st.path) end
     raw = nil
@@ -183,18 +224,30 @@ local function build(st, yield)
     local POS_Q, UV_Q = info.posq, info.uvq
     for gi, g in ipairs(info.groups) do
         local nvg = g.nv
+        -- strip indices of all chunks first (high-water mark code): format 7 predicts from them
+        local nt3 = g.nidx
+        local C = strip_places(idx, ibase, nt3)
+        local PA, PB, PD
+        if ver == 7 then PA, PB, PD = para_places(C, g.chunks_len) end
         local X, Y, Z, NX, NY, NZ, U, V = {}, {}, {}, {}, {}, {}, {}, {}
+        local XI, YI, ZI, UI, VI = {}, {}, {}, {}, {}      -- quantized values (the predictions add them)
         local x, y, z, u, v = 0, 0, 0, 0, 0
         for i = 1, nvg do
             local k = vbase + i
             local r = pref[k]
             if r == 0 then
                 cp = cp + 1
+                local a = PA and PA[i]
+                if a then
+                    local b, e = PB[i], PD[i]
+                    x, y, z = XI[a] + XI[b] - XI[e], YI[a] + YI[b] - YI[e], ZI[a] + ZI[b] - ZI[e]
+                end
                 x = x + px[cp]; y = y + py[cp]; z = z + pz[cp]
-                X[i], Y[i], Z[i] = x * POS_Q, y * POS_Q, z * POS_Q
+                XI[i], YI[i], ZI[i] = x, y, z
             else
-                X[i], Y[i], Z[i] = X[i - r], Y[i - r], Z[i - r]
+                XI[i], YI[i], ZI[i] = XI[i - r], YI[i - r], ZI[i - r]
             end
+            X[i], Y[i], Z[i] = XI[i] * POS_Q, YI[i] * POS_Q, ZI[i] * POS_Q
             r = nref[k]
             if r == 0 then
                 cn = cn + 1
@@ -206,20 +259,19 @@ local function build(st, yield)
             r = uvref[k]
             if r == 0 then
                 cu = cu + 1
+                local a = PA and PA[i]
+                if a then
+                    local b, e = PB[i], PD[i]
+                    u, v = UI[a] + UI[b] - UI[e], VI[a] + VI[b] - VI[e]
+                end
                 u = u + uu[cu]; v = v + vv[cu]
-                U[i], V[i] = u * UV_Q, v * UV_Q
+                UI[i], VI[i] = u, v
             else
-                U[i], V[i] = U[i - r], V[i - r]
+                UI[i], VI[i] = UI[i - r], VI[i - r]
             end
+            U[i], V[i] = UI[i] * UV_Q, VI[i] * UV_Q
         end
-        -- strip indices of all chunks (high-water mark code)
-        local nt3 = g.nidx
-        local C = {}
-        local hwm = 0
-        for c = 1, nt3 do
-            local code = idx[ibase + c]
-            if code == 0 then hwm = hwm + 1; C[c] = hwm else C[c] = hwm + 1 - code end
-        end
+        XI, YI, ZI, UI, VI, PA, PB, PD = nil, nil, nil, nil, nil, nil, nil, nil
         yield()
         -- surface area (the flashlight pass draws the biggest groups only)
         local area = 0
@@ -916,7 +968,8 @@ end
 -- the triangles of every group of a stream, read from its file again (only the positions and the strips)
 local function load_geometry(st, yield)
     local raw = file.Read(st.path, "GAME")
-    if not raw or sub(raw, 1, 4) ~= "GMOS" or byte(raw, 5) ~= 6 then error("missing or bad stream " .. tostring(st.path)) end
+    local ver = stream_version(raw)
+    if not ver then error("missing or bad stream " .. tostring(st.path)) end
     local blob = util.Decompress(sub(raw, 6))
     if not blob then error("decompress failed " .. st.path) end
     raw = nil
@@ -928,22 +981,26 @@ local function load_geometry(st, yield)
     local pref, px, py, pz, idx = d.pref, d.px, d.py, d.pz, d.idx
     local POS_Q = info.posq
     for gi, g in ipairs(info.groups) do
-        local X, Y, Z = {}, {}, {}
+        local C = strip_places(idx, ibase, g.nidx)
+        local PA, PB, PD
+        if ver == 7 then PA, PB, PD = para_places(C, g.chunks_len) end
+        local X, Y, Z, XI, YI, ZI = {}, {}, {}, {}, {}, {}
         local x, y, z = 0, 0, 0
         for i = 1, g.nv do
             local r = pref[vbase + i]
             if r == 0 then
                 cp = cp + 1
+                local a = PA and PA[i]
+                if a then
+                    local b, e = PB[i], PD[i]
+                    x, y, z = XI[a] + XI[b] - XI[e], YI[a] + YI[b] - YI[e], ZI[a] + ZI[b] - ZI[e]
+                end
                 x = x + px[cp]; y = y + py[cp]; z = z + pz[cp]
-                X[i], Y[i], Z[i] = x * POS_Q, y * POS_Q, z * POS_Q
+                XI[i], YI[i], ZI[i] = x, y, z
             else
-                X[i], Y[i], Z[i] = X[i - r], Y[i - r], Z[i - r]
+                XI[i], YI[i], ZI[i] = XI[i - r], YI[i - r], ZI[i - r]
             end
-        end
-        local C, hwm = {}, 0
-        for c = 1, g.nidx do
-            local code = idx[ibase + c]
-            if code == 0 then hwm = hwm + 1; C[c] = hwm else C[c] = hwm + 1 - code end
+            X[i], Y[i], Z[i] = XI[i] * POS_Q, YI[i] * POS_Q, ZI[i] * POS_Q
         end
         yield()
         groups[gi] = index_group(X, Y, Z, C, g.chunks_len, yield)

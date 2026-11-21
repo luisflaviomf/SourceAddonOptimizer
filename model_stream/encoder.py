@@ -1,6 +1,6 @@
-"""GMOS v6: compressed model geometry drawn by the Lua runtime (runtime.lua).
+"""GMOS v7: compressed model geometry drawn by the Lua runtime (runtime.lua).
 
-File = b"GMOS" + u8 version (6) + LZMA-alone blob in the format Garry's Mod's util.Decompress reads
+File = b"GMOS" + u8 version (7; 6 is still read) + LZMA-alone blob in the format Garry's Mod's util.Decompress reads
 (5 property bytes, u64 uncompressed size, LZMA data).
 Blob (little endian):
   3 x f32 illumposition (lighting origin in model space), f32 POS_Q, f32 UV_Q
@@ -12,11 +12,16 @@ Blob (little endian):
   u32 n_newpos, u32 n_newnrm, u32 n_newuv
   streams (each = u8 nbytes then nbytes byte planes, low plane first; groups concatenated):
     pref (nverts): 0 = new position, k = same position as the vertex k places back (same group)
-    px py pz (n_newpos): zigzag(delta of round(pos / POS_Q)) from the previous new position of the group
-    nref, ncx ncy  : the same scheme for normals: the engine's own PackNormal_UBYTE4 bytes (no delta),
+    px py pz (n_newpos): zigzag(round(pos / POS_Q) - prediction): see "Prediction" below
+    nref, ncx ncy  : the same scheme for normals: the engine's own PackNormal_UBYTE4 bytes (no prediction),
                      so the GPU receives exactly the vectors it receives for the compiled model
-    uvref, u v     : the same scheme for UVs (zigzag delta of round(uv / UV_Q))
+    uvref, u v     : the same scheme for UVs (zigzag(round(uv / UV_Q) - prediction))
     idx (strip indices of every chunk): high-water mark code: 0 = next new vertex, k > 0 = vertex hwm+1-k
+Prediction of a new position or UV (vertex i, numbered by its first place in the group's strips, position c
+there): v7 uses the parallelogram of the strip's previous triangle, value(C[c-1]) + value(C[c-2]) -
+value(C[c-3]), when those three places are in the same strip chunk as c and hold three different vertices;
+otherwise, and always in v6, the previous new value of that field in the group (0 for the first). A decoder
+therefore reads the strips before the vertices.
 A group is one (bodypart, choice, mesh, bone): its triangles become triangle strips (degenerate joins,
 meshoptimizer) of at most CHUNK_TRIS triangles, one IMesh each. Tangents are rebuilt by the runtime
 (per-triangle UV derivatives summed per vertex, Gram-Schmidt, handedness from the bitangent, then the
@@ -36,7 +41,8 @@ from model_screen.binary import mesh_arrays
 from model_screen.mirror import read_bones
 from texlab.source_model import _read_mdl
 
-VERSION = 6
+VERSION = 7             # 7 (2026-11-20): parallelogram prediction of positions and UVs, 3.6% smaller on the bench
+VERSIONS = (6, 7)       # what the decoders read
 CHUNK_TRIS = 20000
 MAX_STRIP = 65534       # indices of one strip chunk: a game mesh takes 65535 vertices (runtime.lua MAX_STRIP)
 POS_Q = 1.0 / 64.0      # 0.016 units: at most 0.15 mm off
@@ -172,9 +178,31 @@ def _refs(A: np.ndarray, delta: bool):
     return np.array(refs, np.int64), (np.array(new, np.int64).reshape(-1, A.shape[1]))
 
 
-def encode(mdl: Path, resolver, meshes_tris: dict | None = None) -> bytes:
+def _para_rows(A: np.ndarray, refs: np.ndarray, strip: np.ndarray, lens) -> np.ndarray:
+    """v7 rows of the new values of A (refs == 0): each minus its prediction (module docstring). strip: the
+    group's strip places as vertex numbers (vertices numbered by first place), lens: its chunk lengths."""
+    n = len(A)
+    ids, first = np.unique(strip, return_index=True)
+    if len(ids) != n or (n and ids[-1] != n - 1):
+        raise ValueError("strip does not number every vertex by its first place")
+    lens = np.asarray(lens, np.int64)
+    start = np.repeat(np.concatenate([[0], np.cumsum(lens)[:-1]]), lens)
+    c = first
+    cc = np.maximum(c, 3)
+    a, b, d = strip[cc - 1], strip[cc - 2], strip[cc - 3]
+    ok = (c - 3 >= start[c]) & (a != b) & (b != d) & (a != d)
+    new = np.flatnonzero(refs == 0)
+    prev = np.vstack([np.zeros((1, A.shape[1]), np.int64), A[new[:-1]]])
+    pred = np.where(ok[new][:, None], A[a[new]] + A[b[new]] - A[d[new]], prev)
+    return A[new] - pred
+
+
+def encode(mdl: Path, resolver, meshes_tris: dict | None = None, version: int = VERSION) -> bytes:
     """GMOS bytes of a compiled model. meshes_tris: optional {mesh key: (T,3) mesh-local record ids}
-    (e.g. a simplified set); default = the model's own LOD0 triangles."""
+    (e.g. a simplified set); default = the model's own LOD0 triangles. version: 7, or 6 (no prediction; the
+    tests compare both)."""
+    if version not in VERSIONS:
+        raise ValueError("GMOS version %r" % version)
     from vvd_engine_exact import pack_ubyte4
     f, has_tan, bone, _nb, _w = vvd_records(mdl)
     _v, _n, _c, _textures, _cd, skins, bodyparts = _read_mdl(mdl)
@@ -212,6 +240,8 @@ def encode(mdl: Path, resolver, meshes_tris: dict | None = None) -> bytes:
             UV = np.round(f[order, 6:8] / UV_Q).astype(np.int64)
             for name, A, delta in (("p", P, True), ("n", N, False), ("uv", UV, True)):
                 r, new = _refs(A, delta)
+                if delta and version >= 7:
+                    new = _para_rows(A, r, lt, [len(x) for x in strips])
                 S[name + "ref"].append(r)
                 S[name].append(new)
             hwm = -1
@@ -256,7 +286,7 @@ def encode(mdl: Path, resolver, meshes_tris: dict | None = None) -> bytes:
                                    filters=[{"id": lzma.FILTER_LZMA1, "preset": 9 | lzma.PRESET_EXTREME,
                                              "dict_size": 1 << 24}]))
     comp[5:13] = struct.pack("<Q", len(blob))       # known size: util.Decompress allocates from it
-    return b"GMOS" + bytes([VERSION]) + bytes(comp)
+    return b"GMOS" + bytes([version]) + bytes(comp)
 
 
 # ----------------------------------------------------------------------------- reference decoder
@@ -275,9 +305,28 @@ def unpack_ubyte4(cx: float, cy: float):
     return (-x if xs else x), (-y if ys else y), (-z if zs else z), (-1 if ts else 1)
 
 
+def predictor_places(C, lens):
+    """per vertex (numbered by first place): the strip places (c-1, c-2, c-3) of the v7 parallelogram before
+    its first place c, or None when they leave the chunk or do not hold three different vertices."""
+    out = {}
+    o = 0
+    for ln in lens:
+        for c in range(o, o + ln):
+            v = int(C[c])
+            if v not in out:
+                if c - 3 >= o:
+                    a, b, d = int(C[c - 1]), int(C[c - 2]), int(C[c - 3])
+                    out[v] = (a, b, d) if a != b and b != d and a != d else None
+                else:
+                    out[v] = None
+        o += ln
+    return [out[i] for i in range(len(out))]
+
+
 def decode(data: bytes) -> dict:
-    if data[:4] != b"GMOS" or data[4] != VERSION:
-        raise ValueError("not a GMOS v%d stream" % VERSION)
+    if data[:4] != b"GMOS" or data[4] not in VERSIONS:
+        raise ValueError("not a GMOS v%s stream" % "/".join(map(str, VERSIONS)))
+    ver = data[4]
     d = bytearray(data[5:])
     d[5:13] = b"\xff" * 8                          # Python's decoder wants "unknown size" + end mark
     blob = lzma.decompress(bytes(d), format=lzma.FORMAT_ALONE)
@@ -328,27 +377,7 @@ def decode(data: bytes) -> dict:
     vb = ib = cp = cn = cu = 0
     for g in groups:
         nv = g["nv"]
-        X = np.zeros((nv, 3)); Nn = np.zeros((nv, 3)); U = np.zeros((nv, 2)); codes = np.zeros((nv, 2), np.int64)
-        x = y = z = u = v = 0
-        for i in range(nv):
-            r = pref[vb + i]
-            if r == 0:
-                x += px[cp]; y += py[cp]; z += pz[cp]; cp += 1
-                X[i] = (x * posq, y * posq, z * posq)
-            else:
-                X[i] = X[i - r]
-            r = nref_[vb + i]
-            if r == 0:
-                codes[i] = (ncx[cn], ncy[cn]); cn += 1
-                Nn[i] = unpack_ubyte4(int(codes[i, 0]), int(codes[i, 1]))[:3]
-            else:
-                Nn[i] = Nn[i - r]; codes[i] = codes[i - r]
-            r = uvref[vb + i]
-            if r == 0:
-                u += uu[cu]; v += vv[cu]; cu += 1
-                U[i] = (u * uvq, v * uvq)
-            else:
-                U[i] = U[i - r]
+        # the strips first: v7 predicts new positions and UVs from them
         n3 = sum(g["lens"])
         C = np.zeros(n3, np.int64)
         hwm = -1
@@ -359,6 +388,37 @@ def decode(data: bytes) -> dict:
                 C[c] = hwm
             else:
                 C[c] = hwm + 1 - code
+        para = predictor_places(C, g["lens"]) if ver >= 7 else [None] * nv
+        X = np.zeros((nv, 3)); Nn = np.zeros((nv, 3)); U = np.zeros((nv, 2)); codes = np.zeros((nv, 2), np.int64)
+        XI = np.zeros((nv, 3), np.int64); UI = np.zeros((nv, 2), np.int64)
+        x = y = z = u = v = 0
+        for i in range(nv):
+            r = pref[vb + i]
+            if r == 0:
+                p3 = para[i]
+                if p3 is not None:
+                    x, y, z = (XI[p3[0]] + XI[p3[1]] - XI[p3[2]]).tolist()
+                x += int(px[cp]); y += int(py[cp]); z += int(pz[cp]); cp += 1
+                XI[i] = (x, y, z)
+            else:
+                XI[i] = XI[i - r]
+            X[i] = XI[i] * posq
+            r = nref_[vb + i]
+            if r == 0:
+                codes[i] = (ncx[cn], ncy[cn]); cn += 1
+                Nn[i] = unpack_ubyte4(int(codes[i, 0]), int(codes[i, 1]))[:3]
+            else:
+                Nn[i] = Nn[i - r]; codes[i] = codes[i - r]
+            r = uvref[vb + i]
+            if r == 0:
+                p3 = para[i]
+                if p3 is not None:
+                    u, v = (UI[p3[0]] + UI[p3[1]] - UI[p3[2]]).tolist()
+                u += int(uu[cu]); v += int(vv[cu]); cu += 1
+                UI[i] = (u, v)
+            else:
+                UI[i] = UI[i - r]
+            U[i] = UI[i] * uvq
         tris, o = [], 0
         for ln in g["lens"]:
             for k in range(ln - 2):
