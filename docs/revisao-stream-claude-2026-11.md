@@ -508,7 +508,7 @@ amostra e escalado; "estimativa" = conta. Ordenado pelo que entrega por risco e 
 | 5 | Stream parcial dos 34 models mantidos por lente/mira | ≈ −25 a −29 MiB | igual, se as lentes ficarem com o motor | mais um desenho por arma | alto; proxies e render target | estimativa |
 | 6 | Rodas no GMOS | ≈ −15 MiB | igual | mais desenhos IMesh por carro: medir FPS | médio | estimativa |
 | 7 | Animações dos `.mdl` (redução de quadros com erro limitado) | ≈ −14 a −28 MiB (de ~47) | perda nas animações | nenhum | alto; fora do GMOT/GMOS | estimativa |
-| 8 | GMOS: paralelogramo para posição e UV | **−3,85 MiB** | idêntica | estimativa +10 a 20% na decodificação do GMOS | médio; GMOS v7 + `REVISION` | medido |
+| 8 | GMOS: paralelogramo para posição e UV — **feito** (`8f4ff83`, GMOS v7) | **−3,85 MiB** | idêntica (conferida em todos os 2.156 streams) | montagem +4,5 a 6% no LuaJIT (medido) | médio; GMOS v7 + `REVISION` | medido |
 | 9 | Placeholders de 8 px sem miniatura no cabeçalho; runtime Lua minificado | ≈ −1,5 a −2 MiB | primeiros instantes mais borrados | nenhum | baixo | estimativa |
 | 10 | Piso de 33 dB no jogo por textura | +6% do GMOT (≈ +5 MiB) | cauda melhor (p10 30,5 → 31,6) | nenhum | baixo; decisão de política | amostra |
 
@@ -647,6 +647,20 @@ teste não monta o Lua do Glide.)
 - Foco devolvido à janela do Luis pelo `foco-de-volta.ps1` dela; cursor do jogo livre.
 - Só pastas `zz_clab_*` e `data/clab`, removidas no fim. Nenhuma configuração salva do jogo ou do
   StormFox2 foi mudada.
+
+### Paralelogramo no GMOS: feito (commit `8f4ff83`, branch `feature/gmos-paralelogramo`)
+
+- **Formato:** GMOS v7. Posição e UV novas são guardadas como a diferença para o paralelogramo do
+  triângulo anterior da strip.
+- **Compatibilidade:** o runtime novo (formato 7, `REVISION` 5) lê v6 e v7 e vale sobre os runtimes v6
+  de outros addons.
+- **Bancada inteira, nos dois perfis:**
+  - streams 107,18 → 103,33 MiB (−3,85);
+  - geometria idêntica em todos os streams;
+  - só mudam os streams e o runtime de modelos; texturas e o resto ficam idênticos byte a byte.
+- **Tempo:** montagem no LuaJIT +4,5 a 6% nos 12 maiores models; os streams v6 antigos não mudam de
+  tempo no runtime novo.
+- **Testes:** 28 passam, incluindo v6 × v7 no runtime em LuaJIT (malhas e geometria das marcas de bala).
 
 ## Nota final: sons e Lua
 
