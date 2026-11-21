@@ -120,6 +120,7 @@ local function run()
         util.PrecacheSound(f)
     end
     RunConsoleCommand("sonslab_sv_dur")
+    file.Write(OUT .. "/log.json", util.TableToJSON(log))
     waitt(3)
     log.info.frametime = FrameTime()
     log.info.realframe = RealFrameTime()
@@ -132,7 +133,11 @@ local function run()
         local stop
         if s.shim == 1 then shim_on = true; RunConsoleCommand("sonslab_shim", "1"); waitt(0.1) end
         local ok, err = pcall(function()
-            if s.api == "world" then
+            if s.api == "worldemit" then
+                -- the same point, by the global EmitSound, with the name prefix under test (")" or "^")
+                local pos = EyePos() + EyeAngles():Right() * 300
+                EmitSound((s.prefix or "") .. s.file, pos, 0, CHAN_STATIC, 0.5, 75, 0, 100)
+            elseif s.api == "world" then
                 -- 300 units to the listener's right: a spatialized sound comes out louder on the right
                 local pos = EyePos() + EyeAngles():Right() * 300
                 ev.right = tostring(EyeAngles():Right())
@@ -192,15 +197,16 @@ local function run()
         if s.shim == 1 then shim_on = false; RunConsoleCommand("sonslab_shim", "0") end
         waitt(s.gap)
         log.events[#log.events + 1] = ev
+        -- the log is saved as the run goes: the first round lost it when the game closed at the end
+        if #log.events % 8 == 0 then file.Write(OUT .. "/log.json", util.TableToJSON(log)) end
     end
     waitt(1)
-    if vw then local v = vw; vw = nil; hook.Remove("DrawOverlay", "sonslab_cap"); v:Finish() end
-    RunConsoleCommand("endmovie")
-    waitr(1)
     log.info.t_end = CurTime() - t0
     file.Write(OUT .. "/log.json", util.TableToJSON(log, true))
     file.Write(OUT .. "/done.txt", "1")
     print("sonslab_done")
+    if vw then local v = vw; vw = nil; hook.Remove("DrawOverlay", "sonslab_cap"); v:Finish() end
+    if __ENDMOVIE__ then RunConsoleCommand("endmovie") end
 end
 
 hook.Add("InitPostEntity", "sonslab", function()
@@ -278,13 +284,40 @@ def build_slots(tests):
     return slots
 
 
+def remove_frames():
+    """startmovie also writes one image per frame (sonslab_cap0001.tga ...): they are removed as they appear."""
+    import os
+    import re
+    pat = re.compile(r"^%s\d+\.(tga|jpg)$" % CAP)
+    n = 0
+    try:
+        for e in os.scandir(GAME):
+            if e.is_file() and pat.match(e.name):
+                try:
+                    os.unlink(e.path)
+                    n += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return n
+
+
 def main():
     run = sys.argv[1]
-    tests = json.loads((LAB / "game" / "tests.json").read_text(encoding="utf-8"))
-    slots = build_slots(tests)
-    files = sorted({t["file"] for t in tests} | {"sonslab/sync.wav"})
+    plan = None
+    if len(sys.argv) > 2 and sys.argv[2].endswith(".json"):
+        plan = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+    if plan:
+        slots, files, addon_src = plan["slots"], plan["files"], Path(plan["addon"])
+    else:
+        tests = json.loads((LAB / "game" / "tests.json").read_text(encoding="utf-8"))
+        slots = build_slots(tests)
+        files = sorted({t["file"] for t in tests} | {"sonslab/sync.wav"})
+        addon_src = LAB / "game" / "addon"
     lua = (LUA.replace("__FILES__", "{" + ",".join('"%s"' % f for f in files) + "}")
-              .replace("__SLOTS__", lua_table(slots)).replace("__CAP__", CAP))
+              .replace("__SLOTS__", lua_table(slots)).replace("__CAP__", CAP)
+              .replace("__ENDMOVIE__", "true" if (plan or {}).get("endmovie", True) else "false"))
     out = LAB / "game" / "run" / run
     if out.exists():
         shutil.rmtree(out)
@@ -292,7 +325,7 @@ def main():
     (out / "slots.json").write_text(json.dumps(slots), encoding="utf-8")
     (out / "sonslab.lua").write_text(lua, encoding="utf-8")
     print("slots", len(slots), "tempo de jogo previsto %.0f s" % sum(s["dur"] + s["gap"] for s in slots), flush=True)
-    if len(sys.argv) > 2 and sys.argv[2] == "dry":
+    if sys.argv[-1] == "dry":
         return
 
     addon = GAME / "addons" / ADDON
@@ -313,16 +346,19 @@ def main():
     for p in cap_files:
         if p.exists():
             p.unlink()
+    crashes = CLIENT / "crashes"
+    crashes_before = set(p.name for p in crashes.iterdir()) if crashes.exists() else set()
     focus = None
     proc = None
     t0 = time.time()
     try:
-        shutil.copytree(LAB / "game" / "addon", addon)
+        shutil.copytree(addon_src, addon)
         (addon / "lua" / "autorun").mkdir(parents=True)
         (addon / "lua" / "autorun" / "sonslab.lua").write_text(lua, encoding="utf-8")
         args = [str(CLIENT / "bin" / "win64" / "gmod.exe"), "-multirun", "-allowquit", "-windowed", "-noborder",
-                "-x", "32000", "-y", "32000", "-w", "640", "-h", "360", "-noworkshop", "-nomouse", "-novid",
-                "-condebug", "+developer", "1", "+fps_max", "60", "+fps_max_nofocus", "60", "+gamemode", "sandbox",
+                "-x", "32000", "-y", "32000", "-w", "320", "-h", "240", "-noworkshop", "-nomouse", "-novid",
+                "-condebug", "+developer", "1", "+fps_max", "60", "+fps_max_nofocus", "60",
+                "+engine_no_focus_sleep", "0", "+gamemode", "sandbox",
                 "+map", "gm_construct", "+startmovie", CAP, "wav"]
         proc = subprocess.Popen(args, cwd=str(CLIENT))
         loop = LAB / "work" / "sonslab_focus.ps1"
@@ -331,9 +367,12 @@ def main():
         focus = subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(loop),
                                   "-Flag", str(data_dir / "inmap.txt"), "-GamePid", str(proc.pid)])
         done = data_dir / "done.txt"
-        while not done.exists() and proc.poll() is None and time.time() - t0 < 1500:
+        removed = 0
+        while not done.exists() and proc.poll() is None and time.time() - t0 < 3000:
             time.sleep(2)
+            removed += remove_frames()
         time.sleep(3)
+        print("quadros de imagem removidos durante a rodada:", removed, flush=True)
         print("done", done.exists(), "jogo ainda aberto", proc.poll() is None, round(time.time() - t0), "s", flush=True)
     finally:
         if proc is not None and proc.poll() is None:
@@ -363,6 +402,12 @@ def main():
         shutil.copy2(backup / "config.cfg", config)
         for p in [addon, data_dir]:
             shutil.rmtree(p, ignore_errors=True)
+        time.sleep(1)
+        print("quadros de imagem removidos no fim:", remove_frames(), flush=True)
+        if crashes.exists():
+            for p in crashes.iterdir():
+                if p.name not in crashes_before:
+                    shutil.move(str(p), str(out / ("crash_" + p.name)))
         left = [str(p) for p in [addon, data_dir, *cap_files] if p.exists()]
         print("limpeza: sobrou", left or "nada", flush=True)
         print("saida", out, sorted(f.name for f in out.iterdir()), flush=True)

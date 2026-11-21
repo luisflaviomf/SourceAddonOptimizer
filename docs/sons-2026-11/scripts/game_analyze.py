@@ -74,10 +74,66 @@ def find_sync(mono):
     return i * hop / FS, float(score[i])
 
 
+def reconstruct(x, t_sync, slots, noise):
+    """Slot times from the recording itself, for a run whose Lua log was lost (game closed before writing it).
+    In the engine's movie mode every frame is 1/30 s of game time, so each slot lasts a whole number of frames that
+    follows from the schedule (waits of the Lua). The call time of each slot is that count from the sync marker,
+    corrected at every slot where a strong onset is found within 5 frames of the prediction (the drift is a frame
+    now and then, when a wait lands exactly on a frame boundary)."""
+    fr = 1.0 / 30.0
+    nfr = lambda sec: int(np.ceil(sec * 30.0 - 1e-6))
+    hop = 147
+    db = 20 * np.log10(rms_env(x.mean(axis=1), hop) + 1e-12)
+    strong = db > -30.0
+
+    def onset_near(t, before=0.17, after=0.20):
+        a = max(0, int((t - before) * FS / hop))
+        b = int((t + after) * FS / hop)
+        q = int(0.12 * FS / hop)
+        for i in range(a, b):
+            if strong[i] and not strong[max(0, i - q):i].any():
+                return i * hop / FS
+        return None
+
+    events, call, lat, drifts = [], t_sync + 2.0, {}, []
+    for s in slots:
+        if s["api"] == "bass":
+            continue
+        shim = nfr(0.1) * fr if s.get("shim") else 0.0
+        probe = s["api"] in ("patch", "pitch")
+        frames = (nfr(0.25) + nfr(s["dur"] - 0.25) if probe else nfr(s["dur"])) + nfr(s["gap"])
+        t_call = call + shim
+        ev = {"id": s["id"], "file": s["file"], "api": s["api"], "reconstructed": True}
+        guess = t_call + lat.get(s["api"], 0.0)
+        on = onset_near(guess)
+        if on is not None:
+            ev["found"] = True
+            if s["api"] not in lat:
+                lat[s["api"]] = on - t_call
+            else:
+                d = on - t_call - lat[s["api"]]
+                if abs(d) > 0.004:
+                    drifts.append((s["id"], round(d * 30, 2)))
+                call += d
+                t_call += d
+            anchor = on
+        else:
+            ev["found"] = False
+            anchor = guess
+        ev["t"] = anchor - t_sync
+        ev["t_stop"] = ev["t"] + s["dur"]
+        events.append(ev)
+        call = call + shim + frames * fr
+    print("atraso do inicio por API (quadros de 1/30 s):", {k: round(v * 30, 2) for k, v in lat.items()})
+    print("correcoes de deriva (teste, quadros):", drifts[:40], "total", len(drifts))
+    return events
+
+
 def main():
     run = LAB / "game" / "run" / sys.argv[1]
     tests = {t["file"]: t for t in json.loads((LAB / "game" / "tests.json").read_text(encoding="utf-8"))}
-    log = json.loads((run / "log.json").read_text(encoding="utf-8"))
+    has_log = (run / "log.json").exists()
+    log = json.loads((run / "log.json").read_text(encoding="utf-8")) if has_log else {"events": [], "info": {"log": "perdido"}}
     x, capname = load_capture(run)
     out = {"capture": capname, "info": log.get("info"), "slots": []}
     if x is None:
@@ -90,6 +146,10 @@ def main():
         out["sync"] = {"t": t_sync, "strength": strength, "seconds": len(x) / FS, "noise_floor_db": 20 * np.log10(noise + 1e-12)}
         print("gravacao", capname, "%.1f s" % (len(x) / FS), "sync em %.3f s" % t_sync, "forca", round(strength, 4),
               "piso de ruido %.1f dBFS" % (20 * np.log10(noise + 1e-12)))
+    if not has_log and x is not None:
+        slots = json.loads((run / "slots.json").read_text(encoding="utf-8"))
+        log["events"] = reconstruct(x, t_sync, slots, noise)
+        print("registro do Lua perdido: horarios reconstruidos da gravacao (%d testes; sound.PlayFile fora)" % len(log["events"]))
     for ev in log["events"]:
         t = tests.get(ev["file"], {})
         row = {"id": ev["id"], "file": ev["file"], "api": ev["api"], "kind": t.get("kind"),
@@ -98,11 +158,13 @@ def main():
             out["slots"].append(row)
             continue
         a = int((t_sync + ev["t"] - 0.05) * FS)
-        b = int((t_sync + ev["t_stop"] + 0.25) * FS)
+        b = int((t_sync + ev["t_stop"] + (0.25 if has_log else 0.12)) * FS)
         seg = x[max(0, a):b]
         hop = 221
         env = rms_env(seg.mean(axis=1), hop)
-        thr = max(noise * 4, 10 ** (-52 / 20))
+        # the map has ambient sound around -42 dBFS: a test counts as played above -30 (test tones are at -13),
+        # real bench sounds above -38
+        thr = 10 ** ((-38 if t.get("kind") == "real" else -30) / 20)
         active = env > thr
         row["peak_db"] = float(20 * np.log10(env.max() + 1e-12)) if len(env) else -120.0
         if not active.any():
@@ -186,8 +248,11 @@ def main():
     tail = run / "console_tail.log"
     if tail.exists():
         text = tail.read_text(encoding="utf-8", errors="replace")
-        lines = [l for l in text.splitlines() if re.search(r"sonslab|sample rate|[Uu]nsupported|block size|Failed to load sound|"
-                                                           r"S_StartSound|decoder|MP3|mp3|ogg|wave|Wave|sound", l)]
+        from collections import Counter
+        pat = re.compile(r"sonslab|sample rate|[Uu]nsupported .*wave|block size|Failed to load sound|S_StartSound|"
+                         r"[Cc]an't create mixer|needs Decoder|startmovie|recording movie")
+        cnt = Counter(l.strip() for l in text.splitlines() if pat.search(l))
+        lines = ["%dx %s" % (n, l) for l, n in cnt.items()]
         out["console"] = lines[:400]
         out["console_lines"] = len(text.splitlines())
     for name in ("sv_dur.json",):
