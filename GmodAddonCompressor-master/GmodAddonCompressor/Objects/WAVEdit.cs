@@ -260,10 +260,39 @@ namespace GmodAddonCompressor.Objects
                         $"WAV-SINGLE-CUE-LOOP-PROTECT | {wavFilePath} | forcing pcm_s16le | keep-channels={targetChannels} | sample-rate={targetSampleRate}");
                 }
 
+                // A looped sound in MS-ADPCM is written for the way the engine loops it (MsAdpcmLoop: short
+                // last block, loop mark the engine turns into the real loop start). When no tested block
+                // size reaches the loop start, the sound stays PCM16.
+                WaveLoopMetadata? adpcmLoops = null;
+                AudioEncodingSpec? adpcmLoopSpec = null;
+                ulong adpcmLoopSamples = 0;
+                if (targetCodec == AudioContext.WavCodecKind.AdpcmMs && wavIsLooping && AudioContext.PreserveLoopMetadata &&
+                    NeedsReencode(info, targetSampleRate, targetChannels, targetCodec))
+                {
+                    WaveLoopMetadata loops = WaveLoopMetadata.Capture(wavFilePath, info.SampleRate);
+                    if (loops.TryGetEngineLoopStart(targetSampleRate, out long loopStart))
+                    {
+                        int blockAlign = MsAdpcmLoop.ChooseBlockAlign(loopStart, targetChannels);
+                        if (blockAlign == 0 ||
+                            !RiffWaveDuration.TryGetLogicalSampleCountFile(wavFilePath, out ulong sourceSamples, out _))
+                        {
+                            targetCodec = AudioContext.WavCodecKind.Pcm16;
+                            _logger.LogInformation($"Keeping PCM16 for a loop MS-ADPCM cannot restart correctly: {wavFilePath.GAC_ToLocalPath()}");
+                            FFMpegSystem.AppendAudioLog($"WAV-ADPCM-LOOP-PROTECT | {wavFilePath} | forcing pcm_s16le");
+                        }
+                        else
+                        {
+                            adpcmLoops = loops;
+                            adpcmLoopSpec = new AudioEncodingSpec(AudioCodec.MsAdpcm, targetSampleRate, targetChannels, blockAlign);
+                            adpcmLoopSamples = RiffWaveDuration.ScaleSampleCount(sourceSamples, info.SampleRate, targetSampleRate);
+                        }
+                    }
+                }
+
                 if (!NeedsReencode(info, targetSampleRate, targetChannels, targetCodec))
                     return;
 
-                if (wavIsLooping)
+                if (wavIsLooping && adpcmLoops == null)
                 {
                     if (AudioContext.PreserveLoopMetadata)
                         loopChunks = ExtractLoopChunks(wavFilePath, info.SampleRate, targetSampleRate);
@@ -271,12 +300,32 @@ namespace GmodAddonCompressor.Objects
                         _logger.LogWarning($"Loop metadata may be lost: {wavFilePath.GAC_ToLocalPath()}");
                 }
 
-                bool converted = await _ffmpegSystem.ReencodeWavAsync(
-                    wavFilePath,
-                    newWavFilePath,
-                    targetSampleRate,
-                    targetChannels,
-                    targetCodec);
+                bool converted;
+                if (adpcmLoops != null)
+                {
+                    converted = await _ffmpegSystem.ReencodeAdaptiveWavAsync(
+                        wavFilePath,
+                        newWavFilePath,
+                        targetSampleRate,
+                        targetChannels,
+                        targetCodec,
+                        adpcmLoopSpec!.BlockAlign,
+                        info.SampleRate);
+                    if (converted)
+                    {
+                        // the loop marks go in before the original is replaced: a failure leaves it as it was
+                        MsAdpcmLoop.WriteLoopedFile(newWavFilePath, adpcmLoopSpec, adpcmLoops, adpcmLoopSamples);
+                    }
+                }
+                else
+                {
+                    converted = await _ffmpegSystem.ReencodeWavAsync(
+                        wavFilePath,
+                        newWavFilePath,
+                        targetSampleRate,
+                        targetChannels,
+                        targetCodec);
+                }
 
                 if (!converted)
                 {

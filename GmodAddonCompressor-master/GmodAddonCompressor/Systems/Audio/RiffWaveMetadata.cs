@@ -52,7 +52,41 @@ namespace GmodAddonCompressor.Systems.Audio
         internal static WaveLoopMetadata Capture(string path, int sourceSampleRate) =>
             Capture(File.ReadAllBytes(path), sourceSampleRate);
 
-        internal byte[] Restore(byte[] encodedWave, int targetSampleRate)
+        /// <summary>
+        /// The sample the engine loops back to, at the target rate: the start of the first sampler loop when
+        /// the sound has one (the sampler chunk is written last, so it is the one the engine keeps), else the
+        /// first cue point. False when the sound has no loop mark.
+        /// </summary>
+        internal bool TryGetEngineLoopStart(int targetSampleRate, out long loopStart)
+        {
+            loopStart = 0;
+            if (targetSampleRate <= 0)
+                return false;
+            if (_smpl != null && _smpl.Length >= 44 + 16 && ReadUInt32(_smpl, 36) > 0)
+            {
+                loopStart = Scale(ReadUInt32(_smpl, 44 + 8), targetSampleRate);
+                return true;
+            }
+            if (_cue != null && _cue.Length >= 12 + 24 && ReadUInt32(_cue, 8) > 0)
+            {
+                loopStart = Scale(ReadUInt32(_cue, 12 + 20), targetSampleRate);
+                return true;
+            }
+            return false;
+        }
+
+        private uint Scale(uint value, int targetSampleRate) =>
+            SourceSampleRate == targetSampleRate ? value : ScaleSample(value, SourceSampleRate, targetSampleRate);
+
+        internal byte[] Restore(byte[] encodedWave, int targetSampleRate) =>
+            Restore(encodedWave, targetSampleRate, engineLoopMark: null);
+
+        /// <summary>
+        /// <paramref name="engineLoopMark"/>: the loop start is written as this value (first cue point and
+        /// first sampler loop) instead of the scaled position. Used for MS-ADPCM, where the engine converts
+        /// the mark (see <see cref="MsAdpcmLoop"/>).
+        /// </summary>
+        internal byte[] Restore(byte[] encodedWave, int targetSampleRate, uint? engineLoopMark)
         {
             if (targetSampleRate <= 0)
                 throw new ArgumentOutOfRangeException(nameof(targetSampleRate));
@@ -70,9 +104,9 @@ namespace GmodAddonCompressor.Systems.Audio
 
             foreach (RiffChunk chunk in preserved)
                 writer.Write(chunk.FullBytes(encodedWave));
-            WriteScaled(writer, _cue, "cue ", targetSampleRate);
-            WriteScaled(writer, _listAdtl, "LIST", targetSampleRate);
-            WriteScaled(writer, _smpl, "smpl", targetSampleRate);
+            WriteScaled(writer, _cue, "cue ", targetSampleRate, engineLoopMark);
+            WriteScaled(writer, _listAdtl, "LIST", targetSampleRate, null);
+            WriteScaled(writer, _smpl, "smpl", targetSampleRate, engineLoopMark);
 
             if (output.Length - 8 > uint.MaxValue)
                 throw new InvalidDataException("RIFF output exceeds the 32-bit RIFF size limit.");
@@ -81,9 +115,9 @@ namespace GmodAddonCompressor.Systems.Audio
             return output.ToArray();
         }
 
-        internal void RestoreFile(string encodedPath, int targetSampleRate)
+        internal void RestoreFile(string encodedPath, int targetSampleRate, uint? engineLoopMark = null)
         {
-            byte[] restored = Restore(File.ReadAllBytes(encodedPath), targetSampleRate);
+            byte[] restored = Restore(File.ReadAllBytes(encodedPath), targetSampleRate, engineLoopMark);
             File.WriteAllBytes(encodedPath, restored);
         }
 
@@ -95,7 +129,7 @@ namespace GmodAddonCompressor.Systems.Audio
                 Encoding.ASCII.GetString(wave, chunk.DataOffset, 4) == "adtl";
         }
 
-        private void WriteScaled(BinaryWriter writer, byte[]? chunk, string id, int targetSampleRate)
+        private void WriteScaled(BinaryWriter writer, byte[]? chunk, string id, int targetSampleRate, uint? engineLoopMark)
         {
             if (chunk == null)
                 return;
@@ -108,6 +142,18 @@ namespace GmodAddonCompressor.Systems.Audio
                     ScaleListAdtl(copy, SourceSampleRate, targetSampleRate);
                 else if (id == "smpl")
                     ScaleSmpl(copy, SourceSampleRate, targetSampleRate);
+            }
+            if (engineLoopMark.HasValue)
+            {
+                if (id == "cue " && copy.Length >= 12 + 24 && ReadUInt32(copy, 8) > 0)
+                {
+                    WriteUInt32(copy, 12 + 4, engineLoopMark.Value);
+                    WriteUInt32(copy, 12 + 20, engineLoopMark.Value);
+                }
+                else if (id == "smpl" && copy.Length >= 44 + 16 && ReadUInt32(copy, 36) > 0)
+                {
+                    WriteUInt32(copy, 44 + 8, engineLoopMark.Value);
+                }
             }
             writer.Write(copy);
         }
@@ -210,7 +256,14 @@ namespace GmodAddonCompressor.Systems.Audio
             }
         }
 
-        internal static bool TryValidateEncoding(byte[] wave, AudioEncodingSpec spec, out string reason)
+        internal static bool TryValidateEncoding(byte[] wave, AudioEncodingSpec spec, out string reason) =>
+            TryValidateEncoding(wave, spec, allowShortLastBlock: false, out reason);
+
+        /// <summary>
+        /// <paramref name="allowShortLastBlock"/>: a looped MS-ADPCM sound ends in a short block that holds
+        /// exactly the logical sample count (one sample more in an odd mono sound); see <see cref="MsAdpcmLoop"/>.
+        /// </summary>
+        internal static bool TryValidateEncoding(byte[] wave, AudioEncodingSpec spec, bool allowShortLastBlock, out string reason)
         {
             if (!TryValidate(wave, out reason))
                 return false;
@@ -226,7 +279,9 @@ namespace GmodAddonCompressor.Systems.Audio
             }
 
             RiffChunk data = layout!.Chunks.First(chunk => chunk.Id == "data");
-            if (data.DataSize % spec.BlockAlign != 0)
+            bool shortLastBlock = allowShortLastBlock && spec.Codec == AudioCodec.MsAdpcm &&
+                data.DataSize % spec.BlockAlign >= 7 * spec.Channels;
+            if (data.DataSize % spec.BlockAlign != 0 && !shortLastBlock)
             {
                 reason = $"WAV data contains a partial {spec.BlockAlign}-byte block.";
                 return false;
@@ -257,6 +312,17 @@ namespace GmodAddonCompressor.Systems.Audio
                 return false;
             }
             ulong logicalSamples = BitConverter.ToUInt32(wave, fact.DataOffset);
+            if (allowShortLastBlock)
+            {
+                ulong decodable = MsAdpcmLoop.DecodableSamples(data.DataSize, spec.BlockAlign, spec.Channels);
+                if (logicalSamples > decodable || decodable - logicalSamples > 1)
+                {
+                    reason = "Looped MS ADPCM data does not end at its last sample.";
+                    return false;
+                }
+                reason = string.Empty;
+                return true;
+            }
             ulong blockCount = (ulong)data.DataSize / (uint)spec.BlockAlign;
             ulong fullBlockSamples = blockCount * (uint)samplesPerBlock;
             if (logicalSamples > fullBlockSamples || fullBlockSamples - logicalSamples >= (uint)samplesPerBlock)
@@ -268,11 +334,14 @@ namespace GmodAddonCompressor.Systems.Audio
             return true;
         }
 
-        internal static bool TryValidateEncodingFile(string path, AudioEncodingSpec spec, out string reason)
+        internal static bool TryValidateEncodingFile(string path, AudioEncodingSpec spec, out string reason) =>
+            TryValidateEncodingFile(path, spec, allowShortLastBlock: false, out reason);
+
+        internal static bool TryValidateEncodingFile(string path, AudioEncodingSpec spec, bool allowShortLastBlock, out string reason)
         {
             try
             {
-                return TryValidateEncoding(File.ReadAllBytes(path), spec, out reason);
+                return TryValidateEncoding(File.ReadAllBytes(path), spec, allowShortLastBlock, out reason);
             }
             catch (Exception ex)
             {

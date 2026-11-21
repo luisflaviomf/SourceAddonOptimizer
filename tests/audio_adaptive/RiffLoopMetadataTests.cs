@@ -155,6 +155,19 @@ internal static class WaveFixture
         return stream.ToArray();
     }
 
+    /// <summary>The fixture's loop marks (one cue point, one sampler loop) moved to <paramref name="loopStart"/>.</summary>
+    internal static byte[] WithLoopStart(byte[] wave, uint loopStart)
+    {
+        byte[] copy = wave.ToArray();
+        int cue = FindFourCc(copy, "cue ", 12) + 8;
+        BitConverter.GetBytes(loopStart).CopyTo(copy, cue + 8);
+        BitConverter.GetBytes(loopStart).CopyTo(copy, cue + 24);
+        int smpl = FindFourCc(copy, "smpl", 12) + 8;
+        BitConverter.GetBytes(loopStart).CopyTo(copy, smpl + 44);
+        BitConverter.GetBytes(loopStart + 500).CopyTo(copy, smpl + 48);
+        return copy;
+    }
+
     internal static byte[] Chunk(byte[] wave, string id)
     {
         int offset = FindFourCc(wave, id, 12);

@@ -118,3 +118,17 @@ output is also byte-identical to the corpus driver's.
 
 Remaining limit: libsoxr can take a different SIMD code path on another CPU, so a different machine
 may still round differently. The goal here is the same bytes when the same PC optimizes the same addon again.
+
+### Looped MS-ADPCM written for the engine (2026-11-21)
+
+Measured in the game (see `docs/sons-2026-11.md`): the engine plays the padding of the last MS-ADPCM block on every
+loop pass and, at the restart, divides the loop mark by the block size in bytes. A looped sound that ends up in
+MS-ADPCM is now written with a short last block and with the loop mark the engine turns into the real loop start
+(`Systems/Audio/MsAdpcmLoop.cs`); the block is 1024, 2048 or 512 bytes per channel, whichever reaches the loop start,
+and when none does the MS-ADPCM candidate is dropped. The statement above that `fact` is corrected still holds, but the
+engine does not read it; the short last block is what removes the padding.
+
+On the 77 LVS files of this benchmark the selected formats are unchanged in kind; looped MS-ADPCM outputs change bytes.
+On the whole test bench (3,150 WAVs): 594 looped MS-ADPCM files before (593 with padding played, 200 restarting at the
+wrong sample), 570 after, all correct, and 24 back to the PCM16 reference (+1.96 MiB in total). Sounds without loop
+marks and PCM loops are byte-identical.

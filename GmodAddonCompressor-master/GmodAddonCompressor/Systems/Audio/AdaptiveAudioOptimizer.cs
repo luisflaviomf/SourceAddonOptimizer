@@ -50,7 +50,37 @@ namespace GmodAddonCompressor.Systems.Audio
 
     internal static class AdaptiveAudioPlan
     {
-        internal static IReadOnlyList<AudioEncodingSpec> Build(PcmAudio source, AudioEncodingSpec baseline)
+        internal static IReadOnlyList<AudioEncodingSpec> Build(PcmAudio source, AudioEncodingSpec baseline) =>
+            Build(source, baseline, loops: null);
+
+        /// <summary>
+        /// <paramref name="loops"/>: the loop marks of the sound, when it has any. Each MS-ADPCM candidate then
+        /// gets the block size whose loop mark the engine turns into the real loop start (the official size
+        /// when it reaches it), and is left out when no tested block size does. See <see cref="MsAdpcmLoop"/>.
+        /// </summary>
+        internal static IReadOnlyList<AudioEncodingSpec> Build(PcmAudio source, AudioEncodingSpec baseline, WaveLoopMetadata? loops)
+        {
+            IReadOnlyList<AudioEncodingSpec> plan = BuildUnlooped(source, baseline);
+            if (loops == null || !loops.TryGetEngineLoopStart(source.SampleRate, out _))
+                return plan;
+
+            var result = new List<AudioEncodingSpec>(plan.Count);
+            foreach (AudioEncodingSpec spec in plan)
+            {
+                if (spec.Codec != AudioCodec.MsAdpcm)
+                {
+                    result.Add(spec);
+                    continue;
+                }
+                loops.TryGetEngineLoopStart(spec.SampleRate, out long loopStart);
+                int blockAlign = MsAdpcmLoop.ChooseBlockAlign(loopStart, spec.Channels);
+                if (blockAlign != 0)
+                    AddIfDifferent(result, spec with { BlockAlign = blockAlign }, baseline);
+            }
+            return result;
+        }
+
+        private static IReadOnlyList<AudioEncodingSpec> BuildUnlooped(PcmAudio source, AudioEncodingSpec baseline)
         {
             IReadOnlyList<int> rates = AudioSignalAnalyzer.OrderConservativeSampleRates(source);
             var channels = new List<int> { source.Channels };
@@ -110,6 +140,8 @@ namespace GmodAddonCompressor.Systems.Audio
                 WaveLoopMetadata? loopMetadata = null;
                 if (options.PreserveLoopMetadata)
                     loopMetadata = WaveLoopMetadata.Capture(fullPath, sourceFormat!.SampleRate);
+                // a looped sound in MS-ADPCM is written for the way the engine loops it (MsAdpcmLoop)
+                bool looped = loopMetadata != null && loopMetadata.TryGetEngineLoopStart(sourceFormat!.SampleRate, out _);
 
                 // The steps that do not depend on each other are asked for together (the baseline with the
                 // decode of the original, the candidates with the decode of the baseline, then the decodes of
@@ -118,24 +150,56 @@ namespace GmodAddonCompressor.Systems.Audio
                 // with one step at a time.
                 Task<PcmAudio> referenceTask = Start(
                     started, _backend.DecodeAsync(fullPath, sourceFormat!.SampleRate, sourceFormat.Channels));
-                if (sourceFormat.MatchesManual(options.BaselineSpec))
+                AudioEncodingSpec baselineSpec = options.BaselineSpec;
+                bool baselineLoopSafe = false;
+                if (sourceFormat.MatchesManual(baselineSpec))
                 {
                     File.Copy(fullPath, baselinePath, overwrite: true);
                     baselineCreated = true;
                     baselineCopiedByteIdentically = true;
                 }
+                else if (looped && baselineSpec.Codec == AudioCodec.MsAdpcm)
+                {
+                    loopMetadata!.TryGetEngineLoopStart(baselineSpec.SampleRate, out long baselineLoopStart);
+                    int blockAlign = MsAdpcmLoop.ChooseBlockAlign(baselineLoopStart, baselineSpec.Channels);
+                    if (blockAlign == 0)
+                        return Result(false, false, true, baselineSpec, originalBytes, originalBytes, stopwatch, candidateResults, "No MS ADPCM block size reaches the loop start; original preserved.");
+                    baselineSpec = baselineSpec with { BlockAlign = blockAlign };
+                    baselineLoopSafe = true;
+                    baselineCreated = await _backend.EncodeCandidateAsync(fullPath, baselinePath, baselineSpec).ConfigureAwait(false);
+                }
                 else
                 {
-                    baselineCreated = await _backend.EncodeBaselineAsync(fullPath, baselinePath, options.BaselineSpec).ConfigureAwait(false);
+                    baselineCreated = await _backend.EncodeBaselineAsync(fullPath, baselinePath, baselineSpec).ConfigureAwait(false);
                 }
                 if (!baselineCreated || !File.Exists(baselinePath))
-                    return Result(false, false, true, options.BaselineSpec, originalBytes, originalBytes, stopwatch, candidateResults, "Baseline encode failed; original preserved.");
+                    return Result(false, false, true, baselineSpec, originalBytes, originalBytes, stopwatch, candidateResults, "Baseline encode failed; original preserved.");
 
-                RestoreAndValidate(
-                    baselinePath,
-                    options.BaselineSpec,
-                    baselineCopiedByteIdentically ? null : loopMetadata,
-                    strictBlockGeometry: false);
+                if (baselineLoopSafe)
+                {
+                    try
+                    {
+                        WriteLoopSafe(
+                            baselinePath,
+                            baselineSpec,
+                            loopMetadata!,
+                            RiffWaveDuration.ScaleSampleCount(sourceLogicalSamples, sourceFormat.SampleRate, baselineSpec.SampleRate));
+                    }
+                    catch (Exception ex)
+                    {
+                        // the encoder's own file has no loop marks: it must never be committed as the fallback
+                        baselineCreated = false;
+                        return Result(false, false, true, baselineSpec, originalBytes, originalBytes, stopwatch, candidateResults, "Looped MS ADPCM baseline could not be written; original preserved: " + ex.Message);
+                    }
+                }
+                else
+                {
+                    RestoreAndValidate(
+                        baselinePath,
+                        baselineSpec,
+                        baselineCopiedByteIdentically ? null : loopMetadata,
+                        strictBlockGeometry: false);
+                }
                 long baselineBytes = new FileInfo(baselinePath).Length;
 
                 PcmAudio reference;
@@ -150,7 +214,7 @@ namespace GmodAddonCompressor.Systems.Audio
                     Task<PcmAudio> baselineDecodeTask = Start(
                         started, _backend.DecodeAsync(baselinePath, sourceFormat.SampleRate, sourceFormat.Channels));
                     // the candidates only need the original: encoded while the baseline is decoded
-                    plan = AdaptiveAudioPlan.Build(reference, options.BaselineSpec);
+                    plan = AdaptiveAudioPlan.Build(reference, baselineSpec, looped ? loopMetadata : null);
                     candidatePaths = new string[plan.Count];
                     encodeTasks = new Task<bool>[plan.Count];
                     for (int index = 0; index < plan.Count; index++)
@@ -166,7 +230,7 @@ namespace GmodAddonCompressor.Systems.Audio
                 {
                     await SettleAsync(started).ConfigureAwait(false);
                     CommitSelected(baselinePath, fullPath);
-                    return Result(true, true, true, options.BaselineSpec, originalBytes, baselineBytes, stopwatch, candidateResults, "Quality decode failed; committed byte-identical baseline: " + ex.Message);
+                    return Result(true, true, true, baselineSpec, originalBytes, baselineBytes, stopwatch, candidateResults, "Quality decode failed; committed byte-identical baseline: " + ex.Message);
                 }
 
                 var baseline = new AdaptiveAudioCandidate(
@@ -195,9 +259,16 @@ namespace GmodAddonCompressor.Systems.Audio
                             sourceLogicalSamples,
                             sourceFormat.SampleRate,
                             spec.SampleRate);
-                        if (spec.Codec == AudioCodec.MsAdpcm)
-                            RiffWaveDuration.SetAdpcmFactSampleCountFile(candidatePath, expectedLogicalSamples);
-                        RestoreAndValidate(candidatePath, spec, loopMetadata, strictBlockGeometry: true);
+                        if (spec.Codec == AudioCodec.MsAdpcm && looped)
+                        {
+                            WriteLoopSafe(candidatePath, spec, loopMetadata!, expectedLogicalSamples);
+                        }
+                        else
+                        {
+                            if (spec.Codec == AudioCodec.MsAdpcm)
+                                RiffWaveDuration.SetAdpcmFactSampleCountFile(candidatePath, expectedLogicalSamples);
+                            RestoreAndValidate(candidatePath, spec, loopMetadata, strictBlockGeometry: true);
+                        }
                         ValidateLogicalDuration(
                             candidatePath,
                             expectedLogicalSamples,
@@ -251,7 +322,7 @@ namespace GmodAddonCompressor.Systems.Audio
                 AdaptiveAudioCandidate selected = AdaptiveAudioSelector.Select(baseline, selectable);
                 string selectedPath = (string)selected.Payload!;
                 AudioEncodingSpec selectedSpec = selected == baseline
-                    ? options.BaselineSpec
+                    ? baselineSpec
                     : plan.First(spec => spec.Id == selected.Name);
                 CommitSelected(selectedPath, fullPath);
                 long outputBytes = new FileInfo(fullPath).Length;
@@ -327,6 +398,9 @@ namespace GmodAddonCompressor.Systems.Audio
             if (!valid)
                 throw new InvalidDataException(reason);
         }
+
+        private static void WriteLoopSafe(string path, AudioEncodingSpec spec, WaveLoopMetadata loopMetadata, ulong logicalSamples) =>
+            MsAdpcmLoop.WriteLoopedFile(path, spec, loopMetadata, logicalSamples);
 
         private static void CommitSelected(string selectedPath, string targetPath)
         {
