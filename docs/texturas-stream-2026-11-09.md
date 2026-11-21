@@ -211,6 +211,18 @@ pastas isoladas):
   - no jogo, a decodificação fica mais rápida: `GMOT.Decode` das 30 maiores texturas com alfa no
     LuaJIT, 8,51 → 8,01 s (−5,8%), porque o alfa deixa de gerar ruído pixel a pixel.
 
+Alvo do alfa 1,5 dB abaixo (20/11/2026, escolha do Luis depois de comparar no jogo). O passo do alfa é o
+maior que mantém `max(30, alvo + 20 log10(peso)) − 1,5 dB` (`choose.ALPHA_RELIEF_DB`). No jogo, em vistas
+próximas de 11 models da bancada, vidros, sirenes, faróis e partes translúcidas ficaram iguais (a diferença ficou
+dentro da variação entre sessões do jogo). Bancada inteira, contra o alfa sem ruído:
+
+- Tamanho: GMOT 83,37 → 80,08 MiB no Custo-benefício (−3,29) e 59,65 → 57,19 MiB no Máximo (−2,46). Só
+  mudam blobs com alfa; uma textura do simfphys que não ganhava nada como stream passou a ganhar.
+- Alfa no jogo, nas 1.889 texturas com alfa, contra o que o produto mostrava antes destas duas mudanças:
+  - mediana 33,7 → 33,9 dB, p10 30,1 → 31,0 dB, pior caso 27,2 → 27,6 dB;
+  - 817 texturas melhoram mais de 1 dB e 99 pioram mais de 1 dB (31 mais de 2 dB; a pior, 3,2 dB);
+  - cor idêntica.
+
 Análise e outras propostas: `docs/revisao-stream-claude-2026-11.md` (branch `review/claude-stream`).
 
 ## Custos e limites

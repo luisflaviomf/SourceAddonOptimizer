@@ -6,7 +6,7 @@
   unknown shader).
 - choose(): normal-map or colour mode, chroma resolution and the largest quantization step (STEPS) whose
   reconstruction keeps the target PSNR (+ MARGIN for the DXT step after it); alpha against its own target
-  max(30, target + 20 log10(weight)).
+  max(30, target + 20 log10(weight)) - ALPHA_RELIEF_DB.
 """
 from __future__ import annotations
 
@@ -24,6 +24,10 @@ from .codec import dwt, idwt, levels_for, normal_z, psnr, quant, rgb_to_ycocg, u
 
 STEPS = [2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 19, 22, 26, 30, 36, 44, 54, 66]
 MARGIN = 1.2
+# The alpha plane's target is this much lower than the colour's (2026-11-20, Luis's choice after the in-game
+# comparison: on 11 bench models, glass, beacons, lights and see-through parts looked the same). Alpha is a
+# mask (cut-out, gloss/envmap mask, see-through) without noise filling; its step often reaches the largest one.
+ALPHA_RELIEF_DB = 1.5
 MIN_SIDE = 64
 # Uncompressed sources (HUD art, sights, icons: hard edges the DXT step never blurred) keep at least this
 # much; they come back in their own format. DXT3 is decoded to DXT5.
@@ -366,7 +370,7 @@ def choose(v, rgba, use, target, transforms=None) -> dict:
                 measured_a[s] = (_psnr_of(mse) if mse is not None else
                                  psnr(np.clip(np.round(r + 128), 0, 255), a))
             return measured_a[s]
-        ast = _search(q_a, max(30.0, t + 20 * np.log10(aw)))
+        ast = _search(q_a, max(30.0, t + 20 * np.log10(aw)) - ALPHA_RELIEF_DB)
         aq = q_a(ast)
     if transforms is not None:
         transforms[:] = list(dw) + ([da] if has_alpha else [])
